@@ -65,16 +65,16 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
     <div class="brand-sub">CVE Verification Engine</div>
   </div>
   <div class="hdr-spacer"></div>
-  <div class="hdr-date">22 NOVIEMBRE 2026 &mdash; 29 CVEs verificados dinámicamente</div>
+  <div class="hdr-date">22 NOVIEMBRE 2026 &mdash; 30 CVEs verificados dinámicamente</div>
 </header>
 
 <div class="stats-bar">
-  <div class="stat"><div class="stat-n s-green">29</div><div class="stat-l">Verificados</div></div>
+  <div class="stat"><div class="stat-n s-green">30</div><div class="stat-l">Verificados</div></div>
   <div class="stat"><div class="stat-n s-crit">19</div><div class="stat-l">Critical</div></div>
   <div class="stat"><div class="stat-n s-high">7</div><div class="stat-l">High</div></div>
   <div class="stat"><div class="stat-n s-blue">16</div><div class="stat-l">SQLi</div></div>
-  <div class="stat"><div class="stat-n s-purple">22</div><div class="stat-l">Con PoC</div></div>
-  <div class="stat"><div class="stat-n s-green">21</div><div class="stat-l">Unauthenticated</div></div>
+  <div class="stat"><div class="stat-n s-purple">23</div><div class="stat-l">Con PoC</div></div>
+  <div class="stat"><div class="stat-n s-green">22</div><div class="stat-l">Unauthenticated</div></div>
 </div>
 
 <div class="filters">
@@ -99,7 +99,7 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
   <button class="f-btn" data-filter="auth" data-val="false">Unauthenticated</button>
   <button class="f-btn" data-filter="auth" data-val="true">Autenticado</button>
   <input class="search-box" type="text" id="search" placeholder="Buscar CVE, plugin, endpoint...">
-  <span class="filter-count" id="filter-count"><span id="vis-count">29</span> / 29 CVEs</span>
+  <span class="filter-count" id="filter-count"><span id="vis-count">30</span> / 30 CVEs</span>
 </div>
 
 <div class="wrap">
@@ -569,8 +569,24 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
     <a href="CVE-2024-23334_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
   </td>
 </tr>
-<tr class="cve-row" data-cls="ssti" data-sev="medium" data-poc="false" data-auth="false" data-gap="true">
+<tr class="cve-row" data-cls="path-traversal" data-sev="medium" data-poc="true" data-auth="false" data-gap="false">
   <td class="td-num">29</td>
+  <td class="td-cve"><a href="CVE-2026-86253_informe_pdf.html" target="_blank"><code>CVE-2026-86253</code></a></td>
+  <td><span class="badge" style="background:#2563eb">5.9 MEDIUM</span></td>
+  <td><span class="badge badge-sm" style="background:#0891b2">path-traversal</span></td>
+  <td><code class="tech">path-traversal</code></td>
+  <td><span class="badge badge-sm" style="background:#1e40af">PoC publico</span></td>
+  <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
+  <td class="td-aff"><code>1.15.5</code></td>
+  <td class="td-pub">2026-03-17</td>
+  <td class="td-desc">h3 is a minimal Node.js HTTP framework. The serveStatic() utility in h3 versions prior to 1.15.6 and in 2.x prior to 2.0</td>
+  <td class="td-links">
+    <a href="CVE-2026-86253_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
+    <a href="CVE-2026-86253_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
+  </td>
+</tr>
+<tr class="cve-row" data-cls="ssti" data-sev="medium" data-poc="false" data-auth="false" data-gap="true">
+  <td class="td-num">30</td>
   <td class="td-cve"><a href="CVE-2025-27516_informe_pdf.html" target="_blank"><code>CVE-2025-27516</code></a></td>
   <td><span class="badge" style="background:#2563eb">5.4 MEDIUM</span></td>
   <td><span class="badge badge-sm" style="background:#374151">ssti</span></td>

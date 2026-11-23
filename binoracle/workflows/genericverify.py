@@ -3825,3 +3825,90 @@ def verify_generic_cors_misconfig(
     finally:
         step("desmontando el laboratorio generico...")
         lab.teardown()
+
+
+def verify_generic_http_confirm(
+    source_dir: str, endpoint: str, http_method: str = "GET",
+    confirm_string: str = "", patched_patterns: Optional[List[str]] = None,
+    on_step: Optional[Callable[[str], None]] = None,
+    budget_s: float = 900.0, custom_headers: Optional[dict] = None,
+    post_data: Optional[dict] = None,
+    dockerfile_body: str = "", extra_files: Optional[dict] = None,
+    setup_wait_extra_s: float = 0.0,
+) -> WpVerifyResult:
+    """Verificador generico de string de confirmacion en respuesta HTTP.
+
+    Usado para CVEs cuya prueba de explotacion se reduce a:
+      "enviar peticion X -> si la respuesta contiene confirm_string, vulnerable".
+
+    Ejemplos: Drupal install.php RCE (confirm_string='Choose language'),
+    cualquier endpoint cuyo comportamiento vulnerable se detecta con un string
+    especifico en la respuesta.
+
+    Parametros:
+      confirm_string   - substring que, SI aparece en la respuesta, confirma
+                         la vulnerabilidad.
+      patched_patterns - lista de strings que, si aparecen, indican un sitio YA
+                         parcheado (ej. 'AlreadyInstalled', 'already installed').
+      setup_wait_extra_s - segundos adicionales de espera despues del health check
+                           (util cuando el Dockerfile hace instalaciones largas).
+    """
+    import time as _time
+    step = on_step or (lambda _m: None)
+    res = WpVerifyResult()
+    if not _docker_daemon_ok():
+        res.available = False
+        res.detail = "sin daemon Docker alcanzable"
+        res.limitations.append("verificacion dinamica NO intentada: sin daemon Docker")
+        return res
+    if not confirm_string:
+        res.detail = "confirm_string vacia, no se puede confirmar la vulnerabilidad"
+        res.limitations.append("se necesita confirm_string para verificar la explotacion")
+        return res
+
+    boot = _bootstrap_generic_lab(source_dir, step, res, budget_s,
+                                   dockerfile_body=dockerfile_body, extra_files=extra_files)
+    if boot is None:
+        return res
+    lab, base_url, container = boot
+    try:
+        if setup_wait_extra_s > 0:
+            step(f"esperando {setup_wait_extra_s:.0f}s adicionales para que el lab este listo...")
+            _time.sleep(setup_wait_extra_s)
+
+        m = (http_method or "GET").upper().strip() or "GET"
+        hdrs = dict(custom_headers or {})
+        url = base_url.rstrip("/") + "/" + endpoint.lstrip("/")
+        step(f"enviando {m} {endpoint} buscando confirm_string={confirm_string!r}...")
+        try:
+            resp = _http_request(m, url, timeout=20, data=post_data,
+                                 headers=hdrs if hdrs else None)
+        except Exception as e:
+            res.detail = f"peticion HTTP fallida: {e}"
+            return res
+
+        body = resp.text if hasattr(resp, "text") else (resp.get("body") or "")
+        if patched_patterns and any(pat.lower() in body.lower() for pat in patched_patterns):
+            matched = next(p for p in patched_patterns if p.lower() in body.lower())
+            res.detail = (f"respuesta contiene patron de parche {matched!r} -> "
+                          f"este endpoint ya fue corregido")
+            res.evidence = body[:500]
+            return res
+
+        if confirm_string.lower() in body.lower():
+            res.verified = True
+            res.detail = (f"confirm_string {confirm_string!r} encontrado en la respuesta "
+                          f"de {m} {endpoint} -- vulnerabilidad confirmada")
+            res.evidence = body[:800]
+            return res
+
+        res.detail = (f"confirm_string {confirm_string!r} NO encontrado en la respuesta "
+                      f"de {m} {endpoint} (len={len(body)})")
+        res.evidence = body[:300]
+        return res
+    except Exception as e:
+        res.detail = f"error inesperado en verify_generic_http_confirm: {e}"
+        return res
+    finally:
+        step("desmontando el laboratorio generico...")
+        lab.teardown()

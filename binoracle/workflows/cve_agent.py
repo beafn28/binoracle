@@ -9286,6 +9286,33 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     _attempt_ssrf_generic, wr, notes.get("endpoint"), url_p,
                     technique_label="SSRF generico")
                 _apply_wpverify_result(inv, wr, es, llm)
+            # Fallback generico: cualquier clase web con confirm_string + (docker_image o
+            # dockerfile_body) + endpoint -- envia la peticion HTTP y busca confirm_string.
+            # Cubre CVEs como Drupal install.php RCE (confirm_string='Choose language'),
+            # backends que responden diferente cuando son vulnerables, etc.
+            elif (not plugin_dir and fr.local_path
+                  and notes.get("confirm_string") and notes.get("endpoint")
+                  and (notes.get("docker_image") or notes.get("dockerfile_body"))):
+                from .genericverify import verify_generic_http_confirm
+                _hc_ep = notes.get("endpoint")
+                _hc_method = notes.get("http_method") or "GET"
+                _hc_confirm = notes.get("confirm_string") or ""
+                _hc_patched = notes.get("patched_patterns") or None
+                _hc_hdrs = notes.get("custom_headers") or None
+                _hc_df = notes.get("dockerfile_body") or ""
+                _hc_ef = notes.get("extra_files") or None
+                _inject_custom_docker_lab(str(fr.local_path), notes, step)
+                _hc_confirm_short = _hc_confirm[:40]
+                step(("intentando verificacion DINAMICA GENERICA -- HTTP confirm "
+                     f"(buscando {_hc_confirm_short!r} en {_hc_ep})..." if es else
+                     "attempting GENERIC DYNAMIC verification -- HTTP confirm "
+                     f"(looking for {_hc_confirm_short!r} in {_hc_ep})..."))
+                wr = verify_generic_http_confirm(
+                    fr.local_path, _hc_ep, _hc_method,
+                    confirm_string=_hc_confirm, patched_patterns=_hc_patched,
+                    on_step=step, budget_s=budget_s, custom_headers=_hc_hdrs,
+                    dockerfile_body=_hc_df, extra_files=_hc_ef)
+                _apply_wpverify_result(inv, wr, es, llm)
             # mismo laboratorio efimero, para XSS/SSTI/XXE/open-redirect/file-upload/CSRF -- ver
             # _apply_wpverify_result() mas abajo, que vuelca el resultado en inv/blockers igual que
             # los bloques anteriores (evita repetir el mismo volcado 6 veces mas). Cada clase trae
