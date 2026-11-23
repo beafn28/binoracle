@@ -23,6 +23,119 @@ def _esc(s) -> str:
     return _html.escape(str(s if s is not None else ""))
 
 
+def _generate_wp_injection_shot(resp_body: str, highlight: str, url: str,
+                                 method: str = "GET",
+                                 site_title: str = "binoracle-lab") -> Optional[str]:
+    """Render a WordPress-like browser screenshot with the SQL/traversal error prominently
+    shown at the top of the page, MySQL version (or canary) highlighted in amber.
+    Returns base64 PNG or None if Playwright is unavailable."""
+    try:
+        from playwright.sync_api import sync_playwright
+        import base64
+        import os
+        import tempfile
+    except Exception:
+        return None
+
+    import html as _h
+
+    # Keep only the error part (cut at <!DOCTYPE to drop the full WP HTML below)
+    body_clean = resp_body
+    for _cut in ("<!DOCTYPE", "<html", "<!doctype"):
+        _ci = body_clean.lower().find(_cut.lower())
+        if _ci > 100:
+            body_clean = body_clean[:_ci].strip()
+            break
+    body_clean = body_clean[:1200]
+
+    body_esc = _h.escape(body_clean)
+    # Highlight stored key (e.g. mysql_version_extraida or canary)
+    if highlight:
+        hl_safe = _h.escape(highlight)
+        if hl_safe in body_esc:
+            body_esc = body_esc.replace(hl_safe,
+                f'<mark class="hl">{hl_safe}</mark>', 1)
+        else:
+            # Regex fallback: highlight first x.y.z version number found
+            import re as _re_hl
+            body_esc = _re_hl.sub(
+                r'(~?)(\d+\.\d+\.\d+)',
+                lambda m: (f'{m.group(1)}<mark class="hl">{m.group(2)}</mark>'
+                           if not m.group(2).startswith('00') else m.group(0)),
+                body_esc, count=1)
+
+    page_html = f"""<!doctype html>
+<html><head><meta charset="utf-8"><style>
+*{{box-sizing:border-box;margin:0;padding:0}}
+body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#fff;color:#333;min-height:100vh}}
+/* WordPress DB error banner */
+.wp-err{{background:#fef7f7;border-left:4px solid #d63638;border-bottom:1px solid #f0d0d0;padding:12px 20px;font-family:Consolas,'Courier New',monospace;font-size:12.5px;line-height:1.65;color:#2c2c2c}}
+.wp-err strong{{color:#d63638;font-size:13px}}
+.wp-err code{{background:rgba(0,0,0,.07);padding:2px 5px;border-radius:3px;font-size:12px;word-break:break-all}}
+mark.hl{{background:#f9a825;color:#000;padding:1px 4px;border-radius:3px;font-weight:700;font-size:13.5px}}
+/* WordPress header */
+.wp-hdr{{border-bottom:1px solid #eee;padding:18px 32px;display:flex;justify-content:space-between;align-items:center}}
+.wp-brand{{font-size:20px;font-weight:700;color:#1a1a1a}}
+.wp-nav{{display:flex;gap:28px}}
+.wp-nav a{{color:#555;text-decoration:none;font-size:14px}}
+/* WordPress content */
+.wp-body{{max-width:960px;margin:32px auto;padding:0 32px}}
+.wp-h1{{font-size:36px;font-weight:700;margin-bottom:28px;color:#1a1a1a}}
+.wp-art{{border-bottom:1px solid #eee;padding-bottom:24px;margin-bottom:24px}}
+.wp-art-t{{font-size:22px;font-weight:600;color:#1a1a1a;margin-bottom:8px}}
+.wp-art-p{{font-size:15px;color:#666;line-height:1.6}}
+.wp-art-d{{font-size:12px;color:#999;margin-top:6px}}
+/* Request info bar at bottom */
+.req-bar{{background:#0d1117;color:#9cdcfe;font-family:Consolas,monospace;font-size:11px;padding:7px 16px;display:flex;gap:12px;align-items:center;position:fixed;bottom:0;left:0;right:0;border-top:1px solid #21262d}}
+.req-meth{{color:#4ec9b0;font-weight:700}}
+.req-url{{color:#ce9178;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}}
+.req-st{{color:#4ade80;font-weight:700}}
+</style></head><body>
+<div class="wp-err"><strong>WordPress database error:</strong> {body_esc}</div>
+<header class="wp-hdr">
+  <span class="wp-brand">{_h.escape(site_title)}</span>
+  <nav class="wp-nav"><a href="#">Sample Page</a></nav>
+</header>
+<main class="wp-body">
+  <h1 class="wp-h1">Blog</h1>
+  <article class="wp-art">
+    <h2 class="wp-art-t">Hello world!</h2>
+    <p class="wp-art-p">Welcome to WordPress. This is your first post.</p>
+    <p class="wp-art-d">November 20, 2026</p>
+  </article>
+</main>
+<div class="req-bar">
+  <span class="req-meth">{_h.escape(method)}</span>
+  <span class="req-url">{_h.escape(url[:200])}</span>
+  <span class="req-st">HTTP 200</span>
+</div>
+</body></html>"""
+
+    fd, out_path = tempfile.mkstemp(suffix=".png")
+    os.close(fd)
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(args=["--no-sandbox", "--disable-gpu"])
+            try:
+                page = browser.new_context(
+                    viewport={"width": 1200, "height": 650},
+                    device_scale_factor=1.5,
+                ).new_page()
+                page.set_content(page_html, wait_until="domcontentloaded")
+                page.screenshot(path=out_path, full_page=False)
+            finally:
+                browser.close()
+        with open(out_path, "rb") as fh:
+            return base64.b64encode(fh.read()).decode("ascii")
+    except Exception:
+        return None
+    finally:
+        try:
+            os.unlink(out_path)
+        except OSError:
+            pass
+
+
 def _lg(es_html: str, en_html: str) -> str:
     """Envuelve un bloque en las dos variantes de idioma (mismo mecanismo que el resto del informe:
     _bi(), .lg-es/.lg-en, boton de idioma) para que TODO el informe -- no solo el markdown de los
@@ -3026,41 +3139,54 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
             _highlight_kw = (str(_vev.get("mysql_version_extraida") or "")
                              or str(_vev.get("canary_secret") or ""))
             if (_is_sqli_confirm or _is_trav_confirm) and _resp_body and _highlight_kw:
-                # Cut at <!DOCTYPE to show only the error/relevant part, not the full WP page
-                _rb_clean = _resp_body
-                for _cut_at in ("<!DOCTYPE", "<html", "<!doctype"):
-                    _ci = _rb_clean.lower().find(_cut_at.lower())
-                    if _ci > 0:  # keep at least 1 char before cut
-                        _rb_clean = _rb_clean[:_ci].rstrip()
-                        break
-                _rb_esc = _esc(_rb_clean[:800] or _resp_body[:800])
-                _hl_esc = _esc(_highlight_kw)
-                # Try primary highlight (stored version), then regex for any version-like pattern
-                if _hl_esc in _rb_esc:
-                    _rb_marked = _rb_esc.replace(_hl_esc,
-                        f'<mark class="hl">{_hl_esc}</mark>')
-                else:
-                    # Highlight any MySQL version number in the error (e.g. ~8.0.46 → 8.0.46)
-                    import re as _re_hl
-                    _rb_marked = _re_hl.sub(
-                        r'(~?)(\d+\.\d+\.\d+)',
-                        lambda m: f'{m.group(1)}<mark class="hl">{m.group(2)}</mark>',
-                        _rb_esc, count=1)
-                _sv_method = _esc(str(_vev.get("metodo") or "GET").upper())
-                _sv_ep     = _esc(str(_vev.get("endpoint") or url_raw))
+                _sv_method = str(_vev.get("metodo") or "GET").upper()
+                _sv_ep     = str(_vev.get("endpoint") or url_raw)
                 _sv_status = str(_vev.get("status_code_respuesta") or 200)
-                _st_cls_sv = "s2xx" if _sv_status.startswith("2") else "s4xx"
-                _synthetic_viewer = (
-                    f'<div class="synth-viewer">'
-                    f'<div class="synth-bar">'
-                    f'<span class="synth-lbl">binoracle &middot; HTTP response</span>'
-                    f'<span class="synth-method">{_sv_method}</span>'
-                    f'<span class="synth-url">{_sv_ep[:160]}</span>'
-                    f'<span class="burp-status {_st_cls_sv}">HTTP {_sv_status}</span>'
-                    f'</div>'
-                    f'<div class="synth-body">{_rb_marked}</div>'
-                    f'</div>'
+                _sv_url    = url_raw or (_sv_method + " " + _sv_ep)
+                # Try to generate a WordPress-style browser screenshot with error visible
+                _wp_png = _generate_wp_injection_shot(
+                    resp_body=_resp_body,
+                    highlight=_highlight_kw,
+                    url=_sv_url,
+                    method=_sv_method,
                 )
+                if _wp_png:
+                    # Use the realistic WP screenshot + keep synth text viewer as fallback
+                    _synthetic_viewer = (
+                        f'<img class="step-screenshot" src="data:image/png;base64,{_wp_png}"'
+                        f' alt="WordPress injection evidence" loading="eager">'
+                    )
+                else:
+                    # Pure CSS/HTML fallback: cut at <!DOCTYPE and show response body inline
+                    _rb_clean = _resp_body
+                    for _cut_at in ("<!DOCTYPE", "<html", "<!doctype"):
+                        _ci = _rb_clean.lower().find(_cut_at.lower())
+                        if _ci > 0:
+                            _rb_clean = _rb_clean[:_ci].rstrip()
+                            break
+                    _rb_esc = _esc(_rb_clean[:800] or _resp_body[:800])
+                    _hl_esc = _esc(_highlight_kw)
+                    if _hl_esc in _rb_esc:
+                        _rb_marked = _rb_esc.replace(_hl_esc,
+                            f'<mark class="hl">{_hl_esc}</mark>')
+                    else:
+                        import re as _re_hl
+                        _rb_marked = _re_hl.sub(
+                            r'(~?)(\d+\.\d+\.\d+)',
+                            lambda m: f'{m.group(1)}<mark class="hl">{m.group(2)}</mark>',
+                            _rb_esc, count=1)
+                    _st_cls_sv = "s2xx" if _sv_status.startswith("2") else "s4xx"
+                    _synthetic_viewer = (
+                        f'<div class="synth-viewer">'
+                        f'<div class="synth-bar">'
+                        f'<span class="synth-lbl">binoracle &middot; HTTP response</span>'
+                        f'<span class="synth-method">{_esc(_sv_method)}</span>'
+                        f'<span class="synth-url">{_esc(_sv_ep[:160])}</span>'
+                        f'<span class="burp-status {_st_cls_sv}">HTTP {_sv_status}</span>'
+                        f'</div>'
+                        f'<div class="synth-body">{_rb_marked}</div>'
+                        f'</div>'
+                    )
 
             shot_cards.append(
                 f'<div class="step-card">'
