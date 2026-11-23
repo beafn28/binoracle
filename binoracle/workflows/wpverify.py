@@ -178,6 +178,12 @@ class WpVerifyResult:
     failure_trace: list = field(default_factory=list)
     # PoC listo para copiar-pegar generado tras verified=True: {curl, python, http, description}
     exploit_poc: dict = field(default_factory=dict)
+    # Timestamps y hashes de evidencia — integridad forense
+    # started_at / finished_at: epoch float del inicio/fin de la verificacion
+    # evidence_hashes: {nombre → sha256_hex} de respuestas HTTP y ficheros de canario capturados
+    started_at: float = field(default_factory=lambda: __import__("time").time())
+    finished_at: float = 0.0
+    evidence_hashes: dict = field(default_factory=dict)
     # Nivel de confianza: confirmed | probable | inconclusive | not_reproducible | none
     # confirmed  → técnica dura (error-based, UNION, canary confirmado, password reset verificado)
     # probable   → técnica blanda (time-based, boolean-blind, content-diff) con señal consistente
@@ -188,7 +194,9 @@ class WpVerifyResult:
 
 
 def _auto_set_confidence(res: "WpVerifyResult") -> None:
-    """Sets res.confidence if still 'none', based on verified status and technique."""
+    """Sets res.confidence if still 'none', based on verified status and technique.
+    Also stamps finished_at and hashes key evidence fields (idempotent)."""
+    _stamp_result(res)
     if res.confidence != "none":
         return
     if not res.available:
@@ -218,6 +226,22 @@ def _auto_set_confidence(res: "WpVerifyResult") -> None:
         res.confidence = "probable"
     else:
         res.confidence = "confirmed"  # default for verified without explicit technique
+
+
+def _hash_evidence(data: str) -> str:
+    """SHA-256 of a string (truncated to 16 hex chars for compactness)."""
+    import hashlib
+    return hashlib.sha256(data.encode("utf-8", errors="replace")).hexdigest()[:16]
+
+
+def _stamp_result(res: "WpVerifyResult") -> None:
+    """Record finished_at and hash key evidence fields."""
+    res.finished_at = time.time()
+    for key in ("respuesta_cuerpo_recorte", "respuesta_control_recorte", "canary_secret",
+                "payload_ganador", "mysql_version_extraida"):
+        val = res.evidence.get(key)
+        if val:
+            res.evidence_hashes[key] = _hash_evidence(str(val))
 
 
 def _run(cmd: List[str], timeout: float = 60.0, input_text: str = None) -> subprocess.CompletedProcess:
@@ -996,6 +1020,7 @@ class _Lab:
 
     def start_mysql(self, root_pw: str, db_pw: str):
         self.sh("run", "-d", "--name", self.mysql, "--network", self.net,
+               "--cpus", "1.5", "--memory", "512m", "--pids-limit", "200",
                "-e", f"MYSQL_ROOT_PASSWORD={root_pw}", "-e", "MYSQL_DATABASE=wordpress",
                "-e", "MYSQL_USER=wordpress", "-e", f"MYSQL_PASSWORD={db_pw}", _MYSQL_IMAGE,
                timeout=90)
@@ -1031,6 +1056,7 @@ class _Lab:
                         "-e", "WORDPRESS_DB_USER=wordpress", "-e", f"WORDPRESS_DB_PASSWORD={db_pw}"]
         self.sh("run", "-d", "--name", self.wp, "--network", self.net, "--platform", "linux/amd64",
                "-v", f"{self.vol}:/var/www/html", *self._db_env,
+               "--cpus", "2.0", "--memory", "768m", "--pids-limit", "400",
                "-p", "0.0.0.0::80", _WP_IMAGE, timeout=90)
         self._created.append(("container", self.wp))
         r = self.sh("port", self.wp, "80", timeout=15)

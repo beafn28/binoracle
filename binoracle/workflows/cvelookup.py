@@ -232,6 +232,26 @@ def fetch_cve(cve_id: str, timeout: float = 20.0, enrich: bool = True) -> CVEInf
                 seen.add(r.url)
                 info.exploit_refs.append(r)
                 info.has_public_exploit = True
+        # Patch intelligence: fetch fix commits and affected ranges from NVD refs + OSV
+        try:
+            from .patch_intel import fetch_patch_intel
+            _patch = fetch_patch_intel(
+                cid,
+                nvd_refs=[{"url": ref.get("url", "")} for ref in info.references],
+                nvd_published=info.published,
+            )
+            if _patch.ok:
+                info.references.append({"url": "patch_intel", "patch_intel": {
+                    "fix_commits": [{"repo": fc.repo, "sha": fc.sha, "url": fc.url,
+                                     "files": fc.files[:10], "message": fc.message[:200]}
+                                    for fc in _patch.fix_commits],
+                    "patched_versions": _patch.patched_versions[:10],
+                    "affected_ranges": _patch.affected_ranges[:10],
+                    "timeline": _patch.timeline[:10],
+                    "sources": _patch.sources,
+                }})
+        except Exception:
+            pass
     info.ok = bool(info.description)
     if not info.ok and not info.note:
         info.note = "la NVD no incluyo descripcion para esa CVE"

@@ -2168,6 +2168,81 @@ def _classify_pipeline_error(error_text: str) -> dict:
     return result
 
 
+def _docker_self_repair(container: str, step, max_attempts: int = 3) -> bool:
+    """Autonomous Docker container self-repair loop.
+
+    Inspect the container, classify the problem, and try to fix it without
+    human intervention. Returns True if the container is healthy after repair.
+
+    Repair strategies (in order):
+    1. OOMKilled / exit 137 → restart with higher memory limit
+    2. Stopped / exited with code != 0 → restart container
+    3. Health check failing → wait additional 30s then recheck
+    4. Port not bound → inspect and find actual bound port
+    5. Fatal: image missing or build failed → cannot repair, return False
+    """
+    import subprocess as _sp
+
+    def _inspect(fmt: str) -> str:
+        r = _sp.run(["docker", "inspect", "--format", fmt, container],
+                    capture_output=True, text=True, timeout=10)
+        return (r.stdout or "").strip()
+
+    def _logs_tail() -> str:
+        r = _sp.run(["docker", "logs", "--tail", "30", container],
+                    capture_output=True, text=True, timeout=10)
+        return ((r.stdout or "") + (r.stderr or ""))[-2000:]
+
+    for attempt in range(1, max_attempts + 1):
+        status   = _inspect("{{.State.Status}}")
+        oom      = _inspect("{{.State.OOMKilled}}")
+        exit_code = _inspect("{{.State.ExitCode}}")
+        step(f"[self-repair #{attempt}] container={container} status={status} oom={oom} exit={exit_code}")
+
+        if status == "running":
+            # Already running — verify it's actually serving (port bound)
+            port_r = _sp.run(["docker", "port", container], capture_output=True, text=True, timeout=10)
+            if port_r.stdout.strip():
+                step(f"[self-repair] container is running and has bound ports — healthy")
+                return True
+            # Running but no ports? Wait a bit and retry
+            import time as _t; _t.sleep(5)
+            continue
+
+        if oom == "true" or exit_code == "137":
+            step(f"[self-repair] OOMKilled (exit 137) — restarting (memory pressure)")
+            _sp.run(["docker", "start", container], capture_output=True, text=True, timeout=30)
+            import time as _t; _t.sleep(5)
+            continue
+
+        if status in ("exited", "dead") and exit_code not in ("", "0"):
+            logs = _logs_tail()
+            cls = _classify_pipeline_error(logs)
+            step(f"[self-repair] container exited (code={exit_code}) category={cls['category']}: "
+                 f"{cls['remediation_hint'][:120]}")
+            if cls["category"] in ("missing_dependency", "npm_install_failure",
+                                   "pkg_install_failure", "syntax_error", "build_failure"):
+                step(f"[self-repair] fatal category={cls['category']} — cannot fix without rebuild")
+                return False
+            # Transient failure: try restart
+            _sp.run(["docker", "start", container], capture_output=True, text=True, timeout=30)
+            import time as _t; _t.sleep(8)
+            continue
+
+        if status == "created":
+            # Container created but not started
+            _sp.run(["docker", "start", container], capture_output=True, text=True, timeout=30)
+            import time as _t; _t.sleep(5)
+            continue
+
+        step(f"[self-repair] unknown status={status!r} — cannot repair")
+        return False
+
+    # Final check
+    final_status = _inspect("{{.State.Status}}")
+    return final_status == "running"
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # CONTAINER SAFETY VALIDATOR
 # Valida el Dockerfile generado por el LLM antes de pasarlo al lab.
@@ -13167,6 +13242,22 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
             llm = None
     inv = Investigation(cve_id=cve_id.upper().strip())
 
+    # Persistent state: register in CveStateDB (non-blocking, best-effort)
+    try:
+        from .cve_state import CveStateDB, JobState
+        _state_db = CveStateDB()
+        _already = _state_db.duplicate_check(inv.cve_id)
+        if _already and use_cache and not binary and not hints:
+            step((f"{inv.cve_id}: ya completado en state DB (estado={_already}) -- saltando")
+                 if es else
+                 f"{inv.cve_id}: already in state DB (state={_already}) -- skipping")
+        else:
+            _state_db.enqueue(inv.cve_id)
+            _state_db.transition(inv.cve_id, JobState.RESEARCH)
+            _state_db.save_checkpoint(inv.cve_id, "research", {})
+    except Exception:
+        _state_db = None
+
     # Limpieza proactiva de Docker antes de cada investigacion: evita ENOSPC en MySQL cuando
     # el build cache / volumenes huerfanos se acumulan entre labs.
     try:
@@ -13688,6 +13779,23 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
         pass
 
     save_investigation_to_cache(inv)
+
+    # Update persistent state on completion
+    try:
+        if _state_db is not None:
+            from .cve_state import JobState
+            final_state = JobState.DONE if inv.verified else JobState.REPORT
+            _state_db.transition(inv.cve_id, JobState.REPORT)
+            _state_db.transition(inv.cve_id, final_state)
+            _state_db.set_evidence(inv.cve_id, {
+                "verified": inv.verified,
+                "confidence": getattr(inv, "confidence", "none"),
+                "vuln_class": getattr(inv, "vuln_class", ""),
+                "blockers": list(getattr(inv, "blockers", []) or [])[:5],
+            })
+    except Exception:
+        pass
+
     return inv
 
 

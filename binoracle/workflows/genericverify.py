@@ -478,6 +478,20 @@ class _GenericLab:
     def sh(self, *args, timeout=60.0, input_text=None):
         return _run(["docker"] + list(args), timeout=timeout, input_text=input_text)
 
+    def container_healthy(self) -> bool:
+        """True if the main container is running and passes a basic health check."""
+        r = self.sh("inspect", "--format", "{{.State.Running}}", self.container, timeout=10)
+        return (r.returncode == 0 and (r.stdout or "").strip().lower() == "true")
+
+    def restart_if_stopped(self) -> bool:
+        """Restart a stopped container instead of creating a new one. Returns True if restarted."""
+        r = self.sh("inspect", "--format", "{{.State.Status}}", self.container, timeout=10)
+        status = (r.stdout or "").strip().lower()
+        if status == "exited":
+            rr = self.sh("start", self.container, timeout=30)
+            return rr.returncode == 0
+        return False
+
     def build_and_run(self, target: dict, timeout_build=600.0, timeout_run=60.0):
         self.kind = target["kind"]
         if self.kind == "dockerfile":
@@ -516,7 +530,9 @@ class _GenericLab:
             self._created.append(("network", self.net))
             self._created.append(("image", self.image))
             r = self.sh("run", "-d", "--platform", "linux/amd64", "--name", self.container,
-                       "--network", self.net, "-P", self.image, timeout=timeout_run)
+                       "--network", self.net, "-P",
+                       "--cpus", "2.0", "--memory", "1g", "--pids-limit", "500",
+                       self.image, timeout=timeout_run)
             if r.returncode == 0:
                 self._created.append(("container", self.container))
             return r
