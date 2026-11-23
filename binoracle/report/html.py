@@ -3008,6 +3008,60 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
             cap_en = _esc(sh.get("caption_en") or cap_es)
             cap_bilingual = (f'<span class="l-es">{cap_es}</span>'
                              f'<span class="l-en">{cap_en}</span>')
+
+            # ── Synthetic HTTP response viewer for SQLi/traversal confirmation shots ──
+            # When the stored PNG is a generic page (browser-rendered WP homepage) but we
+            # have the real response body in verified_evidence, render an inline dark viewer
+            # instead — the check: caption says "confirmada/confirmed" for SQLi/traversal
+            # and we have the response body in verified_evidence.
+            _vev = verified_ev  # noqa: captured from outer scope
+            _synthetic_viewer = ""
+            _cap_low_sh = (sh.get("caption_es") or "").lower()
+            _is_sqli_confirm = any(x in _cap_low_sh for x in
+                ("sql injection confirmada", "version extraida", "sqli confirm",
+                 "sql injection confirmed", "mysql version"))
+            _is_trav_confirm = any(x in _cap_low_sh for x in
+                ("traversal confirm", "traversal confirmad", "canary", "lfi confirm"))
+            _resp_body = str(_vev.get("respuesta_cuerpo_recorte") or "")
+            _highlight_kw = (str(_vev.get("mysql_version_extraida") or "")
+                             or str(_vev.get("canary_secret") or ""))
+            if (_is_sqli_confirm or _is_trav_confirm) and _resp_body and _highlight_kw:
+                # Cut at <!DOCTYPE to show only the error/relevant part, not the full WP page
+                _rb_clean = _resp_body
+                for _cut_at in ("<!DOCTYPE", "<html", "<!doctype"):
+                    _ci = _rb_clean.lower().find(_cut_at.lower())
+                    if _ci > 0:  # keep at least 1 char before cut
+                        _rb_clean = _rb_clean[:_ci].rstrip()
+                        break
+                _rb_esc = _esc(_rb_clean[:800] or _resp_body[:800])
+                _hl_esc = _esc(_highlight_kw)
+                # Try primary highlight (stored version), then regex for any version-like pattern
+                if _hl_esc in _rb_esc:
+                    _rb_marked = _rb_esc.replace(_hl_esc,
+                        f'<mark class="hl">{_hl_esc}</mark>')
+                else:
+                    # Highlight any MySQL version number in the error (e.g. ~8.0.46 → 8.0.46)
+                    import re as _re_hl
+                    _rb_marked = _re_hl.sub(
+                        r'(~?)(\d+\.\d+\.\d+)',
+                        lambda m: f'{m.group(1)}<mark class="hl">{m.group(2)}</mark>',
+                        _rb_esc, count=1)
+                _sv_method = _esc(str(_vev.get("metodo") or "GET").upper())
+                _sv_ep     = _esc(str(_vev.get("endpoint") or url_raw))
+                _sv_status = str(_vev.get("status_code_respuesta") or 200)
+                _st_cls_sv = "s2xx" if _sv_status.startswith("2") else "s4xx"
+                _synthetic_viewer = (
+                    f'<div class="synth-viewer">'
+                    f'<div class="synth-bar">'
+                    f'<span class="synth-lbl">binoracle &middot; HTTP response</span>'
+                    f'<span class="synth-method">{_sv_method}</span>'
+                    f'<span class="synth-url">{_sv_ep[:160]}</span>'
+                    f'<span class="burp-status {_st_cls_sv}">HTTP {_sv_status}</span>'
+                    f'</div>'
+                    f'<div class="synth-body">{_rb_marked}</div>'
+                    f'</div>'
+                )
+
             shot_cards.append(
                 f'<div class="step-card">'
                 f'<div class="step-header">'
@@ -3015,7 +3069,8 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
                 f'<div class="step-title">{cap_bilingual}</div>'
                 + (f'<span class="step-url">{url_txt}</span>' if url_txt else "")
                 + '</div>'
-                f'<img class="step-screenshot" src="data:image/png;base64,{png}" alt="{cap_es}" loading="eager">'
+                + (_synthetic_viewer if _synthetic_viewer else
+                   f'<img class="step-screenshot" src="data:image/png;base64,{png}" alt="{cap_es}" loading="eager">')
                 + curl_line
                 + '</div>'
             )
@@ -3767,6 +3822,13 @@ code,pre,kbd{font-family:'JetBrains Mono','Fira Code',ui-monospace,monospace}
 .evtable-note{padding:10px 16px;font-size:12px;color:var(--mut);font-style:italic;
   border-top:1px solid var(--brd);font-family:var(--sans)}
 /* ── Burp-style HTTP captures ── */
+.synth-viewer{background:#0d1117;border:1.5px solid var(--brd);border-radius:8px;overflow:hidden;margin:12px 0 4px}
+.synth-bar{background:#161b22;padding:8px 14px;display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--brd)}
+.synth-lbl{font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:#666;font-family:var(--sans)}
+.synth-method{font-family:var(--mono);font-weight:700;font-size:11px;color:#4ec9b0}
+.synth-url{font-family:var(--mono);font-size:11px;color:#9cdcfe;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.synth-body{font-family:var(--mono);font-size:12px;white-space:pre-wrap;word-break:break-all;line-height:1.6;color:#d4d4d4;padding:14px 16px;max-height:320px;overflow-y:auto}
+.synth-body mark.hl{background:#f9a825;color:#000;padding:1px 4px;border-radius:3px;font-weight:700;font-size:13px}
 .proof-box{background:var(--surf2);border:2px solid var(--brd);border-radius:12px;overflow:hidden;margin-top:14px}
 .prow{display:grid;grid-template-columns:220px 1fr;gap:0;border-bottom:1px solid var(--brd);padding:10px 16px;align-items:start}
 .prow:last-child{border-bottom:none}
