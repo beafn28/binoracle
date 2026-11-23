@@ -1841,6 +1841,353 @@ _LAB_SCAFFOLD_GRAPHQL_SYS = (
     "\"server_port\": 4000}"
 )
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# EVIDENCE LEVELS (ISO/IEC 29147 + CVE scoring guidance)
+# ═══════════════════════════════════════════════════════════════════════════════
+# Usado en VerificationResult.evidence_level y en el informe final.
+EVIDENCE_CONFIRMED        = "CONFIRMED"       # prueba dinamica reproducible
+EVIDENCE_STRONGLY         = "STRONGLY_SUPPORTED"  # prueba parcial + codigo fuente
+EVIDENCE_INFERRED         = "INFERRED"        # solo analisis estatico, sin lab dinamico
+EVIDENCE_SIMULATED        = "SIMULATED"       # lab generico, no CVE especifico
+EVIDENCE_UNVERIFIED       = "UNVERIFIED"      # hipotesis sin evidencia de codigo
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# LAB VERDICT / STATUS (compatible con el modelo del documento de arquitectura)
+# ═══════════════════════════════════════════════════════════════════════════════
+LAB_STATUS_VERIFIED       = "VERIFIED"
+LAB_STATUS_FAILED         = "FAILED"
+LAB_STATUS_INCONCLUSIVE   = "INCONCLUSIVE"    # lab arrancó pero diferencial insuficiente
+LAB_STATUS_NEEDS_ANALYST  = "NEEDS_ANALYST"   # iteraciones agotadas, escalar
+LAB_STATUS_BLOCKED        = "BLOCKED"         # Docker inaccesible o budget agotado
+LAB_STATUS_SKIPPED        = "SKIPPED"         # clase sin verifier implementado
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CWE → vuln_class REGISTRY
+# Permite al motor clasificar desde el CWE del CVE sin que el analista indique
+# la vuln_class. Fuente: CWE-1000 (Research Concepts) + mapeo OWASP Top10:2021.
+# ═══════════════════════════════════════════════════════════════════════════════
+CWE_TO_VULN_CLASS: dict = {
+    # A03 Injection
+    "CWE-89":  "sqli",
+    "CWE-564": "sqli",          # SQL Injection in Hibernate
+    "CWE-943": "sqli",          # NoSQL query injection
+    "CWE-78":  "command-injection",
+    "CWE-77":  "command-injection",
+    "CWE-88":  "command-injection",
+    "CWE-917": "ssti",
+    "CWE-1336":"ssti",          # Improper Neutralization in Template Engines
+    "CWE-91":  "xxe",
+    "CWE-611": "xxe",
+    "CWE-776": "xxe",
+    "CWE-79":  "xss",
+    "CWE-80":  "xss",
+    "CWE-83":  "xss",
+    "CWE-87":  "xss",
+    "CWE-116": "xss",
+    "CWE-601": "open-redirect",
+    "CWE-918": "ssrf",
+    # A01 Broken Access Control
+    "CWE-284": "missing-authorization",
+    "CWE-285": "missing-authorization",
+    "CWE-862": "missing-authorization",
+    "CWE-863": "missing-authorization",
+    "CWE-269": "missing-authorization",  # Improper Privilege Management
+    "CWE-639": "idor",
+    "CWE-566": "idor",
+    # A02 Cryptographic Failures
+    "CWE-327": "cryptographic-failure",
+    "CWE-326": "cryptographic-failure",
+    "CWE-330": "cryptographic-failure",
+    "CWE-338": "cryptographic-failure",
+    "CWE-759": "cryptographic-failure",
+    "CWE-760": "cryptographic-failure",
+    "CWE-312": "sensitive-data-exposure",
+    "CWE-313": "sensitive-data-exposure",
+    "CWE-315": "sensitive-data-exposure",
+    "CWE-316": "sensitive-data-exposure",
+    # A05 Security Misconfiguration
+    "CWE-16":  "cors-misconfiguration",
+    "CWE-942": "cors-misconfiguration",
+    "CWE-614": "insecure-cookie",
+    "CWE-1021":"clickjacking",
+    # A07 Authentication Failures
+    "CWE-287": "auth-bypass",
+    "CWE-306": "auth-bypass",   # Missing Authentication for Critical Function
+    "CWE-307": "auth-bypass",   # Improper Restriction of Authentication Attempts
+    "CWE-384": "auth-bypass",   # Session Fixation
+    "CWE-294": "auth-bypass",   # Authentication Bypass by Capture-replay
+    # A08 Software/Data Integrity
+    "CWE-502": "deserialization",
+    "CWE-915": "prototype-pollution",
+    "CWE-1321":"prototype-pollution",
+    # Path traversal / LFI
+    "CWE-22":  "path-traversal",
+    "CWE-23":  "path-traversal",
+    "CWE-24":  "path-traversal",
+    "CWE-25":  "path-traversal",
+    "CWE-26":  "path-traversal",
+    "CWE-27":  "path-traversal",
+    "CWE-28":  "path-traversal",
+    "CWE-29":  "path-traversal",
+    "CWE-30":  "path-traversal",
+    "CWE-31":  "path-traversal",
+    "CWE-32":  "path-traversal",
+    "CWE-33":  "path-traversal",
+    "CWE-34":  "path-traversal",
+    "CWE-35":  "path-traversal",
+    "CWE-36":  "path-traversal",
+    "CWE-37":  "path-traversal",
+    "CWE-38":  "path-traversal",
+    "CWE-39":  "path-traversal",
+    "CWE-40":  "path-traversal",
+    # File upload
+    "CWE-434": "file-upload",
+    "CWE-351": "file-upload",
+    # CSRF
+    "CWE-352": "csrf",
+    # Race conditions / concurrency
+    "CWE-362": "race-condition",
+    "CWE-366": "race-condition",
+    "CWE-367": "race-condition",
+    # Header injection / CRLF
+    "CWE-113": "header-injection",
+    "CWE-93":  "header-injection",
+    # JWT / token issues
+    "CWE-347": "jwt-bypass",
+    # Business logic
+    "CWE-840": "business-logic",
+    "CWE-841": "business-logic",
+    # Denial of Service
+    "CWE-400": "dos",
+    "CWE-770": "dos",
+    "CWE-776": "dos",
+}
+
+
+def _cwe_to_vuln_class(cwe_ids) -> Optional[str]:
+    """Dado un CWE ID o lista, devuelve la vuln_class del motor. Prioriza el mas especifico."""
+    if not cwe_ids:
+        return None
+    if isinstance(cwe_ids, str):
+        cwe_ids = [cwe_ids]
+    for cid in cwe_ids:
+        cid_norm = cid.strip().upper()
+        if not cid_norm.startswith("CWE-"):
+            cid_norm = "CWE-" + cid_norm.lstrip("CWE-").lstrip("-")
+        vc = CWE_TO_VULN_CLASS.get(cid_norm)
+        if vc:
+            return vc
+    return None
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONTAINER SAFETY VALIDATOR
+# Valida el Dockerfile generado por el LLM antes de pasarlo al lab.
+# Reglas del documento de arquitectura (sección 12).
+# ═══════════════════════════════════════════════════════════════════════════════
+_CONTAINER_SAFETY_VIOLATIONS = [
+    # (regex_pattern, severity, description)
+    (r"--privileged",        "CRITICAL", "contenedor privilegiado — deshabilitar"),
+    (r"--network\s+host",    "CRITICAL", "host networking — aislar con bridge"),
+    (r"network_mode.*host",  "CRITICAL", "host networking en compose"),
+    (r"/var/run/docker\.sock", "HIGH",   "socket Docker montado — vector de escape"),
+    (r"--cap-add\s+ALL",     "HIGH",    "todos los capabilities — especificar solo los necesarios"),
+    (r"--security-opt.*seccomp:unconfined", "HIGH", "seccomp deshabilitado"),
+    (r"RUN\s+curl.*\|\s*sh", "HIGH",    "pipe-to-shell — descargar y ejecutar sin verificar"),
+    (r"RUN\s+wget.*\|\s*sh", "HIGH",    "pipe-to-shell — descargar y ejecutar sin verificar"),
+    (r"ADD\s+http",          "MEDIUM",  "ADD desde URL externa — usar COPY + descarga separada"),
+    (r"FROM\s+ubuntu:latest|FROM\s+debian:latest|FROM\s+alpine:latest",
+     "INFO", "imagen sin pinning de version — usar tag especifico"),
+]
+
+
+def _validate_dockerfile_safety(dockerfile_body: str, step=None) -> List[str]:
+    """Verifica el Dockerfile generado por el LLM contra politica de seguridad.
+    Devuelve lista de warnings; si hay CRITICALs registra en step.
+    """
+    import re as _re
+    warnings: List[str] = []
+    if not dockerfile_body:
+        return warnings
+    for pattern, severity, desc in _CONTAINER_SAFETY_VIOLATIONS:
+        if _re.search(pattern, dockerfile_body, _re.IGNORECASE | _re.MULTILINE):
+            msg = f"[CONTAINER-SAFETY {severity}] {desc}"
+            warnings.append(msg)
+            if step and severity in ("CRITICAL", "HIGH"):
+                step(f"⚠ {msg}")
+    return warnings
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ESCALATION HELPER — NEEDS_ANALYST
+# Cuando se agotan las iteraciones del feedback loop, documenta el estado
+# terminal para que el analista pueda intervenir manualmente.
+# ═══════════════════════════════════════════════════════════════════════════════
+def _escalate_to_analyst(inv, fail_reason: str, lab_config: dict, es: bool) -> None:
+    """Marca la investigacion como NEEDS_ANALYST y documenta el motivo."""
+    inv.blockers.append((
+        f"[NEEDS_ANALYST] Lab autonomo agotó {2} iteraciones sin verificar. "
+        f"Ultimo error: {fail_reason[:300]}. "
+        f"Endpoint ensayado: {lab_config.get('endpoint', 'desconocido')}. "
+        f"Accion: revisar el Dockerfile/servidor generado manualmente o "
+        f"proporcionar dockerfile_body/extra_files en el JSON del CVE."
+        if es else
+        f"[NEEDS_ANALYST] Autonomous lab exhausted {2} iterations without verifying. "
+        f"Last error: {fail_reason[:300]}. "
+        f"Endpoint tried: {lab_config.get('endpoint', 'unknown')}. "
+        f"Action: review generated Dockerfile/server manually or "
+        f"provide dockerfile_body/extra_files in the CVE JSON."
+    ))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# NUEVOS PROMPTS DE SCAFFOLD — clases de ataque adicionales
+# ═══════════════════════════════════════════════════════════════════════════════
+_LAB_SCAFFOLD_NOSQL_INJECTION_SYS = (
+    "Eres un experto en seguridad. Genera un servidor para un lab de NoSQL injection (MongoDB). "
+    "El servidor tiene un endpoint de login vulnerable a operadores MongoDB. REGLAS:\n"
+    "1. Endpoint POST /api/login con body JSON {username, password}\n"
+    "2. La query vulnerable: db.users.findOne({username: req.body.username, password: req.body.password})\n"
+    "3. SIN sanitizacion de los operadores MongoDB ($ne, $gt, $regex, etc.)\n"
+    "4. Con payload {\"username\": \"admin\", \"password\": {\"$ne\": \"\"}} devuelve el usuario admin\n"
+    "5. La respuesta del admin contiene el CONFIRM_STRING\n"
+    "6. Con credenciales incorrectas normales devuelve {error: 'invalid credentials'}\n"
+    "7. Usar mongoose o mongodb driver directamente\n"
+    "Responde SOLO con JSON sin markdown: "
+    "{\"server_code\": \"...\", \"dockerfile\": \"...\", \"endpoint\": \"/api/login\", "
+    "\"confirm_string\": \"...\", \"server_port\": 3000, "
+    "\"parameters\": {\"username\": \"admin\", \"password\": {\"$ne\": \"\"}}}"
+)
+
+_LAB_SCAFFOLD_JWT_BYPASS_SYS = (
+    "Eres un experto en seguridad. Genera un servidor para un lab de JWT bypass. "
+    "El servidor tiene un endpoint autenticado con JWT verificacion debil. REGLAS:\n"
+    "1. El servidor usa un JWT con algoritmo configurable\n"
+    "2. VULNERABILIDAD: acepta alg='none' (sin firma) o tiene clave debil ('secret')\n"
+    "3. Endpoint GET /api/admin que requiere JWT con role='admin'\n"
+    "4. Con JWT falso (alg none o firmado con 'secret') devuelve datos con CONFIRM_STRING\n"
+    "5. Sin JWT o con JWT invalido devuelve 401\n"
+    "Para alg none: el servidor NO debe rechazar tokens sin firma si se indica alg:none\n"
+    "Responde SOLO con JSON sin markdown: "
+    "{\"server_code\": \"...\", \"dockerfile\": \"...\", \"endpoint\": \"/api/admin\", "
+    "\"confirm_string\": \"...\", \"server_port\": 3000}"
+)
+
+_LAB_SCAFFOLD_DESERIALIZATION_SYS = (
+    "Eres un experto en seguridad. Genera un servidor para un lab de deserializacion insegura. "
+    "El servidor deserializa datos del usuario sin validar. REGLAS:\n"
+    "1. Para Node.js: usa 'serialize-javascript' o 'node-serialize' vulnerable a RCE via IIFE\n"
+    "2. Para Python: usa pickle.loads() directamente sobre input del usuario\n"
+    "3. El atacante envia un payload que al deserializarse ejecuta 'touch /tmp/pwned'\n"
+    "4. El endpoint GET /api/status verifica si /tmp/pwned existe y devuelve CONFIRM_STRING\n"
+    "5. El canario es el contenido de /tmp/pwned (binoracle-rce-<token>)\n"
+    "Para Node.js usar: require('node-serialize').unserialize(input) con IIFE payload\n"
+    "Para Python usar: pickle.loads(base64.b64decode(input))\n"
+    "Responde SOLO con JSON sin markdown: "
+    "{\"server_code\": \"...\", \"dockerfile\": \"...\", \"endpoint\": \"/api/deserialize\", "
+    "\"confirm_string\": \"...\", \"server_port\": 3000}"
+)
+
+_LAB_SCAFFOLD_RACE_CONDITION_SYS = (
+    "Eres un experto en seguridad. Genera un servidor para un lab de race condition. "
+    "El servidor tiene una operacion de lectura-modificacion-escritura sin atomicidad. REGLAS:\n"
+    "1. Endpoint POST /api/redeem que canjea un voucher: lee el saldo, verifica >= 100, resta 100\n"
+    "2. SIN transacciones ni locks: hay una ventana TOCTOU entre la verificacion y la resta\n"
+    "3. Con dos peticiones simultaneas el saldo puede quedar negativo\n"
+    "4. Endpoint GET /api/balance devuelve el saldo actual\n"
+    "5. Si el saldo queda < 0, la respuesta contiene el CONFIRM_STRING (saldo negativo = race ganada)\n"
+    "6. Saldo inicial: 100 (solo se puede canjear una vez en condiciones normales)\n"
+    "Responde SOLO con JSON sin markdown: "
+    "{\"server_code\": \"...\", \"dockerfile\": \"...\", \"endpoint\": \"/api/redeem\", "
+    "\"confirm_string\": \"...\", \"server_port\": 3000}"
+)
+
+_LAB_SCAFFOLD_PATH_CONFUSION_SYS = (
+    "Eres un experto en seguridad. Genera un servidor para un lab de path confusion / normalizacion. "
+    "El servidor tiene un middleware de autenticacion que se puede saltar con path manipulation. REGLAS:\n"
+    "1. El middleware protege /admin/* pero usa una comparacion string simple (startsWith('/admin/'))\n"
+    "2. BYPASS: /admin;foo/secret o /admin/../admin/secret o /ADMIN/secret (case) no matchean\n"
+    "3. El router de Express SI normaliza la ruta y el handler de /admin/* se ejecuta\n"
+    "4. El endpoint GET /admin/secret devuelve el CONFIRM_STRING sin autenticacion via bypass\n"
+    "5. El endpoint GET /admin/secret CON autenticacion normal tambien devuelve el CONFIRM_STRING\n"
+    "6. SIN bypass el middleware devuelve 403\n"
+    "Responde SOLO con JSON sin markdown: "
+    "{\"server_code\": \"...\", \"dockerfile\": \"...\", \"endpoint\": \"/admin/secret\", "
+    "\"bypass_path\": \"/admin;bypass/secret\", \"confirm_string\": \"...\", \"server_port\": 3000}"
+)
+
+_LAB_SCAFFOLD_BUSINESS_LOGIC_SYS = (
+    "Eres un experto en seguridad. Genera un servidor para un lab de business logic bypass. "
+    "El servidor tiene una logica de negocio con una condicion insuficiente. REGLAS:\n"
+    "1. El endpoint permite una accion privilegiada (ej: descuento ilimitado, transferencia negativa)\n"
+    "2. La validacion solo comprueba una condicion pero no todas las invariantes del negocio\n"
+    "3. El atacante manipula el flujo para obtener un beneficio no autorizado\n"
+    "4. El estado final del sistema contiene el CONFIRM_STRING como evidencia del bypass\n"
+    "5. Ejemplo: transfer de -100 credita la cuenta, o coupon aplicado N veces cuando solo deberia ser 1\n"
+    "Responde SOLO con JSON sin markdown: "
+    "{\"server_code\": \"...\", \"dockerfile\": \"...\", \"endpoint\": \"/api/transaction\", "
+    "\"confirm_string\": \"...\", \"server_port\": 3000}"
+)
+
+_LAB_SCAFFOLD_BOOLEAN_ORACLE_SYS = (
+    "Eres un experto en seguridad. Genera un servidor para un lab de boolean oracle / data-leak. "
+    "El servidor tiene un endpoint de busqueda/filtrado con una condicion booleana controlable. REGLAS:\n"
+    "1. Endpoint GET /api/items?<param>=<value> que filtra registros de una tabla SQLite o array\n"
+    "2. Con condicion TRUE (ej: ?id[gt]=0 o ?active=1): devuelve TODOS los registros\n"
+    "3. Con condicion FALSE (ej: ?id[lt]=0 o ?active=999): devuelve array VACIO []\n"
+    "4. Los registros contienen el CONFIRM_STRING en al menos uno de ellos\n"
+    "5. La diferencia de bytes entre TRUE (con datos) y FALSE (vacio) es el oracle\n"
+    "6. Parametros planos SIN brackets: usar 'minId' en vez de 'where[id][$gt]'\n"
+    "   (Python requests codifica brackets como %5B%5D que Express qs no parsea como nested)\n"
+    "Responde SOLO con JSON sin markdown: "
+    "{\"server_code\": \"...\", \"dockerfile\": \"...\", \"endpoint\": \"/api/items\", "
+    "\"true_param\": \"minId\", \"true_value\": \"0\", "
+    "\"false_param\": \"minId\", \"false_value\": \"999999\", "
+    "\"confirm_field\": \"...\", \"confirm_string\": \"...\", "
+    "\"server_port\": 3000}"
+)
+
+_LAB_SCAFFOLD_OAUTH_SYS = (
+    "Eres un experto en seguridad. Genera un servidor para un lab de OAuth bypass. "
+    "El servidor tiene un flujo OAuth simplificado con un bypass de state/redirect_uri. REGLAS:\n"
+    "1. Endpoint GET /oauth/authorize?client_id=...&redirect_uri=...&state=... que valida redirect_uri\n"
+    "2. La validacion de redirect_uri es INSUFICIENTE: acepta subdominios del dominio registrado\n"
+    "   o no valida el path completo (ej: solo valida el dominio, no path/query)\n"
+    "3. Endpoint GET /oauth/callback?code=...&state=... que canjea el codigo por token\n"
+    "4. El token devuelto contiene el CONFIRM_STRING\n"
+    "5. El atacante puede redirigir el codigo a su propio endpoint\n"
+    "Responde SOLO con JSON sin markdown: "
+    "{\"server_code\": \"...\", \"dockerfile\": \"...\", \"endpoint\": \"/oauth/authorize\", "
+    "\"confirm_string\": \"...\", \"server_port\": 3000}"
+)
+
+_LAB_SCAFFOLD_CSRF_SYS = (
+    "Eres un experto en seguridad. Genera un servidor para un lab de CSRF. "
+    "El servidor acepta peticiones POST que cambian estado SIN validar CSRF token ni Origin. REGLAS:\n"
+    "1. Endpoint POST /api/update que cambia el email/password del usuario\n"
+    "2. SIN validacion de Referer ni Origin ni CSRF token\n"
+    "3. El atacante envia la peticion desde un dominio externo y el cambio se aplica\n"
+    "4. Endpoint GET /api/profile devuelve el estado actual del usuario\n"
+    "5. El CONFIRM_STRING aparece en /api/profile tras el cambio exitoso\n"
+    "Responde SOLO con JSON sin markdown: "
+    "{\"server_code\": \"...\", \"dockerfile\": \"...\", \"endpoint\": \"/api/update\", "
+    "\"confirm_string\": \"...\", \"server_port\": 3000}"
+)
+
+_LAB_SCAFFOLD_HEADER_INJECTION_SYS = (
+    "Eres un experto en seguridad. Genera un servidor para un lab de HTTP header injection. "
+    "El servidor refleja un header del request en la respuesta SIN sanitizar. REGLAS:\n"
+    "1. El endpoint lee un header personalizado (ej: X-Forwarded-Host, X-Forwarded-For, Host)\n"
+    "2. Usa el valor del header SIN validar en la respuesta (ej: en Location, o en HTML)\n"
+    "3. El atacante inyecta \\r\\n para insertar headers adicionales o dividir la respuesta\n"
+    "4. El CONFIRM_STRING aparece en un header de la respuesta cuando el payload se inyecta\n"
+    "Responde SOLO con JSON sin markdown: "
+    "{\"server_code\": \"...\", \"dockerfile\": \"...\", \"endpoint\": \"/redirect\", "
+    "\"confirm_string\": \"...\", \"server_port\": 3000}"
+)
+
 _LAB_SCAFFOLD_PROTOTYPE_POLLUTION_SYS = (
     "Eres un experto en seguridad. Genera un servidor Node.js para un lab de prototype pollution. "
     "El servidor tiene una funcion de merge/assign vulnerable que permite contaminar Object.prototype. REGLAS:\n"
@@ -1916,9 +2263,49 @@ _LAB_FEEDBACK_GENERIC_SYS = (
     "- 'Module not found' -> dependencia faltante en package.json o requirements.txt\n"
     "- El servidor arranca pero el endpoint raiz responde HTML de bienvenida, no JSON -> el "
     "verificador necesita el subpath correcto (/api/...) no '/'\n\n"
+    "=== NOSQL / MONGODB ===\n"
+    "- 'SyntaxError en Mongo' o 'MongoParseError' -> el operador $ne/$gt no es un objeto: "
+    "pasar como JSON {'$ne': ''} no como string '$ne'\n"
+    "- El servidor usa mongoose y el schema tiene tipo String -> los operadores no funcionan; "
+    "cambiar a Schema.Types.Mixed o quitar el schema\n"
+    "- 'authentication required' en mongo -> eliminar la auth del Dockerfile, iniciar sin --auth\n\n"
+    "=== JWT ===\n"
+    "- 'invalid algorithm' -> la libreria no acepta alg:none; usar 'jsonwebtoken' con "
+    "{algorithms: ['none']} en verify() o no validar la firma con split('.')[1]\n"
+    "- 'invalid signature' -> la clave 'secret' no coincide; usar process.env.JWT_SECRET='secret'\n\n"
+    "=== DESERIALIZACION ===\n"
+    "- 'Module not found: node-serialize' -> falta en package.json; usar 'serialize-javascript' "
+    "o implementar el IIFE payload manualmente\n"
+    "- El pickle payload no ejecuta -> el contenedor usa Python 3.12+ que restringe pickle; "
+    "bajar a python:3.10-slim\n\n"
+    "=== RACE CONDITION ===\n"
+    "- 'diferencial insuficiente' -> el lab no tiene estado compartido real; usar SQLite con "
+    "transacciones deshabilitadas (journal_mode=MEMORY) para maximizar la ventana de race\n"
+    "- 'saldo nunca negativo' -> el gap CHECK-UPDATE es demasiado corto; añadir sleep(0.01) "
+    "entre el check y el update en el servidor para ampliar la ventana\n\n"
+    "=== PATH CONFUSION ===\n"
+    "- 'middleware no bypasseable' -> Express normaliza rutas antes del router; usar "
+    "app.use((req, res, next) => { if (req.url.startsWith('/admin/')) ... }) con req.url "
+    "en vez de req.path (req.path ya esta normalizado)\n"
+    "- ';' no funciona -> probar con %09 (tab), %20 (space), %2F/ entre segmentos\n\n"
+    "=== GENERAL DOCKER/BUILD ===\n"
+    "- 'apt-get: command not found' -> imagen Alpine usa apk, no apt-get\n"
+    "- 'npm ERR! code EACCES' -> ejecutando como root en imagen restrictiva; "
+    "anadir USER node o usar --unsafe-perm\n"
+    "- 'better-sqlite3 prebuild failed' -> falta python3/make/g++ en imagen; "
+    "usar node:18 (ya los tiene) o anadir RUN apt-get install -y python3 make g++\n"
+    "- 'PORT no escucha' -> server.listen(port) sin callback; anadir callback "
+    "console.log para confirmar arranque\n"
+    "- El contenedor arranca pero el healthcheck falla -> el servidor tarda >5s en arrancar; "
+    "anadir '--health-start-period=10s' o 'sleep 5' antes del endpoint\n\n"
+    "=== PROVENANCE / EVIDENCE ===\n"
+    "Al corregir, indica en 'diagnosis' si el lab es SIMULATED (generico) o CONFIRMED "
+    "(replica el patron de codigo fuente del CVE). Nunca reclames CONFIRMED si no hay "
+    "codigo vulnerable especifico identificado.\n\n"
     "Responde SOLO con JSON sin markdown: "
     "{\"diagnosis\": \"causa especifica del fallo (cita el error exacto)\", "
-    "\"server_code\": \"...\", \"dockerfile\": \"...\", \"endpoint\": \"...\", \"parameters\": {}}"
+    "\"server_code\": \"...\", \"dockerfile\": \"...\", \"endpoint\": \"...\", \"parameters\": {}, "
+    "\"evidence_level\": \"SIMULATED|STRONGLY_SUPPORTED|CONFIRMED\"}"
 )
 
 # Retry para herramientas CLI cuyo vector es el VALOR de un argumento (verify_cli_argv_*).
@@ -7287,6 +7674,50 @@ _SCAFFOLD_SYS_FOR_CLASS = {
     # Prototype pollution (Node.js)
     "prototype-pollution":         "_LAB_SCAFFOLD_PROTOTYPE_POLLUTION_SYS",
     "property-injection":          "_LAB_SCAFFOLD_PROTOTYPE_POLLUTION_SYS",
+    # Boolean oracle / data-leak
+    "boolean-oracle":              "_LAB_SCAFFOLD_BOOLEAN_ORACLE_SYS",
+    "boolean-injection":           "_LAB_SCAFFOLD_BOOLEAN_ORACLE_SYS",
+    "data-leak":                   "_LAB_SCAFFOLD_BOOLEAN_ORACLE_SYS",
+    "filter-bypass":               "_LAB_SCAFFOLD_BOOLEAN_ORACLE_SYS",
+    "information-disclosure":      "_LAB_SCAFFOLD_BOOLEAN_ORACLE_SYS",
+    # OAuth / OIDC
+    "oauth-bypass":                "_LAB_SCAFFOLD_OAUTH_SYS",
+    "oauth":                       "_LAB_SCAFFOLD_OAUTH_SYS",
+    "oidc-bypass":                 "_LAB_SCAFFOLD_OAUTH_SYS",
+    # CSRF
+    "csrf":                        "_LAB_SCAFFOLD_CSRF_SYS",
+    "cross-site-request-forgery":  "_LAB_SCAFFOLD_CSRF_SYS",
+    # HTTP header injection
+    "header-injection":            "_LAB_SCAFFOLD_HEADER_INJECTION_SYS",
+    "http-header-injection":       "_LAB_SCAFFOLD_HEADER_INJECTION_SYS",
+    "crlf-injection":              "_LAB_SCAFFOLD_HEADER_INJECTION_SYS",
+    "response-splitting":          "_LAB_SCAFFOLD_HEADER_INJECTION_SYS",
+    # NoSQL injection
+    "nosql-injection":             "_LAB_SCAFFOLD_NOSQL_INJECTION_SYS",
+    "nosql":                       "_LAB_SCAFFOLD_NOSQL_INJECTION_SYS",
+    "mongodb-injection":           "_LAB_SCAFFOLD_NOSQL_INJECTION_SYS",
+    # JWT bypass
+    "jwt-bypass":                  "_LAB_SCAFFOLD_JWT_BYPASS_SYS",
+    "jwt":                         "_LAB_SCAFFOLD_JWT_BYPASS_SYS",
+    "jwt-none-algorithm":          "_LAB_SCAFFOLD_JWT_BYPASS_SYS",
+    "jwt-weak-secret":             "_LAB_SCAFFOLD_JWT_BYPASS_SYS",
+    # Deserialization
+    "deserialization":             "_LAB_SCAFFOLD_DESERIALIZATION_SYS",
+    "insecure-deserialization":    "_LAB_SCAFFOLD_DESERIALIZATION_SYS",
+    "pickle":                      "_LAB_SCAFFOLD_DESERIALIZATION_SYS",
+    # Race condition
+    "race-condition":              "_LAB_SCAFFOLD_RACE_CONDITION_SYS",
+    "toctou":                      "_LAB_SCAFFOLD_RACE_CONDITION_SYS",
+    "time-of-check":               "_LAB_SCAFFOLD_RACE_CONDITION_SYS",
+    # Path confusion / normalization bypass
+    "path-confusion":              "_LAB_SCAFFOLD_PATH_CONFUSION_SYS",
+    "normalization-bypass":        "_LAB_SCAFFOLD_PATH_CONFUSION_SYS",
+    "middleware-bypass":           "_LAB_SCAFFOLD_PATH_CONFUSION_SYS",
+    "routing-bypass":              "_LAB_SCAFFOLD_PATH_CONFUSION_SYS",
+    # Business logic
+    "business-logic":              "_LAB_SCAFFOLD_BUSINESS_LOGIC_SYS",
+    "logic-flaw":                  "_LAB_SCAFFOLD_BUSINESS_LOGIC_SYS",
+    "insufficient-validation":     "_LAB_SCAFFOLD_BUSINESS_LOGIC_SYS",
 }
 
 
@@ -7312,6 +7743,16 @@ def _scaffold_llm_lab_for_class(llm, source_dir: str, notes: dict, cve_id: str,
         "_LAB_SCAFFOLD_CORS_SYS":                _LAB_SCAFFOLD_CORS_SYS,
         "_LAB_SCAFFOLD_GRAPHQL_SYS":             _LAB_SCAFFOLD_GRAPHQL_SYS,
         "_LAB_SCAFFOLD_PROTOTYPE_POLLUTION_SYS": _LAB_SCAFFOLD_PROTOTYPE_POLLUTION_SYS,
+        "_LAB_SCAFFOLD_BOOLEAN_ORACLE_SYS":      _LAB_SCAFFOLD_BOOLEAN_ORACLE_SYS,
+        "_LAB_SCAFFOLD_OAUTH_SYS":               _LAB_SCAFFOLD_OAUTH_SYS,
+        "_LAB_SCAFFOLD_CSRF_SYS":                _LAB_SCAFFOLD_CSRF_SYS,
+        "_LAB_SCAFFOLD_HEADER_INJECTION_SYS":    _LAB_SCAFFOLD_HEADER_INJECTION_SYS,
+        "_LAB_SCAFFOLD_NOSQL_INJECTION_SYS":     _LAB_SCAFFOLD_NOSQL_INJECTION_SYS,
+        "_LAB_SCAFFOLD_JWT_BYPASS_SYS":          _LAB_SCAFFOLD_JWT_BYPASS_SYS,
+        "_LAB_SCAFFOLD_DESERIALIZATION_SYS":     _LAB_SCAFFOLD_DESERIALIZATION_SYS,
+        "_LAB_SCAFFOLD_RACE_CONDITION_SYS":      _LAB_SCAFFOLD_RACE_CONDITION_SYS,
+        "_LAB_SCAFFOLD_PATH_CONFUSION_SYS":      _LAB_SCAFFOLD_PATH_CONFUSION_SYS,
+        "_LAB_SCAFFOLD_BUSINESS_LOGIC_SYS":      _LAB_SCAFFOLD_BUSINESS_LOGIC_SYS,
     }
     sys_key = _SCAFFOLD_SYS_FOR_CLASS.get(vuln_class)
     sys_prompt = _SYS_MAP.get(sys_key) if sys_key else None
@@ -7359,6 +7800,11 @@ def _scaffold_llm_lab_for_class(llm, source_dir: str, notes: dict, cve_id: str,
     if reasoning:
         step(f"lab scaffolded: {reasoning}")
 
+    # Container safety check antes de devolver el lab
+    safety_warns = _validate_dockerfile_safety(dockerfile, step)
+    if safety_warns:
+        step(f"[CONTAINER-SAFETY] {len(safety_warns)} advertencia(s) en Dockerfile generado")
+
     return {
         "dockerfile_body": dockerfile,
         "extra_files":     {srv_file: server_code},
@@ -7367,13 +7813,26 @@ def _scaffold_llm_lab_for_class(llm, source_dir: str, notes: dict, cve_id: str,
         "server_port":     int(data.get("server_port") or 3000),
         "parameters":      data.get("parameters") or {},
         # Claves especificas por clase (valor "" si no aplica)
-        "path_param":    data.get("path_param") or "",
-        "url_param":     data.get("url_param") or "",
-        "url_suffix":    data.get("url_suffix") or "",
-        "query_suffix":  data.get("query_suffix") or "",
-        "cmd_param":     data.get("cmd_param") or "",
-        "ssti_param":    data.get("ssti_param") or "",
-        "sqli_param":    data.get("sqli_param") or "",
+        "path_param":      data.get("path_param") or "",
+        "url_param":       data.get("url_param") or "",
+        "url_suffix":      data.get("url_suffix") or "",
+        "query_suffix":    data.get("query_suffix") or "",
+        "cmd_param":       data.get("cmd_param") or "",
+        "ssti_param":      data.get("ssti_param") or "",
+        "sqli_param":      data.get("sqli_param") or "",
+        # Claves para clases nuevas
+        "xss_param":       data.get("xss_param") or "",
+        "xml_param":       data.get("xml_param") or "",
+        "redirect_param":  data.get("redirect_param") or "",
+        "file_param":      data.get("file_param") or "",
+        "graphql_query":   data.get("graphql_query") or "",
+        "poll_endpoint":   data.get("poll_endpoint") or "/api/status",
+        "poll_prop":       data.get("poll_prop") or "binoracle_pwned",
+        "true_param":      data.get("true_param") or "",
+        "true_value":      data.get("true_value") or "",
+        "false_param":     data.get("false_param") or "",
+        "false_value":     data.get("false_value") or "",
+        "confirm_field":   data.get("confirm_field") or data.get("confirm_string") or confirm,
     }
 
 
@@ -10051,6 +10510,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         wr = wr_fb
                         if wr_fb.verified:
                             break
+                    if not wr.verified:
+                        _escalate_to_analyst(inv, getattr(wr, 'detail', '') or "", _lab_cfg, es)
                 def _attempt_sqli_blind_generic(ep, pr):
                     _ep  = _genlab_ep    if _is_local_lab else ep
                     _pr  = _genlab_param if _is_local_lab else pr
@@ -11349,11 +11810,57 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                      "(diferencia TRUE/FALSE en respuesta)..." if es else
                      "attempting GENERIC DYNAMIC verification -- boolean oracle "
                      "(TRUE/FALSE response difference)..."))
+                _bool_dockerfile = notes.get("dockerfile_body") or ""
+                _bool_extra_files = notes.get("extra_files") or None
+                _scf_bool = False
+                if not _bool_dockerfile and llm is not None:
+                    _scf = _scaffold_llm_lab_for_class(
+                        llm, str(fr.local_path), notes, inv.cve_id, "boolean-oracle", step, es)
+                    if _scf:
+                        _bool_dockerfile  = _scf["dockerfile_body"]
+                        _bool_extra_files = _scf["extra_files"]
+                        bool_ep           = _scf.get("endpoint") or bool_ep
+                        if _scf.get("true_param"):
+                            true_p = _scf["true_param"]
+                            true_v = _scf.get("true_value") or true_v
+                        if _scf.get("false_param"):
+                            false_p = _scf["false_param"]
+                            false_v = _scf.get("false_value") or false_v
+                        if _scf.get("confirm_field"):
+                            confirm_f = _scf["confirm_field"]
+                        _scf_bool = True
                 wr = verify_generic_boolean_oracle(
                     fr.local_path, bool_ep, bool_method,
                     true_p, true_v, false_p, false_v,
                     confirm_field=confirm_f, on_step=step, budget_s=budget_s,
-                    prebuilt_url=notes.get("prebuilt_url") or "")
+                    prebuilt_url=notes.get("prebuilt_url") or "",
+                    dockerfile_body=_bool_dockerfile, extra_files=_bool_extra_files)
+                if _scf_bool and not wr.verified:
+                    _lab_cfg_bool = {
+                        "dockerfile_body": _bool_dockerfile, "extra_files": _bool_extra_files,
+                        "endpoint": bool_ep, "confirm_string": confirm_f or "",
+                        "parameters": {"true_param": true_p, "false_param": false_p},
+                    }
+                    for _fb_i in range(2):
+                        _fb = _lab_feedback_for_class(
+                            llm, getattr(wr, 'detail', '') or "", _lab_cfg_bool, step, es)
+                        if not _fb:
+                            break
+                        _bool_dockerfile  = _fb["dockerfile_body"]
+                        _bool_extra_files = _fb["extra_files"]
+                        bool_ep           = _fb.get("endpoint") or bool_ep
+                        _lab_cfg_bool     = _fb
+                        wr_fb = verify_generic_boolean_oracle(
+                            fr.local_path, bool_ep, bool_method,
+                            true_p, true_v, false_p, false_v,
+                            confirm_field=confirm_f, on_step=step, budget_s=budget_s,
+                            prebuilt_url=notes.get("prebuilt_url") or "",
+                            dockerfile_body=_bool_dockerfile, extra_files=_bool_extra_files)
+                        wr = wr_fb
+                        if wr_fb.verified:
+                            break
+                    if not wr.verified:
+                        _escalate_to_analyst(inv, getattr(wr, 'detail', '') or "", _lab_cfg_bool, es)
                 _apply_wpverify_result(inv, wr, es, llm)
             # CORS misconfiguration: reflexion del Origin en ACAO + ACAC: true
             elif (not plugin_dir and fr.local_path and

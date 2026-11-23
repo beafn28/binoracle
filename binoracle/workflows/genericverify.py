@@ -3914,6 +3914,7 @@ def verify_generic_boolean_oracle(
     on_step: Optional[Callable[[str], None]] = None,
     budget_s: float = 900.0,
     prebuilt_url: str = "",
+    dockerfile_body: str = "", extra_files: Optional[dict] = None,
 ) -> WpVerifyResult:
     """Verifica una vulnerabilidad de tipo oracle booleano (p.ej. Strapi CVE-2026-27886).
 
@@ -3943,7 +3944,8 @@ def verify_generic_boolean_oracle(
         return res
 
     tup = _bootstrap_generic_lab(source_dir, step, res, budget_s,
-                                  prebuilt_url=prebuilt_url)
+                                  prebuilt_url=prebuilt_url,
+                                  dockerfile_body=dockerfile_body, extra_files=extra_files)
     if tup is None:
         return res
     lab, base_url, container = tup
@@ -4020,6 +4022,7 @@ def verify_generic_cors_misconfig(
     on_step: Optional[Callable[[str], None]] = None,
     budget_s: float = 900.0, custom_headers: Optional[dict] = None,
     dockerfile_body: str = "", extra_files: Optional[dict] = None,
+    confirm_string: str = "",
 ) -> WpVerifyResult:
     """Verifica CORS misconfiguration: reflexion del Origin en Access-Control-Allow-Origin
     + Access-Control-Allow-Credentials: true (CVE-2025-53092 Strapi y otros).
@@ -4070,19 +4073,26 @@ def verify_generic_cors_misconfig(
             except Exception as e:
                 tried.append({"endpoint": ep, "error": str(e)})
                 continue
+            resp_body = (getattr(r, "content", b"") or b"").decode("utf-8", errors="replace")
             hdrs = {k.lower(): v for k, v in (getattr(r, "headers", {}) or {}).items()}
             acao = hdrs.get("access-control-allow-origin", "")
             acac = hdrs.get("access-control-allow-credentials", "").strip().lower()
             reflected = cors_token in acao or acao.strip() == cors_token.strip()
             credentials_true = acac == "true"
+            # confirm_string del lab scaffoldeado: señal secundaria de que el endpoint
+            # devuelve datos sensibles (la reflexion Origin es la prueba principal).
+            confirm_found = bool(confirm_string and confirm_string in resp_body)
             tried.append({"endpoint": ep, "acao": acao, "acac": acac,
                           "reflejado": reflected, "credentials": credentials_true,
-                          "status": r.status_code})
-            step(f"  {ep} → ACAO: {acao!r}, ACAC: {acac!r}")
+                          "confirm_found": confirm_found, "status": r.status_code})
+            step(f"  {ep} → ACAO: {acao!r}, ACAC: {acac!r}"
+                 + (f", confirm_string={confirm_found}" if confirm_string else ""))
             if reflected:
                 found = True
                 result_data = {"endpoint": ep, "acao": acao, "acac": acac,
-                               "reflejado": reflected, "credentials": credentials_true}
+                               "reflejado": reflected, "credentials": credentials_true,
+                               "confirm_found": confirm_found,
+                               "resp_body_preview": resp_body[:300]}
 
         res.evidence["intentos"] = tried
         if found:
@@ -4104,7 +4114,9 @@ def verify_generic_cors_misconfig(
             _cors_body = (f"Access-Control-Allow-Origin: {rd['acao']}\n"
                           f"Access-Control-Allow-Credentials: {rd['acac']}\n\n"
                           f"Origin enviado: {cors_token}\n"
-                          f"Endpoint: {rd['endpoint']}")
+                          f"Endpoint: {rd['endpoint']}"
+                          + (f"\n\nRespuesta (recorte):\n{rd.get('resp_body_preview','')}"
+                             if rd.get("confirm_found") else ""))
             _add_exploit_evidence(
                 res=res, method=m, url=base_url + rd["endpoint"],
                 resp_or_body=_cors_body,
