@@ -4720,3 +4720,170 @@ def verify_generic_crlf_injection(
     finally:
         step("desmontando el laboratorio generico...")
         lab.teardown()
+
+
+def verify_generic_multistep(
+    source_dir: str,
+    steps: list,
+    confirm_string: str = "",
+    on_step: Optional[Callable[[str], None]] = None,
+    budget_s: float = 900.0,
+    dockerfile_body: str = "",
+    extra_files: Optional[dict] = None,
+) -> WpVerifyResult:
+    """Multi-step HTTP chain verifier for flows that require extracting a token/nonce
+    from one request and using it in a subsequent request.
+
+    ``steps`` is a list of step dicts, each with:
+      - method (str): "GET" | "POST" | "PUT" etc.
+      - endpoint (str): path relative to lab base URL, e.g. "/auth/login"
+      - params (dict, optional): query params
+      - body (dict | str, optional): request body (dict → JSON)
+      - headers (dict, optional): extra request headers
+      - extract (dict, optional): {var_name: "re:<pattern>"} — extract from response body
+        using the first capture group of the regex and store in context dict
+      - extract_header (dict, optional): {var_name: "Header-Name"} — extract from response header
+      - confirm_string (str, optional): if present, assert this string is in the response body
+
+    Variables from earlier steps can be referenced in later steps as "{{var_name}}" in any
+    string value of params/body/headers/endpoint.
+
+    Example:
+      steps = [
+        {"method": "GET", "endpoint": "/login",
+         "extract": {"nonce": "re:nonce\\s*=\\s*['\"]([a-f0-9]{8,16})['\"]"}},
+        {"method": "POST", "endpoint": "/api/action",
+         "body": {"nonce": "{{nonce}}", "action": "admin_takeover"},
+         "confirm_string": "admin_takeover_ok"},
+      ]
+    """
+    res = WpVerifyResult()
+    step = on_step or (lambda _: None)
+    t0 = time.time()
+
+    if not _docker_daemon_ok():
+        res.available = False
+        res.detail = "Docker no disponible"
+        res.limitations.append("Docker daemon no encontrado o no arrancado")
+        return res
+
+    lab = _GenericLab(_token())
+    try:
+        lab_cfg = _bootstrap_generic_lab(
+            lab, source_dir, step, res, t0, budget_s,
+            dockerfile_body=dockerfile_body,
+            extra_files=extra_files,
+        )
+        if not lab_cfg:
+            return res
+
+        import requests as _rq
+        sess = _rq.Session()
+        sess.verify = False
+        base_url = lab_cfg["base_url"]
+        ctx: dict = {}  # extracted variables from previous steps
+
+        def _interpolate(val):
+            if isinstance(val, str):
+                for k, v in ctx.items():
+                    val = val.replace(f"{{{{{k}}}}}", v)
+            elif isinstance(val, dict):
+                return {k2: _interpolate(v2) for k2, v2 in val.items()}
+            elif isinstance(val, list):
+                return [_interpolate(i) for i in val]
+            return val
+
+        for i, s in enumerate(steps):
+            if time.time() - t0 > budget_s:
+                res.detail = f"presupuesto agotado antes del step {i+1}"
+                return res
+
+            method   = (s.get("method") or "GET").upper()
+            endpoint = _interpolate(s.get("endpoint") or "/")
+            params   = _interpolate(s.get("params") or {})
+            body_raw = _interpolate(s.get("body") or {})
+            headers  = _interpolate(s.get("headers") or {})
+            step_confirm = _interpolate(s.get("confirm_string") or "")
+            extract      = s.get("extract") or {}
+            extract_hdr  = s.get("extract_header") or {}
+            url = base_url + (endpoint if endpoint.startswith("/") else "/" + endpoint)
+
+            step(f"[multistep step {i+1}/{len(steps)}] {method} {endpoint}")
+            try:
+                json_body = isinstance(body_raw, dict) and body_raw
+                data_body = body_raw if isinstance(body_raw, str) else None
+                resp = sess.request(
+                    method, url,
+                    params=params,
+                    json=json_body if json_body else None,
+                    data=data_body,
+                    headers=headers,
+                    timeout=30,
+                    allow_redirects=True,
+                )
+            except Exception as e:
+                res.detail = f"error en step {i+1} ({method} {endpoint}): {e}"
+                return res
+
+            body_text = resp.text or ""
+            step(f"  → HTTP {resp.status_code}, {len(body_text)}B")
+
+            # Extract variables for next steps
+            for var_name, pattern in extract.items():
+                if pattern.startswith("re:"):
+                    m = re.search(pattern[3:], body_text)
+                    if m:
+                        ctx[var_name] = m.group(1) if m.lastindex else m.group(0)
+                        step(f"  extracted {var_name}={ctx[var_name]!r:.50}")
+                    else:
+                        step(f"  [WARN] extract pattern for '{var_name}' not found in response")
+                else:
+                    ctx[var_name] = pattern  # static value
+
+            for var_name, hdr_name in extract_hdr.items():
+                val = resp.headers.get(hdr_name, "")
+                if val:
+                    ctx[var_name] = val
+                    step(f"  extracted header {var_name}={val!r:.50}")
+
+            # Per-step confirmation check
+            if step_confirm and step_confirm not in body_text:
+                res.detail = (f"step {i+1}: confirm_string {step_confirm!r} "
+                              f"not found in response")
+                return res
+
+        # Final step: check overall confirm_string
+        final_body = body_text  # from last step
+        if confirm_string and confirm_string in final_body:
+            res.verified = True
+            res.ok = True
+            res.confidence = "confirmed"
+            res.evidence["tecnica"] = "multistep-chain"
+            res.evidence["steps_executed"] = len(steps)
+            res.evidence["ctx_extracted"] = {k: v[:80] for k, v in ctx.items()}
+            res.detail = (f"MULTI-STEP CHAIN CONFIRMADO: {len(steps)} pasos ejecutados, "
+                          f"confirm_string {confirm_string!r} presente en la respuesta final")
+            step(f"VERIFICADO: multi-step chain ({len(steps)} pasos)")
+        elif not confirm_string:
+            # No confirm_string: success = all steps completed without error
+            res.verified = True
+            res.ok = True
+            res.confidence = "probable"
+            res.evidence["tecnica"] = "multistep-chain-no-confirm"
+            res.evidence["steps_executed"] = len(steps)
+            res.detail = (f"MULTI-STEP CHAIN: {len(steps)} pasos completados sin error "
+                          f"(sin confirm_string — resultado no duro)")
+            step(f"COMPLETADO: multi-step chain ({len(steps)} pasos) sin confirm_string")
+        else:
+            res.ok = True
+            res.confidence = "inconclusive"
+            res.detail = (f"multi-step chain: {len(steps)} pasos ejecutados pero "
+                          f"confirm_string {confirm_string!r} no encontrado en respuesta final")
+        return res
+    except Exception as e:
+        res.detail = f"error inesperado en verify_generic_multistep: {e}"
+        res.confidence = "not_reproducible"
+        return res
+    finally:
+        step("desmontando el laboratorio generico (multistep)...")
+        lab.teardown()

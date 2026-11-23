@@ -171,6 +171,46 @@ class WpVerifyResult:
     failure_trace: list = field(default_factory=list)
     # PoC listo para copiar-pegar generado tras verified=True: {curl, python, http, description}
     exploit_poc: dict = field(default_factory=dict)
+    # Nivel de confianza: confirmed | probable | inconclusive | not_reproducible | none
+    # confirmed  → técnica dura (error-based, UNION, canary confirmado, password reset verificado)
+    # probable   → técnica blanda (time-based, boolean-blind, content-diff) con señal consistente
+    # inconclusive → lab OK pero ninguna técnica produjo diferencial; no descarta la vuln
+    # not_reproducible → lab no arrancó o build falló
+    # none       → no se ha intentado nada (valor inicial)
+    confidence: str = "none"
+
+
+def _auto_set_confidence(res: "WpVerifyResult") -> None:
+    """Sets res.confidence if still 'none', based on verified status and technique."""
+    if res.confidence != "none":
+        return
+    if not res.available:
+        res.confidence = "not_reproducible"
+        return
+    if not res.verified:
+        res.confidence = "inconclusive"
+        return
+    # confirmed techniques: strong, deterministic evidence
+    _CONFIRMED_TECHS = {
+        "error-based", "union-based", "order-by-context-error-based",
+        "command-injection", "path-traversal", "lfi-rce", "canary",
+        "confirm-string", "password-reset", "xss-confirmed", "ssti-confirmed",
+        "nosql-injection", "xxe", "graphql-bypass", "header-bypass",
+        "cors-misconfig", "csrf", "crlf-injection",
+    }
+    _PROBABLE_TECHS = {
+        "boolean-blind-differential", "boolean-blind-content-diff", "time-based-blind",
+        "order-by-context-time-based", "boolean-oracle", "ssrf-callback",
+        "open-redirect", "jwt-bypass", "prototype-pollution",
+        "race-condition", "idor",
+    }
+    tech = res.evidence.get("tecnica", "")
+    if any(t in tech for t in _CONFIRMED_TECHS):
+        res.confidence = "confirmed"
+    elif any(t in tech for t in _PROBABLE_TECHS):
+        res.confidence = "probable"
+    else:
+        res.confidence = "confirmed"  # default for verified without explicit technique
 
 
 def _run(cmd: List[str], timeout: float = 60.0, input_text: str = None) -> subprocess.CompletedProcess:
@@ -3673,6 +3713,7 @@ def verify_wordpress_path_traversal(
     extra_setup_trigger_paths: Optional[list] = None,
     shortcode_name: Optional[str] = None,
     keep_lab_on_failure: bool = False,
+    _tried_params_set: Optional[frozenset] = None,
 ) -> WpVerifyResult:
     """Verifica path-traversal/LFI: planta un fichero CANARIO con un secreto aleatorio en una ruta
     del sistema de ficheros REAL del contenedor Apache (fuera del volumen /var/www/html, via
@@ -4046,12 +4087,48 @@ def verify_wordpress_path_traversal(
                           (f". Respuesta real del primer intento: {sample!r}" if sample else ""))
         res.evidence["screenshots"] = boot.shots
         res.evidence["http_captures"] = boot.http_captures
+        # --- LFI param fuzzing ---
+        # If traversal failed, try other path-hint params that haven't been attempted yet.
+        # Uses the same running lab for zero extra startup cost. Caps at 3 extra params.
+        if (not res.verified and parameters
+                and (_tried_params_set is None or len(_tried_params_set) < 4)):
+            _already_tried_lfi = (_tried_params_set or frozenset()) | {path_param}
+            _lfi_param_names = (list(parameters.keys()) if isinstance(parameters, dict)
+                                else list(parameters))
+            _lfi_candidates = []
+            for _lfi_h in _PATH_HINTS:
+                for _lfi_pn in _lfi_param_names:
+                    if (_lfi_h in _lfi_pn.lower() and _lfi_pn not in _already_tried_lfi
+                            and _lfi_pn not in _lfi_candidates):
+                        _lfi_candidates.append(_lfi_pn)
+            if _lfi_candidates:
+                _lfi_next = _lfi_candidates[0]
+                _lfi_budget_rem = max(60.0, budget_s - (time.time() - t0))
+                step(f"LFI param fuzzing: '{path_param}' sin canario; "
+                     f"probando siguiente candidato '{_lfi_next}'...")
+                _lfi_rot = verify_wordpress_path_traversal(
+                    plugin_source_dir, slug, endpoint, http_method,
+                    parameters, path_param_hint=_lfi_next,
+                    on_step=on_step, budget_s=_lfi_budget_rem,
+                    companion_plugins=companion_plugins,
+                    extra_nonce_pages=extra_nonce_pages,
+                    extra_setup_trigger_paths=extra_setup_trigger_paths,
+                    shortcode_name=shortcode_name,
+                    keep_lab_on_failure=False,
+                    _tried_params_set=_already_tried_lfi,
+                )
+                if _lfi_rot.verified:
+                    return _lfi_rot
+        if not res.verified:
+            res.confidence = "inconclusive"
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = f"timeout de infraestructura: {e}"
+        res.confidence = "not_reproducible"
         return res
     except Exception as e:
         res.detail = f"error inesperado: {e}"
+        res.confidence = "not_reproducible"
         return res
     finally:
         _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
@@ -5067,6 +5144,7 @@ def verify_wordpress_sqli(
     required_role: str = "subscriber",
     sqli_via_request_uri: bool = False,
     sqli_via_rawurldecode: bool = False,
+    _tried_params_set: Optional[frozenset] = None,
 ) -> WpVerifyResult:
     """Verifica SQL injection con CINCO tecnicas, de mas a menos dura, probando varios contextos
     de inyeccion (numerico sin comillas, comilla simple, comilla doble, cierre de parentesis) y
@@ -6259,6 +6337,7 @@ def verify_wordpress_sqli(
             payload_val, mysql_version, r = error_found
             res.verified = True
             res.ok = True
+            res.confidence = "confirmed"
             res.evidence["tecnica"] = "error-based"
             res.evidence["payload_ganador"] = payload_val
             res.evidence["mysql_version_extraida"] = mysql_version
@@ -6371,6 +6450,7 @@ def verify_wordpress_sqli(
             payload_val, mysql_version, r = union_found
             res.verified = True
             res.ok = True
+            res.confidence = "confirmed"
             res.evidence["tecnica"] = "union-based"
             res.evidence["payload_ganador"] = payload_val
             res.evidence["mysql_version_extraida"] = mysql_version
@@ -6490,6 +6570,7 @@ def verify_wordpress_sqli(
         if consistent_diffs >= 2:
             res.verified = True
             res.ok = True
+            res.confidence = "probable"
             res.evidence["tecnica"] = "boolean-blind-differential"
             # Capture TRUE/FALSE response sizes for report generation
             _winning_pair = next((e for e in bool_tried if e.get("difiere") and e.get("true_coincide_con_base")), None)
@@ -6628,6 +6709,7 @@ def verify_wordpress_sqli(
             if _content_consistent >= 2:
                 res.verified = True
                 res.ok = True
+                res.confidence = "probable"
                 res.evidence["tecnica"] = "boolean-blind-content-diff"
                 res.evidence["content_diff_trigger"] = _content_trigger_pair
                 res.detail = (f"SQLI probable (boolean-blind, content-diff): {_content_consistent}/"
@@ -6741,6 +6823,7 @@ def verify_wordpress_sqli(
         if timing_consistent >= 2 or (timing_consistent >= 1 and _max_single_delay >= 8.0):
             res.verified = True
             res.ok = True
+            res.confidence = "probable"
             res.evidence["tecnica"] = "time-based-blind"
             res.detail = (f"SQLI probable (time-based blind): {timing_consistent}/"
                           f"{len(timing_pairs)} pares SLEEP(5)/SLEEP(0) mostraron un retraso "
@@ -6876,6 +6959,7 @@ def verify_wordpress_sqli(
                 payload_val, mysql_version = orderby_error_found
                 res.verified = True
                 res.ok = True
+                res.confidence = "confirmed"
                 res.evidence["tecnica"] = "order-by-context-error-based"
                 res.evidence["mysql_version_extraida"] = mysql_version
                 res.evidence["payload_ganador"] = payload_val
@@ -6938,6 +7022,7 @@ def verify_wordpress_sqli(
                 if orderby_timing_consistent >= 1:
                     res.verified = True
                     res.ok = True
+                    res.confidence = "probable"
                     res.evidence["tecnica"] = "order-by-context-time-based"
                     res.detail = (f"SQLI VERIFICADA (time-based, contexto ORDER BY): "
                                   f"{orderby_timing_consistent}/{len(orderby_timing_pairs)} "
@@ -6997,14 +7082,61 @@ def verify_wordpress_sqli(
                     })
         res.evidence["screenshots"] = boot.shots
         res.evidence["http_captures"] = boot.http_captures
+        if not res.verified and res.confidence == "none":
+            res.confidence = "inconclusive"
+        # --- SQLi param rotation ---
+        # If all 5 techniques failed on sqli_param, try the next candidate from parameters
+        # that hasn't been tried yet. Reuses the running lab (boot/_live_boot=boot) so no
+        # extra Docker startup cost. Caps at 2 additional params to avoid runaway budget.
+        if (not res.verified and parameters and sqli_param
+                and (_tried_params_set is None or len(_tried_params_set) < 3)):
+            _already_tried = (_tried_params_set or frozenset()) | {sqli_param}
+            _param_names = (list(parameters.keys()) if isinstance(parameters, dict)
+                            else list(parameters))
+            # collect candidates in SQLI_HINTS priority order, skip already tried
+            _rotation_candidates = []
+            for _h in _SQLI_HINTS:
+                for _pn in _param_names:
+                    if (_h in _pn.lower() and _pn not in _already_tried
+                            and _pn not in _rotation_candidates):
+                        _rotation_candidates.append(_pn)
+            if _rotation_candidates:
+                _next_p = _rotation_candidates[0]
+                _remaining_budget = max(60.0, budget_s - (time.time() - t0))
+                step(f"param rotation: sin diferencial en '{sqli_param}'; "
+                     f"probando siguiente candidato '{_next_p}' "
+                     f"(presupuesto restante: {_remaining_budget:.0f}s)...")
+                _rot = verify_wordpress_sqli(
+                    plugin_source_dir, slug, endpoint, m,
+                    parameters, sqli_param_hint=_next_p,
+                    on_step=on_step, budget_s=_remaining_budget,
+                    setup_wp_options=setup_wp_options,
+                    companion_plugins=companion_plugins,
+                    shortcode_name=shortcode_name,
+                    relationship_table=relationship_table,
+                    extra_nonce_pages=extra_nonce_pages,
+                    extra_setup_trigger_paths=extra_setup_trigger_paths,
+                    keep_lab_on_failure=False,
+                    _live_boot=boot,  # reuse running lab — no extra Docker cost
+                    json_body=json_body,
+                    required_role=required_role,
+                    sqli_via_request_uri=sqli_via_request_uri,
+                    sqli_via_rawurldecode=sqli_via_rawurldecode,
+                    _tried_params_set=_already_tried,
+                )
+                if _rot.verified:
+                    return _rot
         return res
     except subprocess.TimeoutExpired as e:
         step(f"TIMEOUT en verify_wordpress_sqli: {e}")
         res.detail = f"timeout de infraestructura: {e}"
+        res.confidence = "not_reproducible"
         return res
     except Exception as e:
         step(f"ERROR inesperado en verify_wordpress_sqli: {type(e).__name__}: {e}")
         res.detail = f"error inesperado: {e}"
+        if res.confidence == "none":
+            res.confidence = "not_reproducible"
         return res
     finally:
         # _live_boot: we borrowed the lab, caller owns teardown — don't touch it.
