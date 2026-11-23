@@ -131,6 +131,23 @@ WEB_CLASSES = frozenset({
     "deserialization", "xxe", "ssti", "csrf", "open-redirect", "php-object-injection",
     "graphql-bypass", "boolean-oracle",
     "cors", "cors-misconfiguration", "cors-misconfig", "cors-reflection",
+    # New classes added in architecture v2
+    "jwt-bypass", "jwt", "jwt-weakness", "jwt-vulnerability", "jwt-none-algorithm",
+    "jwt-weak-secret", "token-forgery", "authentication-bypass-via-jwt",
+    "nosql-injection", "nosql", "mongodb-injection", "nosqli", "mongo-injection",
+    "nosql-auth-bypass",
+    "prototype-pollution", "proto-pollution", "proto-pollute",
+    "race-condition", "toctou", "race", "time-of-check-time-of-use", "concurrent-request",
+    "path-confusion", "middleware-bypass", "semicolon-bypass", "path-parameter-bypass",
+    "path-override",
+    "business-logic", "logic-flaw", "logic-bypass", "insufficient-validation",
+    "workflow-bypass", "quota-bypass",
+    "oauth-bypass", "oauth", "redirect-uri-bypass",
+    "header-injection", "crlf-injection", "http-header-injection",
+    "insecure-deserialization", "unsafe-deserialization", "object-injection",
+    "pickle", "yaml-deserialization",
+    "graphql-injection", "graphql-auth", "graphql", "graphql-authorization",
+    "graphql-introspection",
 })
 
 

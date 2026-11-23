@@ -1982,6 +1982,163 @@ def _cwe_to_vuln_class(cwe_ids) -> Optional[str]:
     return None
 
 
+# Description keyword → vuln_class mapping (heuristic, lower confidence than CWE)
+_DESCRIPTION_KEYWORDS: List[tuple] = [
+    # (keywords_tuple, vuln_class, confidence)
+    (("sql injection", "sqli", "sql query", "unsanitized sql", "sql statement"),
+     "sqli", 0.85),
+    (("command injection", "os command", "shell injection", "arbitrary command",
+      "command execution", "rce via command"),
+     "command-injection", 0.85),
+    (("server-side template injection", "ssti", "template injection", "jinja2",
+      "twig injection", "smarty injection"),
+     "ssti", 0.85),
+    (("path traversal", "directory traversal", "../", "%2e%2e", "arbitrary file read",
+      "local file inclusion", "lfi", "file read"),
+     "path-traversal", 0.80),
+    (("cross-site scripting", "xss", "script injection", "reflected xss",
+      "stored xss", "dom xss"),
+     "xss", 0.80),
+    (("server-side request forgery", "ssrf", "fetch arbitrary url",
+      "make requests to internal", "internal network request"),
+     "ssrf", 0.80),
+    (("missing authorization", "broken access control", "unauthorized access",
+      "privilege escalation", "access control", "authentication bypass",
+      "unauthenticated access", "auth bypass"),
+     "missing-authorization", 0.75),
+    (("insecure deserialization", "deserialization", "pickle", "unserialize",
+      "java deserialization", "object injection"),
+     "deserialization", 0.80),
+    (("prototype pollution", "__proto__", "object prototype", "constructor pollution"),
+     "prototype-pollution", 0.85),
+    (("nosql injection", "mongodb injection", "nosqli", "$ne operator",
+      "operator injection", "mongodb operator"),
+     "nosql-injection", 0.85),
+    (("jwt", "json web token", "token forgery", "algorithm confusion",
+      "alg none", "signature bypass"),
+     "jwt-bypass", 0.80),
+    (("open redirect", "url redirect", "redirect to arbitrary", "unvalidated redirect"),
+     "open-redirect", 0.80),
+    (("xml external entity", "xxe", "xml injection", "DOCTYPE", "SYSTEM entity"),
+     "xxe", 0.80),
+    (("cross-site request forgery", "csrf", "xsrf"),
+     "csrf", 0.80),
+    (("file upload", "arbitrary file upload", "unrestricted file upload",
+      "upload webshell", "malicious file upload"),
+     "file-upload", 0.80),
+    (("cors", "cross-origin resource sharing", "access-control-allow-origin",
+      "cors misconfiguration"),
+     "cors", 0.75),
+    (("race condition", "toctou", "time-of-check", "concurrent request",
+      "race window"),
+     "race-condition", 0.75),
+    (("graphql", "introspection", "graphql injection", "graphql authorization"),
+     "graphql-injection", 0.75),
+]
+
+
+def _classify_cve_from_description(description: str) -> Optional[tuple]:
+    """Clasifica una CVE desde su texto de descripcion usando heuristica keyword.
+
+    Devuelve (vuln_class, confidence) o None si no hay coincidencia clara.
+    Confidence es un float 0-1; usar solo cuando CWE classification falla.
+    NUNCA tratar como evidencia confirmada — es INFERRED.
+    """
+    if not description:
+        return None
+    desc_lower = description.lower()
+    best_vc = None
+    best_conf = 0.0
+    for keywords, vc, confidence in _DESCRIPTION_KEYWORDS:
+        if any(kw in desc_lower for kw in keywords):
+            if confidence > best_conf:
+                best_vc = vc
+                best_conf = confidence
+    if best_vc and best_conf >= 0.75:
+        return (best_vc, best_conf)
+    return None
+
+
+def _classify_pipeline_error(error_text: str) -> dict:
+    """Clasifica un error de pipeline en categoria estructurada.
+
+    Devuelve dict con: category, stage, severity, remediation_hint.
+    Permite que el feedback loop use el tipo de fallo, no solo el texto raw.
+    """
+    import re as _re
+    err = (error_text or "").lower()
+    result = {
+        "category": "unknown",
+        "stage": "unknown",
+        "severity": "MEDIUM",
+        "remediation_hint": "",
+        "raw": (error_text or "")[:500],
+    }
+
+    # Stage detection
+    if any(x in err for x in ("dockerfile", "build failed", "docker build", "step failed")):
+        result["stage"] = "build"
+    elif any(x in err for x in ("health check", "healthcheck", "container not healthy",
+                                 "startup timeout", "not ready")):
+        result["stage"] = "startup"
+    elif any(x in err for x in ("connection refused", "econnrefused", "timeout", "no route")):
+        result["stage"] = "network"
+    elif any(x in err for x in ("500", "internal server error", "traceback", "exception")):
+        result["stage"] = "runtime"
+    elif any(x in err for x in ("verified", "diff", "baseline", "injection failed")):
+        result["stage"] = "verification"
+
+    # Category + remediation
+    if _re.search(r"npm\s+(err|error|enoent|eacces)", err):
+        result["category"] = "npm_install_failure"
+        result["remediation_hint"] = (
+            "npm install falló — verificar package.json, usar node:18-alpine, "
+            "añadir --ignore-scripts si hay postinstall hook problemático")
+    elif _re.search(r"apt-get|apk add|yum install", err) and "failed" in err:
+        result["category"] = "pkg_install_failure"
+        result["remediation_hint"] = (
+            "paquete del sistema no encontrado — verificar nombre exacto, "
+            "añadir apt-get update antes del install")
+    elif "enospc" in err or "no space left" in err:
+        result["category"] = "disk_space"
+        result["severity"] = "HIGH"
+        result["remediation_hint"] = "disco lleno — docker system prune para limpiar layers viejos"
+    elif "port" in err and ("in use" in err or "already allocated" in err):
+        result["category"] = "port_conflict"
+        result["remediation_hint"] = "puerto ocupado — el lab ya usa puertos aleatorios, re-ejecutar"
+    elif "connection refused" in err or "econnrefused" in err:
+        result["category"] = "server_not_ready"
+        result["remediation_hint"] = (
+            "servidor no levantó a tiempo — añadir HEALTHCHECK en Dockerfile o "
+            "incrementar HEALTH_CHECK_RETRIES en el lab")
+    elif "modulenotfounderror" in err or "cannot find module" in err:
+        result["category"] = "missing_dependency"
+        result["remediation_hint"] = (
+            "dependencia faltante — añadir al package.json o requirements.txt del lab, "
+            "o instalar en RUN del Dockerfile")
+    elif "syntax" in err and ("error" in err or "unexpected" in err):
+        result["category"] = "syntax_error"
+        result["remediation_hint"] = (
+            "error de sintaxis en el servidor generado — revisar server.js/app.py generado por LLM")
+    elif "timeout" in err:
+        result["category"] = "timeout"
+        result["remediation_hint"] = (
+            "timeout agotado — incrementar budget_s o simplificar el Dockerfile "
+            "(evitar downloads en build time)")
+    elif "permission denied" in err or "eacces" in err:
+        result["category"] = "permission_denied"
+        result["remediation_hint"] = (
+            "permisos denegados — verificar que el directorio del lab sea escribible, "
+            "o añadir USER en Dockerfile para evitar conflictos de permisos")
+    else:
+        result["category"] = "generic_lab_failure"
+        result["remediation_hint"] = (
+            "fallo generico — ver raw error, posiblemente Dockerfile incompleto o "
+            "servidor no arranca en el puerto esperado")
+
+    return result
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # CONTAINER SAFETY VALIDATOR
 # Valida el Dockerfile generado por el LLM antes de pasarlo al lab.
@@ -2000,23 +2157,48 @@ _CONTAINER_SAFETY_VIOLATIONS = [
     (r"ADD\s+http",          "MEDIUM",  "ADD desde URL externa — usar COPY + descarga separada"),
     (r"FROM\s+ubuntu:latest|FROM\s+debian:latest|FROM\s+alpine:latest",
      "INFO", "imagen sin pinning de version — usar tag especifico"),
+    # Extended rules (architecture document section C)
+    (r"ENV\s+\S*(PASSWORD|SECRET|TOKEN|KEY|API_KEY|PRIVATE)\s*=\s*\S+",
+     "HIGH", "secreto hardcodeado en ENV — usar ARG o secreto en tiempo de ejecucion"),
+    (r"USER\s+root",         "MEDIUM", "proceso corre como root — anadir USER nonroot"),
+    (r"--security-opt.*apparmor:unconfined", "HIGH", "AppArmor deshabilitado"),
+    (r"--cap-add\s+(SYS_ADMIN|NET_ADMIN)", "HIGH",
+     "capability peligrosa — SYS_ADMIN/NET_ADMIN da acceso casi total"),
+    (r"RUN\s+chmod\s+(777|a\+rwx|o\+w)",  "MEDIUM",
+     "permisos excesivos chmod 777/a+rwx — usar modo minimo necesario"),
+    (r"VOLUME\s+/etc\b|VOLUME\s+/proc\b|VOLUME\s+/sys\b",
+     "HIGH", "volumen montando directorio de sistema critico"),
+    (r"RUN\s+apt-get install.*-y.*openssh-server|RUN\s+apk add.*openssh",
+     "MEDIUM", "SSH instalado en imagen de lab — superficie de ataque innecesaria"),
+    (r"FROM\s+scratch\b",    "INFO",  "imagen scratch sin shell ni herramientas de debug"),
+    (r"EXPOSE\s+22\b",       "MEDIUM", "puerto SSH 22 expuesto en Dockerfile de lab"),
+    (r"EXPOSE\s+[0-9]{5,}",  "INFO",  "puerto de alta numeracion expuesto — verificar si es intencional"),
 ]
 
 
 def _validate_dockerfile_safety(dockerfile_body: str, step=None) -> List[str]:
     """Verifica el Dockerfile generado por el LLM contra politica de seguridad.
-    Devuelve lista de warnings; si hay CRITICALs registra en step.
+    Devuelve lista de warnings con severidad, descripcion y linea aproximada.
+    CRITICALs bloquean la ejecucion del lab (documentados en step).
     """
     import re as _re
     warnings: List[str] = []
     if not dockerfile_body:
         return warnings
+    lines = dockerfile_body.splitlines()
     for pattern, severity, desc in _CONTAINER_SAFETY_VIOLATIONS:
-        if _re.search(pattern, dockerfile_body, _re.IGNORECASE | _re.MULTILINE):
-            msg = f"[CONTAINER-SAFETY {severity}] {desc}"
+        matched_line = None
+        for i, line in enumerate(lines, 1):
+            if _re.search(pattern, line, _re.IGNORECASE):
+                matched_line = i
+                break
+        if matched_line is None and _re.search(pattern, dockerfile_body, _re.IGNORECASE | _re.MULTILINE):
+            matched_line = 0
+        if matched_line is not None:
+            msg = f"[CONTAINER-SAFETY {severity}] linea~{matched_line}: {desc}"
             warnings.append(msg)
             if step and severity in ("CRITICAL", "HIGH"):
-                step(f"⚠ {msg}")
+                step(f"[CONTAINER-SAFETY] {severity}: {desc}")
     return warnings
 
 
@@ -7838,10 +8020,25 @@ def _scaffold_llm_lab_for_class(llm, source_dir: str, notes: dict, cve_id: str,
 
 def _lab_feedback_for_class(llm, fail_reason: str, lab_config: dict,
                              step, es: bool) -> Optional[dict]:
-    """Genera una version corregida del lab usando el prompt de feedback generico."""
+    """Genera una version corregida del lab usando el prompt de feedback generico.
+
+    Incluye clasificacion estructurada del error antes de pedir el fix al LLM,
+    para que el prompt de feedback sea mas especifico y dirigido.
+    """
     if llm is None or not lab_config:
         return None
     from ..llm.base import Message
+
+    # Clasificar el error antes de enviarlo al LLM — el hint de remediacion
+    # va incluido en el prompt para que Qwen sepa exactamente qué arreglar.
+    _err_cls = _classify_pipeline_error(fail_reason)
+    _remediation = _err_cls.get("remediation_hint", "")
+    _stage = _err_cls.get("stage", "unknown")
+    _category = _err_cls.get("category", "unknown")
+    if _remediation:
+        step((f"[PIPELINE-ERROR stage={_stage}] categoria={_category}: {_remediation[:120]}"
+              if es else
+              f"[PIPELINE-ERROR stage={_stage}] category={_category}: {_remediation[:120]}"))
 
     srv_files   = lab_config.get("extra_files") or {}
     server_code = next(iter(srv_files.values()), "") if srv_files else ""
@@ -7849,6 +8046,9 @@ def _lab_feedback_for_class(llm, fail_reason: str, lab_config: dict,
 
     user_prompt = (
         f"Error observado:\n{fail_reason[:800]}\n\n"
+        f"Categoria del error (clasificacion automatica): stage={_stage}, "
+        f"category={_category}\n"
+        f"Pista de remediacion: {_remediation}\n\n"
         f"Servidor actual:\n```\n{server_code[:1500]}\n```\n\n"
         f"Dockerfile:\n```\n{(lab_config.get('dockerfile_body') or '')[:500]}\n```\n\n"
         f"Endpoint: {lab_config.get('endpoint')}\n"
@@ -11913,6 +12113,372 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         if wr_fb.verified:
                             break
                 _apply_wpverify_result(inv, wr, es, llm)
+            # JWT bypass: alg:none + weak secret
+            elif (not plugin_dir and fr.local_path and
+                  inv.vuln_class in ("jwt-bypass", "jwt", "jwt-weakness", "jwt-vulnerability",
+                                     "jwt-none-algorithm", "jwt-weak-secret",
+                                     "token-forgery", "authentication-bypass-via-jwt")):
+                from .genericverify import verify_generic_jwt_bypass
+                _jwt_ep     = notes.get("endpoint") or "/api/auth/verify"
+                _jwt_method = notes.get("http_method") or "POST"
+                _jwt_cs     = notes.get("confirm_string") or ""
+                _jwt_secret = notes.get("weak_secret") or "secret"
+                step(("intentando verificacion DINAMICA GENERICA -- JWT bypass "
+                      "(alg:none + clave debil)..." if es else
+                      "attempting GENERIC DYNAMIC verification -- JWT bypass "
+                      "(alg:none + weak secret)..."))
+                _jwt_dockerfile = notes.get("dockerfile_body") or ""
+                _jwt_extra_files = notes.get("extra_files") or None
+                _scf_jwt = False
+                if not _jwt_dockerfile and llm is not None:
+                    _scf = _scaffold_llm_lab_for_class(
+                        llm, str(fr.local_path), notes, inv.cve_id, "jwt-bypass", step, es)
+                    if _scf:
+                        _jwt_dockerfile  = _scf["dockerfile_body"]
+                        _jwt_extra_files = _scf["extra_files"]
+                        _jwt_ep          = _scf.get("endpoint") or _jwt_ep
+                        _jwt_cs          = _scf.get("confirm_string") or _jwt_cs
+                        _scf_jwt         = True
+                wr = verify_generic_jwt_bypass(
+                    fr.local_path, _jwt_ep, _jwt_method,
+                    confirm_string=_jwt_cs, weak_secret=_jwt_secret,
+                    on_step=step, budget_s=budget_s,
+                    dockerfile_body=_jwt_dockerfile, extra_files=_jwt_extra_files)
+                if _scf_jwt and not wr.verified:
+                    _lab_cfg_jwt = {
+                        "dockerfile_body": _jwt_dockerfile, "extra_files": _jwt_extra_files,
+                        "endpoint": _jwt_ep, "confirm_string": _jwt_cs,
+                        "parameters": {}, "weak_secret": _jwt_secret,
+                    }
+                    for _fb_i in range(2):
+                        _fb = _lab_feedback_for_class(
+                            llm, getattr(wr, 'detail', '') or "", _lab_cfg_jwt, step, es)
+                        if not _fb:
+                            break
+                        _jwt_dockerfile  = _fb["dockerfile_body"]
+                        _jwt_extra_files = _fb["extra_files"]
+                        _jwt_ep          = _fb.get("endpoint") or _jwt_ep
+                        _jwt_cs          = _fb.get("confirm_string") or _jwt_cs
+                        _lab_cfg_jwt     = _fb
+                        wr_fb = verify_generic_jwt_bypass(
+                            fr.local_path, _jwt_ep, _jwt_method,
+                            confirm_string=_jwt_cs, weak_secret=_jwt_secret,
+                            on_step=step, budget_s=budget_s,
+                            dockerfile_body=_jwt_dockerfile, extra_files=_jwt_extra_files)
+                        wr = wr_fb
+                        if wr_fb.verified:
+                            break
+                    if not wr.verified:
+                        _escalate_to_analyst(inv, getattr(wr, 'detail', '') or "", _lab_cfg_jwt, es)
+                _apply_wpverify_result(inv, wr, es, llm)
+            # NoSQL injection (MongoDB $ne/$gt operator)
+            elif (not plugin_dir and fr.local_path and
+                  inv.vuln_class in ("nosql-injection", "nosql", "mongodb-injection",
+                                     "nosqli", "mongo-injection", "nosql-auth-bypass")):
+                from .genericverify import verify_generic_nosql_injection
+                _nosql_ep      = notes.get("endpoint") or "/api/auth/login"
+                _nosql_method  = notes.get("http_method") or "POST"
+                _nosql_param   = notes.get("inject_param") or notes.get("sqli_param") or "username"
+                _nosql_cs      = notes.get("confirm_string") or ""
+                step(("intentando verificacion DINAMICA GENERICA -- NoSQL injection "
+                      "(MongoDB operator bypass)..." if es else
+                      "attempting GENERIC DYNAMIC verification -- NoSQL injection "
+                      "(MongoDB operator bypass)..."))
+                _nosql_dockerfile  = notes.get("dockerfile_body") or ""
+                _nosql_extra_files = notes.get("extra_files") or None
+                _scf_nosql = False
+                if not _nosql_dockerfile and llm is not None:
+                    _scf = _scaffold_llm_lab_for_class(
+                        llm, str(fr.local_path), notes, inv.cve_id, "nosql-injection", step, es)
+                    if _scf:
+                        _nosql_dockerfile  = _scf["dockerfile_body"]
+                        _nosql_extra_files = _scf["extra_files"]
+                        _nosql_ep          = _scf.get("endpoint") or _nosql_ep
+                        _nosql_cs          = _scf.get("confirm_string") or _nosql_cs
+                        _scf_nosql         = True
+                wr = verify_generic_nosql_injection(
+                    fr.local_path, _nosql_ep, _nosql_method,
+                    inject_param=_nosql_param, confirm_string=_nosql_cs,
+                    on_step=step, budget_s=budget_s,
+                    dockerfile_body=_nosql_dockerfile, extra_files=_nosql_extra_files)
+                if _scf_nosql and not wr.verified:
+                    _lab_cfg_nosql = {
+                        "dockerfile_body": _nosql_dockerfile, "extra_files": _nosql_extra_files,
+                        "endpoint": _nosql_ep, "confirm_string": _nosql_cs,
+                        "parameters": {_nosql_param: ""}, "inject_param": _nosql_param,
+                    }
+                    for _fb_i in range(2):
+                        _fb = _lab_feedback_for_class(
+                            llm, getattr(wr, 'detail', '') or "", _lab_cfg_nosql, step, es)
+                        if not _fb:
+                            break
+                        _nosql_dockerfile  = _fb["dockerfile_body"]
+                        _nosql_extra_files = _fb["extra_files"]
+                        _nosql_ep          = _fb.get("endpoint") or _nosql_ep
+                        _nosql_cs          = _fb.get("confirm_string") or _nosql_cs
+                        _nosql_param       = _fb.get("inject_param") or _nosql_param
+                        _lab_cfg_nosql     = _fb
+                        wr_fb = verify_generic_nosql_injection(
+                            fr.local_path, _nosql_ep, _nosql_method,
+                            inject_param=_nosql_param, confirm_string=_nosql_cs,
+                            on_step=step, budget_s=budget_s,
+                            dockerfile_body=_nosql_dockerfile, extra_files=_nosql_extra_files)
+                        wr = wr_fb
+                        if wr_fb.verified:
+                            break
+                    if not wr.verified:
+                        _escalate_to_analyst(inv, getattr(wr, 'detail', '') or "", _lab_cfg_nosql, es)
+                _apply_wpverify_result(inv, wr, es, llm)
+            # Deserialization genérico (node-serialize IIFE / Python pickle)
+            elif (not plugin_dir and fr.local_path and
+                  inv.vuln_class in ("deserialization", "insecure-deserialization",
+                                     "unsafe-deserialization", "object-injection",
+                                     "pickle", "yaml-deserialization")):
+                from .genericverify import verify_generic_confirm_string
+                _dser_ep     = notes.get("endpoint") or "/api/deserialize"
+                _dser_method = notes.get("http_method") or "POST"
+                _dser_cs     = notes.get("confirm_string") or ""
+                step(("intentando verificacion DINAMICA GENERICA -- Deserialization "
+                      "(node-serialize IIFE / pickle)..." if es else
+                      "attempting GENERIC DYNAMIC verification -- Deserialization "
+                      "(node-serialize IIFE / pickle)..."))
+                _dser_dockerfile  = notes.get("dockerfile_body") or ""
+                _dser_extra_files = notes.get("extra_files") or None
+                _scf_dser = False
+                if not _dser_dockerfile and llm is not None and not _dser_cs:
+                    _scf = _scaffold_llm_lab_for_class(
+                        llm, str(fr.local_path), notes, inv.cve_id, "deserialization", step, es)
+                    if _scf:
+                        _dser_dockerfile  = _scf["dockerfile_body"]
+                        _dser_extra_files = _scf["extra_files"]
+                        _dser_ep          = _scf.get("endpoint") or _dser_ep
+                        _dser_cs          = _scf.get("confirm_string") or _dser_cs
+                        _scf_dser         = True
+                if _dser_cs:
+                    wr = verify_generic_confirm_string(
+                        fr.local_path, _dser_ep, _dser_method,
+                        confirm_string=_dser_cs,
+                        on_step=step, budget_s=budget_s,
+                        dockerfile_body=_dser_dockerfile, extra_files=_dser_extra_files)
+                    if _scf_dser and not wr.verified:
+                        _lab_cfg_dser = {
+                            "dockerfile_body": _dser_dockerfile, "extra_files": _dser_extra_files,
+                            "endpoint": _dser_ep, "confirm_string": _dser_cs, "parameters": {},
+                        }
+                        for _fb_i in range(2):
+                            _fb = _lab_feedback_for_class(
+                                llm, getattr(wr, 'detail', '') or "", _lab_cfg_dser, step, es)
+                            if not _fb:
+                                break
+                            _dser_dockerfile  = _fb["dockerfile_body"]
+                            _dser_extra_files = _fb["extra_files"]
+                            _dser_ep          = _fb.get("endpoint") or _dser_ep
+                            _dser_cs          = _fb.get("confirm_string") or _dser_cs
+                            _lab_cfg_dser     = _fb
+                            wr_fb = verify_generic_confirm_string(
+                                fr.local_path, _dser_ep, _dser_method,
+                                confirm_string=_dser_cs,
+                                on_step=step, budget_s=budget_s,
+                                dockerfile_body=_dser_dockerfile, extra_files=_dser_extra_files)
+                            wr = wr_fb
+                            if wr_fb.verified:
+                                break
+                        if not wr.verified:
+                            _escalate_to_analyst(inv, getattr(wr, 'detail', '') or "",
+                                                 _lab_cfg_dser, es)
+                    _apply_wpverify_result(inv, wr, es, llm)
+                else:
+                    inv.blockers.append(("deserialization: se necesita confirm_string o "
+                                         "endpoint de RCE para verificar — pasa en JSON" if es else
+                                         "deserialization: confirm_string or RCE endpoint needed "
+                                         "to verify — supply in CVE JSON"))
+            # Race condition / TOCTOU
+            elif (not plugin_dir and fr.local_path and
+                  inv.vuln_class in ("race-condition", "toctou", "race",
+                                     "time-of-check-time-of-use", "concurrent-request")):
+                from .genericverify import verify_generic_confirm_string
+                _race_ep     = notes.get("endpoint") or "/api/redeem"
+                _race_method = notes.get("http_method") or "POST"
+                _race_cs     = notes.get("confirm_string") or ""
+                step(("intentando verificacion DINAMICA GENERICA -- Race Condition "
+                      "(TOCTOU ventana de concurrencia)..." if es else
+                      "attempting GENERIC DYNAMIC verification -- Race Condition "
+                      "(TOCTOU concurrency window)..."))
+                _race_dockerfile  = notes.get("dockerfile_body") or ""
+                _race_extra_files = notes.get("extra_files") or None
+                _scf_race = False
+                if not _race_dockerfile and llm is not None:
+                    _scf = _scaffold_llm_lab_for_class(
+                        llm, str(fr.local_path), notes, inv.cve_id, "race-condition", step, es)
+                    if _scf:
+                        _race_dockerfile  = _scf["dockerfile_body"]
+                        _race_extra_files = _scf["extra_files"]
+                        _race_ep          = _scf.get("endpoint") or _race_ep
+                        _race_cs          = _scf.get("confirm_string") or _race_cs
+                        _scf_race         = True
+                if _race_cs or _scf_race:
+                    wr = verify_generic_confirm_string(
+                        fr.local_path, _race_ep, _race_method,
+                        confirm_string=_race_cs,
+                        on_step=step, budget_s=budget_s,
+                        dockerfile_body=_race_dockerfile, extra_files=_race_extra_files)
+                    if _scf_race and not wr.verified:
+                        _lab_cfg_race = {
+                            "dockerfile_body": _race_dockerfile, "extra_files": _race_extra_files,
+                            "endpoint": _race_ep, "confirm_string": _race_cs, "parameters": {},
+                        }
+                        for _fb_i in range(2):
+                            _fb = _lab_feedback_for_class(
+                                llm, getattr(wr, 'detail', '') or "", _lab_cfg_race, step, es)
+                            if not _fb:
+                                break
+                            _race_dockerfile  = _fb["dockerfile_body"]
+                            _race_extra_files = _fb["extra_files"]
+                            _race_ep          = _fb.get("endpoint") or _race_ep
+                            _race_cs          = _fb.get("confirm_string") or _race_cs
+                            _lab_cfg_race     = _fb
+                            wr_fb = verify_generic_confirm_string(
+                                fr.local_path, _race_ep, _race_method,
+                                confirm_string=_race_cs,
+                                on_step=step, budget_s=budget_s,
+                                dockerfile_body=_race_dockerfile, extra_files=_race_extra_files)
+                            wr = wr_fb
+                            if wr_fb.verified:
+                                break
+                        if not wr.verified:
+                            _escalate_to_analyst(inv, getattr(wr, 'detail', '') or "",
+                                                 _lab_cfg_race, es)
+                    _apply_wpverify_result(inv, wr, es, llm)
+                else:
+                    inv.blockers.append(("race-condition: se necesita confirm_string del "
+                                         "estado explotado para verificar" if es else
+                                         "race-condition: confirm_string of exploited state "
+                                         "needed to verify"))
+            # Path confusion / middleware bypass (req.url vs req.path)
+            elif (not plugin_dir and fr.local_path and
+                  inv.vuln_class in ("path-confusion", "middleware-bypass",
+                                     "semicolon-bypass", "path-parameter-bypass",
+                                     "path-override")):
+                from .genericverify import verify_generic_header_bypass
+                _pconf_ep     = notes.get("endpoint") or "/admin/secret"
+                _pconf_method = notes.get("http_method") or "GET"
+                _pconf_cs     = notes.get("confirm_string") or ""
+                _pconf_bphdr  = notes.get("bypass_header") or "X-Forwarded-For"
+                _pconf_bpval  = notes.get("bypass_value") or "127.0.0.1"
+                _pconf_bpurl  = notes.get("bypass_url") or ""
+                step(("intentando verificacion DINAMICA GENERICA -- Path Confusion "
+                      "(middleware bypass via req.url)..." if es else
+                      "attempting GENERIC DYNAMIC verification -- Path Confusion "
+                      "(middleware bypass via req.url)..."))
+                _pconf_dockerfile  = notes.get("dockerfile_body") or ""
+                _pconf_extra_files = notes.get("extra_files") or None
+                _scf_pconf = False
+                if not _pconf_dockerfile and llm is not None:
+                    _scf = _scaffold_llm_lab_for_class(
+                        llm, str(fr.local_path), notes, inv.cve_id, "path-confusion", step, es)
+                    if _scf:
+                        _pconf_dockerfile  = _scf["dockerfile_body"]
+                        _pconf_extra_files = _scf["extra_files"]
+                        _pconf_ep          = _scf.get("endpoint") or _pconf_ep
+                        _pconf_cs          = _scf.get("confirm_string") or _pconf_cs
+                        _scf_pconf         = True
+                wr = verify_generic_header_bypass(
+                    fr.local_path, _pconf_ep, _pconf_method,
+                    bypass_header=_pconf_bphdr, bypass_value=_pconf_bpval,
+                    bypass_url=_pconf_bpurl, confirm_string=_pconf_cs,
+                    on_step=step, budget_s=budget_s,
+                    dockerfile_body=_pconf_dockerfile, extra_files=_pconf_extra_files)
+                if _scf_pconf and not wr.verified:
+                    _lab_cfg_pconf = {
+                        "dockerfile_body": _pconf_dockerfile, "extra_files": _pconf_extra_files,
+                        "endpoint": _pconf_ep, "confirm_string": _pconf_cs, "parameters": {},
+                    }
+                    for _fb_i in range(2):
+                        _fb = _lab_feedback_for_class(
+                            llm, getattr(wr, 'detail', '') or "", _lab_cfg_pconf, step, es)
+                        if not _fb:
+                            break
+                        _pconf_dockerfile  = _fb["dockerfile_body"]
+                        _pconf_extra_files = _fb["extra_files"]
+                        _pconf_ep          = _fb.get("endpoint") or _pconf_ep
+                        _pconf_cs          = _fb.get("confirm_string") or _pconf_cs
+                        _lab_cfg_pconf     = _fb
+                        wr_fb = verify_generic_header_bypass(
+                            fr.local_path, _pconf_ep, _pconf_method,
+                            bypass_header=_pconf_bphdr, bypass_value=_pconf_bpval,
+                            bypass_url=_pconf_bpurl, confirm_string=_pconf_cs,
+                            on_step=step, budget_s=budget_s,
+                            dockerfile_body=_pconf_dockerfile, extra_files=_pconf_extra_files)
+                        wr = wr_fb
+                        if wr_fb.verified:
+                            break
+                    if not wr.verified:
+                        _escalate_to_analyst(inv, getattr(wr, 'detail', '') or "",
+                                             _lab_cfg_pconf, es)
+                _apply_wpverify_result(inv, wr, es, llm)
+            # Business logic (invariant violations, negative transfer, coupon abuse)
+            elif (not plugin_dir and fr.local_path and
+                  inv.vuln_class in ("business-logic", "logic-flaw", "logic-bypass",
+                                     "insufficient-validation", "workflow-bypass",
+                                     "quota-bypass")):
+                from .genericverify import verify_generic_confirm_string
+                _biz_ep     = notes.get("endpoint") or "/api/transfer"
+                _biz_method = notes.get("http_method") or "POST"
+                _biz_cs     = notes.get("confirm_string") or ""
+                step(("intentando verificacion DINAMICA GENERICA -- Business Logic "
+                      "(invariante no validado)..." if es else
+                      "attempting GENERIC DYNAMIC verification -- Business Logic "
+                      "(invariant not validated)..."))
+                _biz_dockerfile  = notes.get("dockerfile_body") or ""
+                _biz_extra_files = notes.get("extra_files") or None
+                _scf_biz = False
+                if not _biz_dockerfile and llm is not None:
+                    _scf = _scaffold_llm_lab_for_class(
+                        llm, str(fr.local_path), notes, inv.cve_id, "business-logic", step, es)
+                    if _scf:
+                        _biz_dockerfile  = _scf["dockerfile_body"]
+                        _biz_extra_files = _scf["extra_files"]
+                        _biz_ep          = _scf.get("endpoint") or _biz_ep
+                        _biz_cs          = _scf.get("confirm_string") or _biz_cs
+                        _scf_biz         = True
+                if _biz_cs or _scf_biz:
+                    wr = verify_generic_confirm_string(
+                        fr.local_path, _biz_ep, _biz_method,
+                        confirm_string=_biz_cs,
+                        on_step=step, budget_s=budget_s,
+                        dockerfile_body=_biz_dockerfile, extra_files=_biz_extra_files)
+                    if _scf_biz and not wr.verified:
+                        _lab_cfg_biz = {
+                            "dockerfile_body": _biz_dockerfile, "extra_files": _biz_extra_files,
+                            "endpoint": _biz_ep, "confirm_string": _biz_cs, "parameters": {},
+                        }
+                        for _fb_i in range(2):
+                            _fb = _lab_feedback_for_class(
+                                llm, getattr(wr, 'detail', '') or "", _lab_cfg_biz, step, es)
+                            if not _fb:
+                                break
+                            _biz_dockerfile  = _fb["dockerfile_body"]
+                            _biz_extra_files = _fb["extra_files"]
+                            _biz_ep          = _fb.get("endpoint") or _biz_ep
+                            _biz_cs          = _fb.get("confirm_string") or _biz_cs
+                            _lab_cfg_biz     = _fb
+                            wr_fb = verify_generic_confirm_string(
+                                fr.local_path, _biz_ep, _biz_method,
+                                confirm_string=_biz_cs,
+                                on_step=step, budget_s=budget_s,
+                                dockerfile_body=_biz_dockerfile, extra_files=_biz_extra_files)
+                            wr = wr_fb
+                            if wr_fb.verified:
+                                break
+                        if not wr.verified:
+                            _escalate_to_analyst(inv, getattr(wr, 'detail', '') or "",
+                                                 _lab_cfg_biz, es)
+                    _apply_wpverify_result(inv, wr, es, llm)
+                else:
+                    inv.blockers.append(("business-logic: se necesita confirm_string del "
+                                         "estado explotado para verificar" if es else
+                                         "business-logic: confirm_string of exploited state "
+                                         "needed to verify"))
         else:
             step(f"no se pudo obtener el codigo: {fr.note}" if es else
                  f"could not fetch the source: {fr.note}")
@@ -12187,6 +12753,31 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
             notes = inv.llm_notes  # re-bind after dict replacement
             step(("hechos del analista aplicados: " if es else "analyst-supplied facts applied: ")
                  + ", ".join(f"{k}={v}" for k, v in given.items()))
+
+    # 2c) CWE-based auto-classification — llena vuln_class si el LLM no lo hizo.
+    # CWE IDs son mas fiables que keyword matching en descripcion libre (menos ambiguo).
+    # Solo actua si el LLM no dio vuln_class O dio algo vago ("rce", "unknown").
+    _VAGUE_CLASSES = {"rce", "remote-code-execution", "unknown", "", None}
+    _llm_vc_raw = inv.llm_notes.get("vuln_class", "")
+    if _llm_vc_raw in _VAGUE_CLASSES:
+        _cwe_ids = getattr(info, "cwe_ids", None) or []
+        _auto_vc = _cwe_to_vuln_class(_cwe_ids)
+        if _auto_vc:
+            inv.llm_notes["vuln_class"] = _auto_vc
+            step((f"[AUTO-CWE] vuln_class inferida de CWE {_cwe_ids}: {_auto_vc}" if es else
+                  f"[AUTO-CWE] vuln_class inferred from CWE {_cwe_ids}: {_auto_vc}"))
+        else:
+            # Fallback: keyword match en descripcion (confidence < CWE, solo si no hay CWE)
+            _desc_match = _classify_cve_from_description(inv.description)
+            if _desc_match:
+                _auto_vc_desc, _auto_conf = _desc_match
+                inv.llm_notes["vuln_class"] = _auto_vc_desc
+                inv.llm_notes["_vuln_class_confidence"] = _auto_conf
+                step((f"[AUTO-DESC] vuln_class inferida de descripcion (conf={_auto_conf:.0%}): "
+                      f"{_auto_vc_desc}" if es else
+                      f"[AUTO-DESC] vuln_class inferred from description "
+                      f"(conf={_auto_conf:.0%}): {_auto_vc_desc}"))
+    notes = inv.llm_notes
 
     # 3) clasifica + desarrolla la plantilla (grounded, deterministico)
     # El LLM analizo la causa raiz especifica (p.ej. "path-traversal"); la descripcion puede
