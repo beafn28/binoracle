@@ -2234,16 +2234,41 @@ def _validate_dockerfile_safety(dockerfile_body: str, step=None) -> List[str]:
 # Cuando se agotan las iteraciones del feedback loop, documenta el estado
 # terminal para que el analista pueda intervenir manualmente.
 # ═══════════════════════════════════════════════════════════════════════════════
-def _escalate_to_analyst(inv, fail_reason: str, lab_config: dict, es: bool) -> None:
-    """Marca la investigacion como NEEDS_ANALYST y documenta el motivo."""
+def _escalate_to_analyst(inv, fail_reason: str, lab_config: dict, es: bool,
+                          progress_level: str = "unknown") -> None:
+    """Marca la investigacion como NEEDS_ANALYST y documenta el motivo.
+
+    progress_level indica hasta donde llegó el pipeline:
+      not_started | build_ok | start_ok | request_sent | confirm_missing
+    """
+    _PROGRESS_ES = {
+        "not_started":    "ni siquiera inició el build Docker",
+        "build_ok":       "Docker build OK pero el contenedor no arrancó",
+        "start_ok":       "contenedor arrancado pero sin respuesta HTTP",
+        "request_sent":   "petición HTTP enviada pero confirm_string ausente en la respuesta",
+        "confirm_missing": "respuesta recibida — revisar confirm_string o payload",
+        "unknown":        "estado desconocido",
+    }
+    _PROGRESS_EN = {
+        "not_started":    "Docker build did not even start",
+        "build_ok":       "Docker build OK but container did not start",
+        "start_ok":       "container started but no HTTP response",
+        "request_sent":   "HTTP request sent but confirm_string not in response",
+        "confirm_missing": "response received — review confirm_string or payload",
+        "unknown":        "unknown stage",
+    }
+    _prog_desc = (_PROGRESS_ES if es else _PROGRESS_EN).get(
+        progress_level, progress_level)
     inv.blockers.append((
-        f"[NEEDS_ANALYST] Lab autonomo agotó {2} iteraciones sin verificar. "
+        f"[NEEDS_ANALYST] Lab autonomo agotó iteraciones sin verificar "
+        f"(progreso: {_prog_desc}). "
         f"Ultimo error: {fail_reason[:300]}. "
         f"Endpoint ensayado: {lab_config.get('endpoint', 'desconocido')}. "
         f"Accion: revisar el Dockerfile/servidor generado manualmente o "
         f"proporcionar dockerfile_body/extra_files en el JSON del CVE."
         if es else
-        f"[NEEDS_ANALYST] Autonomous lab exhausted {2} iterations without verifying. "
+        f"[NEEDS_ANALYST] Autonomous lab exhausted iterations without verifying "
+        f"(progress: {_prog_desc}). "
         f"Last error: {fail_reason[:300]}. "
         f"Endpoint tried: {lab_config.get('endpoint', 'unknown')}. "
         f"Action: review generated Dockerfile/server manually or "
@@ -7961,15 +7986,25 @@ _SCAFFOLD_SYS_FOR_CLASS = {
     "insufficient-validation":     "_LAB_SCAFFOLD_BUSINESS_LOGIC_SYS",
 }
 
+# Cache de scaffolds verificados: (tech, vuln_class) → lab_config dict.
+# Permite reutilizar el Dockerfile/server_code de un lab que funcionó antes
+# como punto de partida para CVEs del mismo stack y clase.
+_scaffold_cache: dict = {}
+
 
 def _scaffold_llm_lab_for_class(llm, source_dir: str, notes: dict, cve_id: str,
-                                 vuln_class: str, step, es: bool) -> Optional[dict]:
+                                 vuln_class: str, step, es: bool,
+                                 patch_diff: Optional[dict] = None) -> Optional[dict]:
     """Scaffold automatico para cualquier clase de vulnerabilidad excepto SQLi.
 
     Lee el codigo fuente, detecta el stack, llama al sistema de prompts correcto
     segun la clase (path-traversal, SSRF, CMDI, SSTI, missing-auth...) y genera
     un servidor + Dockerfile minimal. Devuelve un dict con todas las claves
     posibles (las no relevantes para la clase quedan en ""), o None si falla.
+
+    patch_diff (opcional): dict con changed_files, vuln_functions, fix_type —
+    si está disponible, Qwen lo usa para generar un server.js que ejercita
+    el código path real del CVE en vez de uno genérico.
     """
     _SYS_MAP = {
         "_LAB_SCAFFOLD_PATH_TRAVERSAL_SYS":      _LAB_SCAFFOLD_PATH_TRAVERSAL_SYS,
@@ -8007,6 +8042,10 @@ def _scaffold_llm_lab_for_class(llm, source_dir: str, notes: dict, cve_id: str,
     confirm = notes.get("confirm_string") or f"binoracle-{vuln_class}-secret-{cve_id}"
     endpoint = notes.get("endpoint") or "/api/items"
 
+    # Comprobar cache (tech, vuln_class) — scaffold verificado previo como contexto
+    _cache_key = (tech, vuln_class)
+    _cached_scf = _scaffold_cache.get(_cache_key)
+
     step(("razonando lab autonomamente desde codigo fuente (Qwen)..." if es
           else "auto-reasoning lab from source code (Qwen)..."))
 
@@ -8018,6 +8057,28 @@ def _scaffold_llm_lab_for_class(llm, source_dir: str, notes: dict, cve_id: str,
         prompt += f"\nCodigo vulnerable (replica este patron):\n```\n{snippet[:2500]}\n```\n"
     else:
         prompt += "\nNo se encontro codigo fuente; genera un servidor generico para esta clase.\n"
+    # Inyectar info del parche si está disponible — Qwen usa las funciones cambiadas
+    if patch_diff and patch_diff.get("ok"):
+        _vuln_fns = patch_diff.get("vuln_functions", [])
+        _files    = patch_diff.get("changed_files", [])
+        _fix_type = patch_diff.get("fix_type", "")
+        prompt += (
+            f"\nINFO DEL PARCHE (usa esto para ejercitar el codigo path real):\n"
+            f"- Funciones vulnerables: {_vuln_fns}\n"
+            f"- Archivos modificados: {_files}\n"
+            f"- Tipo de fix: {_fix_type}\n"
+        )
+    # Scaffold previo verificado como ejemplo de referencia
+    if _cached_scf:
+        _prev_df = (_cached_scf.get("dockerfile_body") or "")[:300]
+        _prev_srv = next(iter((_cached_scf.get("extra_files") or {}).values()), "")[:400]
+        if _prev_df or _prev_srv:
+            prompt += (
+                f"\nEJEMPLO PREVIO VERIFICADO (mismo stack={tech}, clase={vuln_class}):\n"
+                f"Dockerfile de referencia:\n```\n{_prev_df}\n```\n"
+                f"Servidor de referencia (adapta el confirm_string y endpoint):\n"
+                f"```\n{_prev_srv}\n```\n"
+            )
 
     try:
         raw  = llm.chat([Message("system", sys_prompt),
@@ -8046,7 +8107,7 @@ def _scaffold_llm_lab_for_class(llm, source_dir: str, notes: dict, cve_id: str,
     if safety_warns:
         step(f"[CONTAINER-SAFETY] {len(safety_warns)} advertencia(s) en Dockerfile generado")
 
-    return {
+    _result = {
         "dockerfile_body": dockerfile,
         "extra_files":     {srv_file: server_code},
         "endpoint":        data.get("endpoint") or endpoint,
@@ -8075,6 +8136,61 @@ def _scaffold_llm_lab_for_class(llm, source_dir: str, notes: dict, cve_id: str,
         "false_value":     data.get("false_value") or "",
         "confirm_field":   data.get("confirm_field") or data.get("confirm_string") or confirm,
     }
+    # Almacenar en cache por (tech, vuln_class) para reutilizar en CVEs futuros del mismo stack
+    _scaffold_cache[_cache_key] = _result
+    return _result
+
+
+def _infer_progress_level(detail: str) -> str:
+    """Infiere hasta donde llegó el pipeline a partir del mensaje de error."""
+    d = (detail or "").lower()
+    if any(x in d for x in ("confirm_string", "not in body", "not found in response",
+                             "ausente en la respuesta", "confirm not")):
+        return "confirm_missing"
+    if any(x in d for x in ("status=", "respuesta:", "http", "request sent", "peticion")):
+        return "request_sent"
+    if any(x in d for x in ("contenedor arrancado", "container started", "listening",
+                             "port", "puerto", "bind")):
+        return "start_ok"
+    if any(x in d for x in ("build ok", "image built", "imagen construida", "successfully built")):
+        return "build_ok"
+    return "not_started"
+
+
+def _feedback_loop(llm, verifier_fn, initial_wr, lab_cfg: dict,
+                   step, es: bool, max_rounds: int = 4) -> tuple:
+    """Loop de feedback adaptativo: continúa mientras haya progreso real.
+
+    - Si el error cambia de categoría entre iteraciones → hay progreso → sigue.
+    - Si el error se repite (misma categoría) → atascado → escala antes.
+    - Máximo max_rounds iteraciones en total (default=4 para seguir corrigiendo).
+
+    Devuelve (wr_final, lab_cfg_final, progress_level).
+    """
+    wr  = initial_wr
+    cfg = dict(lab_cfg)
+    _prev_cat = _classify_pipeline_error(getattr(wr, 'detail', '')).get("category", "")
+    _progress_level = _infer_progress_level(getattr(wr, 'detail', ''))
+
+    for _i in range(max_rounds):
+        _fb = _lab_feedback_for_class(llm, getattr(wr, 'detail', '') or "", cfg, step, es)
+        if not _fb:
+            break
+        cfg = _fb
+        wr  = verifier_fn(cfg)
+        _progress_level = _infer_progress_level(getattr(wr, 'detail', ''))
+        if wr.verified:
+            break
+        _curr_cat = _classify_pipeline_error(getattr(wr, 'detail', '')).get("category", "")
+        if _curr_cat == _prev_cat and _curr_cat not in ("", "unknown"):
+            step(("feedback atascado en la misma categoria de error "
+                  f"({_curr_cat}) — escalando a analista" if es else
+                  f"feedback stuck on same error category ({_curr_cat}) "
+                  "— escalating to analyst"))
+            break
+        _prev_cat = _curr_cat
+
+    return wr, cfg, _progress_level
 
 
 def _lab_feedback_for_class(llm, fail_reason: str, lab_config: dict,
@@ -9877,7 +9993,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _scf_pt = False
                 if not _pt_dockerfile and llm is not None:
                     _scf = _scaffold_llm_lab_for_class(
-                        llm, str(fr.local_path), notes, inv.cve_id, "path-traversal", step, es)
+                        llm, str(fr.local_path), notes, inv.cve_id, "path-traversal", step, es,
+                            patch_diff=inv.llm_notes.get("patch_diff_analysis"))
                     if _scf:
                         _pt_dockerfile   = _scf["dockerfile_body"]
                         _pt_extra_files  = _scf["extra_files"]
@@ -9906,7 +10023,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         "url_suffix":      _pt_url_suffix,
                         "query_suffix":    _pt_query_suffix,
                     }
-                    for _fb_i in range(2):
+                    _pt_prev_err_cat = ""
+                    for _fb_i in range(4):
                         _fb = _lab_feedback_for_class(
                             llm, getattr(wr, 'detail', '') or "", _lab_cfg_pt, step, es)
                         if not _fb:
@@ -9929,6 +10047,11 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         wr = wr_fb
                         if wr_fb.verified:
                             break
+                        _pt_curr_cat = _classify_pipeline_error(
+                            getattr(wr_fb, 'detail', '')).get("category", "")
+                        if _pt_curr_cat == _pt_prev_err_cat and _pt_curr_cat not in ("", "unknown"):
+                            break
+                        _pt_prev_err_cat = _pt_curr_cat
                 # aprendizaje y reintento, version GENERICA (cualquier tecnologia, no solo
                 # WordPress) -- mismo bucle acotado que el SQLi de WordPress: el LLM lee el
                 # cuerpo real del primer intento y solo sugiere un reintento con una pista
@@ -10077,7 +10200,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 if not _auth_dockerfile and not _auth_bypass_hdr and not _auth_bypass_url and llm is not None:
                     _scf = _scaffold_llm_lab_for_class(
                         llm, str(fr.local_path), notes, inv.cve_id,
-                        inv.vuln_class or "missing-authorization", step, es)
+                        inv.vuln_class or "missing-authorization", step, es,
+                        patch_diff=inv.llm_notes.get("patch_diff_analysis"))
                     if _scf:
                         _auth_dockerfile  = _scf["dockerfile_body"]
                         _auth_extra_files = _scf["extra_files"]
@@ -10099,7 +10223,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         "endpoint": _auth_ep, "confirm_string": _auth_confirm,
                         "parameters": {},
                     }
-                    for _fb_i in range(2):
+                    _auth_prev_err_cat = ""
+                    for _fb_i in range(4):
                         _fb = _lab_feedback_for_class(
                             llm, getattr(wr, 'detail', '') or "", _lab_cfg_auth, step, es)
                         if not _fb:
@@ -10121,6 +10246,11 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         wr = wr_fb
                         if wr_fb.verified:
                             break
+                        _auth_curr_cat = _classify_pipeline_error(
+                            getattr(wr_fb, 'detail', '')).get("category", "")
+                        if _auth_curr_cat == _auth_prev_err_cat and _auth_curr_cat not in ("", "unknown"):
+                            break
+                        _auth_prev_err_cat = _auth_curr_cat
                 _apply_wpverify_result(inv, wr, es, llm)
             # mismo laboratorio efimero, para command injection en Drupal (cuarta clase de
             # Drupal, "poco a poco" -- ver drupalverify.py).
@@ -10278,7 +10408,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _scf_cmdi = False
                 if not _cmdi_dockerfile and llm is not None:
                     _scf = _scaffold_llm_lab_for_class(
-                        llm, str(fr.local_path), notes, inv.cve_id, "command-injection", step, es)
+                        llm, str(fr.local_path), notes, inv.cve_id, "command-injection", step, es,
+                            patch_diff=inv.llm_notes.get("patch_diff_analysis"))
                     if _scf:
                         _cmdi_dockerfile  = _scf["dockerfile_body"]
                         _cmdi_extra_files = _scf["extra_files"]
@@ -10302,7 +10433,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         "parameters":      params if isinstance(params, dict) else {},
                         "cmd_param":       cmd_p or "",
                     }
-                    for _fb_i in range(2):
+                    _cmdi_prev_err_cat = ""
+                    for _fb_i in range(4):
                         _fb = _lab_feedback_for_class(
                             llm, getattr(wr, 'detail', '') or "", _lab_cfg_cmdi, step, es)
                         if not _fb:
@@ -10321,6 +10453,11 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         wr = wr_fb
                         if wr_fb.verified:
                             break
+                        _cmdi_curr_cat = _classify_pipeline_error(
+                            getattr(wr_fb, 'detail', '')).get("category", "")
+                        if _cmdi_curr_cat == _cmdi_prev_err_cat and _cmdi_curr_cat not in ("", "unknown"):
+                            break
+                        _cmdi_prev_err_cat = _cmdi_curr_cat
                 def _attempt_cmdi_generic(ep, pr):
                     return verify_generic_command_injection(
                         fr.local_path, ep, notes.get("http_method") or "GET", params,
@@ -10743,7 +10880,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         "confirm_string":  _sqli_cs,
                         "parameters":      params if isinstance(params, dict) else {},
                     }
-                    for _fb_i in range(2):
+                    _sqli_prev_err_cat = ""
+                    for _fb_i in range(4):
                         _fb = _lab_debug_feedback(
                             llm, getattr(wr, 'detail', '') or "",
                             _lab_cfg, step, es)
@@ -10769,8 +10907,14 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         wr = wr_fb
                         if wr_fb.verified:
                             break
+                        _sqli_curr_cat = _classify_pipeline_error(
+                            getattr(wr_fb, 'detail', '')).get("category", "")
+                        if _sqli_curr_cat == _sqli_prev_err_cat and _sqli_curr_cat not in ("", "unknown"):
+                            break
+                        _sqli_prev_err_cat = _sqli_curr_cat
                     if not wr.verified:
-                        _escalate_to_analyst(inv, getattr(wr, 'detail', '') or "", _lab_cfg, es)
+                        _escalate_to_analyst(inv, getattr(wr, 'detail', '') or "", _lab_cfg, es,
+                                             progress_level=_infer_progress_level(getattr(wr, 'detail', '')))
                 def _attempt_sqli_blind_generic(ep, pr):
                     _ep  = _genlab_ep    if _is_local_lab else ep
                     _pr  = _genlab_param if _is_local_lab else pr
@@ -10918,7 +11062,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _scf_ssrf = False
                 if not _ssrf_dockerfile and llm is not None:
                     _scf = _scaffold_llm_lab_for_class(
-                        llm, str(fr.local_path), notes, inv.cve_id, "ssrf", step, es)
+                        llm, str(fr.local_path), notes, inv.cve_id, "ssrf", step, es,
+                            patch_diff=inv.llm_notes.get("patch_diff_analysis"))
                     if _scf:
                         _ssrf_dockerfile  = _scf["dockerfile_body"]
                         _ssrf_extra_files = _scf["extra_files"]
@@ -10942,7 +11087,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         "parameters":      params if isinstance(params, dict) else {},
                         "url_param":       url_p or "",
                     }
-                    for _fb_i in range(2):
+                    _ssrf_prev_err_cat = ""
+                    for _fb_i in range(4):
                         _fb = _lab_feedback_for_class(
                             llm, getattr(wr, 'detail', '') or "", _lab_cfg_ssrf, step, es)
                         if not _fb:
@@ -10961,6 +11107,11 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         wr = wr_fb
                         if wr_fb.verified:
                             break
+                        _ssrf_curr_cat = _classify_pipeline_error(
+                            getattr(wr_fb, 'detail', '')).get("category", "")
+                        if _ssrf_curr_cat == _ssrf_prev_err_cat and _ssrf_curr_cat not in ("", "unknown"):
+                            break
+                        _ssrf_prev_err_cat = _ssrf_curr_cat
                 def _attempt_ssrf_generic(ep, pr):
                     return verify_generic_ssrf(
                         fr.local_path, ep, notes.get("http_method") or "GET", params,
@@ -11196,7 +11347,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _scf_xss = False
                 if not _xss_dockerfile and llm is not None:
                     _scf = _scaffold_llm_lab_for_class(
-                        llm, str(fr.local_path), notes, inv.cve_id, "xss", step, es)
+                        llm, str(fr.local_path), notes, inv.cve_id, "xss", step, es,
+                            patch_diff=inv.llm_notes.get("patch_diff_analysis"))
                     if _scf:
                         _xss_dockerfile  = _scf["dockerfile_body"]
                         _xss_extra_files = _scf["extra_files"]
@@ -11216,7 +11368,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         "endpoint": _xss_ep, "confirm_string": notes.get("confirm_string") or "",
                         "parameters": params if isinstance(params, dict) else {},
                     }
-                    for _fb_i in range(2):
+                    _xss_prev_err_cat = ""
+                    for _fb_i in range(4):
                         _fb = _lab_feedback_for_class(
                             llm, getattr(wr, 'detail', '') or "", _lab_cfg_xss, step, es)
                         if not _fb:
@@ -11234,6 +11387,11 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         wr = wr_fb
                         if wr_fb.verified:
                             break
+                        _xss_curr_cat = _classify_pipeline_error(
+                            getattr(wr_fb, 'detail', '')).get("category", "")
+                        if _xss_curr_cat == _xss_prev_err_cat and _xss_curr_cat not in ("", "unknown"):
+                            break
+                        _xss_prev_err_cat = _xss_curr_cat
                 def _attempt_xss_generic(ep, pr):
                     return verify_generic_xss(
                         fr.local_path, ep, notes.get("http_method") or "GET", params,
@@ -11322,7 +11480,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _scf_ssti = False
                 if not _ssti_dockerfile and llm is not None:
                     _scf = _scaffold_llm_lab_for_class(
-                        llm, str(fr.local_path), notes, inv.cve_id, "ssti", step, es)
+                        llm, str(fr.local_path), notes, inv.cve_id, "ssti", step, es,
+                            patch_diff=inv.llm_notes.get("patch_diff_analysis"))
                     if _scf:
                         _ssti_dockerfile  = _scf["dockerfile_body"]
                         _ssti_extra_files = _scf["extra_files"]
@@ -11346,7 +11505,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         "parameters":      params if isinstance(params, dict) else {},
                         "ssti_param":      ssti_p or "",
                     }
-                    for _fb_i in range(2):
+                    _ssti_prev_err_cat = ""
+                    for _fb_i in range(4):
                         _fb = _lab_feedback_for_class(
                             llm, getattr(wr, 'detail', '') or "", _lab_cfg_ssti, step, es)
                         if not _fb:
@@ -11365,6 +11525,11 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         wr = wr_fb
                         if wr_fb.verified:
                             break
+                        _ssti_curr_cat = _classify_pipeline_error(
+                            getattr(wr_fb, 'detail', '')).get("category", "")
+                        if _ssti_curr_cat == _ssti_prev_err_cat and _ssti_curr_cat not in ("", "unknown"):
+                            break
+                        _ssti_prev_err_cat = _ssti_curr_cat
                 def _attempt_ssti_generic(ep, pr):
                     return verify_generic_ssti(
                         fr.local_path, ep, notes.get("http_method") or "GET", params,
@@ -11450,7 +11615,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _scf_xxe = False
                 if not _xxe_dockerfile and llm is not None:
                     _scf = _scaffold_llm_lab_for_class(
-                        llm, str(fr.local_path), notes, inv.cve_id, "xxe", step, es)
+                        llm, str(fr.local_path), notes, inv.cve_id, "xxe", step, es,
+                            patch_diff=inv.llm_notes.get("patch_diff_analysis"))
                     if _scf:
                         _xxe_dockerfile  = _scf["dockerfile_body"]
                         _xxe_extra_files = _scf["extra_files"]
@@ -11468,7 +11634,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         "endpoint": _xxe_ep, "confirm_string": notes.get("confirm_string") or "",
                         "parameters": params if isinstance(params, dict) else {},
                     }
-                    for _fb_i in range(2):
+                    _xxe_prev_err_cat = ""
+                    for _fb_i in range(4):
                         _fb = _lab_feedback_for_class(
                             llm, getattr(wr, 'detail', '') or "", _lab_cfg_xxe, step, es)
                         if not _fb:
@@ -11484,6 +11651,11 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         wr = wr_fb
                         if wr_fb.verified:
                             break
+                        _xxe_curr_cat = _classify_pipeline_error(
+                            getattr(wr_fb, 'detail', '')).get("category", "")
+                        if _xxe_curr_cat == _xxe_prev_err_cat and _xxe_curr_cat not in ("", "unknown"):
+                            break
+                        _xxe_prev_err_cat = _xxe_curr_cat
                 def _attempt_xxe_generic(ep, pr):
                     return verify_generic_xxe(
                         fr.local_path, ep, notes.get("http_method") or "GET", params,
@@ -11569,7 +11741,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _scf_or = False
                 if not _or_dockerfile and llm is not None:
                     _scf = _scaffold_llm_lab_for_class(
-                        llm, str(fr.local_path), notes, inv.cve_id, "open-redirect", step, es)
+                        llm, str(fr.local_path), notes, inv.cve_id, "open-redirect", step, es,
+                            patch_diff=inv.llm_notes.get("patch_diff_analysis"))
                     if _scf:
                         _or_dockerfile  = _scf["dockerfile_body"]
                         _or_extra_files = _scf["extra_files"]
@@ -11590,7 +11763,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         "endpoint": _or_ep, "confirm_string": notes.get("confirm_string") or "",
                         "parameters": params if isinstance(params, dict) else {},
                     }
-                    for _fb_i in range(2):
+                    _or_prev_err_cat = ""
+                    for _fb_i in range(4):
                         _fb = _lab_feedback_for_class(
                             llm, getattr(wr, 'detail', '') or "", _lab_cfg_or, step, es)
                         if not _fb:
@@ -11607,6 +11781,11 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         wr = wr_fb
                         if wr_fb.verified:
                             break
+                        _or_curr_cat = _classify_pipeline_error(
+                            getattr(wr_fb, 'detail', '')).get("category", "")
+                        if _or_curr_cat == _or_prev_err_cat and _or_curr_cat not in ("", "unknown"):
+                            break
+                        _or_prev_err_cat = _or_curr_cat
                 def _attempt_or_generic(ep, pr):
                     return verify_generic_open_redirect(
                         fr.local_path, ep, notes.get("http_method") or "GET", params,
@@ -11751,7 +11930,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _scf_fu = False
                 if not _fu_dockerfile and llm is not None:
                     _scf = _scaffold_llm_lab_for_class(
-                        llm, str(fr.local_path), notes, inv.cve_id, "file-upload", step, es)
+                        llm, str(fr.local_path), notes, inv.cve_id, "file-upload", step, es,
+                            patch_diff=inv.llm_notes.get("patch_diff_analysis"))
                     if _scf:
                         _fu_dockerfile  = _scf["dockerfile_body"]
                         _fu_extra_files = _scf["extra_files"]
@@ -11771,7 +11951,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         "endpoint": _fu_ep, "confirm_string": notes.get("confirm_string") or "",
                         "parameters": params if isinstance(params, dict) else {},
                     }
-                    for _fb_i in range(2):
+                    _fu_prev_err_cat = ""
+                    for _fb_i in range(4):
                         _fb = _lab_feedback_for_class(
                             llm, getattr(wr, 'detail', '') or "", _lab_cfg_fu, step, es)
                         if not _fb:
@@ -11787,6 +11968,11 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         wr = wr_fb
                         if wr_fb.verified:
                             break
+                        _fu_curr_cat = _classify_pipeline_error(
+                            getattr(wr_fb, 'detail', '')).get("category", "")
+                        if _fu_curr_cat == _fu_prev_err_cat and _fu_curr_cat not in ("", "unknown"):
+                            break
+                        _fu_prev_err_cat = _fu_curr_cat
                 _apply_wpverify_result(inv, wr, es, llm)
             elif (is_drupal and fr.kind in ("drupal-module", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class == "csrf" and notes.get("endpoint")):
@@ -11960,7 +12146,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _scf_gql = False
                 if not _gql_dockerfile and llm is not None:
                     _scf = _scaffold_llm_lab_for_class(
-                        llm, str(fr.local_path), notes, inv.cve_id, "graphql", step, es)
+                        llm, str(fr.local_path), notes, inv.cve_id, "graphql", step, es,
+                            patch_diff=inv.llm_notes.get("patch_diff_analysis"))
                     if _scf:
                         _gql_dockerfile  = _scf["dockerfile_body"]
                         _gql_extra_files = _scf["extra_files"]
@@ -11980,7 +12167,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         "endpoint": gql_ep, "confirm_string": confirm_f,
                         "graphql_query": forbidden_q,
                     }
-                    for _fb_i in range(2):
+                    _gql_prev_err_cat = ""
+                    for _fb_i in range(4):
                         _fb = _lab_feedback_for_class(
                             llm, getattr(wr, 'detail', '') or "", _lab_cfg_gql, step, es)
                         if not _fb:
@@ -11996,6 +12184,11 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         wr = wr_fb
                         if wr_fb.verified:
                             break
+                        _gql_curr_cat = _classify_pipeline_error(
+                            getattr(wr_fb, 'detail', '')).get("category", "")
+                        if _gql_curr_cat == _gql_prev_err_cat and _gql_curr_cat not in ("", "unknown"):
+                            break
+                        _gql_prev_err_cat = _gql_curr_cat
                 _apply_wpverify_result(inv, wr, es, llm)
             # Prototype pollution (Node.js deepMerge vulnerable → contaminacion de Object.prototype)
             elif (not plugin_dir and fr.local_path and
@@ -12015,7 +12208,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _scf_pp = False
                 if not _pp_dockerfile and llm is not None:
                     _scf = _scaffold_llm_lab_for_class(
-                        llm, str(fr.local_path), notes, inv.cve_id, "prototype-pollution", step, es)
+                        llm, str(fr.local_path), notes, inv.cve_id, "prototype-pollution", step, es,
+                            patch_diff=inv.llm_notes.get("patch_diff_analysis"))
                     if _scf:
                         _pp_dockerfile  = _scf["dockerfile_body"]
                         _pp_extra_files = _scf["extra_files"]
@@ -12032,7 +12226,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         "endpoint": _pp_ep, "confirm_string": notes.get("confirm_string") or "",
                         "parameters": {},
                     }
-                    for _fb_i in range(2):
+                    _pp_prev_err_cat = ""
+                    for _fb_i in range(4):
                         _fb = _lab_feedback_for_class(
                             llm, getattr(wr, 'detail', '') or "", _lab_cfg_pp, step, es)
                         if not _fb:
@@ -12049,6 +12244,11 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         wr = wr_fb
                         if wr_fb.verified:
                             break
+                        _pp_curr_cat = _classify_pipeline_error(
+                            getattr(wr_fb, 'detail', '')).get("category", "")
+                        if _pp_curr_cat == _pp_prev_err_cat and _pp_curr_cat not in ("", "unknown"):
+                            break
+                        _pp_prev_err_cat = _pp_curr_cat
                 _apply_wpverify_result(inv, wr, es, llm)
             # Boolean oracle / data-leak: diferencia TRUE/FALSE en respuesta filtra datos privados
             elif (not plugin_dir and fr.local_path and
@@ -12074,7 +12274,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _scf_bool = False
                 if not _bool_dockerfile and llm is not None:
                     _scf = _scaffold_llm_lab_for_class(
-                        llm, str(fr.local_path), notes, inv.cve_id, "boolean-oracle", step, es)
+                        llm, str(fr.local_path), notes, inv.cve_id, "boolean-oracle", step, es,
+                            patch_diff=inv.llm_notes.get("patch_diff_analysis"))
                     if _scf:
                         _bool_dockerfile  = _scf["dockerfile_body"]
                         _bool_extra_files = _scf["extra_files"]
@@ -12100,7 +12301,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         "endpoint": bool_ep, "confirm_string": confirm_f or "",
                         "parameters": {"true_param": true_p, "false_param": false_p},
                     }
-                    for _fb_i in range(2):
+                    _bool_prev_err_cat = ""
+                    for _fb_i in range(4):
                         _fb = _lab_feedback_for_class(
                             llm, getattr(wr, 'detail', '') or "", _lab_cfg_bool, step, es)
                         if not _fb:
@@ -12118,8 +12320,14 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         wr = wr_fb
                         if wr_fb.verified:
                             break
+                        _bool_curr_cat = _classify_pipeline_error(
+                            getattr(wr_fb, 'detail', '')).get("category", "")
+                        if _bool_curr_cat == _bool_prev_err_cat and _bool_curr_cat not in ("", "unknown"):
+                            break
+                        _bool_prev_err_cat = _bool_curr_cat
                     if not wr.verified:
-                        _escalate_to_analyst(inv, getattr(wr, 'detail', '') or "", _lab_cfg_bool, es)
+                        _escalate_to_analyst(inv, getattr(wr, 'detail', '') or "", _lab_cfg_bool, es,
+                                                       progress_level=_infer_progress_level(getattr(wr, 'detail', '')))
                 _apply_wpverify_result(inv, wr, es, llm)
             # CORS misconfiguration: reflexion del Origin en ACAO + ACAC: true
             elif (not plugin_dir and fr.local_path and
@@ -12139,7 +12347,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _scf_cors = False
                 if not _cors_dockerfile and llm is not None:
                     _scf = _scaffold_llm_lab_for_class(
-                        llm, str(fr.local_path), notes, inv.cve_id, "cors", step, es)
+                        llm, str(fr.local_path), notes, inv.cve_id, "cors", step, es,
+                            patch_diff=inv.llm_notes.get("patch_diff_analysis"))
                     if _scf:
                         _cors_dockerfile  = _scf["dockerfile_body"]
                         _cors_extra_files = _scf["extra_files"]
@@ -12155,7 +12364,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         "endpoint": cors_ep, "confirm_string": notes.get("confirm_string") or "",
                         "parameters": {},
                     }
-                    for _fb_i in range(2):
+                    _cors_prev_err_cat = ""
+                    for _fb_i in range(4):
                         _fb = _lab_feedback_for_class(
                             llm, getattr(wr, 'detail', '') or "", _lab_cfg_cors, step, es)
                         if not _fb:
@@ -12171,6 +12381,11 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         wr = wr_fb
                         if wr_fb.verified:
                             break
+                        _cors_curr_cat = _classify_pipeline_error(
+                            getattr(wr_fb, 'detail', '')).get("category", "")
+                        if _cors_curr_cat == _cors_prev_err_cat and _cors_curr_cat not in ("", "unknown"):
+                            break
+                        _cors_prev_err_cat = _cors_curr_cat
                 _apply_wpverify_result(inv, wr, es, llm)
             # JWT bypass: alg:none + weak secret
             elif (not plugin_dir and fr.local_path and
@@ -12191,7 +12406,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _scf_jwt = False
                 if not _jwt_dockerfile and llm is not None:
                     _scf = _scaffold_llm_lab_for_class(
-                        llm, str(fr.local_path), notes, inv.cve_id, "jwt-bypass", step, es)
+                        llm, str(fr.local_path), notes, inv.cve_id, "jwt-bypass", step, es,
+                        patch_diff=inv.llm_notes.get("patch_diff_analysis"))
                     if _scf:
                         _jwt_dockerfile  = _scf["dockerfile_body"]
                         _jwt_extra_files = _scf["extra_files"]
@@ -12209,26 +12425,21 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         "endpoint": _jwt_ep, "confirm_string": _jwt_cs,
                         "parameters": {}, "weak_secret": _jwt_secret,
                     }
-                    for _fb_i in range(2):
-                        _fb = _lab_feedback_for_class(
-                            llm, getattr(wr, 'detail', '') or "", _lab_cfg_jwt, step, es)
-                        if not _fb:
-                            break
-                        _jwt_dockerfile  = _fb["dockerfile_body"]
-                        _jwt_extra_files = _fb["extra_files"]
-                        _jwt_ep          = _fb.get("endpoint") or _jwt_ep
-                        _jwt_cs          = _fb.get("confirm_string") or _jwt_cs
-                        _lab_cfg_jwt     = _fb
-                        wr_fb = verify_generic_jwt_bypass(
-                            fr.local_path, _jwt_ep, _jwt_method,
-                            confirm_string=_jwt_cs, weak_secret=_jwt_secret,
-                            on_step=step, budget_s=budget_s,
-                            dockerfile_body=_jwt_dockerfile, extra_files=_jwt_extra_files)
-                        wr = wr_fb
-                        if wr_fb.verified:
-                            break
+                    def _jwt_verifier(cfg):
+                        return verify_generic_jwt_bypass(
+                            fr.local_path,
+                            cfg.get("endpoint", _jwt_ep), _jwt_method,
+                            confirm_string=cfg.get("confirm_string", _jwt_cs),
+                            weak_secret=_jwt_secret, on_step=step, budget_s=budget_s,
+                            dockerfile_body=cfg["dockerfile_body"],
+                            extra_files=cfg.get("extra_files"))
+                    wr, _lab_cfg_jwt, _prog = _feedback_loop(
+                        llm, _jwt_verifier, wr, _lab_cfg_jwt, step, es)
                     if not wr.verified:
-                        _escalate_to_analyst(inv, getattr(wr, 'detail', '') or "", _lab_cfg_jwt, es)
+                        _escalate_to_analyst(inv, getattr(wr, 'detail', '') or "",
+                                             _lab_cfg_jwt, es, progress_level=_prog)
+                    else:
+                        _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path)), "jwt-bypass")] = _lab_cfg_jwt
                 _apply_wpverify_result(inv, wr, es, llm)
             # NoSQL injection (MongoDB $ne/$gt operator)
             elif (not plugin_dir and fr.local_path and
@@ -12248,7 +12459,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _scf_nosql = False
                 if not _nosql_dockerfile and llm is not None:
                     _scf = _scaffold_llm_lab_for_class(
-                        llm, str(fr.local_path), notes, inv.cve_id, "nosql-injection", step, es)
+                        llm, str(fr.local_path), notes, inv.cve_id, "nosql-injection", step, es,
+                        patch_diff=inv.llm_notes.get("patch_diff_analysis"))
                     if _scf:
                         _nosql_dockerfile  = _scf["dockerfile_body"]
                         _nosql_extra_files = _scf["extra_files"]
@@ -12266,27 +12478,22 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         "endpoint": _nosql_ep, "confirm_string": _nosql_cs,
                         "parameters": {_nosql_param: ""}, "inject_param": _nosql_param,
                     }
-                    for _fb_i in range(2):
-                        _fb = _lab_feedback_for_class(
-                            llm, getattr(wr, 'detail', '') or "", _lab_cfg_nosql, step, es)
-                        if not _fb:
-                            break
-                        _nosql_dockerfile  = _fb["dockerfile_body"]
-                        _nosql_extra_files = _fb["extra_files"]
-                        _nosql_ep          = _fb.get("endpoint") or _nosql_ep
-                        _nosql_cs          = _fb.get("confirm_string") or _nosql_cs
-                        _nosql_param       = _fb.get("inject_param") or _nosql_param
-                        _lab_cfg_nosql     = _fb
-                        wr_fb = verify_generic_nosql_injection(
-                            fr.local_path, _nosql_ep, _nosql_method,
-                            inject_param=_nosql_param, confirm_string=_nosql_cs,
+                    def _nosql_verifier(cfg):
+                        return verify_generic_nosql_injection(
+                            fr.local_path,
+                            cfg.get("endpoint", _nosql_ep), _nosql_method,
+                            inject_param=cfg.get("inject_param", _nosql_param),
+                            confirm_string=cfg.get("confirm_string", _nosql_cs),
                             on_step=step, budget_s=budget_s,
-                            dockerfile_body=_nosql_dockerfile, extra_files=_nosql_extra_files)
-                        wr = wr_fb
-                        if wr_fb.verified:
-                            break
+                            dockerfile_body=cfg["dockerfile_body"],
+                            extra_files=cfg.get("extra_files"))
+                    wr, _lab_cfg_nosql, _prog = _feedback_loop(
+                        llm, _nosql_verifier, wr, _lab_cfg_nosql, step, es)
                     if not wr.verified:
-                        _escalate_to_analyst(inv, getattr(wr, 'detail', '') or "", _lab_cfg_nosql, es)
+                        _escalate_to_analyst(inv, getattr(wr, 'detail', '') or "",
+                                             _lab_cfg_nosql, es, progress_level=_prog)
+                    else:
+                        _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path)), "nosql-injection")] = _lab_cfg_nosql
                 _apply_wpverify_result(inv, wr, es, llm)
             # OAuth bypass / OIDC state confusion
             elif (not plugin_dir and fr.local_path and
@@ -12305,7 +12512,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _scf_oauth = False
                 if not _oauth_dockerfile and llm is not None:
                     _scf = _scaffold_llm_lab_for_class(
-                        llm, str(fr.local_path), notes, inv.cve_id, "oauth-bypass", step, es)
+                        llm, str(fr.local_path), notes, inv.cve_id, "oauth-bypass", step, es,
+                            patch_diff=inv.llm_notes.get("patch_diff_analysis"))
                     if _scf:
                         _oauth_dockerfile  = _scf["dockerfile_body"]
                         _oauth_extra_files = _scf["extra_files"]
@@ -12323,27 +12531,18 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             "dockerfile_body": _oauth_dockerfile, "extra_files": _oauth_extra_files,
                             "endpoint": _oauth_ep, "confirm_string": _oauth_cs, "parameters": {},
                         }
-                        for _fb_i in range(2):
-                            _fb = _lab_feedback_for_class(
-                                llm, getattr(wr, 'detail', '') or "", _lab_cfg_oauth, step, es)
-                            if not _fb:
-                                break
-                            _oauth_dockerfile  = _fb["dockerfile_body"]
-                            _oauth_extra_files = _fb["extra_files"]
-                            _oauth_ep          = _fb.get("endpoint") or _oauth_ep
-                            _oauth_cs          = _fb.get("confirm_string") or _oauth_cs
-                            _lab_cfg_oauth     = _fb
-                            wr_fb = verify_generic_confirm_string(
-                                fr.local_path, _oauth_ep, _oauth_method,
-                                confirm_string=_oauth_cs,
+                        def _oauth_verifier(cfg):
+                            return verify_generic_confirm_string(
+                                fr.local_path, cfg.get("endpoint", _oauth_ep), _oauth_method,
+                                confirm_string=cfg.get("confirm_string", _oauth_cs),
                                 on_step=step, budget_s=budget_s,
-                                dockerfile_body=_oauth_dockerfile, extra_files=_oauth_extra_files)
-                            wr = wr_fb
-                            if wr_fb.verified:
-                                break
+                                dockerfile_body=cfg["dockerfile_body"],
+                                extra_files=cfg.get("extra_files"))
+                        wr, _lab_cfg_oauth, _prog = _feedback_loop(
+                            llm, _oauth_verifier, wr, _lab_cfg_oauth, step, es)
                         if not wr.verified:
                             _escalate_to_analyst(inv, getattr(wr, 'detail', '') or "",
-                                                 _lab_cfg_oauth, es)
+                                                 _lab_cfg_oauth, es, progress_level=_prog)
                     _apply_wpverify_result(inv, wr, es, llm)
                 else:
                     inv.blockers.append(("oauth-bypass: se necesita confirm_string del "
@@ -12368,7 +12567,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _scf_dser = False
                 if not _dser_dockerfile and llm is not None and not _dser_cs:
                     _scf = _scaffold_llm_lab_for_class(
-                        llm, str(fr.local_path), notes, inv.cve_id, "deserialization", step, es)
+                        llm, str(fr.local_path), notes, inv.cve_id, "deserialization", step, es,
+                        patch_diff=inv.llm_notes.get("patch_diff_analysis"))
                     if _scf:
                         _dser_dockerfile  = _scf["dockerfile_body"]
                         _dser_extra_files = _scf["extra_files"]
@@ -12386,27 +12586,18 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             "dockerfile_body": _dser_dockerfile, "extra_files": _dser_extra_files,
                             "endpoint": _dser_ep, "confirm_string": _dser_cs, "parameters": {},
                         }
-                        for _fb_i in range(2):
-                            _fb = _lab_feedback_for_class(
-                                llm, getattr(wr, 'detail', '') or "", _lab_cfg_dser, step, es)
-                            if not _fb:
-                                break
-                            _dser_dockerfile  = _fb["dockerfile_body"]
-                            _dser_extra_files = _fb["extra_files"]
-                            _dser_ep          = _fb.get("endpoint") or _dser_ep
-                            _dser_cs          = _fb.get("confirm_string") or _dser_cs
-                            _lab_cfg_dser     = _fb
-                            wr_fb = verify_generic_confirm_string(
-                                fr.local_path, _dser_ep, _dser_method,
-                                confirm_string=_dser_cs,
+                        def _dser_verifier(cfg):
+                            return verify_generic_confirm_string(
+                                fr.local_path, cfg.get("endpoint", _dser_ep), _dser_method,
+                                confirm_string=cfg.get("confirm_string", _dser_cs),
                                 on_step=step, budget_s=budget_s,
-                                dockerfile_body=_dser_dockerfile, extra_files=_dser_extra_files)
-                            wr = wr_fb
-                            if wr_fb.verified:
-                                break
+                                dockerfile_body=cfg["dockerfile_body"],
+                                extra_files=cfg.get("extra_files"))
+                        wr, _lab_cfg_dser, _prog = _feedback_loop(
+                            llm, _dser_verifier, wr, _lab_cfg_dser, step, es)
                         if not wr.verified:
                             _escalate_to_analyst(inv, getattr(wr, 'detail', '') or "",
-                                                 _lab_cfg_dser, es)
+                                                 _lab_cfg_dser, es, progress_level=_prog)
                     _apply_wpverify_result(inv, wr, es, llm)
                 else:
                     inv.blockers.append(("deserialization: se necesita confirm_string o "
@@ -12430,7 +12621,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _scf_race = False
                 if not _race_dockerfile and llm is not None:
                     _scf = _scaffold_llm_lab_for_class(
-                        llm, str(fr.local_path), notes, inv.cve_id, "race-condition", step, es)
+                        llm, str(fr.local_path), notes, inv.cve_id, "race-condition", step, es,
+                        patch_diff=inv.llm_notes.get("patch_diff_analysis"))
                     if _scf:
                         _race_dockerfile  = _scf["dockerfile_body"]
                         _race_extra_files = _scf["extra_files"]
@@ -12448,27 +12640,18 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             "dockerfile_body": _race_dockerfile, "extra_files": _race_extra_files,
                             "endpoint": _race_ep, "confirm_string": _race_cs, "parameters": {},
                         }
-                        for _fb_i in range(2):
-                            _fb = _lab_feedback_for_class(
-                                llm, getattr(wr, 'detail', '') or "", _lab_cfg_race, step, es)
-                            if not _fb:
-                                break
-                            _race_dockerfile  = _fb["dockerfile_body"]
-                            _race_extra_files = _fb["extra_files"]
-                            _race_ep          = _fb.get("endpoint") or _race_ep
-                            _race_cs          = _fb.get("confirm_string") or _race_cs
-                            _lab_cfg_race     = _fb
-                            wr_fb = verify_generic_confirm_string(
-                                fr.local_path, _race_ep, _race_method,
-                                confirm_string=_race_cs,
+                        def _race_verifier(cfg):
+                            return verify_generic_confirm_string(
+                                fr.local_path, cfg.get("endpoint", _race_ep), _race_method,
+                                confirm_string=cfg.get("confirm_string", _race_cs),
                                 on_step=step, budget_s=budget_s,
-                                dockerfile_body=_race_dockerfile, extra_files=_race_extra_files)
-                            wr = wr_fb
-                            if wr_fb.verified:
-                                break
+                                dockerfile_body=cfg["dockerfile_body"],
+                                extra_files=cfg.get("extra_files"))
+                        wr, _lab_cfg_race, _prog = _feedback_loop(
+                            llm, _race_verifier, wr, _lab_cfg_race, step, es)
                         if not wr.verified:
                             _escalate_to_analyst(inv, getattr(wr, 'detail', '') or "",
-                                                 _lab_cfg_race, es)
+                                                 _lab_cfg_race, es, progress_level=_prog)
                     _apply_wpverify_result(inv, wr, es, llm)
                 else:
                     inv.blockers.append(("race-condition: se necesita confirm_string del "
@@ -12496,7 +12679,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _scf_pconf = False
                 if not _pconf_dockerfile and llm is not None:
                     _scf = _scaffold_llm_lab_for_class(
-                        llm, str(fr.local_path), notes, inv.cve_id, "path-confusion", step, es)
+                        llm, str(fr.local_path), notes, inv.cve_id, "path-confusion", step, es,
+                        patch_diff=inv.llm_notes.get("patch_diff_analysis"))
                     if _scf:
                         _pconf_dockerfile  = _scf["dockerfile_body"]
                         _pconf_extra_files = _scf["extra_files"]
@@ -12514,28 +12698,20 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         "dockerfile_body": _pconf_dockerfile, "extra_files": _pconf_extra_files,
                         "endpoint": _pconf_ep, "confirm_string": _pconf_cs, "parameters": {},
                     }
-                    for _fb_i in range(2):
-                        _fb = _lab_feedback_for_class(
-                            llm, getattr(wr, 'detail', '') or "", _lab_cfg_pconf, step, es)
-                        if not _fb:
-                            break
-                        _pconf_dockerfile  = _fb["dockerfile_body"]
-                        _pconf_extra_files = _fb["extra_files"]
-                        _pconf_ep          = _fb.get("endpoint") or _pconf_ep
-                        _pconf_cs          = _fb.get("confirm_string") or _pconf_cs
-                        _lab_cfg_pconf     = _fb
-                        wr_fb = verify_generic_header_bypass(
-                            fr.local_path, _pconf_ep, _pconf_method,
+                    def _pconf_verifier(cfg):
+                        return verify_generic_header_bypass(
+                            fr.local_path, cfg.get("endpoint", _pconf_ep), _pconf_method,
                             bypass_header=_pconf_bphdr, bypass_value=_pconf_bpval,
-                            bypass_url=_pconf_bpurl, confirm_string=_pconf_cs,
+                            bypass_url=cfg.get("bypass_url", _pconf_bpurl),
+                            confirm_string=cfg.get("confirm_string", _pconf_cs),
                             on_step=step, budget_s=budget_s,
-                            dockerfile_body=_pconf_dockerfile, extra_files=_pconf_extra_files)
-                        wr = wr_fb
-                        if wr_fb.verified:
-                            break
+                            dockerfile_body=cfg["dockerfile_body"],
+                            extra_files=cfg.get("extra_files"))
+                    wr, _lab_cfg_pconf, _prog = _feedback_loop(
+                        llm, _pconf_verifier, wr, _lab_cfg_pconf, step, es)
                     if not wr.verified:
                         _escalate_to_analyst(inv, getattr(wr, 'detail', '') or "",
-                                             _lab_cfg_pconf, es)
+                                             _lab_cfg_pconf, es, progress_level=_prog)
                 _apply_wpverify_result(inv, wr, es, llm)
             # Business logic (invariant violations, negative transfer, coupon abuse)
             elif (not plugin_dir and fr.local_path and
@@ -12555,7 +12731,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _scf_biz = False
                 if not _biz_dockerfile and llm is not None:
                     _scf = _scaffold_llm_lab_for_class(
-                        llm, str(fr.local_path), notes, inv.cve_id, "business-logic", step, es)
+                        llm, str(fr.local_path), notes, inv.cve_id, "business-logic", step, es,
+                        patch_diff=inv.llm_notes.get("patch_diff_analysis"))
                     if _scf:
                         _biz_dockerfile  = _scf["dockerfile_body"]
                         _biz_extra_files = _scf["extra_files"]
@@ -12573,27 +12750,18 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             "dockerfile_body": _biz_dockerfile, "extra_files": _biz_extra_files,
                             "endpoint": _biz_ep, "confirm_string": _biz_cs, "parameters": {},
                         }
-                        for _fb_i in range(2):
-                            _fb = _lab_feedback_for_class(
-                                llm, getattr(wr, 'detail', '') or "", _lab_cfg_biz, step, es)
-                            if not _fb:
-                                break
-                            _biz_dockerfile  = _fb["dockerfile_body"]
-                            _biz_extra_files = _fb["extra_files"]
-                            _biz_ep          = _fb.get("endpoint") or _biz_ep
-                            _biz_cs          = _fb.get("confirm_string") or _biz_cs
-                            _lab_cfg_biz     = _fb
-                            wr_fb = verify_generic_confirm_string(
-                                fr.local_path, _biz_ep, _biz_method,
-                                confirm_string=_biz_cs,
+                        def _biz_verifier(cfg):
+                            return verify_generic_confirm_string(
+                                fr.local_path, cfg.get("endpoint", _biz_ep), _biz_method,
+                                confirm_string=cfg.get("confirm_string", _biz_cs),
                                 on_step=step, budget_s=budget_s,
-                                dockerfile_body=_biz_dockerfile, extra_files=_biz_extra_files)
-                            wr = wr_fb
-                            if wr_fb.verified:
-                                break
+                                dockerfile_body=cfg["dockerfile_body"],
+                                extra_files=cfg.get("extra_files"))
+                        wr, _lab_cfg_biz, _prog = _feedback_loop(
+                            llm, _biz_verifier, wr, _lab_cfg_biz, step, es)
                         if not wr.verified:
                             _escalate_to_analyst(inv, getattr(wr, 'detail', '') or "",
-                                                 _lab_cfg_biz, es)
+                                                 _lab_cfg_biz, es, progress_level=_prog)
                     _apply_wpverify_result(inv, wr, es, llm)
                 else:
                     inv.blockers.append(("business-logic: se necesita confirm_string del "
