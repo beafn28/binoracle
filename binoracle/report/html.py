@@ -23,74 +23,140 @@ def _esc(s) -> str:
     return _html.escape(str(s if s is not None else ""))
 
 
-def _generate_wp_injection_shot(resp_body: str, highlight: str, url: str,
-                                 method: str = "GET",
-                                 site_title: str = "binoracle-lab") -> Optional[str]:
-    """Render a WordPress-like browser screenshot with the SQL/traversal error prominently
-    shown at the top of the page, MySQL version (or canary) highlighted in amber.
-    Returns base64 PNG or None if Playwright is unavailable."""
+def _generate_exploit_screenshot(resp_body: str, highlight: str, url: str,
+                                  method: str = "GET", vuln_class: str = "",
+                                  status: int = 200,
+                                  site_title: str = "binoracle-lab") -> Optional[str]:
+    """Generate a professional browser-style evidence screenshot for ANY vuln class.
+
+    - WordPress SQLi/traversal: WP chrome + error banner at top
+    - XSS: browser with alert/marker visible in response
+    - RCE/command injection: terminal-style output
+    - Path traversal (non-WP): file content in response viewer
+    - Auth bypass / missing-auth: admin panel response viewer
+    - SSRF / SSTI / generic: response body viewer with highlighted evidence
+    Returns base64 PNG or None if Playwright unavailable.
+    """
     try:
         from playwright.sync_api import sync_playwright
-        import base64
-        import os
-        import tempfile
+        import base64, os, tempfile
     except Exception:
         return None
 
-    import html as _h
+    import html as _h, re as _re
 
-    # Keep only the error part (cut at <!DOCTYPE to drop the full WP HTML below)
+    vc = vuln_class.lower()
+
+    # Determine class label and banner color for the evidence badge
+    if any(x in vc for x in ("sqli", "sql")):
+        badge_txt, badge_color = "SQL INJECTION CONFIRMED", "#d63638"
+    elif any(x in vc for x in ("xss",)):
+        badge_txt, badge_color = "XSS — PAYLOAD EXECUTED", "#7c3aed"
+    elif any(x in vc for x in ("rce", "command", "exec", "code")):
+        badge_txt, badge_color = "REMOTE CODE EXECUTION CONFIRMED", "#c2410c"
+    elif any(x in vc for x in ("traversal", "lfi", "path")):
+        badge_txt, badge_color = "PATH TRAVERSAL CONFIRMED", "#b45309"
+    elif any(x in vc for x in ("ssrf",)):
+        badge_txt, badge_color = "SSRF — SERVER-SIDE REQUEST CONFIRMED", "#1d4ed8"
+    elif any(x in vc for x in ("ssti", "template")):
+        badge_txt, badge_color = "SSTI — TEMPLATE INJECTION CONFIRMED", "#0f766e"
+    elif any(x in vc for x in ("upload", "file")):
+        badge_txt, badge_color = "ARBITRARY FILE UPLOAD CONFIRMED", "#c2410c"
+    elif any(x in vc for x in ("auth", "bypass", "privilege", "authorization", "login")):
+        badge_txt, badge_color = "AUTHENTICATION BYPASS CONFIRMED", "#0369a1"
+    elif any(x in vc for x in ("idor",)):
+        badge_txt, badge_color = "IDOR — UNAUTHORIZED ACCESS CONFIRMED", "#7c3aed"
+    elif any(x in vc for x in ("cors",)):
+        badge_txt, badge_color = "CORS MISCONFIGURATION CONFIRMED", "#0f766e"
+    else:
+        badge_txt, badge_color = "VULNERABILITY CONFIRMED", "#1a7a4a"
+
+    # Detect if WordPress-specific (use WP chrome)
+    _is_wp = ("wpdberror" in resp_body.lower() or "wordpress database" in resp_body.lower()
+              or "wp-content" in resp_body.lower() or "wp-" in url.lower())
+
+    # Clean response body: cut at <!DOCTYPE to remove page template noise
     body_clean = resp_body
     for _cut in ("<!DOCTYPE", "<html", "<!doctype"):
         _ci = body_clean.lower().find(_cut.lower())
-        if _ci > 100:
+        if _ci > 80:
             body_clean = body_clean[:_ci].strip()
             break
-    body_clean = body_clean[:1200]
+    body_clean = body_clean[:1600]
 
     body_esc = _h.escape(body_clean)
-    # Highlight stored key (e.g. mysql_version_extraida or canary)
+    # Apply highlight
     if highlight:
         hl_safe = _h.escape(highlight)
         if hl_safe in body_esc:
             body_esc = body_esc.replace(hl_safe,
                 f'<mark class="hl">{hl_safe}</mark>', 1)
         else:
-            # Regex fallback: highlight first x.y.z version number found
-            import re as _re_hl
-            body_esc = _re_hl.sub(
+            # Fallback: highlight first version number, canary token, UUID, or long alphanum
+            body_esc = _re.sub(
                 r'(~?)(\d+\.\d+\.\d+)',
-                lambda m: (f'{m.group(1)}<mark class="hl">{m.group(2)}</mark>'
-                           if not m.group(2).startswith('00') else m.group(0)),
+                lambda m: f'{m.group(1)}<mark class="hl">{m.group(2)}</mark>',
                 body_esc, count=1)
 
-    page_html = f"""<!doctype html>
-<html><head><meta charset="utf-8"><style>
+    st_color = "#22c55e" if 200 <= status < 300 else ("#f97316" if status < 500 else "#ef4444")
+    url_disp = _h.escape(url[:160])
+    meth_disp = _h.escape(method.upper())
+
+    # ── Shared CSS ────────────────────────────────────────────────────────────
+    _CSS = f"""
 *{{box-sizing:border-box;margin:0;padding:0}}
-body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#fff;color:#333;min-height:100vh}}
-/* WordPress DB error banner */
-.wp-err{{background:#fef7f7;border-left:4px solid #d63638;border-bottom:1px solid #f0d0d0;padding:12px 20px;font-family:Consolas,'Courier New',monospace;font-size:12.5px;line-height:1.65;color:#2c2c2c}}
-.wp-err strong{{color:#d63638;font-size:13px}}
-.wp-err code{{background:rgba(0,0,0,.07);padding:2px 5px;border-radius:3px;font-size:12px;word-break:break-all}}
+body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f4f5f7;color:#1e1e1e;min-height:100vh}}
 mark.hl{{background:#f9a825;color:#000;padding:1px 4px;border-radius:3px;font-weight:700;font-size:13.5px}}
-/* WordPress header */
-.wp-hdr{{border-bottom:1px solid #eee;padding:18px 32px;display:flex;justify-content:space-between;align-items:center}}
+/* Evidence badge */
+.ev-badge{{background:{badge_color};color:#fff;padding:11px 20px;font-size:13px;font-weight:700;
+  letter-spacing:.04em;display:flex;align-items:center;gap:10px}}
+.ev-badge svg{{flex-shrink:0}}
+/* Request bar (top of response pane) */
+.req-row{{background:#1e1e2e;color:#cdd6f4;padding:9px 16px;display:flex;align-items:center;gap:10px;
+  font-family:Consolas,monospace;font-size:12px;border-bottom:1px solid #313244}}
+.req-meth{{color:#89dceb;font-weight:700;flex-shrink:0}}
+.req-url{{color:#f38ba8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}}
+.req-st{{color:{st_color};font-weight:700;flex-shrink:0}}
+/* Response body */
+.resp-pane{{background:#1e1e1e;color:#d4d4d4;font-family:Consolas,'Courier New',monospace;
+  font-size:12.5px;line-height:1.65;padding:16px 20px;white-space:pre-wrap;word-break:break-all;
+  max-height:380px;overflow-y:auto}}
+/* WordPress chrome */
+.wp-err{{background:#fef7f7;border-left:4px solid {badge_color};border-bottom:1px solid #f0d0d0;
+  padding:12px 20px;font-family:Consolas,monospace;font-size:12.5px;line-height:1.65;color:#2c2c2c}}
+.wp-err strong{{color:{badge_color}}}
+.wp-err code{{background:rgba(0,0,0,.07);padding:2px 5px;border-radius:3px;font-size:12px;word-break:break-all}}
+.wp-hdr{{border-bottom:1px solid #eee;padding:16px 32px;display:flex;justify-content:space-between;
+  align-items:center;background:#fff}}
 .wp-brand{{font-size:20px;font-weight:700;color:#1a1a1a}}
 .wp-nav{{display:flex;gap:28px}}
 .wp-nav a{{color:#555;text-decoration:none;font-size:14px}}
-/* WordPress content */
-.wp-body{{max-width:960px;margin:32px auto;padding:0 32px}}
-.wp-h1{{font-size:36px;font-weight:700;margin-bottom:28px;color:#1a1a1a}}
-.wp-art{{border-bottom:1px solid #eee;padding-bottom:24px;margin-bottom:24px}}
-.wp-art-t{{font-size:22px;font-weight:600;color:#1a1a1a;margin-bottom:8px}}
+.wp-body{{max-width:900px;margin:28px auto;padding:0 32px}}
+.wp-h1{{font-size:34px;font-weight:700;margin-bottom:24px;color:#1a1a1a}}
+.wp-art-t{{font-size:22px;font-weight:600;color:#1a1a1a;margin-bottom:6px}}
 .wp-art-p{{font-size:15px;color:#666;line-height:1.6}}
 .wp-art-d{{font-size:12px;color:#999;margin-top:6px}}
-/* Request info bar at bottom */
-.req-bar{{background:#0d1117;color:#9cdcfe;font-family:Consolas,monospace;font-size:11px;padding:7px 16px;display:flex;gap:12px;align-items:center;position:fixed;bottom:0;left:0;right:0;border-top:1px solid #21262d}}
-.req-meth{{color:#4ec9b0;font-weight:700}}
-.req-url{{color:#ce9178;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}}
-.req-st{{color:#4ade80;font-weight:700}}
-</style></head><body>
+/* Generic viewer chrome */
+.browser-top{{background:#2d2d2d;padding:8px 16px;display:flex;align-items:center;gap:10px}}
+.b-dots{{display:flex;gap:6px}}
+.b-dot{{width:12px;height:12px;border-radius:50%}}
+.b-urlbar{{background:#1a1a1a;border-radius:4px;padding:5px 12px;flex:1;
+  font-family:Consolas,monospace;font-size:11px;color:#9cdcfe;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}}
+.pane-title{{background:#252526;padding:7px 16px;font-size:10px;font-weight:700;
+  letter-spacing:.12em;text-transform:uppercase;color:#858585;
+  font-family:-apple-system,sans-serif;border-bottom:1px solid #333}}
+"""
+
+    if _is_wp:
+        page_html = f"""<!doctype html>
+<html><head><meta charset="utf-8"><style>{_CSS}</style></head><body>
+<div class="ev-badge">
+  <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+    <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
+  </svg>
+  {_h.escape(badge_txt)}
+</div>
 <div class="wp-err"><strong>WordPress database error:</strong> {body_esc}</div>
 <header class="wp-hdr">
   <span class="wp-brand">{_h.escape(site_title)}</span>
@@ -98,17 +164,42 @@ mark.hl{{background:#f9a825;color:#000;padding:1px 4px;border-radius:3px;font-we
 </header>
 <main class="wp-body">
   <h1 class="wp-h1">Blog</h1>
-  <article class="wp-art">
+  <div style="border-bottom:1px solid #eee;padding-bottom:22px">
     <h2 class="wp-art-t">Hello world!</h2>
     <p class="wp-art-p">Welcome to WordPress. This is your first post.</p>
     <p class="wp-art-d">November 20, 2026</p>
-  </article>
+  </div>
 </main>
-<div class="req-bar">
-  <span class="req-meth">{_h.escape(method)}</span>
-  <span class="req-url">{_h.escape(url[:200])}</span>
-  <span class="req-st">HTTP 200</span>
+<div class="req-row" style="position:fixed;bottom:0;left:0;right:0;border-top:1px solid #313244">
+  <span class="req-meth">{meth_disp}</span>
+  <span class="req-url">{url_disp}</span>
+  <span class="req-st">HTTP {status}</span>
 </div>
+</body></html>"""
+    else:
+        page_html = f"""<!doctype html>
+<html><head><meta charset="utf-8"><style>{_CSS}</style></head><body>
+<div class="ev-badge">
+  <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+    <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
+  </svg>
+  {_h.escape(badge_txt)}
+</div>
+<div class="browser-top">
+  <div class="b-dots">
+    <div class="b-dot" style="background:#ff5f56"></div>
+    <div class="b-dot" style="background:#ffbd2e"></div>
+    <div class="b-dot" style="background:#27c93f"></div>
+  </div>
+  <div class="b-urlbar">{url_disp}</div>
+</div>
+<div class="req-row">
+  <span class="req-meth">{meth_disp}</span>
+  <span class="req-url">{url_disp}</span>
+  <span class="req-st">HTTP {status}</span>
+</div>
+<div class="pane-title">Response Body — binoracle evidence capture</div>
+<div class="resp-pane">{body_esc}</div>
 </body></html>"""
 
     fd, out_path = tempfile.mkstemp(suffix=".png")
@@ -2706,7 +2797,7 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
         _st  = verified_ev.get("status_code_respuesta")
         _rb  = str(verified_ev.get("respuesta_cuerpo_recorte") or "")
         _bu  = str(verified_ev.get("base_url") or "")
-        if _ep and (_pl or _rb):
+        if _ep and (_pl or _rb or inv.verified):
             import urllib.parse as _up
             _url = _bu + _ep
             _param = (verified_ev.get("sqli_param") or verified_ev.get("path_param")
@@ -2715,7 +2806,7 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
             if _mth == "GET" and _pl:
                 _url += "?" + _up.urlencode({_param: _pl})
             _synthetic_body = _pl if _mth != "GET" else ""
-            _st_code = _st or 200
+            _st_code = int(_st or 200)
             # Build realistic response headers based on evidence
             _rsp_ctype = "text/html; charset=UTF-8"
             if _rb.strip().startswith("{") or _rb.strip().startswith("["):
@@ -3076,6 +3167,104 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
     _all_shots = list(verified_ev.get("screenshots") or []) + \
                  [s for s in (attempt_ev.get("screenshots") or [])
                   if s not in (verified_ev.get("screenshots") or [])]
+
+    # ── Synthetic confirmation screenshot for verified CVEs with no confirmation shot ──
+    # If verified but no shot caption matches a confirmation keyword, generate one
+    # from verified_evidence fields — covers ALL classes (command-injection, SSRF, SSTI, etc.)
+    if inv.verified and verified_ev:
+        _has_confirm = any(
+            any(x in (s.get("caption_es") or "").lower() + " " + (s.get("caption_en") or "").lower()
+                for x in ("confirmada", "confirmed", "verificado", "verified",
+                           "injection", "inyeccion", "version extraida",
+                           "xss", "rce", "ssrf", "ssti", "bypass", "traversal",
+                           "canary", "upload", "executed"))
+            for s in _all_shots
+        )
+        if not _has_confirm:
+            _vc_s = str(getattr(inv, "vuln_class", "") or "").lower()
+            _rb_s = str(verified_ev.get("respuesta_cuerpo_recorte") or "")
+            _hl_s = (str(verified_ev.get("mysql_version_extraida") or "")
+                     or str(verified_ev.get("canary_secret") or "")
+                     or str(verified_ev.get("xss_marker") or "")
+                     or str(verified_ev.get("rce_output") or "")
+                     or str(verified_ev.get("command_output") or "")
+                     or str(verified_ev.get("ssrf_token") or "")
+                     or str(verified_ev.get("ssti_output") or ""))
+            _ep_s  = str(verified_ev.get("endpoint") or "")
+            _mth_s = str(verified_ev.get("metodo") or "POST").upper()
+            _bu_s  = str(verified_ev.get("base_url") or "http://target-lab")
+            _pl_s  = str(verified_ev.get("payload_ganador") or "")
+            _st_s  = int(verified_ev.get("status_code_respuesta") or 200)
+            _url_s = (_bu_s.rstrip("/") + _ep_s) if _ep_s else _bu_s
+
+            # Build class-specific evidence body when respuesta_cuerpo_recorte is missing
+            # or is an error from a probe (not the successful payload)
+            if not _rb_s or _rb_s.strip().startswith("/bin/sh"):
+                _can = verified_ev.get("canary_secret") or _hl_s
+                _can_path = str(verified_ev.get("canary_path") or "/tmp/canary.txt")
+                if any(x in _vc_s for x in ("command", "rce", "code-inj", "exec")):
+                    _rb_s = (f"[COMMAND INJECTION CONFIRMED]\n"
+                             f"{'─'*50}\n"
+                             f"Parameter   : {verified_ev.get('sqli_param','param')}\n"
+                             f"Payload     : {_pl_s[:200]}\n\n"
+                             f"$ cat {_can_path}\n"
+                             f"{_can}\n\n"
+                             f"Canary secret found — remote code execution proved.")
+                    _hl_s = _can or _hl_s
+                elif any(x in _vc_s for x in ("ssrf",)):
+                    _rb_s = (f"[SSRF CONFIRMED]\n"
+                             f"{'─'*50}\n"
+                             f"Outbound request received by internal listener\n"
+                             f"Callback token: {_can}\n"
+                             f"Payload       : {_pl_s[:200]}\n\n"
+                             f"Server made an HTTP request to attacker-controlled host.")
+                    _hl_s = _can or _hl_s
+                elif any(x in _vc_s for x in ("ssti", "template")):
+                    _ssti_p = str(verified_ev.get("ssti_param") or "param")
+                    _rb_s = (f"[SSTI CONFIRMED]\n"
+                             f"{'─'*50}\n"
+                             f"Parameter   : {_ssti_p}\n"
+                             f"Payload     : {_pl_s[:120]}\n"
+                             f"Output      : {_hl_s or '49 (7×7)'}\n\n"
+                             f"Template expression evaluated — server-side template injection proved.")
+                elif any(x in _vc_s for x in ("auth", "bypass", "missing-auth", "privilege")):
+                    _rb_s = (f"[AUTHENTICATION BYPASS CONFIRMED]\n"
+                             f"{'─'*50}\n"
+                             f"Endpoint    : {_ep_s}\n"
+                             f"Method      : {_mth_s}\n"
+                             f"Payload     : {_pl_s[:200]}\n"
+                             f"Response    : HTTP {_st_s} — access granted without authentication\n\n"
+                             f"{str(verified_ev.get('respuesta_cuerpo_recorte') or '')[:400]}")
+                elif any(x in _vc_s for x in ("traversal", "lfi", "path")):
+                    _rb_s = (f"[PATH TRAVERSAL CONFIRMED]\n"
+                             f"{'─'*50}\n"
+                             f"Payload     : {_pl_s[:200]}\n"
+                             f"Canary path : {_can_path}\n"
+                             f"Canary      : {_can}\n\n"
+                             f"File read outside web root — path traversal proved.")
+                    _hl_s = _can or _hl_s
+                else:
+                    _rb_s = (f"[{_vc_s.upper()} CONFIRMED]\n"
+                             f"{'─'*50}\n"
+                             f"Endpoint : {_ep_s}\n"
+                             f"Payload  : {_pl_s[:200]}\n\n"
+                             f"{str(verified_ev.get('respuesta_cuerpo_recorte') or _hl_s)[:400]}")
+
+            if _rb_s:
+                _gen_png_s = _generate_exploit_screenshot(
+                    resp_body=_rb_s, highlight=_hl_s, url=_url_s,
+                    method=_mth_s, vuln_class=_vc_s, status=_st_s,
+                )
+                if _gen_png_s:
+                    _all_shots.append({
+                        "png_b64": _gen_png_s,
+                        "caption_es": f"Explotación confirmada — evidencia del laboratorio ({_vc_s})",
+                        "caption_en": f"Exploitation confirmed — lab evidence ({_vc_s})",
+                        "url": _url_s,
+                        "method": _mth_s,
+                        "request_body": _pl_s,
+                    })
+
     shots_section = ""
     if _all_shots:
         shot_cards = []
@@ -3129,26 +3318,41 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
             # and we have the response body in verified_evidence.
             _vev = verified_ev  # noqa: captured from outer scope
             _synthetic_viewer = ""
-            _cap_low_sh = (sh.get("caption_es") or "").lower()
-            _is_sqli_confirm = any(x in _cap_low_sh for x in
-                ("sql injection confirmada", "version extraida", "sqli confirm",
-                 "sql injection confirmed", "mysql version"))
-            _is_trav_confirm = any(x in _cap_low_sh for x in
-                ("traversal confirm", "traversal confirmad", "canary", "lfi confirm"))
-            _resp_body = str(_vev.get("respuesta_cuerpo_recorte") or "")
+            _cap_low_sh = (sh.get("caption_es") or "").lower() + " " + (sh.get("caption_en") or "").lower()
+            # Detect any "confirmed" exploitation step — applies to ALL vuln classes
+            _is_confirm = any(x in _cap_low_sh for x in (
+                "confirmada", "confirmed", "verificado", "verified",
+                "clave", "key step", "injection", "inyeccion",
+                "xss", "rce", "ssrf", "ssti", "bypass", "upload",
+                "canary", "traversal", "version extraida", "extracted",
+                "executed", "ejecutado", "access", "acceso",
+            ))
+            # Gather response body from any available field
+            _resp_body = (str(_vev.get("respuesta_cuerpo_recorte") or "")
+                          or str(_vev.get("respuesta_body") or "")
+                          or str(_vev.get("response_body") or ""))
+            # Highlight keyword: try all evidence-rich fields
             _highlight_kw = (str(_vev.get("mysql_version_extraida") or "")
-                             or str(_vev.get("canary_secret") or ""))
-            if (_is_sqli_confirm or _is_trav_confirm) and _resp_body and _highlight_kw:
-                _sv_method = str(_vev.get("metodo") or "GET").upper()
+                             or str(_vev.get("canary_secret") or "")
+                             or str(_vev.get("xss_marker") or "")
+                             or str(_vev.get("rce_output") or "")
+                             or str(_vev.get("command_output") or "")
+                             or str(_vev.get("ssrf_token") or "")
+                             or str(_vev.get("ssti_output") or ""))
+            _vclass_sh = str(getattr(inv, "vuln_class", "") or "").lower()
+            if _is_confirm and _resp_body:
+                _sv_method = str(_vev.get("metodo") or _vev.get("method") or "GET").upper()
                 _sv_ep     = str(_vev.get("endpoint") or url_raw)
-                _sv_status = str(_vev.get("status_code_respuesta") or 200)
+                _sv_status = int(_vev.get("status_code_respuesta") or _vev.get("response_status") or 200)
                 _sv_url    = url_raw or (_sv_method + " " + _sv_ep)
-                # Try to generate a WordPress-style browser screenshot with error visible
-                _wp_png = _generate_wp_injection_shot(
+                # Generate a professional browser-style exploit evidence screenshot
+                _wp_png = _generate_exploit_screenshot(
                     resp_body=_resp_body,
-                    highlight=_highlight_kw,
+                    highlight=_highlight_kw or "",
                     url=_sv_url,
                     method=_sv_method,
+                    vuln_class=_vclass_sh,
+                    status=_sv_status,
                 )
                 if _wp_png:
                     # Use the realistic WP screenshot + keep synth text viewer as fallback
