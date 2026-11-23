@@ -987,9 +987,9 @@ class _Handler(BaseHTTPRequestHandler):
             inv.published         = result.get("published", "")
             inv.vuln_class        = result.get("vuln_class", "")
             inv.verified          = result.get("verified", False)
-            inv.verified_detail   = result.get("detail", "")
+            inv.verified_detail   = result.get("detail", "") or result.get("verified_detail", "")
             inv.verified_evidence = result.get("verified_evidence") or {}
-            inv.attempt_evidence  = result.get("evidence") or {}
+            inv.attempt_evidence  = result.get("evidence") or result.get("attempt_evidence") or {}
             inv.dynamic_verify    = {"attempted": bool(result.get("verified_evidence"))}
             inv.poc_source_used   = result.get("poc_source", "")
             inv.affected_version  = result.get("affected_version", "")

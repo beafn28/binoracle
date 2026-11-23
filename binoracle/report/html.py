@@ -2690,16 +2690,49 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
     _phase_items = ""
     _inv_logs = list(getattr(inv, "logs", []) or [])
     if _inv_logs:
+        import re as _re_log
+        # Phase inference: regex patterns → (ES label, EN label)
+        _PHASE_PATS = [
+            (r"consul|nvd|fetch.*cve|recuper|inteligenci|fuentes",
+             "CONSULTA NVD", "NVD Intelligence"),
+            (r"llm|hipot|analiza|propone|modelo|token|prompt|plan",
+             "HIPÓTESIS LLM", "LLM Hypothesis"),
+            (r"cod(ig)?o|code|source|fuente|descarg.*plugin|version.*plugin|obtenid",
+             "ANÁLISIS DE CÓDIGO", "Code Analysis"),
+            (r"docker|contenedor|lab|levant|mysql|wordpress|nginx|healthcheck",
+             "LABORATORIO DOCKER", "Docker Lab"),
+            (r"\[docker\]|\[target\]|\[try\]|\[payload\]|\[canary\]|\[resp\]|verif.*dinam|exploit.*poc",
+             "VERIFICACIÓN", "Verification"),
+            (r"binary|binario|reversing|decompil|native|grounding",
+             "ANÁLISIS BINARIO", "Binary Analysis"),
+        ]
         _phases = []
         _cur = None
         for _entry in _inv_logs:
             _msg = _entry.get("msg", "") if isinstance(_entry, dict) else str(_entry)
+            _msg_lo = _msg.lower()
+            # Detect explicit separator lines (──) first
             _is_sep = (_msg.startswith("──") or _msg.startswith("╠") or _msg.startswith("╚"))
             if _is_sep and "──" in _msg:
-                _cur = {"label": _msg.strip("─╠╚═ ").strip(), "entries": []}
+                _cur = {"label": _msg.strip("─╠╚═ ").strip(), "en_label": "", "entries": []}
                 _phases.append(_cur)
-            elif _cur:
+                continue
+            # Infer phase from message content
+            _inferred = None
+            for _pat, _lbl_es, _lbl_en in _PHASE_PATS:
+                if _re_log.search(_pat, _msg_lo):
+                    _inferred = (_lbl_es, _lbl_en)
+                    break
+            if _inferred and (not _cur or _cur["label"] != _inferred[0]):
+                # Merge back-to-back duplicates (same phase appearing in a row)
+                if _phases and _phases[-1]["label"] == _inferred[0]:
+                    _cur = _phases[-1]
+                else:
+                    _cur = {"label": _inferred[0], "en_label": _inferred[1], "entries": []}
+                    _phases.append(_cur)
+            if _cur:
                 _cur["entries"].append(_msg)
+
         _phase_items = ""
         for _i, _ph in enumerate(_phases[:12]):
             _best = next((e for e in _ph["entries"] if e.startswith("[OK]")), None) or \
@@ -2709,11 +2742,14 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
             _ok = _best.startswith("[OK]")
             _warn = _best.startswith("[WARN]") or _best.startswith("[ERROR]")
             _dot_cls = "step-dot-ok" if _ok else ("step-dot-warn" if _warn else "step-dot")
+            _en_lbl = _ph.get("en_label", "")
+            _lbl_html = (f'<span class="l-es">{_esc(_ph["label"])}</span>'
+                         + (f'<span class="l-en">{_esc(_en_lbl)}</span>' if _en_lbl else ""))
             _phase_items += (
                 f'<div class="inv-step">'
                 f'<div class="inv-step-left"><div class="inv-step-dot {_dot_cls}">{_i+1}</div></div>'
                 f'<div class="inv-step-body">'
-                f'<div class="inv-step-label">{_esc(_ph["label"])}</div>'
+                f'<div class="inv-step-label">{_lbl_html}</div>'
                 + (f'<div class="inv-step-detail">{_esc(_detail[:200])}</div>' if _detail else "")
                 + f'</div></div>'
             )
