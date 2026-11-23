@@ -9259,7 +9259,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 from .genericverify import verify_generic_ssrf, _pick_param
                 from .wpverify import _URL_HINTS
                 params = notes.get("parameters") or []
-                url_p = notes.get("url_param") or _pick_param(params, _URL_HINTS)
+                url_p = (notes.get("url_param") or notes.get("ssrf_param")
+                         or _pick_param(params, _URL_HINTS))
                 _inject_custom_docker_lab(str(fr.local_path), notes, step)
                 step(("intentando verificacion DINAMICA GENERICA -- listener interno con token "
                      "aleatorio, el objetivo se construye desde su propio Dockerfile/compose..."
