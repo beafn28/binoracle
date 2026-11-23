@@ -2401,6 +2401,38 @@ _LAB_SCAFFOLD_BOOLEAN_ORACLE_SYS = (
     "\"server_port\": 3000}"
 )
 
+_LAB_SCAFFOLD_CSRF_SYS = (
+    "Eres un experto en seguridad. Genera un servidor Node.js para un lab de CSRF. "
+    "CRITICO bind: app.listen(3000, '0.0.0.0'). "
+    "CRITICO Dockerfile: NO hagas COPY package.json — "
+    "usa RUN npm install express en su lugar. REGLAS:\n"
+    "1. Endpoint POST /api/action que ejecuta una accion de estado (ej: cambiar email/password)\n"
+    "2. SIN validacion de CSRF token ni comprobacion de Origin/Referer\n"
+    "3. SIN SameSite=Strict en las cookies (o sin cookies en absoluto para simplificar)\n"
+    "4. Con body {action: 'confirm'} → ejecuta la accion y devuelve respuesta con CONFIRM_STRING\n"
+    "5. La accion simula una mutacion de estado (campo 'email' cambiado, role elevado, etc.)\n"
+    "Responde SOLO con JSON sin markdown: "
+    "{\"server_code\": \"...\", \"dockerfile\": \"...\", \"endpoint\": \"/api/action\", "
+    "\"confirm_string\": \"...\", \"server_port\": 3000, "
+    "\"parameters\": {\"action\": \"confirm\"}}"
+)
+
+_LAB_SCAFFOLD_CRLF_SYS = (
+    "Eres un experto en seguridad. Genera un servidor Node.js para un lab de CRLF injection. "
+    "CRITICO bind: app.listen(3000, '0.0.0.0'). "
+    "CRITICO Dockerfile: NO hagas COPY package.json — "
+    "usa RUN npm install express en su lugar. REGLAS:\n"
+    "1. Endpoint GET /redirect?url=<valor> que redirige al valor SIN sanitizar\n"
+    "2. Usa res.setHeader('Location', req.query.url) directamente — sin escapar ni filtrar\n"
+    "3. El endpoint responde 302 con Location = el valor del parametro tal cual\n"
+    "4. Esto permite inyectar \\r\\n para insertar cabeceras arbitrarias en la respuesta\n"
+    "5. NO uses res.redirect() — usa res.writeHead(302, {Location: url}) para que los \\r\\n pasen\n"
+    "Responde SOLO con JSON sin markdown: "
+    "{\"server_code\": \"...\", \"dockerfile\": \"...\", \"endpoint\": \"/redirect\", "
+    "\"confirm_string\": \"\", \"server_port\": 3000, "
+    "\"parameters\": {\"url\": \"https://example.com\"}}"
+)
+
 _LAB_SCAFFOLD_OAUTH_SYS = (
     "Eres un experto en seguridad. Genera un servidor para un lab de OAuth bypass. "
     "El servidor tiene un flujo OAuth simplificado con un bypass de state/redirect_uri. REGLAS:\n"
@@ -7984,6 +8016,15 @@ _SCAFFOLD_SYS_FOR_CLASS = {
     "business-logic":              "_LAB_SCAFFOLD_BUSINESS_LOGIC_SYS",
     "logic-flaw":                  "_LAB_SCAFFOLD_BUSINESS_LOGIC_SYS",
     "insufficient-validation":     "_LAB_SCAFFOLD_BUSINESS_LOGIC_SYS",
+    # CSRF
+    "csrf":                        "_LAB_SCAFFOLD_CSRF_SYS",
+    "cross-site-request-forgery":  "_LAB_SCAFFOLD_CSRF_SYS",
+    "xsrf":                        "_LAB_SCAFFOLD_CSRF_SYS",
+    # CRLF injection
+    "crlf-injection":              "_LAB_SCAFFOLD_CRLF_SYS",
+    "crlf":                        "_LAB_SCAFFOLD_CRLF_SYS",
+    "http-response-splitting":     "_LAB_SCAFFOLD_CRLF_SYS",
+    "response-splitting":          "_LAB_SCAFFOLD_CRLF_SYS",
 }
 
 # Cache de scaffolds verificados: (tech, vuln_class) → lab_config dict.
@@ -8029,6 +8070,8 @@ def _scaffold_llm_lab_for_class(llm, source_dir: str, notes: dict, cve_id: str,
         "_LAB_SCAFFOLD_RACE_CONDITION_SYS":      _LAB_SCAFFOLD_RACE_CONDITION_SYS,
         "_LAB_SCAFFOLD_PATH_CONFUSION_SYS":      _LAB_SCAFFOLD_PATH_CONFUSION_SYS,
         "_LAB_SCAFFOLD_BUSINESS_LOGIC_SYS":      _LAB_SCAFFOLD_BUSINESS_LOGIC_SYS,
+        "_LAB_SCAFFOLD_CSRF_SYS":                _LAB_SCAFFOLD_CSRF_SYS,
+        "_LAB_SCAFFOLD_CRLF_SYS":                _LAB_SCAFFOLD_CRLF_SYS,
     }
     sys_key = _SCAFFOLD_SYS_FOR_CLASS.get(vuln_class)
     sys_prompt = _SYS_MAP.get(sys_key) if sys_key else None
@@ -12768,6 +12811,107 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                          "estado explotado para verificar" if es else
                                          "business-logic: confirm_string of exploited state "
                                          "needed to verify"))
+            # CSRF: peticion cross-origin sin token
+            elif (not plugin_dir and fr.local_path and
+                  inv.vuln_class in ("csrf", "cross-site-request-forgery", "xsrf")):
+                from .genericverify import verify_generic_csrf
+                _csrf_ep     = notes.get("endpoint") or "/api/action"
+                _csrf_method = notes.get("http_method") or "POST"
+                _csrf_params = notes.get("parameters") or {}
+                _csrf_cs     = notes.get("confirm_string") or ""
+                step(("intentando verificacion DINAMICA GENERICA -- CSRF "
+                      "(peticion cross-origin sin token)..." if es else
+                      "attempting GENERIC DYNAMIC verification -- CSRF "
+                      "(cross-origin request without token)..."))
+                _csrf_dockerfile  = notes.get("dockerfile_body") or ""
+                _csrf_extra_files = notes.get("extra_files") or None
+                _scf_csrf = False
+                if not _csrf_dockerfile and llm is not None:
+                    _scf = _scaffold_llm_lab_for_class(
+                        llm, str(fr.local_path), notes, inv.cve_id, "csrf", step, es,
+                        patch_diff=inv.llm_notes.get("patch_diff_analysis"))
+                    if _scf:
+                        _csrf_dockerfile  = _scf["dockerfile_body"]
+                        _csrf_extra_files = _scf["extra_files"]
+                        _csrf_ep          = _scf.get("endpoint") or _csrf_ep
+                        _csrf_cs          = _scf.get("confirm_string") or _csrf_cs
+                        if _scf.get("parameters"):
+                            _csrf_params = _scf["parameters"]
+                        _scf_csrf = True
+                wr = verify_generic_csrf(
+                    fr.local_path, _csrf_ep, _csrf_method,
+                    confirm_string=_csrf_cs, parameters=_csrf_params,
+                    on_step=step, budget_s=budget_s,
+                    dockerfile_body=_csrf_dockerfile, extra_files=_csrf_extra_files)
+                if _scf_csrf and not wr.verified:
+                    _lab_cfg_csrf = {
+                        "dockerfile_body": _csrf_dockerfile, "extra_files": _csrf_extra_files,
+                        "endpoint": _csrf_ep, "confirm_string": _csrf_cs,
+                        "parameters": _csrf_params,
+                    }
+                    def _csrf_verifier(cfg):
+                        return verify_generic_csrf(
+                            fr.local_path, cfg.get("endpoint", _csrf_ep), _csrf_method,
+                            confirm_string=cfg.get("confirm_string", _csrf_cs),
+                            parameters=cfg.get("parameters", _csrf_params),
+                            on_step=step, budget_s=budget_s,
+                            dockerfile_body=cfg["dockerfile_body"],
+                            extra_files=cfg.get("extra_files"))
+                    wr, _lab_cfg_csrf, _prog = _feedback_loop(
+                        llm, _csrf_verifier, wr, _lab_cfg_csrf, step, es)
+                    if not wr.verified:
+                        _escalate_to_analyst(inv, getattr(wr, 'detail', '') or "",
+                                             _lab_cfg_csrf, es, progress_level=_prog)
+                _apply_wpverify_result(inv, wr, es, llm)
+            # CRLF injection / HTTP response splitting
+            elif (not plugin_dir and fr.local_path and
+                  inv.vuln_class in ("crlf-injection", "crlf", "http-response-splitting",
+                                     "response-splitting")):
+                from .genericverify import verify_generic_crlf_injection
+                _crlf_ep     = notes.get("endpoint") or "/redirect"
+                _crlf_method = notes.get("http_method") or "GET"
+                _crlf_param  = notes.get("inject_param") or notes.get("url_param") or ""
+                _crlf_params = notes.get("parameters") or {}
+                step(("intentando verificacion DINAMICA GENERICA -- CRLF injection "
+                      "(cabecera HTTP inyectada via \\r\\n)..." if es else
+                      "attempting GENERIC DYNAMIC verification -- CRLF injection "
+                      "(HTTP header injected via \\r\\n)..."))
+                _crlf_dockerfile  = notes.get("dockerfile_body") or ""
+                _crlf_extra_files = notes.get("extra_files") or None
+                _scf_crlf = False
+                if not _crlf_dockerfile and llm is not None:
+                    _scf = _scaffold_llm_lab_for_class(
+                        llm, str(fr.local_path), notes, inv.cve_id, "crlf-injection", step, es,
+                        patch_diff=inv.llm_notes.get("patch_diff_analysis"))
+                    if _scf:
+                        _crlf_dockerfile  = _scf["dockerfile_body"]
+                        _crlf_extra_files = _scf["extra_files"]
+                        _crlf_ep          = _scf.get("endpoint") or _crlf_ep
+                        _scf_crlf         = True
+                wr = verify_generic_crlf_injection(
+                    fr.local_path, _crlf_ep, _crlf_method,
+                    inject_param=_crlf_param, parameters=_crlf_params,
+                    on_step=step, budget_s=budget_s,
+                    dockerfile_body=_crlf_dockerfile, extra_files=_crlf_extra_files)
+                if _scf_crlf and not wr.verified:
+                    _lab_cfg_crlf = {
+                        "dockerfile_body": _crlf_dockerfile, "extra_files": _crlf_extra_files,
+                        "endpoint": _crlf_ep, "confirm_string": "",
+                        "parameters": _crlf_params,
+                    }
+                    def _crlf_verifier(cfg):
+                        return verify_generic_crlf_injection(
+                            fr.local_path, cfg.get("endpoint", _crlf_ep), _crlf_method,
+                            inject_param=_crlf_param, parameters=cfg.get("parameters", _crlf_params),
+                            on_step=step, budget_s=budget_s,
+                            dockerfile_body=cfg["dockerfile_body"],
+                            extra_files=cfg.get("extra_files"))
+                    wr, _lab_cfg_crlf, _prog = _feedback_loop(
+                        llm, _crlf_verifier, wr, _lab_cfg_crlf, step, es)
+                    if not wr.verified:
+                        _escalate_to_analyst(inv, getattr(wr, 'detail', '') or "",
+                                             _lab_cfg_crlf, es, progress_level=_prog)
+                _apply_wpverify_result(inv, wr, es, llm)
         else:
             step(f"no se pudo obtener el codigo: {fr.note}" if es else
                  f"could not fetch the source: {fr.note}")

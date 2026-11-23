@@ -4537,3 +4537,186 @@ def verify_generic_nosql_injection(
     finally:
         step("desmontando el laboratorio generico...")
         lab.teardown()
+
+
+# ---------------------------------------------------------------------------
+# CSRF verifier
+# ---------------------------------------------------------------------------
+
+def verify_generic_csrf(
+    source_dir: str,
+    endpoint: str,
+    http_method: str = "POST",
+    confirm_string: str = "",
+    parameters: Optional[dict] = None,
+    on_step: Optional[Callable[[str], None]] = None,
+    budget_s: float = 900.0,
+    dockerfile_body: str = "", extra_files: Optional[dict] = None,
+) -> WpVerifyResult:
+    """Verifica CSRF: envia peticion cross-origin sin CSRF token.
+
+    Estrategia: hace la peticion de estado-mutante SIN cabeceras Origin/Referer del
+    mismo dominio ni token CSRF en el body — si el servidor acepta (2xx o confirm_string
+    en la respuesta) → la accion es vulnerable a CSRF.
+    confirm_string debe ser un indicador de que la accion realmente se ejecuto
+    (p.ej. el nuevo valor de un campo despues de la mutacion).
+    """
+    step = on_step or (lambda _m: None)
+    res = WpVerifyResult()
+    if not _docker_daemon_ok():
+        res.available = False
+        res.detail = "sin daemon Docker alcanzable"
+        res.limitations.append("verificacion dinamica NO intentada: sin daemon Docker")
+        return res
+
+    boot = _bootstrap_generic_lab(source_dir, step, res, budget_s,
+                                   dockerfile_body=dockerfile_body, extra_files=extra_files)
+    if boot is None:
+        return res
+    lab, base_url, container = boot
+    try:
+        params = dict(parameters or {})
+        body_data = "&".join(f"{k}={v}" for k, v in params.items()) if params else ""
+        # Cross-origin request: Origin from a different domain, no CSRF token
+        evil_origin = "https://evil.example.com"
+        hdrs = {
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Origin":       evil_origin,
+            "Referer":      f"{evil_origin}/attack.html",
+        }
+        st, resp_hdrs, body_bytes = _http_request(
+            base_url, endpoint, http_method,
+            headers=hdrs, body=body_data.encode() if body_data else None,
+            timeout=15.0)
+        body = (body_bytes or b"").decode("utf-8", errors="replace")
+        step(f"CSRF: status={st} len={len(body)}")
+
+        confirmed = False
+        if confirm_string and confirm_string in body:
+            confirmed = True
+        elif not confirm_string and st in (200, 201, 202, 204):
+            confirmed = True
+
+        if confirmed:
+            res.verified = True
+            res.ok = True
+            res.detail = (f"CSRF CONFIRMADO: peticion cross-origin sin token aceptada "
+                          f"(status={st}) en {endpoint}")
+            step(f"VERIFICADO: CSRF — peticion de {evil_origin!r} aceptada")
+            _add_exploit_evidence(
+                res=res, method=http_method, url=base_url + endpoint,
+                resp_or_body=body,
+                highlight=confirm_string or str(st),
+                caption_es="CSRF CONFIRMADO: peticion cross-origin sin token aceptada.",
+                caption_en="CSRF CONFIRMED: cross-origin request without token accepted.",
+            )
+            return res
+
+        res.ok = True
+        res.detail = (f"CSRF no detectado: peticion cross-origin devolvio status={st} "
+                      f"sin confirm_string en la respuesta")
+        return res
+    except Exception as e:
+        res.detail = f"error inesperado en verify_generic_csrf: {e}"
+        return res
+    finally:
+        step("desmontando el laboratorio generico...")
+        lab.teardown()
+
+
+# ---------------------------------------------------------------------------
+# CRLF injection verifier
+# ---------------------------------------------------------------------------
+
+def verify_generic_crlf_injection(
+    source_dir: str,
+    endpoint: str,
+    http_method: str = "GET",
+    inject_param: str = "",
+    parameters: Optional[dict] = None,
+    on_step: Optional[Callable[[str], None]] = None,
+    budget_s: float = 900.0,
+    dockerfile_body: str = "", extra_files: Optional[dict] = None,
+) -> WpVerifyResult:
+    """Verifica CRLF injection / HTTP response splitting.
+
+    Inyecta secuencias CRLF en un parametro de query/header para intentar
+    insertar cabeceras HTTP arbitrarias en la respuesta. Confirmado por la
+    presencia de una cabecera canario (X-Injected-By: binoracle) en la respuesta.
+    """
+    step = on_step or (lambda _m: None)
+    res = WpVerifyResult()
+    if not _docker_daemon_ok():
+        res.available = False
+        res.detail = "sin daemon Docker alcanzable"
+        res.limitations.append("verificacion dinamica NO intentada: sin daemon Docker")
+        return res
+
+    boot = _bootstrap_generic_lab(source_dir, step, res, budget_s,
+                                   dockerfile_body=dockerfile_body, extra_files=extra_files)
+    if boot is None:
+        return res
+    lab, base_url, container = boot
+    try:
+        params = dict(parameters or {})
+        param = inject_param or _pick_param(params, ["url", "redirect", "next", "return",
+                                                       "location", "path", "goto"]) or "url"
+        canary_header = "X-Injected-By"
+        canary_value  = "binoracle-crlf"
+
+        payloads = [
+            f"https://example.com\r\n{canary_header}: {canary_value}",
+            f"https://example.com\r\n\r\n{canary_header}: {canary_value}",
+            f"https://example.com%0d%0a{canary_header}:%20{canary_value}",
+            f"https://example.com%0d%0a%0d%0a{canary_header}:%20{canary_value}",
+            f"https://example.com%0a{canary_header}:%20{canary_value}",
+        ]
+
+        for payload in payloads:
+            test_params = dict(params)
+            test_params[param] = payload
+            qs = "&".join(f"{k}={v}" for k, v in test_params.items())
+            ep_with_qs = f"{endpoint}?{qs}" if http_method == "GET" else endpoint
+            body_data = qs.encode() if http_method != "GET" else None
+            hdrs = {}
+            if http_method != "GET":
+                hdrs["Content-Type"] = "application/x-www-form-urlencoded"
+
+            st, resp_hdrs, body_bytes = _http_request(
+                base_url, ep_with_qs, http_method,
+                headers=hdrs, body=body_data, timeout=15.0)
+            body = (body_bytes or b"").decode("utf-8", errors="replace")
+            step(f"CRLF: payload {payload[:40]!r} → status={st}")
+
+            resp_hdrs_lower = {k.lower(): v for k, v in (resp_hdrs or {}).items()}
+            injected = (canary_header.lower() in resp_hdrs_lower or
+                        canary_value.lower() in body.lower())
+
+            if injected:
+                res.verified = True
+                res.ok = True
+                res.detail = (f"CRLF INJECTION CONFIRMADA: cabecera canario "
+                              f"'{canary_header}: {canary_value}' presente en la respuesta "
+                              f"(status={st}, param={param!r})")
+                step(f"VERIFICADO: CRLF injection — cabecera inyectada con payload {payload[:40]!r}")
+                _add_exploit_evidence(
+                    res=res, method=http_method, url=base_url + ep_with_qs,
+                    resp_or_body=body,
+                    highlight=canary_value,
+                    caption_es=(f"CRLF INJECTION CONFIRMADA: cabecera HTTP arbitraria "
+                                f"inyectada via param {param!r}."),
+                    caption_en=(f"CRLF INJECTION CONFIRMED: arbitrary HTTP header injected "
+                                f"via param {param!r}."),
+                )
+                return res
+
+        res.ok = True
+        res.detail = (f"CRLF injection no detectada: {len(payloads)} payloads probados "
+                      f"en {endpoint} (param={param!r}), cabecera canario no aparecio")
+        return res
+    except Exception as e:
+        res.detail = f"error inesperado en verify_generic_crlf_injection: {e}"
+        return res
+    finally:
+        step("desmontando el laboratorio generico...")
+        lab.teardown()
