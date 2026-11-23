@@ -1282,6 +1282,11 @@ def verify_generic_path_traversal(
         # continuacion (p.ej. /static/ -> /static/../../../../etc/passwd) -- modo URL_PATH.
         if endpoint and endpoint.endswith("/"):
             _url_path_mode = True
+        elif _analyst_owns_lab:
+            # Analyst provided a custom dockerfile — they know the endpoint. With no
+            # path_param and no scan results, default to URL_PATH mode so the payload is
+            # appended to the endpoint path (e.g. /hls/abc123/../../canary.txt).
+            _url_path_mode = True
         elif not scanned:
             res.detail = "no se identifico el parametro que lleva la ruta/fichero objetivo"
             res.limitations.append("la verificacion de path-traversal necesita saber que parametro "
