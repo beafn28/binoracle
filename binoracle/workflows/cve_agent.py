@@ -2228,7 +2228,8 @@ def _escalate_to_analyst(inv, fail_reason: str, lab_config: dict, es: bool) -> N
 # NUEVOS PROMPTS DE SCAFFOLD — clases de ataque adicionales
 # ═══════════════════════════════════════════════════════════════════════════════
 _LAB_SCAFFOLD_NOSQL_INJECTION_SYS = (
-    "Eres un experto en seguridad. Genera un servidor para un lab de NoSQL injection (MongoDB). "
+    "Eres un experto en seguridad. Genera un servidor Node.js para un lab de NoSQL injection (MongoDB). "
+    "CRITICO: el servidor DEBE escuchar en '0.0.0.0' (NO 'localhost'): server.listen(3000, '0.0.0.0'). "
     "El servidor tiene un endpoint de login vulnerable a operadores MongoDB. REGLAS:\n"
     "1. Endpoint POST /api/login con body JSON {username, password}\n"
     "2. La query vulnerable: db.users.findOne({username: req.body.username, password: req.body.password})\n"
@@ -2244,21 +2245,24 @@ _LAB_SCAFFOLD_NOSQL_INJECTION_SYS = (
 )
 
 _LAB_SCAFFOLD_JWT_BYPASS_SYS = (
-    "Eres un experto en seguridad. Genera un servidor para un lab de JWT bypass. "
-    "El servidor tiene un endpoint autenticado con JWT verificacion debil. REGLAS:\n"
-    "1. El servidor usa un JWT con algoritmo configurable\n"
+    "Eres un experto en seguridad. Genera un servidor Node.js para un lab de JWT bypass. "
+    "El servidor tiene un endpoint autenticado con JWT verificacion debil. REGLAS CRITICAS:\n"
+    "1. El servidor DEBE escuchar en '0.0.0.0' (NO en 'localhost') para ser accesible desde Docker\n"
     "2. VULNERABILIDAD: acepta alg='none' (sin firma) o tiene clave debil ('secret')\n"
-    "3. Endpoint GET /api/admin que requiere JWT con role='admin'\n"
-    "4. Con JWT falso (alg none o firmado con 'secret') devuelve datos con CONFIRM_STRING\n"
+    "3. Endpoint GET /api/admin que requiere JWT con role='admin' en el payload\n"
+    "4. Con JWT alg:none o firmado con clave debil 'secret' devuelve 200 con CONFIRM_STRING\n"
     "5. Sin JWT o con JWT invalido devuelve 401\n"
-    "Para alg none: el servidor NO debe rechazar tokens sin firma si se indica alg:none\n"
+    "6. CRITICO: usar jsonwebtoken <=8.5.1 (npm install jsonwebtoken@8.5.1)\n"
+    "7. Para alg none: NO llamar jwt.verify con algorithms=['RS256'] — dejar sin algoritmos\n"
+    "8. El server.listen() DEBE ser: server.listen(3000, '0.0.0.0', ...)\n"
     "Responde SOLO con JSON sin markdown: "
     "{\"server_code\": \"...\", \"dockerfile\": \"...\", \"endpoint\": \"/api/admin\", "
     "\"confirm_string\": \"...\", \"server_port\": 3000}"
 )
 
 _LAB_SCAFFOLD_DESERIALIZATION_SYS = (
-    "Eres un experto en seguridad. Genera un servidor para un lab de deserializacion insegura. "
+    "Eres un experto en seguridad. Genera un servidor Node.js para un lab de deserializacion insegura. "
+    "CRITICO: el servidor DEBE escuchar en '0.0.0.0' (NO 'localhost'): app.listen(3000, '0.0.0.0'). "
     "El servidor deserializa datos del usuario sin validar. REGLAS:\n"
     "1. Para Node.js: usa 'serialize-javascript' o 'node-serialize' vulnerable a RCE via IIFE\n"
     "2. Para Python: usa pickle.loads() directamente sobre input del usuario\n"
@@ -2273,7 +2277,8 @@ _LAB_SCAFFOLD_DESERIALIZATION_SYS = (
 )
 
 _LAB_SCAFFOLD_RACE_CONDITION_SYS = (
-    "Eres un experto en seguridad. Genera un servidor para un lab de race condition. "
+    "Eres un experto en seguridad. Genera un servidor Node.js para un lab de race condition. "
+    "CRITICO: el servidor DEBE escuchar en '0.0.0.0' (NO 'localhost'): app.listen(3000, '0.0.0.0'). "
     "El servidor tiene una operacion de lectura-modificacion-escritura sin atomicidad. REGLAS:\n"
     "1. Endpoint POST /api/redeem que canjea un voucher: lee el saldo, verifica >= 100, resta 100\n"
     "2. SIN transacciones ni locks: hay una ventana TOCTOU entre la verificacion y la resta\n"
@@ -2287,7 +2292,8 @@ _LAB_SCAFFOLD_RACE_CONDITION_SYS = (
 )
 
 _LAB_SCAFFOLD_PATH_CONFUSION_SYS = (
-    "Eres un experto en seguridad. Genera un servidor para un lab de path confusion / normalizacion. "
+    "Eres un experto en seguridad. Genera un servidor Node.js para un lab de path confusion / normalizacion. "
+    "CRITICO: el servidor DEBE escuchar en '0.0.0.0' (NO 'localhost'): app.listen(3000, '0.0.0.0'). "
     "El servidor tiene un middleware de autenticacion que se puede saltar con path manipulation. REGLAS:\n"
     "1. El middleware protege /admin/* pero usa una comparacion string simple (startsWith('/admin/'))\n"
     "2. BYPASS: /admin;foo/secret o /admin/../admin/secret o /ADMIN/secret (case) no matchean\n"
@@ -2301,7 +2307,8 @@ _LAB_SCAFFOLD_PATH_CONFUSION_SYS = (
 )
 
 _LAB_SCAFFOLD_BUSINESS_LOGIC_SYS = (
-    "Eres un experto en seguridad. Genera un servidor para un lab de business logic bypass. "
+    "Eres un experto en seguridad. Genera un servidor Node.js para un lab de business logic bypass. "
+    "CRITICO: el servidor DEBE escuchar en '0.0.0.0' (NO 'localhost'): app.listen(3000, '0.0.0.0'). "
     "El servidor tiene una logica de negocio con una condicion insuficiente. REGLAS:\n"
     "1. El endpoint permite una accion privilegiada (ej: descuento ilimitado, transferencia negativa)\n"
     "2. La validacion solo comprueba una condicion pero no todas las invariantes del negocio\n"
