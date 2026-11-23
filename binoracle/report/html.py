@@ -3498,6 +3498,162 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
             + f'<div class="blockers-box">{items}</div>'
             f'</section>')
 
+    # ── Sección de pasos de reproducción (curl + docker verify) ─────────────
+    repro_section = ""
+    if inv.verified and verified_ev:
+        import shlex as _shlex
+        _vc_r  = str(getattr(inv, "vuln_class", "") or "").lower()
+        _ep_r  = str(verified_ev.get("endpoint") or "")
+        _mth_r = str(verified_ev.get("metodo") or "POST").upper()
+        _bu_r  = str(verified_ev.get("base_url") or "http://target-lab")
+        _pl_r  = str(verified_ev.get("payload_ganador") or "")
+        _pk_r  = (str(verified_ev.get("sqli_param") or "") or
+                  str(verified_ev.get("path_param") or "") or
+                  str(verified_ev.get("ssti_param") or "") or
+                  str(verified_ev.get("ssrf_param") or "") or
+                  str(verified_ev.get("url_param") or "") or
+                  str(verified_ev.get("xss_param") or "") or "payload")
+        _can_r  = str(verified_ev.get("canary_secret") or "")
+        _can_path_r = str(verified_ev.get("canary_path") or "")
+        _url_r  = _bu_r.rstrip("/") + _ep_r
+
+        # Build curl command
+        def _q(s): return _shlex.quote(str(s))
+        _curl_parts = ["curl", "-s", "-i"]
+        _curl_parts += ["-X", _mth_r]
+        if _mth_r in ("POST", "PUT", "PATCH"):
+            if _pl_r:
+                _curl_parts += ["-d", f"{_pk_r}={_pl_r}"]
+            else:
+                _curl_parts += ["-d", f"{_pk_r}=PAYLOAD"]
+        elif _pl_r:
+            _full_url_r = f"{_url_r}?{_pk_r}={_pl_r}"
+        else:
+            _full_url_r = _url_r
+        _full_url_r = (_url_r if (_mth_r in ("POST", "PUT", "PATCH") or not _pl_r) else
+                       f"{_url_r}?{_pk_r}={_pl_r}")
+        _curl_parts.append(_q(_full_url_r))
+
+        # HTTP capture for Burp-style (if any real capture stored)
+        _first_hcap = None
+        _hcaps_r = list(verified_ev.get("http_captures") or [])
+        if _hcaps_r:
+            _first_hcap = _hcaps_r[0]
+
+        # Steps differ by class
+        _repro_steps = []
+        if any(x in _vc_r for x in ("command", "rce", "code-inj")):
+            _repro_steps = [
+                (("1 · Levantar el lab (Docker efímero)" if es else "1 · Start the lab (ephemeral Docker)"),
+                 f"# La URL base se asigna dinámicamente al arrancar\n"
+                 f"# BASE_URL={_bu_r}  (ejemplo — cambia en cada ejecucion)\nexport BASE_URL={_bu_r}"),
+                (("2 · Inyectar el comando" if es else "2 · Inject the command"),
+                 " ".join(_curl_parts)),
+                (("3 · Leer el canario dentro del contenedor" if es else "3 · Read canary inside container"),
+                 (f"docker exec -it <CONTAINER_ID> cat {_can_path_r}\n"
+                  f"# Debe aparecer el secreto: {_can_r}" if _can_r else
+                  f"docker exec -it <CONTAINER_ID> cat /tmp/canary.txt")),
+                (("Resultado esperado" if es else "Expected result"),
+                 (f"El fichero {_can_path_r} existe dentro del contenedor y contiene '{_can_r}'.\n"
+                  f"Esto prueba que el comando se ejecutó del lado del servidor." if _can_r else
+                  f"El canario aparece en el contenedor — ejecución de comandos confirmada.")),
+            ]
+        elif any(x in _vc_r for x in ("traversal", "lfi", "path")):
+            _repro_steps = [
+                (("1 · Levantar el lab" if es else "1 · Start the lab"), f"export BASE_URL={_bu_r}"),
+                (("2 · Enviar el path traversal" if es else "2 · Send path traversal"),
+                 " ".join(_curl_parts)),
+                (("Resultado esperado" if es else "Expected result"),
+                 (f"La respuesta contiene '{_can_r}' — lectura de fichero fuera del webroot confirmada."
+                  if _can_r else "El contenido del fichero objetivo aparece en la respuesta.")),
+            ]
+        elif any(x in _vc_r for x in ("sqli", "sql")):
+            _mysql_ver = str(verified_ev.get("mysql_version_extraida") or "")
+            _repro_steps = [
+                (("1 · Enviar la petición con el payload SQLi" if es else "1 · Send the SQLi request"),
+                 " ".join(_curl_parts)),
+                (("2 · Buscar en la respuesta" if es else "2 · Look in the response"),
+                 (f"grep -i 'version\\|mysql\\|xpath\\|~{_mysql_ver}' -" if _mysql_ver else
+                  "# Busca el error SQL o el canal de extracción en la respuesta")),
+                (("Resultado esperado" if es else "Expected result"),
+                 (f"La respuesta contiene la version MySQL: {_mysql_ver}" if _mysql_ver else
+                  "Error SQL o diferencia en la respuesta confirma la inyeccion.")),
+            ]
+        elif any(x in _vc_r for x in ("ssrf",)):
+            _repro_steps = [
+                (("1 · Levantar listener de callback" if es else "1 · Start callback listener"),
+                 "# En el laboratorio Docker se levanta un listener interno automáticamente"),
+                (("2 · Enviar la petición SSRF" if es else "2 · Send the SSRF request"),
+                 " ".join(_curl_parts)),
+                (("3 · Comprobar el log del listener" if es else "3 · Check listener log"),
+                 (f"# Token esperado: {_can_r}" if _can_r else
+                  "# El listener registra la conexión entrante del servidor objetivo")),
+            ]
+        elif any(x in _vc_r for x in ("xss",)):
+            _xss_m = str(verified_ev.get("xss_marker") or "")
+            _repro_steps = [
+                (("1 · Enviar la petición con el payload XSS" if es else "1 · Send the XSS request"),
+                 " ".join(_curl_parts)),
+                (("2 · Comprobar la respuesta" if es else "2 · Check the response"),
+                 (f"grep -i '{_xss_m}' -" if _xss_m else "# El marcador XSS aparece en la respuesta sin sanitizar")),
+            ]
+        elif any(x in _vc_r for x in ("auth", "bypass", "missing-auth")):
+            _repro_steps = [
+                (("1 · Enviar la petición sin autenticación" if es else "1 · Send the request without authentication"),
+                 " ".join(_curl_parts)),
+                (("Resultado esperado" if es else "Expected result"),
+                 "HTTP 200 con contenido restringido — la autenticación no se aplica."),
+            ]
+        elif any(x in _vc_r for x in ("ssti", "template")):
+            _ssti_p = str(verified_ev.get("ssti_param") or _pk_r)
+            _repro_steps = [
+                (("1 · Enviar la petición con el payload SSTI" if es else "1 · Send the SSTI request"),
+                 " ".join(_curl_parts)),
+                (("Resultado esperado" if es else "Expected result"),
+                 "La expresión de plantilla se evalúa en el servidor — resultado aparece en la respuesta."),
+            ]
+        elif any(x in _vc_r for x in ("upload", "file")):
+            _repro_steps = [
+                (("1 · Subir el webshell" if es else "1 · Upload the webshell"),
+                 " ".join(_curl_parts)),
+                (("2 · Ejecutar el webshell" if es else "2 · Execute the webshell"),
+                 "# Accede a la URL donde se subió el archivo para ejecutar el payload"),
+            ]
+        else:
+            _repro_steps = [
+                (("1 · Enviar la petición" if es else "1 · Send the request"),
+                 " ".join(_curl_parts)),
+            ]
+
+        if _repro_steps:
+            _cards = []
+            for _sn, (_stitle, _sbody) in enumerate(_repro_steps, 1):
+                _is_curl = _sbody.strip().startswith("curl")
+                _copy_btn = ""
+                if _is_curl:
+                    _copy_id = f"repro-curl-{cve or 'x'}-{_sn}"
+                    _copy_btn = (f'<button class="burp-copy-btn" '
+                                 f'onclick="navigator.clipboard.writeText('
+                                 f"document.getElementById('{_copy_id}').innerText"
+                                 f')">copy</button>')
+                _pre_id = f' id="{_copy_id}"' if _is_curl else ""
+                _cards.append(
+                    f'<div class="repro-card">'
+                    f'<div class="repro-title">{_esc(_stitle)}</div>'
+                    f'<div class="repro-body-wrap">{_copy_btn}'
+                    f'<pre class="repro-body"{_pre_id}>{_esc(_sbody)}</pre>'
+                    f'</div></div>'
+                )
+
+            repro_section = (
+                f'<section id="sec-repro" style="margin-top:32px">'
+                + _sec_heading("05b",
+                               "PASOS DE REPRODUCCIÓN",
+                               "REPRODUCTION STEPS", "repro")
+                + f'<div class="repro-grid">{"".join(_cards)}</div>'
+                + f'</section>'
+            )
+
     # ── PoC download + inline ─────────────────────────────────────────────────
     poc_section = ""
     dl = ""
@@ -4160,6 +4316,12 @@ code,pre,kbd{font-family:'JetBrains Mono','Fira Code',ui-monospace,monospace}
 .synth-body{font-family:var(--mono);font-size:12px;white-space:pre-wrap;word-break:break-all;line-height:1.6;color:#d4d4d4;padding:14px 16px;max-height:320px;overflow-y:auto}
 .synth-body mark.hl{background:#f9a825;color:#000;padding:1px 4px;border-radius:3px;font-weight:700;font-size:13px}
 .proof-box{background:var(--surf2);border:2px solid var(--brd);border-radius:12px;overflow:hidden;margin-top:14px}
+.repro-grid{display:flex;flex-direction:column;gap:12px}
+.repro-card{background:var(--surf2);border:1.5px solid var(--brd);border-radius:8px;overflow:hidden}
+.repro-title{background:var(--surf3);padding:8px 14px;font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--acc);border-bottom:1px solid var(--brd)}
+.repro-body-wrap{position:relative}
+.repro-body{font-family:var(--mono);font-size:12px;white-space:pre-wrap;word-break:break-all;line-height:1.65;color:#d4d4d4;background:#0d1117;padding:12px 16px;margin:0;overflow-x:auto}
+.repro-body-wrap .burp-copy-btn{position:absolute;top:6px;right:8px}
 .prow{display:grid;grid-template-columns:220px 1fr;gap:0;border-bottom:1px solid var(--brd);padding:10px 16px;align-items:start}
 .prow:last-child{border-bottom:none}
 .prow-hl{background:rgba(249,168,37,.08);border-left:3px solid #f9a825}
@@ -4385,6 +4547,7 @@ document.addEventListener('DOMContentLoaded',function(){
         + tech_section
         + inv_steps_section
         + shots_section
+        + repro_section
         + blockers_section
         + poc_section
         + full_section

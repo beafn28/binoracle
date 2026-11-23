@@ -3799,20 +3799,30 @@ def _hueco_code_analysis(inv: "Investigation", fr: Any, llm: Any, step: Any, es:
         ("idor",             ["insecure direct object", "idor", "object reference"]),
     ]
     _original_vc = vc
-    for _candidate_class, _keywords in _CLASS_KEYWORDS:
-        if any(kw in _desc_lower for kw in _keywords):
-            if _candidate_class != vc:
-                # Only correct if current class doesn't match primary keywords
-                # (avoid correcting a correct sqli to xss just because description mentions xss as impact)
-                _primary_kw = _keywords[:3]
-                if any(kw in _desc_lower for kw in _primary_kw):
-                    step((f"[HUECO] clase corregida por descripcion NVD: '{_original_vc}' → '{_candidate_class}' "
-                          f"(keyword: '{next(kw for kw in _primary_kw if kw in _desc_lower)}')") if es else
-                         (f"[HUECO] class corrected from NVD description: '{_original_vc}' → '{_candidate_class}' "
-                          f"(keyword: '{next(kw for kw in _primary_kw if kw in _desc_lower)}')"))
-                    inv.vuln_class = _candidate_class
-                    vc = _candidate_class
-                    break
+    # Clases que el analista puede pasar via CLI y son más específicas que las genéricas (rce,
+    # code-injection): no las sobrescribimos aunque la descripción NVD diga "remote code execution".
+    _ANALYST_SPECIFIC_CLASSES = {
+        "arbitrary-file-upload", "file-upload", "unrestricted-file-upload",
+        "sqli", "sql-injection", "xss", "stored-xss", "reflected-xss",
+        "ssrf", "path-traversal", "lfi", "xxe", "ssti", "idor",
+        "missing-authorization", "deserialization", "open-redirect",
+    }
+    _analyst_locked = notes.get("analyst_endpoint_lock") or vc in _ANALYST_SPECIFIC_CLASSES
+    if not _analyst_locked:
+        for _candidate_class, _keywords in _CLASS_KEYWORDS:
+            if any(kw in _desc_lower for kw in _keywords):
+                if _candidate_class != vc:
+                    # Only correct if current class doesn't match primary keywords
+                    # (avoid correcting a correct sqli to xss just because description mentions xss as impact)
+                    _primary_kw = _keywords[:3]
+                    if any(kw in _desc_lower for kw in _primary_kw):
+                        step((f"[HUECO] clase corregida por descripcion NVD: '{_original_vc}' → '{_candidate_class}' "
+                              f"(keyword: '{next(kw for kw in _primary_kw if kw in _desc_lower)}')") if es else
+                             (f"[HUECO] class corrected from NVD description: '{_original_vc}' → '{_candidate_class}' "
+                              f"(keyword: '{next(kw for kw in _primary_kw if kw in _desc_lower)}')"))
+                        inv.vuln_class = _candidate_class
+                        vc = _candidate_class
+                        break
     # ---- end auto-correct vuln_class -------------------------------------------
 
     # ---- pre-step: extract param hints from CVE description text ----------------
@@ -9793,9 +9803,18 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _apply_wpverify_result(inv, wr, es, llm)
             elif (not is_drupal and not is_joomla and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class in ("file-upload", "arbitrary-file-upload") and notes.get("endpoint")):
-                from .wpverify import verify_wordpress_file_upload, _pick_param, _FILE_UPLOAD_HINTS
+                from .wpverify import (verify_wordpress_file_upload, _pick_param,
+                                       _FILE_UPLOAD_HINTS, _UPLOAD_FORM_PLUGIN_CONFIG)
                 params = notes.get("parameters") or []
                 file_p = notes.get("file_param") or _pick_param(params, _FILE_UPLOAD_HINTS)
+                # Si el plugin tiene configuracion conocida de campo anidado (WordForm, WPForms...),
+                # pasamos los parametros al verificador -- este los usa salvo que el analista ya
+                # los haya incluido en las hints de la investigacion.
+                _fu_slug_cfg = _UPLOAD_FORM_PLUGIN_CONFIG.get(plugin_dir, {})
+                _fu_file_field_tpl = notes.get("file_field_tpl") or _fu_slug_cfg.get("file_field_tpl", "")
+                _fu_extra_upload    = notes.get("extra_upload_data") or (
+                    dict(_fu_slug_cfg["extra_upload_data"]) if _fu_slug_cfg.get("extra_upload_data") else None)
+                _fu_shortcode = shortcode_name_generic or _fu_slug_cfg.get("shortcode_name")
                 step(("intentando verificacion DINAMICA -- webshell subido que calcula una suma "
                      "(WordPress+MySQL efimero en Docker)..." if es else
                      "attempting DYNAMIC verification -- uploaded webshell computing a sum "
@@ -9803,8 +9822,10 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 wr = verify_wordpress_file_upload(fr.local_path, plugin_dir, notes.get("endpoint"),
                                                   notes.get("http_method") or "POST", params,
                                                   file_param_hint=file_p or "", on_step=step, budget_s=budget_s,
-                                                  companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic,
-                                                  keep_lab_on_failure=keep_lab_on_failure)
+                                                  companion_plugins=companion_plugins, shortcode_name=_fu_shortcode,
+                                                  keep_lab_on_failure=keep_lab_on_failure,
+                                                  file_field_tpl=_fu_file_field_tpl,
+                                                  extra_upload_data=_fu_extra_upload)
                 fu_wp_extra_nonce_pages: List[str] = []
                 fu_wp_extra_setup_trigger_paths: List[str] = []
                 def _on_fu_wp_suggestion(sug):
@@ -9814,8 +9835,10 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     return verify_wordpress_file_upload(
                         fr.local_path, plugin_dir, ep, notes.get("http_method") or "POST", params,
                         file_param_hint=pr or "", on_step=step, budget_s=budget_s,
-                        companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic,
+                        companion_plugins=companion_plugins, shortcode_name=_fu_shortcode,
                         keep_lab_on_failure=keep_lab_on_failure,
+                        file_field_tpl=_fu_file_field_tpl,
+                        extra_upload_data=_fu_extra_upload,
                         extra_nonce_pages=list(fu_wp_extra_nonce_pages),
                         extra_setup_trigger_paths=list(fu_wp_extra_setup_trigger_paths))
                 wr = _retry_or_keep_lab_alive(
@@ -10080,7 +10103,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 wr = verify_generic_boolean_oracle(
                     fr.local_path, bool_ep, bool_method,
                     true_p, true_v, false_p, false_v,
-                    confirm_field=confirm_f, on_step=step, budget_s=budget_s)
+                    confirm_field=confirm_f, on_step=step, budget_s=budget_s,
+                    prebuilt_url=notes.get("prebuilt_url") or "")
                 _apply_wpverify_result(inv, wr, es, llm)
             # CORS misconfiguration: reflexion del Origin en ACAO + ACAC: true
             elif (not plugin_dir and fr.local_path and
@@ -10195,6 +10219,25 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
         except Exception:
             llm = None
     inv = Investigation(cve_id=cve_id.upper().strip())
+
+    # Limpieza proactiva de Docker antes de cada investigacion: evita ENOSPC en MySQL cuando
+    # el build cache / volumenes huerfanos se acumulan entre labs.
+    try:
+        import sys as _sys, os as _os
+        _scripts = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.dirname(
+            _os.path.abspath(__file__)))), "scripts")
+        if _scripts not in _sys.path:
+            _sys.path.insert(0, _scripts)
+        from docker_cleanup import get_reclaimable_gb, prune as _docker_prune
+        _recl = get_reclaimable_gb()
+        if _recl >= 8.0:
+            step((f"[INFO] auto-limpieza Docker: {_recl:.1f} GB reclaimables -- "
+                  f"purgando build cache y volumenes para evitar ENOSPC en labs...") if es else
+                 (f"[INFO] Docker auto-cleanup: {_recl:.1f} GB reclaimable -- "
+                  f"purging build cache and orphan volumes to prevent ENOSPC in labs..."))
+            _docker_prune()
+    except Exception:
+        pass
 
     # 1) consulta la CVE
     step(f"consultando {inv.cve_id} (NVD + GitHub + Exploit-DB)..." if es else

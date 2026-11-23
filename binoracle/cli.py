@@ -1433,6 +1433,8 @@ def cmd_cve(args, config):
         _slugs = [s.strip() for s in args.companion_plugins.split(",") if s.strip()]
         if _slugs:
             hints["companion_plugins"] = _slugs
+    if getattr(args, "target_url", None):
+        hints["prebuilt_url"] = args.target_url.rstrip("/")
     if getattr(args, "setup_wp_options", None):
         _parsed_opts = []
         import re as _re
@@ -2622,6 +2624,11 @@ def build_parser() -> argparse.ArgumentParser:
                          "\"learnpress[get_courses_of_subcategory]=yes\"")
     cv.add_argument("--budget", type=float, default=600,
                     help="verification budget in seconds (default 600)")
+    cv.add_argument("--target-url", dest="target_url",
+                    help="URL base de un objetivo ya corriendo (salta el lab Docker efimero). "
+                         "Usar cuando el objetivo esta levantado manualmente, ej. "
+                         "'http://localhost:1337'. El motor hace las peticiones directamente "
+                         "contra esa URL sin construir ni arrancar ningun contenedor.")
     cv.add_argument("--no-cache", action="store_true", help="force fresh investigation (no cache)")
     cv.add_argument("-o", "--html", help="export full HTML report (with screenshots) to this path")
     cv.add_argument("--json", dest="json_out", help="dump full evidence JSON to this path")

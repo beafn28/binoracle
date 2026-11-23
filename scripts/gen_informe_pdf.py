@@ -306,7 +306,10 @@ def generate_markdown_report(cve_id, r, ve):
         return _report_sqli_union(cve_id, endpoint, param, payload, mysql_ver, affected, auth, plugin_name, desc, resp_body, status)
     if "error" in tech:
         return _report_sqli_error(cve_id, endpoint, param, payload, mysql_ver, affected, auth, plugin_name, desc, resp_body, status)
-    # boolean/time or unknown
+    # time-based blind
+    if "time" in tech or "sleep" in tech or ("blind" in tech and "boolean" not in tech):
+        return _report_sqli_timebased(cve_id, endpoint, param, payload, affected, auth, plugin_name, desc, ve)
+    # boolean/unknown
     return _report_sqli_boolean(cve_id, endpoint, param, payload, affected, auth, plugin_name, desc, ve)
 
 # ── SQLi ERROR-BASED ─────────────────────────────────────────────────────────
@@ -610,6 +613,103 @@ La diferencia en tamano de respuesta ({resp_true} bytes vs {resp_false} bytes) e
 
 Boolean in-band SQLi es la tecnica de ultimo recurso cuando ni los errores ni los datos son visibles en la respuesta. El hecho de que sea explotable prueba que la correccion no puede depender de ocultar mensajes de error o de que los datos no aparezcan en las respuestas: **la unica correccion efectiva es que el parametro nunca pueda alterar la estructura de la consulta SQL**, lo que solo garantizan las prepared statements con valores vinculados por separado.
 """
+
+# ── SQLi TIME-BASED BLIND ────────────────────────────────────────────────────
+
+def _report_sqli_timebased(cve_id, endpoint, param, payload, affected, auth, plugin, desc, ve):
+    auth_line = (f"El atacante inicia sesion como subscriber (`{auth}`) antes de lanzar la peticion."
+                 if auth else "El endpoint es accesible sin autenticacion.")
+    plugin_line = f"del plugin `{plugin}`" if plugin else "del componente vulnerable"
+    ctrl_ep = endpoint.split("?")[0] if "?" in endpoint else endpoint
+    sleep_s  = ve.get("sleep3_s") or ve.get("sleep_diferencial_s") or "3.0x"
+    ctrl_s   = ve.get("sleep0_s") or ve.get("ctrl_s") or "0.03"
+    diff_s   = ve.get("diferencial_s") or "?"
+    _resp_ctrl_body  = f"# [tiempo de respuesta: ~{ctrl_s}s]\n# Respuesta normal — sin delay"
+    _resp_sleep_body = (f"# [tiempo de respuesta: {sleep_s}s]\n"
+                        f"# Diferencial: {diff_s}s — confirma SLEEP ejecutado en MySQL")
+    _req_ctrl,   _resp_ctrl_b   = _burp_block(ctrl_ep, "GET",  {param: "1"},   "200", _resp_ctrl_body,  auth)
+    _req_exploit, _resp_exploit = _burp_block(ctrl_ep, "GET",  {param: payload or f"/x'/**/or/**/sleep(3)/**/or/**/'x"}, "200", _resp_sleep_body, auth)
+    return f"""## Analisis de Explotacion -- {cve_id}
+
+### A. Modelo mental del flujo normal (sin exploit)
+
+Cuando una peticion HTTP legitima llega al endpoint `{endpoint}` {plugin_line}, la cadena es:
+
+1. **Recepcion.** El servidor encamina la peticion al handler del componente vulnerable.
+2. **Uso de `{param}`.** El componente extrae el valor del parametro y lo usa en una consulta SQL — tipicamente un filtro, una busqueda o una comprobacion de acceso.
+3. **Respuesta.** El servidor devuelve la respuesta en un tiempo determinado por la consulta.
+4. **Envio.** El cliente recibe la respuesta con una latencia normal (< 100ms sin carga).
+
+El punto critico: **el tiempo de respuesta depende de la evaluacion de la consulta SQL**. Si se puede inyectar una funcion de retardo como `SLEEP(N)`, la diferencia de latencia entre la peticion de control y la peticion con inyeccion es el canal de confirmacion de la vulnerabilidad.
+
+---
+
+### B. Identificacion de la superficie de confianza mal ubicada
+
+El parametro `{param}` se interpola directamente en la clausula SQL sin sanitizar. Esto permite al atacante insertar condiciones SQL arbitrarias que incluyen llamadas a `SLEEP()`. La tecnica time-based blind confirma la inyeccion midiendo el diferencial de latencia, sin necesidad de que ningun dato aparezca en la respuesta ni de que los errores sean visibles.
+
+El atacante puede entonces extraer cualquier dato de la base de datos bit a bit usando condiciones temporales: si `SLEEP(3)` solo se ejecuta cuando una condicion es verdadera, el diferencial de latencia confirma cada bit.
+
+---
+
+### C. Cadena de razonamiento del atacante
+
+**Paso 1 -- Verificacion del canal temporal.**
+El atacante envia dos peticiones: una de control (valor inocuo) y una con `SLEEP(3)` en la condicion. Si la segunda tarda ~3 segundos mas, el canal time-based esta disponible.
+
+**Paso 2 -- Calibracion.**
+Se mide la latencia de control (~{ctrl_s}s) y la latencia con SLEEP(3) (~{sleep_s}s). El diferencial de {diff_s}s es consistente y reproducible.
+
+**Paso 3 -- Extraccion de datos.**
+Con el canal calibrado, el atacante extrae datos bit a bit usando condiciones como `IF(ORD(SUBSTR(user(),1,1))>64,SLEEP(3),0)`. La automatizacion (sqlmap) puede extraer credenciales en minutos.
+
+**Paso 4 -- Confirmacion en laboratorio.**
+{auth_line}
+El payload `{payload or "/x'/**/or/**/sleep(3)/**/or/**/'x"}` produce un diferencial de ~{diff_s}s frente a la peticion de control, confirmando la inyeccion.
+
+---
+
+### D. Anatomia exacta del PoC verificado
+
+**Peticion de control (sin inyeccion — respuesta inmediata) — solicitud:**
+```
+{_req_ctrl}
+```
+
+**Peticion de control — respuesta (~{ctrl_s}s):**
+```
+{_resp_ctrl_b}
+```
+
+**Peticion con time-blind SQLi (SLEEP confirmado — diferencial real) — solicitud:**
+```
+{_req_exploit}
+```
+
+**Peticion con inyeccion — respuesta (~{sleep_s}s):**
+```
+{_resp_exploit}
+```
+
+El diferencial de {diff_s}s entre la peticion de control (~{ctrl_s}s) y la peticion con SLEEP (~{sleep_s}s) es la evidencia de la inyeccion: la funcion `SLEEP()` inyectada se ejecuta en el motor MySQL del servidor.
+
+---
+
+### E. Condiciones necesarias
+
+**Condicion 1:** version del componente afectada ({affected}).
+
+**Condicion 2:** el servidor responde con un diferencial de latencia medible cuando se ejecuta SLEEP(). Si hay un timeout de proxy o un WAF que aborta peticiones lentas antes de {sleep_s}s, el diferencial puede no ser observable.
+
+**Condicion 3:** {"sesion con rol subscriber o superior." if auth else "acceso anonimo al endpoint (no se requiere autenticacion)."}
+
+---
+
+### F. Generalizacion defensiva
+
+Time-based blind SQLi es explotable incluso cuando los errores de base de datos no son visibles en las respuestas y los datos nunca aparecen en el cuerpo de la respuesta. El hecho de que sea confirmable solo con latencia demuestra que la correccion no puede depender de ocultar mensajes de error ni de que los datos no se devuelvan: **la unica correccion efectiva es que el parametro nunca pueda alterar la estructura de la consulta SQL**, lo que solo garantizan las prepared statements con valores vinculados por separado.
+"""
+
 
 # ── XSS ──────────────────────────────────────────────────────────────────────
 
