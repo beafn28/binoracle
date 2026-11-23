@@ -23,6 +23,7 @@ import time
 from typing import Callable, List, Optional
 
 from .wpverify import (WpVerifyResult, _ALPINE_IMAGE, _FILE_UPLOAD_HINTS, _ID_HINTS, _PATH_HINTS,
+                       _UPLOAD_BINARY_SUFFIXES,
                        _REDIRECT_HINTS, _SQLI_HINTS, _URL_HINTS, _XML_HINTS, _XSS_HINTS,
                        _XssBrowserSession, _docker_daemon_ok, _http_request,
                        _http_request_raw_path, _lab_host,
@@ -1183,9 +1184,9 @@ def verify_generic_command_injection(
                 resp_or_body=_ci_body,
                 highlight=_highlight_ci,
                 caption_es=(f"COMMAND INJECTION confirmada: payload en '{res.evidence.get('parametro_ganador','')}' "
-                            f"ejecuto comando en el servidor — id={_id_output!r if _id_output else '(ver canario)'}"),
+                            f"ejecuto comando en el servidor — id={repr(_id_output) if _id_output else '(ver canario)'}"),
                 caption_en=(f"COMMAND INJECTION confirmed: payload in '{res.evidence.get('parametro_ganador','')}' "
-                            f"executed server command — id={_id_output!r if _id_output else '(see canary)'}"),
+                            f"executed server command — id={repr(_id_output) if _id_output else '(see canary)'}"),
                 extra_terminal=_ci_body,
             )
         else:
@@ -1869,6 +1870,15 @@ def verify_generic_file_upload(
         res.evidence.update({"base_url": base_url, "contenedor": container, "endpoint": endpoint,
                              "file_param": file_param, "canary_secret": secret})
 
+        # Companion name param: when upload field is *_url, the sibling *_name carries filename
+        _companion_name_param = ""
+        if any(file_param.endswith(s) for s in _UPLOAD_BINARY_SUFFIXES):
+            _prefix = file_param[:file_param.rfind("_")] if "_" in file_param else ""
+            for _np in ((_prefix + "_name") if _prefix else "", _prefix + "_filename", "file_name", "filename"):
+                if _np and _np in base_params:
+                    _companion_name_param = _np
+                    break
+
         # dobles extensiones comunes (el servidor puede mirar solo la ULTIMA extension y
         # confundirla con un tipo inocuo, o solo la PRIMERA y servir el fichero igual por su
         # extension real) -- casuistica de Upload Insecure Files/Extension PHP en
@@ -1884,6 +1894,8 @@ def verify_generic_file_upload(
         found = False
         for fname, ctype in candidates:
             payload = dict(base_params)
+            if _companion_name_param:
+                payload[_companion_name_param] = fname
             files = {file_param: (fname, php_payload, ctype)}
             try:
                 _http_request("POST", base_url + endpoint, timeout=15, data=payload, files=files)

