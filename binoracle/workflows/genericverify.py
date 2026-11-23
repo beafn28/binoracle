@@ -1367,20 +1367,20 @@ def verify_generic_path_traversal(
                     step(f"VERIFICADO: el secreto plantado aparecio literal en la respuesta con "
                          f"{payload_desc}.")
                     _shot_url = (base_url + cand_ep + payload_value) if cand_up else (base_url + cand_ep)
-                    _png = _screenshot_response(
-                        url=_shot_url, method=cand_meth, status=resp.status_code,
-                        body=(resp.text or "")[:4000], highlight=secret,
+                    _add_exploit_evidence(
+                        res=res, method=cand_meth, url=_shot_url,
+                        resp_or_body=resp,
+                        highlight=secret,
+                        caption_es=(f"PATH TRAVERSAL confirmado: {canary_path} devuelto por "
+                                    f"el servidor — secreto plantado visible en la respuesta."),
+                        caption_en=(f"PATH TRAVERSAL confirmed: {canary_path} returned by "
+                                    f"server — planted secret visible in response."),
+                        extra_terminal=(f"Canary: {canary_path}\n"
+                                        f"Secret: {secret}\n"
+                                        f"Payload: {payload_value}\n"
+                                        f"Response body:\n{(resp.text or '')[:400]}"),
                     )
-                    if _png:
-                        res.evidence.setdefault("screenshots", []).append({
-                            "png_b64": _png, "url": _shot_url,
-                            "caption_es": (f"Respuesta HTTP real: el fichero canario ({canary_path}) "
-                                           f"servido por el servidor -- el secreto plantado (amarillo) "
-                                           f"confirma el path traversal."),
-                            "caption_en": (f"Real HTTP response: canary file ({canary_path}) served "
-                                           f"by server -- planted secret (highlighted) confirms path traversal."),
-                        })
-                        step("captura web guardada -- usa --html/-o para verla en el informe.")
+                    step("captura HTTP guardada en el informe.")
                     break
             tried_all.extend(tried)
             if found:
@@ -1455,21 +1455,20 @@ def verify_generic_path_traversal(
                                      f"via URL_PATH={bp!r} -- el middleware sirve ficheros fuera "
                                      f"del prefijo URL configurado.")
                                 _bp_url = target_url
-                                _bp_png = _screenshot_response(
-                                    url=_bp_url, method="GET", status=resp.status_code,
-                                    body=(resp.text or "")[:4000], highlight=secret2,
+                                _add_exploit_evidence(
+                                    res=res, method="GET", url=_bp_url,
+                                    resp_or_body=resp, highlight=secret2,
+                                    caption_es=(f"Bypass de prefijo URL confirmado: "
+                                                f"{_rc_path} accesible fuera del prefijo "
+                                                f"configurado (secreto plantado visible)."),
+                                    caption_en=(f"URL-prefix bypass confirmed: "
+                                                f"{_rc_path} accessible outside the "
+                                                f"configured prefix (planted secret visible)."),
+                                    extra_terminal=(f"Path: {_rc_path}\nSecret: {secret2}\n"
+                                                    f"URL: {_bp_url}\n"
+                                                    f"Response:\n{(resp.text or '')[:300]}"),
                                 )
-                                if _bp_png:
-                                    res.evidence.setdefault("screenshots", []).append({
-                                        "png_b64": _bp_png, "url": _bp_url,
-                                        "caption_es": (f"Bypass de prefijo URL confirmado: "
-                                                       f"{_rc_path} accesible fuera del prefijo "
-                                                       f"configurado (secreto en amarillo)."),
-                                        "caption_en": (f"URL-prefix bypass confirmed: "
-                                                       f"{_rc_path} accessible outside the "
-                                                       f"configured prefix (secret highlighted)."),
-                                    })
-                                    step("captura web guardada -- usa --html/-o para verla en el informe.")
+                                step("captura HTTP guardada en el informe.")
                                 break
                         except Exception as e:
                             tried_all.append({"payload": f"[bypass]{bp}", "error": str(e)})
@@ -1745,6 +1744,15 @@ def verify_generic_idor(
                           f"entre IDs sin rechazar ninguno")
             step(f"diferencia real observada entre {id_param}={own_id!r} y {id_param}="
                  f"{victim_id!r} (prueba mas debil, sin sesion)")
+            _idor_url = base_url + endpoint + (f"?{id_param}={victim_id}" if m == "GET" else "")
+            _add_exploit_evidence(
+                res=res, method=m, url=_idor_url, resp_or_body=resp_victim,
+                highlight="",
+                caption_es=(f"IDOR: {id_param}={victim_id!r} devuelve contenido distinto "
+                            f"({resp_victim.status_code}) — diferencia de {abs(len(own_text)-len(victim_text))} bytes."),
+                caption_en=(f"IDOR: {id_param}={victim_id!r} returns distinct content "
+                            f"({resp_victim.status_code}) — {abs(len(own_text)-len(victim_text))} bytes difference."),
+            )
         else:
             res.evidence["diferencia_observada"] = False
             res.detail = (f"{id_param}={own_id!r} (status {resp_own.status_code}) y "
@@ -1983,6 +1991,20 @@ def verify_generic_ssrf(
                           f"navegador del atacante")
             step(f"VERIFICADO: el listener interno recibio el token "
                  f"'{res.evidence['token_ganador']}' -- la peticion saliente la hizo el servidor.")
+            _ssrf_url = base_url + endpoint
+            _ssrf_body = f"Token SSRF recibido:\n{res.evidence.get('token_ganador','')}\n\nLog del listener:\n{res.evidence.get('listener_log_recorte','')[:600]}"
+            _add_exploit_evidence(
+                res=res, method=m, url=_ssrf_url,
+                resp_or_body=_ssrf_body,
+                highlight=res.evidence.get("token_ganador", ""),
+                caption_es=(f"SSRF confirmado: listener interno recibio el token "
+                            f"'{res.evidence.get('token_ganador','')}' al enviar "
+                            f"{url_param}={res.evidence.get('callback_url_ganadora','')!r}"),
+                caption_en=(f"SSRF confirmed: internal listener received token "
+                            f"'{res.evidence.get('token_ganador','')}' via "
+                            f"{url_param}={res.evidence.get('callback_url_ganadora','')!r}"),
+                extra_terminal=_ssrf_body,
+            )
         else:
             res.ok = True
             res.detail = (f"se probaron {len(tried)} variantes de URL/codificacion (hostname, IP "
@@ -2090,6 +2112,83 @@ def _screenshot_browser_navigate(url: str) -> Optional[str]:
         try:
             os.unlink(out_path)
         except OSError:
+            pass
+
+
+def _add_exploit_evidence(res: "WpVerifyResult", method: str, url: str,
+                          resp_or_body, highlight: str,
+                          caption_es: str, caption_en: str,
+                          extra_terminal: str = "") -> None:
+    """Helper universal: tras confirmar la explotacion, captura screenshot HTTP + http_capture.
+    Llama a _screenshot_response (Playwright), almacena en res.evidence independientemente de
+    si Playwright esta disponible (el http_capture siempre se guarda)."""
+    if isinstance(resp_or_body, str):
+        status = 200
+        body = resp_or_body[:6000]
+        req_body_str = ""
+        req_headers: dict = {}
+        resp_headers: dict = {}
+        reason = ""
+    else:
+        status = getattr(resp_or_body, 'status_code', 200)
+        body = (getattr(resp_or_body, 'text', '') or '')[:6000]
+        reason = getattr(resp_or_body, 'reason', '') or ''
+        req_obj = getattr(resp_or_body, 'request', None)
+        raw_body = getattr(req_obj, 'body', None) if req_obj else None
+        req_body_str = ""
+        if isinstance(raw_body, bytes):
+            req_body_str = raw_body.decode('utf-8', errors='replace')[:2000]
+        elif isinstance(raw_body, str):
+            req_body_str = raw_body[:2000]
+        raw_hdrs = dict(getattr(req_obj, 'headers', {}) or {}) if req_obj else {}
+        req_headers = {k: v for k, v in raw_hdrs.items()
+                       if k.lower() not in ('cookie', 'authorization')}
+        resp_headers = {k: v for k, v in dict(getattr(resp_or_body, 'headers', {}) or {}).items()
+                        if k.lower() not in ('set-cookie',)}
+
+    # Always store structured http_capture (no Playwright needed)
+    res.evidence.setdefault("http_captures", []).append({
+        "caption_es": caption_es,
+        "caption_en": caption_en,
+        "method": method.upper(),
+        "url": url,
+        "request_headers": req_headers,
+        "request_body": req_body_str,
+        "response_status": status,
+        "response_reason": reason,
+        "response_headers": resp_headers,
+        "response_body": body[:3000],
+        "highlight": highlight,
+    })
+
+    # Try Playwright screenshot
+    try:
+        _png = _screenshot_response(url, method.upper(), status, body, highlight=highlight)
+        if _png:
+            res.evidence.setdefault("screenshots", []).append({
+                "png_b64": _png,
+                "url": url,
+                "caption_es": caption_es,
+                "caption_en": caption_en,
+            })
+    except Exception:
+        pass
+
+    # Optional terminal screenshot (for canary-type verification)
+    if extra_terminal:
+        try:
+            _tpng = _screenshot_terminal_step(
+                "binoracle · explotacion confirmada", extra_terminal,
+                highlight=highlight,
+            )
+            if _tpng:
+                res.evidence.setdefault("screenshots", []).append({
+                    "png_b64": _tpng,
+                    "url": "",
+                    "caption_es": caption_es + " (evidencia terminal)",
+                    "caption_en": caption_en + " (terminal evidence)",
+                })
+        except Exception:
             pass
 
 
@@ -2792,15 +2891,14 @@ def verify_generic_xxe(
             _xxe_body = res.evidence.get("respuesta_cuerpo_recorte", "")
             _xxe_hl = res.evidence.get("canary_secret", "") or "SYSTEM"
             _xxe_url = base_url + (endpoint or "/")
-            _xxe_png = _screenshot_response(_xxe_url, m, 200, _xxe_body,
-                                            highlight=_xxe_hl, lang="es")
-            if _xxe_png:
-                res.evidence.setdefault("screenshots", []).append({
-                    "png_b64": _xxe_png,
-                    "caption_es": f"RESULTADO: XXE CONFIRMADA — entidad externa resuelta ({res.evidence.get('modo_ganador','')})",
-                    "caption_en": f"RESULT: XXE CONFIRMED — external entity resolved ({res.evidence.get('modo_ganador','')})",
-                    "url": _xxe_url,
-                })
+            _add_exploit_evidence(
+                res=res, method=m, url=_xxe_url, resp_or_body=_xxe_body,
+                highlight=_xxe_hl,
+                caption_es=(f"XXE CONFIRMADA ({res.evidence.get('modo_ganador','')}): "
+                            f"entidad externa resuelta, secreto plantado en respuesta."),
+                caption_en=(f"XXE CONFIRMED ({res.evidence.get('modo_ganador','')}): "
+                            f"external entity resolved, planted secret in response."),
+            )
         else:
             res.ok = True
             res.detail = (f"se probaron {len(tried)} formas de mandar la entidad externa (en "
@@ -3745,15 +3843,14 @@ def verify_generic_boolean_oracle(
                           f"condición TRUE ({len(b_true)}B) y FALSE ({len(b_false)}B). "
                           + (f"Campo '{confirm_field}' aparece SOLO en TRUE." if field_only_in_true else ""))
             step(f"VERIFICADO: boolean oracle — dif={byte_diff}B campo={confirm_field}")
-            _png = _screenshot_response(base_url + endpoint, http_method.upper(), s_true,
-                                        b_true[:2000], highlight=confirm_field or "", lang="es")
-            if _png:
-                res.evidence.setdefault("screenshots", []).append({
-                    "png_b64": _png,
-                    "caption_es": f"RESULTADO: BOOLEAN ORACLE — TRUE da {len(b_true)}B, FALSE da {len(b_false)}B (dif={byte_diff}B)",
-                    "caption_en": f"RESULT: BOOLEAN ORACLE — TRUE={len(b_true)}B vs FALSE={len(b_false)}B (diff={byte_diff}B)",
-                    "url": base_url + endpoint,
-                })
+            _add_exploit_evidence(
+                res=res, method=http_method.upper(), url=base_url + endpoint,
+                resp_or_body=b_true, highlight=confirm_field or "",
+                caption_es=(f"BOOLEAN ORACLE confirmado: TRUE={len(b_true)}B, "
+                            f"FALSE={len(b_false)}B — diferencia de {byte_diff} bytes."),
+                caption_en=(f"BOOLEAN ORACLE confirmed: TRUE={len(b_true)}B, "
+                            f"FALSE={len(b_false)}B — {byte_diff}-byte differential."),
+            )
         else:
             res.ok = True
             res.detail = (f"diferencia TRUE/FALSE insuficiente para confirmar oracle "
