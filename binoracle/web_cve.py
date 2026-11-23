@@ -247,7 +247,16 @@ def _start_job(cve_id: str, config) -> _Job:
                 "poc_source": getattr(inv, "poc_source_used", ""),
                 "affected_version": sf.get("resolved_version", ""),
                 "exploit_poc": _dv.get("exploit_poc", {}),
+                "poc_script": getattr(inv, "exploit_script", "") or getattr(inv, "poc_script", "") or "",
+                "poc_kind": getattr(inv, "poc_kind", "http") or "http",
+                "blockers": list(getattr(inv, "blockers", []) or []),
                 "markdown_report": getattr(inv, "markdown_report", "") or "",
+                "llm_notes": {
+                    **(dict(inv.llm_notes) if isinstance(inv.llm_notes, dict) else {}),
+                    # Ensure affected_version is always in llm_notes for the HTML export
+                    "affected_version": sf.get("resolved_version", "") or (
+                        inv.llm_notes.get("affected_version", "") if isinstance(inv.llm_notes, dict) else ""),
+                },
                 "cve_intel": {
                     "sources": inv.llm_notes.get("cve_intel", {}).get("sources", {}),
                     "cvss": inv.llm_notes.get("cve_intel", {}).get("cvss_score"),
@@ -874,20 +883,29 @@ class _Handler(BaseHTTPRequestHandler):
             class _Inv:
                 pass
             inv = _Inv()
-            inv.cvss_score     = result.get("cvss_score")
-            inv.cvss_severity  = result.get("cvss_severity", "")
-            inv.cvss_vector    = result.get("cvss_vector", "")
-            inv.description    = result.get("description", "")
-            inv.published      = result.get("published", "")
-            inv.vuln_class     = result.get("vuln_class", "")
-            inv.verified       = result.get("verified", False)
-            inv.verified_detail= result.get("detail", "")
+            inv.cvss_score        = result.get("cvss_score")
+            inv.cvss_severity     = result.get("cvss_severity", "")
+            inv.cvss_vector       = result.get("cvss_vector", "")
+            inv.description       = result.get("description", "")
+            inv.published         = result.get("published", "")
+            inv.vuln_class        = result.get("vuln_class", "")
+            inv.verified          = result.get("verified", False)
+            inv.verified_detail   = result.get("detail", "")
             inv.verified_evidence = result.get("verified_evidence") or {}
             inv.attempt_evidence  = result.get("evidence") or {}
-            inv.dynamic_verify = {"attempted": bool(result.get("verified_evidence"))}
-            inv.poc_source_used = result.get("poc_source", "")
-            inv.llm_notes      = result.get("llm_notes") or {}
-            inv.blockers       = result.get("blockers") or []
+            inv.dynamic_verify    = {"attempted": bool(result.get("verified_evidence"))}
+            inv.poc_source_used   = result.get("poc_source", "")
+            inv.affected_version  = result.get("affected_version", "")
+            inv.blockers          = result.get("blockers") or []
+            inv.logs = result.get("logs") or []
+            # Reconstruct llm_notes: prefer full stored copy (new history), fall back from cve_intel
+            _stored_notes = result.get("llm_notes") or {}
+            _cve_intel = result.get("cve_intel") or {}
+            inv.llm_notes = _stored_notes if _stored_notes else {
+                "affected_version": result.get("affected_version", ""),
+                "cve_intel": _cve_intel,
+                "synthesized_exploit": _cve_intel.get("synthesized_exploit") or {},
+            }
 
         # Get PoC script if available
         script = ""
@@ -896,7 +914,8 @@ class _Handler(BaseHTTPRequestHandler):
             script   = str(getattr(inv, "exploit_script", "") or
                            getattr(inv, "poc_script", "") or
                            (result or {}).get("poc_script", "") or "")
-            poc_kind = str(getattr(inv, "poc_kind", "http") or "http")
+            poc_kind = str(getattr(inv, "poc_kind", None) or
+                           (result or {}).get("poc_kind", "http") or "http")
 
         # Get markdown from logs or detail
         markdown = str(getattr(inv, "markdown_report", "") or
@@ -973,9 +992,17 @@ class _Handler(BaseHTTPRequestHandler):
             inv.attempt_evidence  = result.get("evidence") or {}
             inv.dynamic_verify    = {"attempted": bool(result.get("verified_evidence"))}
             inv.poc_source_used   = result.get("poc_source", "")
-            inv.llm_notes         = result.get("llm_notes") or {}
-            inv.blockers          = result.get("blockers") or []
             inv.affected_version  = result.get("affected_version", "")
+            inv.blockers          = result.get("blockers") or []
+            inv.logs              = result.get("logs") or []
+            # Reconstruct llm_notes: prefer full stored copy (new history), fall back from cve_intel
+            _stored_notes = result.get("llm_notes") or {}
+            _cve_intel    = result.get("cve_intel") or {}
+            inv.llm_notes = _stored_notes if _stored_notes else {
+                "affected_version": result.get("affected_version", ""),
+                "cve_intel": _cve_intel,
+                "synthesized_exploit": _cve_intel.get("synthesized_exploit") or {},
+            }
 
         script   = str(getattr(inv, "exploit_script", "") or getattr(inv, "poc_script", "") or (result or {}).get("poc_script", "") or "")
         poc_kind = str(getattr(inv, "poc_kind", "http") or "http")

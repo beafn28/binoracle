@@ -2685,6 +2685,46 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
                 + f'<div class="steps-grid">{"".join(shot_cards)}</div>'
                 f'</section>')
 
+    # ── Pasos de investigación (desde logs) ──────────────────────────────────
+    inv_steps_section = ""
+    _phase_items = ""
+    _inv_logs = list(getattr(inv, "logs", []) or [])
+    if _inv_logs:
+        _phases = []
+        _cur = None
+        for _entry in _inv_logs:
+            _msg = _entry.get("msg", "") if isinstance(_entry, dict) else str(_entry)
+            _is_sep = (_msg.startswith("──") or _msg.startswith("╠") or _msg.startswith("╚"))
+            if _is_sep and "──" in _msg:
+                _cur = {"label": _msg.strip("─╠╚═ ").strip(), "entries": []}
+                _phases.append(_cur)
+            elif _cur:
+                _cur["entries"].append(_msg)
+        _phase_items = ""
+        for _i, _ph in enumerate(_phases[:12]):
+            _best = next((e for e in _ph["entries"] if e.startswith("[OK]")), None) or \
+                    next((e for e in _ph["entries"] if e.startswith("[WARN]")), None) or \
+                    (_ph["entries"][-1] if _ph["entries"] else "")
+            _detail = _best.split("]", 1)[-1].strip() if "]" in _best else _best
+            _ok = _best.startswith("[OK]")
+            _warn = _best.startswith("[WARN]") or _best.startswith("[ERROR]")
+            _dot_cls = "step-dot-ok" if _ok else ("step-dot-warn" if _warn else "step-dot")
+            _phase_items += (
+                f'<div class="inv-step">'
+                f'<div class="inv-step-left"><div class="inv-step-dot {_dot_cls}">{_i+1}</div></div>'
+                f'<div class="inv-step-body">'
+                f'<div class="inv-step-label">{_esc(_ph["label"])}</div>'
+                + (f'<div class="inv-step-detail">{_esc(_detail[:200])}</div>' if _detail else "")
+                + f'</div></div>'
+            )
+        if _phase_items:
+            inv_steps_section = (
+                f'<section id="sec-inv-steps" style="margin-top:32px">'
+                + _sec_heading("03", "PASOS DE INVESTIGACIÓN", "INVESTIGATION STEPS", "chain")
+                + f'<div class="inv-steps">{_phase_items}</div>'
+                f'</section>'
+            )
+
     # ── Bloqueos ──────────────────────────────────────────────────────────────
     blockers_section = ""
     if blockers:
@@ -3019,6 +3059,8 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
         sidenav_links.append(_slink("#sec-chain", "03 Cadena", "03 Chain"))
     if _tc_items:
         sidenav_links.append(_slink("#sec-tech", "04 Técnico", "04 Technical"))
+    if _phase_items:
+        sidenav_links.append(_slink("#sec-inv-steps", "03 Pasos", "03 Steps"))
     if _all_shots:
         sidenav_links.append(_slink("#sec-shots", "05 Capturas", "05 Screenshots"))
     if blockers:
@@ -3212,6 +3254,18 @@ code,pre,kbd{font-family:'JetBrains Mono','Fira Code',ui-monospace,monospace}
 .blocker-item{padding:10px 16px;font-size:13px;color:var(--fg);
   border-bottom:1px solid var(--blocker-brd)}
 .blocker-item:last-child{border-bottom:none}
+/* ── Investigation steps ── */
+.inv-steps{display:flex;flex-direction:column;gap:4px}
+.inv-step{display:flex;gap:12px;align-items:flex-start;padding:8px 0;border-bottom:1px solid var(--brd)}
+.inv-step:last-child{border-bottom:none}
+.inv-step-left{flex-shrink:0;width:28px;display:flex;justify-content:center;padding-top:2px}
+.inv-step-dot{width:22px;height:22px;border-radius:50%;background:var(--surf2);border:2px solid var(--brd);
+  display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:var(--mut)}
+.step-dot-ok{background:var(--grn);border-color:var(--grn);color:#fff}
+.step-dot-warn{background:#f5b800;border-color:#f5b800;color:#000}
+.inv-step-body{flex:1;min-width:0}
+.inv-step-label{font-size:12px;font-weight:600;color:var(--fg);text-transform:uppercase;letter-spacing:.04em}
+.inv-step-detail{font-size:11px;color:var(--mut);margin-top:2px;word-break:break-word}
 /* ── PoC inline / code-wrap ── */
 .dlbtn{display:inline-flex;align-items:center;gap:7px;background:var(--acc);color:#fff;
   border-radius:8px;padding:9px 18px;text-decoration:none;font-weight:600;
@@ -3517,6 +3571,7 @@ document.addEventListener('DOMContentLoaded',function(){
         + proof_section
         + chain_section
         + tech_section
+        + inv_steps_section
         + shots_section
         + blockers_section
         + poc_section
