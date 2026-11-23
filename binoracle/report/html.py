@@ -3753,10 +3753,19 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
     # ── Informe completo (markdown) — solo si hay contenido ──────────────────
     full_section = ""
     if markdown and markdown.strip():
+        import re as _re_full
+        # Strip embedded data-URI screenshots — already shown in Section 05
+        _md_clean = _re_full.sub(
+            r'!\[[^\]]*\]\(data:image/[a-zA-Z+]+;base64,[A-Za-z0-9+/=\s]+\)',
+            '', markdown)
+        # Also strip the "Evidencia visual" subsection header if screenshots were removed
+        if _all_shots:
+            _md_clean = _re_full.sub(
+                r'#+\s*Evidencia visual[^\n]*\n', '', _md_clean, flags=_re_full.IGNORECASE)
         full_section = (
             f'<section id="sec-report" style="margin-top:32px">'
             + _sec_heading("07", "INFORME COMPLETO", "FULL REPORT", "report")
-            + f'<div class="md-body">{_md_rich(markdown)}</div>'
+            + f'<div class="md-body">{_md_rich(_md_clean)}</div>'
             f'</section>')
 
     # ── Recomendaciones / Remediación ─────────────────────────────────────────
