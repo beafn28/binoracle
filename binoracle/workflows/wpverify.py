@@ -3364,8 +3364,9 @@ def verify_wordpress_header_auth_bypass(
         if boot is None:
             return res
 
+        import requests as _req_hab
         base = boot.base_url.rstrip("/")
-        anon_sess = requests.Session()
+        anon_sess = _req_hab.Session()
         anon_sess.verify = False
 
         # Sustituir el marcador numerico en los valores de las cabeceras por el ID real del admin.
@@ -3450,7 +3451,7 @@ def verify_wordpress_header_auth_bypass(
                                            "ciertas peticiones), puede que sea necesario "
                                            "probar el endpoint real del plugin en lugar de "
                                            "/wp-json/wp/v2/users/me")
-        except requests.RequestException as exc:
+        except _req_hab.RequestException as exc:
             res.detail = f"error de red probando header auth bypass: {exc}"
         if boot is not None:
             res.evidence["screenshots"] = boot.shots

@@ -2048,6 +2048,15 @@ def _inject_custom_docker_lab(source_dir: str, notes: dict, step=None) -> None:
         step(f"inyectado Dockerfile al source_dir desde '{label}' del JSON de hipotesis")
 
 
+def _notes_param(key: str, notes: dict, params, pick_fn, hints) -> "Optional[str]":
+    """Resuelve un nombre de parametro desde notas LLM con validacion de coincidencia exacta.
+    Si el valor del LLM existe EXACTAMENTE en params, lo usa. Si no, cae al _pick_param de hints.
+    Evita que un nombre hallucinated por el LLM llegue al verificador como parametro invalido."""
+    llm_val = notes.get(key) or ""
+    param_names = list(params.keys()) if isinstance(params, dict) else list(params)
+    return (llm_val if (llm_val and llm_val in param_names) else None) or pick_fn(params, hints)
+
+
 def _apply_wpverify_result(inv, wr, es: bool, llm=None) -> None:
     """Vuelca un WpVerifyResult (ver workflows/wpverify.py) en la investigacion -- mismo volcado
     que los bloques de missing-authorization/idor/path-traversal/command-injection/sqli/ssrf
@@ -8009,9 +8018,9 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 from .joomlaverify import verify_joomla_account_takeover, _pick_param
                 from .wpverify import _ID_HINTS, _EMAIL_HINTS, _PASS_HINTS
                 params = notes.get("parameters") or []
-                id_p = notes.get("id_param") or _pick_param(params, _ID_HINTS)
-                email_p = notes.get("email_param") or _pick_param(params, _EMAIL_HINTS)
-                pass_p = notes.get("pass_param") or _pick_param(params, _PASS_HINTS)
+                id_p = _notes_param("id_param", notes, params, _pick_param, _ID_HINTS)
+                email_p = _notes_param("email_param", notes, params, _pick_param, _EMAIL_HINTS)
+                pass_p = _notes_param("pass_param", notes, params, _pick_param, _PASS_HINTS)
                 if not (email_p or pass_p):
                     inv.blockers.append(("verificacion dinamica no intentada: la hipotesis no "
                                          "trae un parametro de email/password reconocible; afina "
@@ -8040,9 +8049,9 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 from .drupalverify import verify_drupal_account_takeover, _pick_param
                 from .wpverify import _ID_HINTS, _EMAIL_HINTS, _PASS_HINTS
                 params = notes.get("parameters") or []
-                id_p = notes.get("id_param") or _pick_param(params, _ID_HINTS)
-                email_p = notes.get("email_param") or _pick_param(params, _EMAIL_HINTS)
-                pass_p = notes.get("pass_param") or _pick_param(params, _PASS_HINTS)
+                id_p = _notes_param("id_param", notes, params, _pick_param, _ID_HINTS)
+                email_p = _notes_param("email_param", notes, params, _pick_param, _EMAIL_HINTS)
+                pass_p = _notes_param("pass_param", notes, params, _pick_param, _PASS_HINTS)
                 if not (email_p or pass_p):
                     inv.blockers.append(("verificacion dinamica no intentada: la hipotesis no "
                                          "trae un parametro de email/password reconocible; afina "
@@ -8090,9 +8099,9 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 # preferir el mapeo de rol que el LLM extrajo LEYENDO el codigo real (mas fiable
                 # que adivinar por el nombre del parametro); cae a la heuristica por nombre si no
                 # hay refinamiento (sin LLM, o el refinamiento no incluyo esa clave).
-                id_p = notes.get("id_param") or _pick_param(params, _ID_HINTS)
-                email_p = notes.get("email_param") or _pick_param(params, _EMAIL_HINTS)
-                pass_p = notes.get("pass_param") or _pick_param(params, _PASS_HINTS)
+                id_p = _notes_param("id_param", notes, params, _pick_param, _ID_HINTS)
+                email_p = _notes_param("email_param", notes, params, _pick_param, _EMAIL_HINTS)
+                pass_p = _notes_param("pass_param", notes, params, _pick_param, _PASS_HINTS)
                 # Leido aqui (antes del elif chain) para que la presencia de custom_headers
                 # pueda suprimir account-takeover: si el LLM da custom_headers es porque el
                 # bypass es via cabecera HTTP, no via cambio de credencial -- correr
@@ -8289,7 +8298,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 from .drupalverify import verify_drupal_path_traversal, _pick_param
                 from .wpverify import _PATH_HINTS
                 params = notes.get("parameters") or []
-                path_p = notes.get("path_param") or _pick_param(params, _PATH_HINTS)
+                path_p = _notes_param("path_param", notes, params, _pick_param, _PATH_HINTS)
                 step(("intentando verificacion DINAMICA -- fichero canario con secreto aleatorio "
                      "(Drupal+MySQL efimero en Docker)..." if es else
                      "attempting DYNAMIC verification -- random-secret canary file "
@@ -8314,7 +8323,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                   and inv.vuln_class == "path-traversal" and notes.get("endpoint")):
                 from .wpverify import verify_wordpress_path_traversal, _pick_param, _PATH_HINTS
                 params = notes.get("parameters") or []
-                path_p = notes.get("path_param") or _pick_param(params, _PATH_HINTS)
+                path_p = _notes_param("path_param", notes, params, _pick_param, _PATH_HINTS)
                 step(("intentando verificacion DINAMICA -- fichero canario con secreto aleatorio "
                      "(WordPress+MySQL efimero en Docker)..." if es else
                      "attempting DYNAMIC verification -- random-secret canary file "
@@ -8420,7 +8429,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 if _pt_ep.endswith('/') and _pt_ep != '/cgi-bin/' and _raw_pt_ep != _pt_ep:
                     _extra_pt_eps = ['/cgi-bin/']
                 params = notes.get("parameters") or []
-                path_p = notes.get("path_param") or _pick_param(params, _PATH_HINTS)
+                path_p = _notes_param("path_param", notes, params, _pick_param, _PATH_HINTS)
                 # Pre-check: detectar capas de validación de ruta en el código antes de Docker
                 _pt_precheck = _static_vuln_precheck(
                     fr.local_path, "", inv.vuln_class,
@@ -8505,7 +8514,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                   and inv.vuln_class == "lfi" and notes.get("endpoint")):
                 from .wpverify import verify_wordpress_lfi, _pick_param, _PATH_HINTS
                 params = notes.get("parameters") or []
-                path_p = notes.get("path_param") or _pick_param(params, _PATH_HINTS)
+                path_p = _notes_param("path_param", notes, params, _pick_param, _PATH_HINTS)
                 step(("intentando verificacion DINAMICA -- LFI lectura y escalada a RCE via "
                      "log poisoning (WordPress+MySQL efimero en Docker)..." if es else
                      "attempting DYNAMIC verification -- LFI read and RCE escalation via "
@@ -8551,7 +8560,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 from .genericverify import verify_generic_idor, _pick_param
                 from .wpverify import _ID_HINTS
                 params = notes.get("parameters") or []
-                id_p = notes.get("id_param") or _pick_param(params, _ID_HINTS)
+                id_p = _notes_param("id_param", notes, params, _pick_param, _ID_HINTS)
                 _inject_custom_docker_lab(str(fr.local_path), notes, step)
                 step(("intentando verificacion DINAMICA GENERICA -- diferencia SIN sesion "
                      "(mas debil que con cuentas reales), el objetivo se construye desde su "
@@ -8598,7 +8607,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 from .drupalverify import verify_drupal_command_injection, _pick_param
                 from .wpverify import _CMD_HINTS
                 params = notes.get("parameters") or []
-                cmd_p = notes.get("cmd_param") or _pick_param(params, _CMD_HINTS)
+                cmd_p = _notes_param("cmd_param", notes, params, _pick_param, _CMD_HINTS)
                 step(("intentando verificacion DINAMICA -- aritmetica calculada por el shell "
                      "remoto (Drupal+MySQL efimero en Docker)..." if es else
                      "attempting DYNAMIC verification -- arithmetic computed by the remote shell "
@@ -8625,7 +8634,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 from .wpverify import verify_wordpress_php_code_injection, _pick_param, _PHP_CODE_HINTS
                 params = notes.get("parameters") or []
                 _params_dict = dict(params) if isinstance(params, dict) else dict.fromkeys(params, "")
-                code_p = notes.get("code_param") or _pick_param(params, _PHP_CODE_HINTS)
+                code_p = _notes_param("code_param", notes, params, _pick_param, _PHP_CODE_HINTS)
                 _json_b = bool(notes.get("json_body") or
                                (notes.get("http_method") or "").upper() == "POST")
                 step(("intentando verificacion DINAMICA -- PHP code injection (marcador echo) "
@@ -8669,7 +8678,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                   and notes.get("endpoint")):
                 from .wpverify import verify_wordpress_command_injection, _pick_param, _CMD_HINTS
                 params = notes.get("parameters") or []
-                cmd_p = notes.get("cmd_param") or _pick_param(params, _CMD_HINTS)
+                cmd_p = _notes_param("cmd_param", notes, params, _pick_param, _CMD_HINTS)
                 step(("intentando verificacion DINAMICA -- aritmetica calculada por el shell "
                      "remoto (WordPress+MySQL efimero en Docker)..." if es else
                      "attempting DYNAMIC verification -- arithmetic computed by the remote shell "
@@ -8733,7 +8742,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 from .genericverify import verify_generic_command_injection, _pick_param
                 from .wpverify import _CMD_HINTS
                 params = notes.get("parameters") or []
-                cmd_p = notes.get("cmd_param") or _pick_param(params, _CMD_HINTS)
+                cmd_p = _notes_param("cmd_param", notes, params, _pick_param, _CMD_HINTS)
                 _inject_custom_docker_lab(str(fr.local_path), notes, step)
                 step(("intentando verificacion DINAMICA GENERICA -- fichero canario via docker "
                      "exec, el objetivo se construye desde su propio Dockerfile/compose..." if es
@@ -8765,7 +8774,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 from .drupalverify import verify_drupal_sqli, _pick_param
                 from .wpverify import _SQLI_HINTS
                 params = notes.get("parameters") or []
-                sqli_p = notes.get("sqli_param") or _pick_param(params, _SQLI_HINTS)
+                sqli_p = _notes_param("sqli_param", notes, params, _pick_param, _SQLI_HINTS)
                 step(("intentando verificacion DINAMICA -- UNION-based/boolean-blind "
                      "(Drupal+MySQL efimero en Docker)..." if es else
                      "attempting DYNAMIC verification -- UNION-based/boolean-blind "
@@ -9115,7 +9124,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 from .genericverify import verify_generic_sqli_blind, _pick_param
                 from .wpverify import _SQLI_HINTS
                 params = notes.get("parameters") or []
-                sqli_p = notes.get("sqli_param") or _pick_param(params, _SQLI_HINTS)
+                sqli_p = _notes_param("sqli_param", notes, params, _pick_param, _SQLI_HINTS)
                 _inject_custom_docker_lab(str(fr.local_path), notes, step)
                 step(("intentando verificacion DINAMICA GENERICA -- ciega por tiempo (SLEEP/"
                      "pg_sleep), el objetivo se construye desde su propio Dockerfile/compose..."
@@ -9163,7 +9172,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 from .drupalverify import verify_drupal_ssrf, _pick_param
                 from .wpverify import _URL_HINTS
                 params = notes.get("parameters") or []
-                url_p = notes.get("url_param") or _pick_param(params, _URL_HINTS)
+                url_p = _notes_param("url_param", notes, params, _pick_param, _URL_HINTS)
                 step(("intentando verificacion DINAMICA -- listener interno con token aleatorio "
                      "(Drupal+MySQL efimero en Docker)..." if es else
                      "attempting DYNAMIC verification -- internal listener with a random token "
@@ -9209,7 +9218,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         notes["url_param"] = _ssrf_p
                 from .wpverify import verify_wordpress_ssrf, _pick_param, _URL_HINTS
                 params = notes.get("parameters") or []
-                url_p = notes.get("url_param") or _pick_param(params, _URL_HINTS)
+                url_p = _notes_param("url_param", notes, params, _pick_param, _URL_HINTS)
                 step(("intentando verificacion DINAMICA -- listener interno con token aleatorio "
                      "(WordPress+MySQL efimero en Docker)..." if es else
                      "attempting DYNAMIC verification -- internal listener with a random token "
@@ -9269,8 +9278,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 from .genericverify import verify_generic_ssrf, _pick_param
                 from .wpverify import _URL_HINTS
                 params = notes.get("parameters") or []
-                url_p = (notes.get("url_param") or notes.get("ssrf_param")
-                         or _pick_param(params, _URL_HINTS))
+                url_p = (_notes_param("url_param", notes, params, _pick_param, _URL_HINTS)
+                         or _notes_param("ssrf_param", notes, params, _pick_param, _URL_HINTS))
                 _inject_custom_docker_lab(str(fr.local_path), notes, step)
                 step(("intentando verificacion DINAMICA GENERICA -- listener interno con token "
                      "aleatorio, el objetivo se construye desde su propio Dockerfile/compose..."
@@ -9332,7 +9341,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 from .drupalverify import verify_drupal_xss, _pick_param
                 from .wpverify import _XSS_HINTS
                 params = notes.get("parameters") or []
-                xss_p = notes.get("xss_param") or _pick_param(params, _XSS_HINTS)
+                xss_p = _notes_param("xss_param", notes, params, _pick_param, _XSS_HINTS)
                 step(("intentando verificacion DINAMICA -- ejecucion real en navegador headless "
                      "(Drupal+MySQL efimero en Docker)..." if es else
                      "attempting DYNAMIC verification -- real headless-browser execution "
@@ -9451,7 +9460,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         if _scanner_found_rest or not _llm_view_now or _llm_view_now in _BAD_VIEW_PATHS:
                             notes["stored_xss_view_path"] = _xss_view
                 params = notes.get("parameters") or []
-                xss_p = notes.get("xss_param") or _pick_param(params, _XSS_HINTS)
+                xss_p = _notes_param("xss_param", notes, params, _pick_param, _XSS_HINTS)
                 step(("intentando verificacion DINAMICA -- ejecucion real en navegador headless "
                      "(WordPress+MySQL efimero en Docker)..." if es else
                      "attempting DYNAMIC verification -- real headless-browser execution "
@@ -9508,7 +9517,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 from .genericverify import verify_generic_xss, _pick_param
                 from .wpverify import _XSS_HINTS
                 params = notes.get("parameters") or []
-                xss_p = notes.get("xss_param") or _pick_param(params, _XSS_HINTS)
+                xss_p = _notes_param("xss_param", notes, params, _pick_param, _XSS_HINTS)
                 _inject_custom_docker_lab(str(fr.local_path), notes, step)
                 step(("intentando verificacion DINAMICA GENERICA -- ejecucion real en navegador "
                      "headless, el objetivo se construye desde su propio Dockerfile/compose..."
@@ -9531,7 +9540,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 from .drupalverify import verify_drupal_ssti, _pick_param
                 from .wpverify import _XSS_HINTS
                 params = notes.get("parameters") or []
-                ssti_p = notes.get("ssti_param") or _pick_param(params, _XSS_HINTS)
+                ssti_p = _notes_param("ssti_param", notes, params, _pick_param, _XSS_HINTS)
                 step(("intentando verificacion DINAMICA -- aritmetica calculada por el motor de "
                      "plantillas (Drupal+MySQL efimero en Docker)..." if es else
                      "attempting DYNAMIC verification -- arithmetic computed by the template "
@@ -9552,7 +9561,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                   and inv.vuln_class == "ssti" and notes.get("endpoint")):
                 from .wpverify import verify_wordpress_ssti, _pick_param, _XSS_HINTS
                 params = notes.get("parameters") or []
-                ssti_p = notes.get("ssti_param") or _pick_param(params, _XSS_HINTS)
+                ssti_p = _notes_param("ssti_param", notes, params, _pick_param, _XSS_HINTS)
                 step(("intentando verificacion DINAMICA -- aritmetica calculada por el motor de "
                      "plantillas (WordPress+MySQL efimero en Docker)..." if es else
                      "attempting DYNAMIC verification -- arithmetic computed by the template "
@@ -9590,7 +9599,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 from .genericverify import verify_generic_ssti, _pick_param
                 from .wpverify import _XSS_HINTS
                 params = notes.get("parameters") or []
-                ssti_p = notes.get("ssti_param") or _pick_param(params, _XSS_HINTS)
+                ssti_p = _notes_param("ssti_param", notes, params, _pick_param, _XSS_HINTS)
                 _inject_custom_docker_lab(str(fr.local_path), notes, step)
                 step(("intentando verificacion DINAMICA GENERICA -- aritmetica calculada por el "
                      "motor de plantillas, el objetivo se construye desde su propio Dockerfile/"
@@ -9621,7 +9630,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 from .drupalverify import verify_drupal_xxe, _pick_param
                 from .wpverify import _XML_HINTS
                 params = notes.get("parameters") or []
-                xml_p = notes.get("xml_param") or _pick_param(params, _XML_HINTS)
+                xml_p = _notes_param("xml_param", notes, params, _pick_param, _XML_HINTS)
                 step(("intentando verificacion DINAMICA -- fichero canario con secreto aleatorio "
                      "via entidad externa (Drupal+MySQL efimero en Docker)..." if es else
                      "attempting DYNAMIC verification -- random-secret canary file via external "
@@ -9642,7 +9651,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                   and inv.vuln_class == "xxe" and notes.get("endpoint")):
                 from .wpverify import verify_wordpress_xxe, _pick_param, _XML_HINTS
                 params = notes.get("parameters") or []
-                xml_p = notes.get("xml_param") or _pick_param(params, _XML_HINTS)
+                xml_p = _notes_param("xml_param", notes, params, _pick_param, _XML_HINTS)
                 step(("intentando verificacion DINAMICA -- fichero canario con secreto aleatorio "
                      "via entidad externa (WordPress+MySQL efimero en Docker)..." if es else
                      "attempting DYNAMIC verification -- random-secret canary file via external "
@@ -9678,7 +9687,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 from .genericverify import verify_generic_xxe, _pick_param
                 from .wpverify import _XML_HINTS
                 params = notes.get("parameters") or []
-                xml_p = notes.get("xml_param") or _pick_param(params, _XML_HINTS)
+                xml_p = _notes_param("xml_param", notes, params, _pick_param, _XML_HINTS)
                 _inject_custom_docker_lab(str(fr.local_path), notes, step)
                 step(("intentando verificacion DINAMICA GENERICA -- fichero canario via entidad "
                      "externa, el objetivo se construye desde su propio Dockerfile/compose..."
@@ -9701,7 +9710,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 from .drupalverify import verify_drupal_open_redirect, _pick_param
                 from .wpverify import _REDIRECT_HINTS
                 params = notes.get("parameters") or []
-                redir_p = notes.get("redirect_param") or _pick_param(params, _REDIRECT_HINTS)
+                redir_p = _notes_param("redirect_param", notes, params, _pick_param, _REDIRECT_HINTS)
                 step(("intentando verificacion DINAMICA -- cabecera Location real sin seguir "
                      "redirects (Drupal+MySQL efimero en Docker)..." if es else
                      "attempting DYNAMIC verification -- real Location header without following "
@@ -9722,7 +9731,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                   and inv.vuln_class == "open-redirect" and notes.get("endpoint")):
                 from .wpverify import verify_wordpress_open_redirect, _pick_param, _REDIRECT_HINTS
                 params = notes.get("parameters") or []
-                redir_p = notes.get("redirect_param") or _pick_param(params, _REDIRECT_HINTS)
+                redir_p = _notes_param("redirect_param", notes, params, _pick_param, _REDIRECT_HINTS)
                 step(("intentando verificacion DINAMICA -- cabecera Location real sin seguir "
                      "redirects (WordPress+MySQL efimero en Docker)..." if es else
                      "attempting DYNAMIC verification -- real Location header without following "
@@ -9757,7 +9766,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 from .genericverify import verify_generic_open_redirect, _pick_param
                 from .wpverify import _REDIRECT_HINTS
                 params = notes.get("parameters") or []
-                redir_p = notes.get("redirect_param") or _pick_param(params, _REDIRECT_HINTS)
+                redir_p = _notes_param("redirect_param", notes, params, _pick_param, _REDIRECT_HINTS)
                 _inject_custom_docker_lab(str(fr.local_path), notes, step)
                 step(("intentando verificacion DINAMICA GENERICA -- cabecera Location real sin "
                      "seguir redirects, el objetivo se construye desde su propio Dockerfile/"
@@ -9784,10 +9793,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 from .drupalverify import verify_drupal_file_upload, _pick_param
                 from .wpverify import _FILE_UPLOAD_HINTS
                 params = notes.get("parameters") or []
-                _llm_fp_d = notes.get("file_param") or ""
-                _pnames_d = list(params.keys()) if isinstance(params, dict) else list(params)
-                _llm_fp_d_ok = bool(_llm_fp_d and _llm_fp_d in _pnames_d)
-                file_p = (_llm_fp_d if _llm_fp_d_ok else None) or _pick_param(params, _FILE_UPLOAD_HINTS)
+                file_p = _notes_param("file_param", notes, params, _pick_param, _FILE_UPLOAD_HINTS)
                 step(("intentando verificacion DINAMICA -- webshell subido que calcula una suma "
                      "(Drupal+MySQL efimero en Docker)..." if es else
                      "attempting DYNAMIC verification -- uploaded webshell computing a sum "
@@ -9809,13 +9815,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 from .wpverify import (verify_wordpress_file_upload, _pick_param,
                                        _FILE_UPLOAD_HINTS, _UPLOAD_FORM_PLUGIN_CONFIG)
                 params = notes.get("parameters") or []
-                _llm_file_p = notes.get("file_param") or ""
-                # Only trust the LLM-suggested file_param when it exactly matches one of the
-                # declared parameter names — the LLM sometimes guesses "file" even when the
-                # real field is "file_url", "attachment", etc.
-                _param_names = list(params.keys()) if isinstance(params, dict) else list(params)
-                _llm_file_p_valid = bool(_llm_file_p and _llm_file_p in _param_names)
-                file_p = (_llm_file_p if _llm_file_p_valid else None) or _pick_param(params, _FILE_UPLOAD_HINTS)
+                file_p = _notes_param("file_param", notes, params, _pick_param, _FILE_UPLOAD_HINTS)
                 # Si el plugin tiene configuracion conocida de campo anidado (WordForm, WPForms...),
                 # pasamos los parametros al verificador -- este los usa salvo que el analista ya
                 # los haya incluido en las hints de la investigacion.
@@ -9907,10 +9907,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 from .genericverify import verify_generic_file_upload, _pick_param
                 from .wpverify import _FILE_UPLOAD_HINTS
                 params = notes.get("parameters") or []
-                _llm_fp_g = notes.get("file_param") or ""
-                _pnames_g = list(params.keys()) if isinstance(params, dict) else list(params)
-                _llm_fp_g_ok = bool(_llm_fp_g and _llm_fp_g in _pnames_g)
-                file_p = (_llm_fp_g if _llm_fp_g_ok else None) or _pick_param(params, _FILE_UPLOAD_HINTS)
+                file_p = _notes_param("file_param", notes, params, _pick_param, _FILE_UPLOAD_HINTS)
                 _inject_custom_docker_lab(str(fr.local_path), notes, step)
                 step(("intentando verificacion DINAMICA GENERICA -- fichero subido con un "
                      "secreto real, confirmado dentro del contenedor (grep), el objetivo se "
@@ -9927,8 +9924,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 from .drupalverify import verify_drupal_csrf, _pick_param
                 from .wpverify import _EMAIL_HINTS, _PASS_HINTS
                 params = notes.get("parameters") or []
-                email_p = notes.get("email_param") or _pick_param(params, _EMAIL_HINTS)
-                pass_p = notes.get("pass_param") or _pick_param(params, _PASS_HINTS)
+                email_p = _notes_param("email_param", notes, params, _pick_param, _EMAIL_HINTS)
+                pass_p = _notes_param("pass_param", notes, params, _pick_param, _PASS_HINTS)
                 step(("intentando verificacion DINAMICA -- self-CSRF sin token, origen externo "
                      "ficticio (Drupal+MySQL efimero en Docker)..." if es else
                      "attempting DYNAMIC verification -- self-CSRF without a token, fake external "
@@ -9943,8 +9940,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 from .wpverify import (verify_wordpress_csrf, _pick_param, _EMAIL_HINTS,
                                        _PASS_HINTS)
                 params = notes.get("parameters") or []
-                email_p = notes.get("email_param") or _pick_param(params, _EMAIL_HINTS)
-                pass_p = notes.get("pass_param") or _pick_param(params, _PASS_HINTS)
+                email_p = _notes_param("email_param", notes, params, _pick_param, _EMAIL_HINTS)
+                pass_p = _notes_param("pass_param", notes, params, _pick_param, _PASS_HINTS)
                 step(("intentando verificacion DINAMICA -- self-CSRF sin nonce, origen externo "
                      "ficticio (WordPress+MySQL efimero en Docker)..." if es else
                      "attempting DYNAMIC verification -- self-CSRF without a nonce, fake external "
@@ -9965,7 +9962,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 from .joomlaverify import verify_joomla_deserialization, _pick_param
                 from .wpverify import _SERIAL_HINTS
                 params = notes.get("parameters") or []
-                serial_p = notes.get("serial_param") or _pick_param(params, _SERIAL_HINTS)
+                serial_p = _notes_param("serial_param", notes, params, _pick_param, _SERIAL_HINTS)
                 step(("intentando verificacion DINAMICA -- gadget de deserializacion del propio "
                      "codigo (Joomla+MySQL efimero en Docker)..." if es else
                      "attempting DYNAMIC verification -- deserialization gadget from the "
@@ -9980,7 +9977,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 from .drupalverify import verify_drupal_deserialization, _pick_param
                 from .wpverify import _SERIAL_HINTS
                 params = notes.get("parameters") or []
-                serial_p = notes.get("serial_param") or _pick_param(params, _SERIAL_HINTS)
+                serial_p = _notes_param("serial_param", notes, params, _pick_param, _SERIAL_HINTS)
                 step(("intentando verificacion DINAMICA -- gadget de deserializacion del propio "
                      "codigo (Drupal+MySQL efimero en Docker)..." if es else
                      "attempting DYNAMIC verification -- deserialization gadget from the "
@@ -10001,7 +9998,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 # $wpdb->insert()/update() todavia.
                 from .wpverify import verify_wordpress_deserialization_custom_table, _pick_param, _SERIAL_HINTS
                 params = notes.get("parameters") or []
-                serial_p = notes.get("serial_param") or _pick_param(params, _SERIAL_HINTS)
+                serial_p = _notes_param("serial_param", notes, params, _pick_param, _SERIAL_HINTS)
                 step(("intentando verificacion DINAMICA -- gadget de deserializacion en DOS PASOS "
                      "via tabla propia del plugin (WordPress+MySQL efimero en Docker)..." if es else
                      "attempting DYNAMIC verification -- TWO-STEP deserialization gadget via the "
@@ -10044,7 +10041,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                   and inv.vuln_class == "deserialization" and notes.get("endpoint")):
                 from .wpverify import verify_wordpress_deserialization, _pick_param, _SERIAL_HINTS
                 params = notes.get("parameters") or []
-                serial_p = notes.get("serial_param") or _pick_param(params, _SERIAL_HINTS)
+                serial_p = _notes_param("serial_param", notes, params, _pick_param, _SERIAL_HINTS)
                 step(("intentando verificacion DINAMICA -- gadget de deserializacion del propio "
                      "codigo (WordPress+MySQL efimero en Docker)..." if es else
                      "attempting DYNAMIC verification -- deserialization gadget from the "
