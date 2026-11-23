@@ -9784,7 +9784,10 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 from .drupalverify import verify_drupal_file_upload, _pick_param
                 from .wpverify import _FILE_UPLOAD_HINTS
                 params = notes.get("parameters") or []
-                file_p = notes.get("file_param") or _pick_param(params, _FILE_UPLOAD_HINTS)
+                _llm_fp_d = notes.get("file_param") or ""
+                _pnames_d = list(params.keys()) if isinstance(params, dict) else list(params)
+                _llm_fp_d_ok = bool(_llm_fp_d and _llm_fp_d in _pnames_d)
+                file_p = (_llm_fp_d if _llm_fp_d_ok else None) or _pick_param(params, _FILE_UPLOAD_HINTS)
                 step(("intentando verificacion DINAMICA -- webshell subido que calcula una suma "
                      "(Drupal+MySQL efimero en Docker)..." if es else
                      "attempting DYNAMIC verification -- uploaded webshell computing a sum "
@@ -9806,7 +9809,13 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 from .wpverify import (verify_wordpress_file_upload, _pick_param,
                                        _FILE_UPLOAD_HINTS, _UPLOAD_FORM_PLUGIN_CONFIG)
                 params = notes.get("parameters") or []
-                file_p = notes.get("file_param") or _pick_param(params, _FILE_UPLOAD_HINTS)
+                _llm_file_p = notes.get("file_param") or ""
+                # Only trust the LLM-suggested file_param when it exactly matches one of the
+                # declared parameter names — the LLM sometimes guesses "file" even when the
+                # real field is "file_url", "attachment", etc.
+                _param_names = list(params.keys()) if isinstance(params, dict) else list(params)
+                _llm_file_p_valid = bool(_llm_file_p and _llm_file_p in _param_names)
+                file_p = (_llm_file_p if _llm_file_p_valid else None) or _pick_param(params, _FILE_UPLOAD_HINTS)
                 # Si el plugin tiene configuracion conocida de campo anidado (WordForm, WPForms...),
                 # pasamos los parametros al verificador -- este los usa salvo que el analista ya
                 # los haya incluido en las hints de la investigacion.
@@ -9898,7 +9907,10 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 from .genericverify import verify_generic_file_upload, _pick_param
                 from .wpverify import _FILE_UPLOAD_HINTS
                 params = notes.get("parameters") or []
-                file_p = notes.get("file_param") or _pick_param(params, _FILE_UPLOAD_HINTS)
+                _llm_fp_g = notes.get("file_param") or ""
+                _pnames_g = list(params.keys()) if isinstance(params, dict) else list(params)
+                _llm_fp_g_ok = bool(_llm_fp_g and _llm_fp_g in _pnames_g)
+                file_p = (_llm_fp_g if _llm_fp_g_ok else None) or _pick_param(params, _FILE_UPLOAD_HINTS)
                 _inject_custom_docker_lab(str(fr.local_path), notes, step)
                 step(("intentando verificacion DINAMICA GENERICA -- fichero subido con un "
                      "secreto real, confirmado dentro del contenedor (grep), el objetivo se "

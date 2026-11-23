@@ -498,7 +498,14 @@ class _Handler(BaseHTTPRequestHandler):
 
             for entry in stored_logs:
                 self._write_sse("step", entry)
-            result_to_emit = rec.get("result") or rec
+            result_to_emit = dict(rec.get("result") or rec)
+            # Normalise CLI-format JSON (uses attempt_evidence/verified_detail) to web UI format
+            if "attempt_evidence" in result_to_emit and "evidence" not in result_to_emit:
+                result_to_emit["evidence"] = result_to_emit["attempt_evidence"]
+            if "verified_detail" in result_to_emit and not result_to_emit.get("detail"):
+                result_to_emit["detail"] = result_to_emit["verified_detail"]
+            if "poc_source_used" in result_to_emit and not result_to_emit.get("poc_source"):
+                result_to_emit["poc_source"] = result_to_emit["poc_source_used"]
             self._write_sse("done", result_to_emit)
             return
 
@@ -648,7 +655,14 @@ class _Handler(BaseHTTPRequestHandler):
             path = os.path.join(_HISTORY_DIR, f"{job_id}.json")
             with open(path, encoding="utf-8") as fh:
                 rec = json.load(fh)
-            result = rec.get("result") or rec
+            result = dict(rec.get("result") or rec)
+            # Normalise CLI-format JSON (attempt_evidence/verified_detail) to web UI field names
+            if "attempt_evidence" in result and "evidence" not in result:
+                result["evidence"] = result["attempt_evidence"]
+            if "verified_detail" in result and not result.get("detail"):
+                result["detail"] = result["verified_detail"]
+            if "poc_source_used" in result and not result.get("poc_source"):
+                result["poc_source"] = result["poc_source_used"]
             # Inject logs if not already stored
             if not result.get("logs"):
                 stored_logs = rec.get("logs") or []
@@ -890,11 +904,11 @@ class _Handler(BaseHTTPRequestHandler):
             inv.published         = result.get("published", "")
             inv.vuln_class        = result.get("vuln_class", "")
             inv.verified          = result.get("verified", False)
-            inv.verified_detail   = result.get("detail", "")
+            inv.verified_detail   = result.get("verified_detail", "") or result.get("detail", "")
             inv.verified_evidence = result.get("verified_evidence") or {}
-            inv.attempt_evidence  = result.get("evidence") or result.get("attempt_evidence") or {}
-            inv.dynamic_verify    = {"attempted": bool(result.get("verified_evidence"))}
-            inv.poc_source_used   = result.get("poc_source", "")
+            inv.attempt_evidence  = result.get("attempt_evidence") or result.get("evidence") or {}
+            inv.dynamic_verify    = {"attempted": bool(result.get("verified_evidence") or result.get("dynamic_verify", {}))}
+            inv.poc_source_used   = result.get("poc_source_used", "") or result.get("poc_source", "")
             inv.affected_version  = result.get("affected_version", "")
             inv.blockers          = result.get("blockers") or []
             inv.logs = result.get("logs") or []
@@ -987,11 +1001,11 @@ class _Handler(BaseHTTPRequestHandler):
             inv.published         = result.get("published", "")
             inv.vuln_class        = result.get("vuln_class", "")
             inv.verified          = result.get("verified", False)
-            inv.verified_detail   = result.get("detail", "") or result.get("verified_detail", "")
+            inv.verified_detail   = result.get("verified_detail", "") or result.get("detail", "")
             inv.verified_evidence = result.get("verified_evidence") or {}
-            inv.attempt_evidence  = result.get("evidence") or result.get("attempt_evidence") or {}
-            inv.dynamic_verify    = {"attempted": bool(result.get("verified_evidence"))}
-            inv.poc_source_used   = result.get("poc_source", "")
+            inv.attempt_evidence  = result.get("attempt_evidence") or result.get("evidence") or {}
+            inv.dynamic_verify    = {"attempted": bool(result.get("verified_evidence") or result.get("dynamic_verify", {}))}
+            inv.poc_source_used   = result.get("poc_source_used", "") or result.get("poc_source", "")
             inv.affected_version  = result.get("affected_version", "")
             inv.blockers          = result.get("blockers") or []
             inv.logs              = result.get("logs") or []

