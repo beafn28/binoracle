@@ -3367,7 +3367,7 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
                     # Use the realistic WP screenshot + keep synth text viewer as fallback
                     _synthetic_viewer = (
                         f'<img class="step-screenshot" src="data:image/png;base64,{_wp_png}"'
-                        f' alt="WordPress injection evidence" loading="eager">'
+                        f' alt="{_esc(_vclass_sh)} exploitation evidence" loading="eager">'
                     )
                 else:
                     # Pure CSS/HTML fallback: cut at <!DOCTYPE and show response body inline
@@ -3499,7 +3499,7 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
     # ── Bloqueos ──────────────────────────────────────────────────────────────
     blockers_section = ""
     if blockers:
-        items = "".join(f'<div class="blocker-item">&#9888; {_esc(b)}</div>'
+        items = "".join(f'<div class="blocker-item">&#9888; {_md_rich(b)}</div>'
                         for b in blockers[:6])
         blockers_section = (
             f'<section id="sec-blockers" style="margin-top:32px">'
