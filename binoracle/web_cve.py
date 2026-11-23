@@ -217,7 +217,7 @@ def _start_job(cve_id: str, config) -> _Job:
             # screenshots/HTTP for the UI, plus diagnostic fields for debugging failures
             attempt_ev = getattr(inv, "attempt_evidence", None) or {}
             _MERGE_KEYS = (
-                "screenshots", "http_requests", "http_log",
+                "screenshots", "http_requests", "http_log", "http_captures",
                 # diagnostic fields from SQLi/LFI/path-traversal verifiers
                 "respuesta_control_recorte", "path_param", "sqli_param",
                 "tecnica", "endpoint_probado", "parametro_probado",
@@ -892,7 +892,7 @@ class _Handler(BaseHTTPRequestHandler):
             inv.verified          = result.get("verified", False)
             inv.verified_detail   = result.get("detail", "")
             inv.verified_evidence = result.get("verified_evidence") or {}
-            inv.attempt_evidence  = result.get("evidence") or {}
+            inv.attempt_evidence  = result.get("evidence") or result.get("attempt_evidence") or {}
             inv.dynamic_verify    = {"attempted": bool(result.get("verified_evidence"))}
             inv.poc_source_used   = result.get("poc_source", "")
             inv.affected_version  = result.get("affected_version", "")

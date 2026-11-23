@@ -908,7 +908,8 @@ def _diagnose_infra_error(e: Exception, source_dir: str = "", base_url: str = ""
 def _bootstrap_generic_lab(source_dir: str, step, res: WpVerifyResult,
                            budget_s: float, setup_commands: Optional[List[str]] = None,
                            dockerfile_body: str = "",
-                           extra_files: Optional[dict] = None) -> Optional[tuple]:
+                           extra_files: Optional[dict] = None,
+                           prebuilt_url: str = "") -> Optional[tuple]:
     """Pasos comunes a TODOS los verificadores genericos: detectar como arrancar el objetivo,
     construirlo/arrancarlo, y encontrar por donde habla HTTP. Devuelve (lab, base_url, container)
     o None con `res` ya relleno (detail/logs/limitations) -- el caller solo tiene que `return res`.
@@ -931,6 +932,12 @@ def _bootstrap_generic_lab(source_dir: str, step, res: WpVerifyResult,
 
     `extra_files` (opcional): diccionario {nombre_fichero: contenido} que se escribe en el
     directorio de contexto Docker ANTES de construir -- necesario para COPY app.py etc."""
+    # Lab ya corriendo externamente (--target-url) — saltar Docker por completo
+    if prebuilt_url:
+        step(f"usando target externo pre-arrancado: {prebuilt_url} (sin Docker)")
+        res.evidence["prebuilt_target"] = prebuilt_url
+        return (None, prebuilt_url.rstrip("/"), "prebuilt")
+
     if dockerfile_body:
         # Analyst-provided Dockerfile takes priority over anything in source_dir
         import tempfile
@@ -2093,6 +2100,7 @@ def _take_generic_screenshots_sqli(
     """Captura screenshots Playwright del lab generico para SQLi: control, payload, false (boolean)."""
     import urllib.parse
     shots: List[dict] = []
+    http_captures: List[dict] = []
     estrategia = evidence.get("estrategia", "tiempo")
     payload_ganador = evidence.get("payload_ganador", "")
     orig_value = str(base_params.get(sqli_param) or "1")
@@ -2113,6 +2121,32 @@ def _take_generic_screenshots_sqli(
             if png:
                 shots.append({"step": step_n, "caption_es": caption_es,
                                "caption_en": caption_en, "png_b64": png})
+            # Captura HTTP estructurada (Burp-style)
+            req_obj = getattr(resp, 'request', None)
+            req_body_raw = getattr(req_obj, 'body', None) if req_obj else None
+            req_body_str = ""
+            if isinstance(req_body_raw, bytes):
+                req_body_str = req_body_raw.decode('utf-8', errors='replace')[:2000]
+            elif isinstance(req_body_raw, str):
+                req_body_str = req_body_raw[:2000]
+            raw_hdrs = dict(getattr(req_obj, 'headers', {}) or {}) if req_obj else {}
+            req_headers = {k: v for k, v in raw_hdrs.items()
+                           if k.lower() not in ('cookie', 'authorization')}
+            resp_hdrs = {k: v for k, v in dict(getattr(resp, 'headers', {}) or {}).items()
+                         if k.lower() not in ('set-cookie',)}
+            http_captures.append({
+                "caption_es": caption_es,
+                "caption_en": caption_en,
+                "method": m,
+                "url": url_disp,
+                "request_headers": req_headers,
+                "request_body": req_body_str,
+                "response_status": status,
+                "response_reason": getattr(resp, 'reason', '') or '',
+                "response_headers": resp_hdrs,
+                "response_body": body[:3000],
+                "highlight": highlight,
+            })
         except Exception:
             pass
 
@@ -2162,7 +2196,7 @@ def _take_generic_screenshots_sqli(
             })
     except Exception:
         pass
-    return shots
+    return shots, http_captures
 
 
 def _take_generic_screenshots_bypass(
@@ -2170,20 +2204,22 @@ def _take_generic_screenshots_bypass(
     bypass_header: str, bypass_value: str,
     status_normal: int, body_normal: str,
     status_bypass: int, body_bypass: str,
-) -> List[dict]:
-    """Captura screenshots Playwright del lab generico para header bypass."""
+) -> tuple:
+    """Captura screenshots Playwright del lab generico para header bypass.
+    Devuelve (shots, http_captures)."""
     shots: List[dict] = []
+    http_captures: List[dict] = []
     url = base_url + endpoint
 
-    for step_n, status, body, caption_es, caption_en, hl in [
+    for step_n, status, body, caption_es, caption_en, hl, extra_hdrs in [
         (1, status_normal, body_normal,
          f"Sin header de bypass → HTTP {status_normal} (middleware bloquea el acceso)",
          f"Without bypass header → HTTP {status_normal} (middleware blocks access)",
-         ""),
+         "", {}),
         (2, status_bypass, body_bypass,
          f"CON {bypass_header}: {bypass_value[:60]!r} → HTTP {status_bypass} (acceso conseguido)",
          f"WITH {bypass_header}: {bypass_value[:60]!r} → HTTP {status_bypass} (access gained)",
-         bypass_value[:80]),
+         bypass_value[:80], {bypass_header: bypass_value}),
     ]:
         try:
             png = _screenshot_response(url, m, status, body, highlight=hl)
@@ -2192,6 +2228,19 @@ def _take_generic_screenshots_bypass(
                                "caption_en": caption_en, "png_b64": png})
         except Exception:
             pass
+        http_captures.append({
+            "caption_es": caption_es,
+            "caption_en": caption_en,
+            "method": m,
+            "url": url,
+            "request_headers": extra_hdrs,
+            "request_body": "",
+            "response_status": status,
+            "response_reason": "",
+            "response_headers": {},
+            "response_body": body[:3000],
+            "highlight": hl,
+        })
 
     # Web screenshot — navegador real apuntando al endpoint (vista complementaria al visor HTTP)
     try:
@@ -2207,7 +2256,7 @@ def _take_generic_screenshots_bypass(
             })
     except Exception:
         pass
-    return shots
+    return shots, http_captures
 
 
 def verify_generic_sqli_blind(
@@ -2583,10 +2632,12 @@ def verify_generic_sqli_blind(
                               f"consistente en 2 peticiones independientes, por encima de la linea "
                               f"base + la mitad del retraso pedido -- no es ruido de red/Docker")
             step("capturando evidencia visual (screenshots del laboratorio)...")
-            shots = _take_generic_screenshots_sqli(
+            shots, http_caps = _take_generic_screenshots_sqli(
                 base_url, endpoint_path, m, base_params, sqli_param, res.evidence)
             if shots:
                 res.evidence["screenshots"] = shots
+            if http_caps:
+                res.evidence["http_captures"] = http_caps
         else:
             res.ok = True
             res.detail = (f"se probaron {len(tried)} combinaciones de contexto/dialecto de "
@@ -3423,11 +3474,13 @@ def verify_generic_header_bypass(
                 " -- el control de autorizacion fue eludido"
             )
             step("capturando evidencia visual (screenshots del laboratorio)...")
-            shots = _take_generic_screenshots_bypass(
+            shots, http_caps = _take_generic_screenshots_bypass(
                 base_url, endpoint, m, bypass_header or "bypass_url", bypass_url or bypass_value,
                 status_normal, body_normal, status_bypass, body_bypass)
             if shots:
                 res.evidence["screenshots"] = shots
+            if http_caps:
+                res.evidence["http_captures"] = http_caps
         else:
             res.ok = True
             # Diagnostico automatico: razona por que fallo el bypass
@@ -3616,6 +3669,7 @@ def verify_generic_boolean_oracle(
     extra_headers: Optional[dict] = None,
     on_step: Optional[Callable[[str], None]] = None,
     budget_s: float = 900.0,
+    prebuilt_url: str = "",
 ) -> WpVerifyResult:
     """Verifica una vulnerabilidad de tipo oracle booleano (p.ej. Strapi CVE-2026-27886).
 
@@ -3644,7 +3698,8 @@ def verify_generic_boolean_oracle(
         res.limitations.append("verificacion dinamica NO intentada: sin daemon Docker")
         return res
 
-    tup = _bootstrap_generic_lab(source_dir, step, res, budget_s)
+    tup = _bootstrap_generic_lab(source_dir, step, res, budget_s,
+                                  prebuilt_url=prebuilt_url)
     if tup is None:
         return res
     lab, base_url, container = tup
@@ -3656,9 +3711,10 @@ def verify_generic_boolean_oracle(
         def _get(param, value):
             sep = "&" if "?" in endpoint else "?"
             ep_q = endpoint + sep + f"{param}={value}"
-            s, _, b = _http_request(base_url, ep_q, http_method.upper(),
-                                    headers=hdrs, timeout=15.0)
-            return s, (b or b"").decode("utf-8", "replace")
+            full_url = base_url.rstrip("/") + ep_q
+            r = _http_request(http_method.upper(), full_url,
+                               headers=hdrs, timeout=15.0)
+            return r.status_code, (r.content or b"").decode("utf-8", "replace")
 
         step(f"Paso 1: condición TRUE — {true_param}={true_value}")
         s_true, b_true = _get(true_param, true_value)
@@ -3711,8 +3767,9 @@ def verify_generic_boolean_oracle(
         res.detail = f"error inesperado en verify_generic_boolean_oracle: {e}"
         return res
     finally:
-        step("desmontando el laboratorio generico...")
-        lab.teardown()
+        if lab is not None:
+            step("desmontando el laboratorio generico...")
+            lab.teardown()
 
 
 def verify_generic_cors_misconfig(

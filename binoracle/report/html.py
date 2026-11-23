@@ -2579,6 +2579,120 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
 
         proof_section += ev_table_html + '</section>'
 
+    # ── Capturas HTTP estilo Burp ──────────────────────────────────────────────
+    burp_section = ""
+    _http_caps = (list(verified_ev.get("http_captures") or []) +
+                  [c for c in (attempt_ev.get("http_captures") or [])
+                   if c not in (verified_ev.get("http_captures") or [])])
+    # Fallback: reconstruct a synthetic Burp capture from verified_evidence structured fields
+    # (for old history entries that pre-date http_captures storage)
+    if not _http_caps and verified_ev:
+        _ep  = verified_ev.get("endpoint") or ""
+        _mth = str(verified_ev.get("metodo") or "GET").upper()
+        _pl  = str(verified_ev.get("payload_ganador") or "")
+        _st  = verified_ev.get("status_code_respuesta")
+        _rb  = str(verified_ev.get("respuesta_cuerpo_recorte") or "")
+        _bu  = str(verified_ev.get("base_url") or "")
+        if _ep and (_pl or _rb):
+            import urllib.parse as _up
+            _url = _bu + _ep
+            if _mth == "GET" and _pl:
+                _param = verified_ev.get("sqli_param") or verified_ev.get("path_param") or "payload"
+                _url += "?" + _up.urlencode({_param: _pl})
+            _synthetic_body = _pl if _mth != "GET" else ""
+            _http_caps = [{
+                "caption_es": "Petición de explotación confirmada (reconstruida del laboratorio Docker)",
+                "caption_en": "Confirmed exploitation request (reconstructed from Docker lab)",
+                "method": _mth,
+                "url": _url,
+                "request_headers": {},
+                "request_body": _synthetic_body,
+                "response_status": _st or 200,
+                "response_reason": "OK" if (_st or 0) == 200 else "",
+                "response_headers": {},
+                "response_body": _rb,
+                "highlight": verified_ev.get("canary_secret") or _pl[:80],
+            }]
+    if _http_caps:
+        def _burp_panel(cap: dict, idx: int) -> str:
+            m_raw   = str(cap.get("method") or "GET").upper()
+            url_raw = str(cap.get("url") or "")
+            st      = cap.get("response_status") or 0
+            reason  = str(cap.get("response_reason") or "")
+            req_hdrs= cap.get("request_headers") or {}
+            req_bdy = str(cap.get("request_body") or "")
+            rsp_hdrs= cap.get("response_headers") or {}
+            rsp_bdy = str(cap.get("response_body") or "")
+            hl      = str(cap.get("highlight") or "")
+            cap_es  = _esc(str(cap.get("caption_es") or ""))
+            cap_en  = _esc(str(cap.get("caption_en") or cap_es))
+
+            st_cls = ("s2xx" if 200 <= st < 300 else
+                      "s3xx" if 300 <= st < 400 else
+                      "s4xx" if 400 <= st < 500 else
+                      "s5xx" if st >= 500 else "s4xx")
+            st_txt = _esc(f"HTTP {st}" + (f" {reason}" if reason else ""))
+
+            # Request headers formatted
+            def _fmt_hdrs(d: dict, limit: int = 8) -> str:
+                lines = []
+                for k, v in list(d.items())[:limit]:
+                    lines.append(
+                        f'<span class="burp-hdr-name">{_esc(str(k))}</span>: '
+                        f'<span class="burp-hdr-val">{_esc(str(v)[:120])}</span>')
+                return "\n".join(lines)
+
+            # Response body with highlight
+            rsp_html = _esc(rsp_bdy[:2000])
+            if hl:
+                hl_esc = _esc(hl)
+                rsp_html = rsp_html.replace(hl_esc, f'<mark>{hl_esc}</mark>')
+
+            req_body_html = _esc(req_bdy[:1000]) if req_bdy.strip() else ""
+            req_hdrs_html = _fmt_hdrs(req_hdrs)
+            rsp_hdrs_html = _fmt_hdrs(rsp_hdrs)
+
+            return (
+                f'<div class="burp-panel">'
+                f'<div class="burp-panel-header">'
+                f'<span class="burp-method {m_raw}">{_esc(m_raw)}</span>'
+                f'<span class="burp-url" title="{_esc(url_raw)}">{_esc(url_raw[:160])}</span>'
+                f'<span class="burp-status {st_cls}">{st_txt}</span>'
+                f'</div>'
+                f'<div class="burp-panes">'
+                # Request pane
+                f'<div class="burp-pane">'
+                f'<div class="burp-pane-title">REQUEST</div>'
+                + (f'<div class="burp-hdrs">{req_hdrs_html}</div>' if req_hdrs_html else "")
+                + (f'<div class="burp-body">{req_body_html}</div>' if req_body_html else
+                   f'<div class="burp-body" style="color:var(--mut);font-style:italic;font-size:11px">'
+                   f'{"(GET — params in URL)" if m_raw == "GET" else "(empty body)"}'
+                   f'</div>')
+                + f'</div>'
+                # Response pane
+                f'<div class="burp-pane">'
+                f'<div class="burp-pane-title">RESPONSE</div>'
+                + (f'<div class="burp-hdrs">{rsp_hdrs_html}</div>' if rsp_hdrs_html else "")
+                + f'<div class="burp-body">{rsp_html}</div>'
+                + f'</div>'
+                f'</div>'
+                # Caption
+                + (f'<div class="burp-caption"><span class="l-es">{cap_es}</span>'
+                   f'<span class="l-en">{cap_en}</span></div>' if (cap_es or cap_en) else "")
+                + f'</div>'
+            )
+
+        panels_html = "".join(_burp_panel(c, i) for i, c in enumerate(_http_caps))
+        burp_section = (
+            f'<section id="sec-burp" style="margin-top:32px">'
+            + _sec_heading("02b",
+                           "CAPTURAS HTTP (BURP STYLE)",
+                           "HTTP CAPTURES (BURP STYLE)",
+                           "burp")
+            + f'<div class="burp-panels">{panels_html}</div>'
+            + f'</section>'
+        )
+
     # ── Timeline de cadena de ataque ─────────────────────────────────────────
     chain_section = ""
     pasos = llm_notes.get("pasos") or []
@@ -3091,6 +3205,8 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
     sidenav_links.append(_slink("#sec-summary", "01 Resumen", "01 Summary"))
     if verified:
         sidenav_links.append(_slink("#sec-proof", "02 ★ Prueba", "02 ★ Proof", "sidenav-verified"))
+    if _http_caps:
+        sidenav_links.append(_slink("#sec-burp", "02b HTTP", "02b HTTP"))
     if pasos:
         sidenav_links.append(_slink("#sec-chain", "03 Cadena", "03 Chain"))
     if _tc_items:
@@ -3423,6 +3539,32 @@ code,pre,kbd{font-family:'JetBrains Mono','Fira Code',ui-monospace,monospace}
 .ev-label{color:var(--fg);font-weight:500;font-family:var(--sans);font-size:12px}
 .evtable-note{padding:10px 16px;font-size:12px;color:var(--mut);font-style:italic;
   border-top:1px solid var(--brd);font-family:var(--sans)}
+/* ── Burp-style HTTP captures ── */
+.burp-panel{background:var(--surf2);border:2px solid var(--brd);border-radius:12px;overflow:hidden;margin-bottom:18px}
+.burp-panel-header{background:#1e2227;border-bottom:2px solid var(--brd);padding:9px 16px;display:flex;align-items:center;gap:10px}
+.burp-method{font-family:var(--mono);font-weight:700;font-size:12px;padding:2px 9px;border-radius:4px;background:#1d4ed8;color:#fff;flex-shrink:0}
+.burp-method.GET{background:#15803d}
+.burp-method.POST{background:#1d4ed8}
+.burp-method.PUT{background:#9333ea}
+.burp-method.DELETE{background:#dc2626}
+.burp-method.PATCH{background:#d97706}
+.burp-url{font-family:var(--mono);font-size:11.5px;color:#9cdcfe;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.burp-status{font-family:var(--mono);font-weight:700;font-size:12px;padding:2px 9px;border-radius:4px;flex-shrink:0}
+.burp-status.s2xx{background:rgba(26,127,55,.25);color:#4ade80;border:1px solid rgba(26,127,55,.4)}
+.burp-status.s3xx{background:rgba(234,179,8,.15);color:#facc15;border:1px solid rgba(234,179,8,.3)}
+.burp-status.s4xx{background:rgba(207,34,46,.15);color:#f87171;border:1px solid rgba(207,34,46,.3)}
+.burp-status.s5xx{background:rgba(207,34,46,.2);color:#f87171;border:1px solid rgba(207,34,46,.35)}
+.burp-panes{display:grid;grid-template-columns:1fr 1fr;gap:0}
+@media(max-width:700px){.burp-panes{grid-template-columns:1fr}}
+.burp-pane{padding:14px 16px;border-right:1px solid var(--brd);min-width:0}
+.burp-pane:last-child{border-right:none}
+.burp-pane-title{font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--mut);margin-bottom:8px;font-family:var(--sans)}
+.burp-hdrs{font-family:var(--mono);font-size:11px;color:var(--mut);white-space:pre;overflow-x:auto;line-height:1.6;margin-bottom:8px}
+.burp-hdr-name{color:#9cdcfe}
+.burp-hdr-val{color:#ce9178}
+.burp-body{font-family:var(--mono);font-size:12px;white-space:pre-wrap;word-break:break-all;line-height:1.6;color:#d4d4d4;background:#1e1e1e;border-radius:6px;padding:10px 12px;overflow-x:auto;max-height:300px;overflow-y:auto}
+.burp-body mark{background:#f9a825;color:#000;padding:1px 2px;border-radius:2px;font-weight:700}
+.burp-caption{padding:10px 16px 12px;font-size:12px;color:var(--mut);font-family:var(--sans);border-top:1px solid var(--brd)}
 /* ── Timing evidence pills ── */
 .time-fast{display:inline-block;font-family:'JetBrains Mono',monospace;font-size:11px;
   font-weight:600;padding:1px 7px;border-radius:4px;
@@ -3605,6 +3747,7 @@ document.addEventListener('DOMContentLoaded',function(){
     content = (
         summary_section
         + proof_section
+        + burp_section
         + chain_section
         + tech_section
         + inv_steps_section
