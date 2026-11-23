@@ -84,7 +84,14 @@ _CMD_HINTS = ("cmd", "command", "exec", "host", "ip", "ping", "target", "query",
 _PHP_CODE_HINTS = ("queryargs", "query_args", "code", "php", "eval", "script", "source",
                    "payload", "querytype", "query_type", "args", "data")
 _SQLI_HINTS = ("sort", "order", "id", "search", "email", "sender", "receiver",
-               "q", "query", "code", "name", "term", "filter")
+               "q", "query", "code", "name", "term", "filter",
+               # ORDER BY injection params (CVE-2024-1071 sorting param, common WP plugin pattern)
+               "sorting", "orderby", "order_by", "sort_by", "sortby", "ordertype",
+               "order_type", "sort_dir", "direction", "field", "column", "colname",
+               # additional common WP plugin param names for SQLi
+               "category", "cat", "tag", "post_id", "user_id", "meta_key", "meta_value",
+               "taxonomy", "parent", "status", "type", "subtype", "action", "task",
+               "directory_id", "member_directory", "listing_id", "event_id", "form_id")
 
 # algunos plugins NO crean sus paginas por defecto (Login/Register/Account/Members/...) con la
 # simple activacion -- exigen un paso extra PROPIO de cada plugin (un boton "Create Pages" en su
@@ -213,6 +220,48 @@ def _pick_param(params, hints) -> Optional[str]:
         non_name = [n for n in matches if not any(low[n].endswith(s) for s in _UPLOAD_NAME_SUFFIXES)]
         return (non_name or matches)[0]
     return None
+
+
+def _scan_rest_routes(plugin_source_dir: str) -> list:
+    """Scan plugin PHP source for REST routes and WP Ajax hooks.
+
+    Returns a list of candidate endpoint strings, e.g.:
+      ['/wp-json/myplugin/v1/members', '/wp-json/myplugin/v1/search', ...]
+
+    Covers:
+    - register_rest_route('namespace', 'route') → /wp-json/namespace/route
+    - add_action('wp_ajax_myaction', ...) → /wp-admin/admin-ajax.php?action=myaction
+    - add_action('wp_ajax_nopriv_myaction', ...) → same, unauthenticated
+    """
+    import glob
+    results = []
+    if not plugin_source_dir:
+        return results
+    _ns_re = re.compile(
+        r"register_rest_route\s*\(\s*['\"]([^'\"]+)['\"]\s*,\s*['\"]([^'\"]+)['\"]",
+        re.I)
+    _ajax_re = re.compile(
+        r"add_action\s*\(\s*['\"]wp_ajax(?:_nopriv)?_([^'\"]+)['\"]",
+        re.I)
+    for php_file in glob.glob(str(plugin_source_dir) + "/**/*.php", recursive=True):
+        try:
+            content = open(php_file, encoding="utf-8", errors="replace").read(80_000)
+        except OSError:
+            continue
+        for m in _ns_re.finditer(content):
+            ns = m.group(1).strip("/")
+            route = m.group(2).strip("/")
+            # strip optional regex anchors from route: (?P<id>\d+) → {id}
+            clean_route = re.sub(r"\(\?P<(\w+)>[^)]+\)", r"{\1}", route)
+            ep = f"/wp-json/{ns}/{clean_route}"
+            if ep not in results:
+                results.append(ep)
+        for m in _ajax_re.finditer(content):
+            action = m.group(1)
+            ep = f"/wp-admin/admin-ajax.php?action={action}"
+            if ep not in results:
+                results.append(ep)
+    return results[:20]  # cap to avoid flooding step output
 
 
 _NONCE_HTML_RE = re.compile(
@@ -5409,9 +5458,44 @@ def verify_wordpress_sqli(
             _probe_loc = _probe_resp.headers.get("Location", "")
             if _probe_status == 404:
                 step(f"pre-check endpoint: HTTP 404 — '{endpoint}' no existe en este lab; "
-                     f"el motor continuará pero las técnicas de SQLi probablemente fallen")
+                     f"escaneando código fuente del plugin para rutas alternativas...")
                 res.evidence["precheck_endpoint_status"] = 404
                 res.evidence["precheck_nota"] = "endpoint devolvio 404 — ruta incorrecta o plugin no expone ese endpoint"
+                # Auto-discover REST routes and AJAX hooks from plugin PHP code
+                if plugin_source_dir:
+                    _alt_routes = _scan_rest_routes(plugin_source_dir)
+                    if _alt_routes:
+                        step(f"rutas candidatas encontradas en source: {_alt_routes[:5]}")
+                        res.evidence["alt_endpoints_discovered"] = _alt_routes
+                        # Probe each candidate and switch to the first one that responds 200
+                        for _alt_ep in _alt_routes:
+                            try:
+                                _ap = _alt_ep.split("?")[0]
+                                _ap_params = {}
+                                if "?" in _alt_ep:
+                                    for _kv in _alt_ep.split("?", 1)[1].split("&"):
+                                        if "=" in _kv:
+                                            _k, _v = _kv.split("=", 1)
+                                            _ap_params[_k] = _v
+                                _ap_params[sqli_param] = "1"
+                                _ar = _probe_sess.get(
+                                    boot.base_url + _ap, params=_ap_params,
+                                    allow_redirects=False, timeout=5, verify=False)
+                                if _ar.status_code == 200 and len(_ar.content) > 5:
+                                    step(f"pre-check: ruta alternativa '{_ap}' responde "
+                                         f"HTTP {_ar.status_code} ({len(_ar.content)}B) → "
+                                         f"usando como nuevo endpoint")
+                                    endpoint = _ap
+                                    if _ap_params:
+                                        base_params = {**base_params, **{
+                                            k: v for k, v in _ap_params.items()
+                                            if k != sqli_param}}
+                                    res.evidence["endpoint_autodiscovered"] = _ap
+                                    break
+                            except Exception:
+                                continue
+                    else:
+                        step(f"no se hallaron rutas REST ni hooks AJAX en el source del plugin")
             elif _probe_status in (301, 302) and "wp-login" in _probe_loc.lower():
                 step(f"pre-check endpoint: redireccion a login ({_probe_loc}) — "
                      f"el endpoint requiere autenticación que el lab no ha resuelto")
@@ -6002,6 +6086,53 @@ def verify_wordpress_sqli(
                                              f"{'diferencial posible' if base_len > 10 else 'sigue vacia'}")
                             except Exception as _rescan_exc:
                                 step(f"[WARN] re-scan MySQL fallo: {_rescan_exc!r:.100}")
+                        # CPT seed fallback: si la respuesta sigue vacia despues del seed de tablas,
+                        # el plugin puede usar wp_posts con un post_type personalizado (eventos,
+                        # cursos, habitaciones, etc.). Detectar el CPT del plugin desde su codigo
+                        # fuente y crear uno o dos posts con wp-cli.
+                        if (base_len <= 10 or _ctrl_body in ("[]", "null", "{}", "0", "false", "")
+                                ) and plugin_source_dir:
+                            try:
+                                import glob as _glob2
+                                _cpt_re = re.compile(
+                                    r"register_post_type\s*\(\s*['\"]([a-z0-9_\-]{3,40})['\"]",
+                                    re.I)
+                                _cpts_found = []
+                                for _phpf in _glob2.glob(
+                                        str(plugin_source_dir) + "/**/*.php", recursive=True):
+                                    try:
+                                        _phpc = open(_phpf, encoding="utf-8", errors="replace"
+                                                     ).read(60_000)
+                                    except OSError:
+                                        continue
+                                    for _cm in _cpt_re.finditer(_phpc):
+                                        _ct = _cm.group(1)
+                                        if _ct not in _cpts_found and _ct != "attachment":
+                                            _cpts_found.append(_ct)
+                                if _cpts_found:
+                                    step(f"CPTs detectados en source: {_cpts_found[:4]} — "
+                                         f"creando posts de seed con wp-cli...")
+                                    for _cpt in _cpts_found[:3]:
+                                        try:
+                                            lab.wp_cli(
+                                                "post", "create",
+                                                f"--post_type={_cpt}",
+                                                f"--post_title=Seed {_cpt} 1",
+                                                "--post_status=publish",
+                                                timeout=15)
+                                        except Exception:
+                                            pass
+                                    try:
+                                        base_resp = send(orig_value)
+                                        base_len = len(base_resp.text or "")
+                                        _ctrl_body = (base_resp.text or "").strip()
+                                        step(f"respuesta post-CPT-seed: {base_len}B "
+                                             f"({_cpts_found[:2]}) — "
+                                             f"{'diferencial posible' if base_len > 10 else 'sigue vacia'}")
+                                    except Exception:
+                                        pass
+                            except Exception as _cpt_exc:
+                                step(f"[WARN] CPT seed fallo: {_cpt_exc!r:.80}")
                         # Si el seed inflO la respuesta mas de 20x respecto al baseline pre-seed pequeno,
                         # la fila seeded esta disparando codigo adicional que crashea el plugin
                         # (p.ej. WooCommerce, payment gateway no instalado): la injection no podria
