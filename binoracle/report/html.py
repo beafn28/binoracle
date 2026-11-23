@@ -3521,6 +3521,13 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
             )
 
     # ── Bloqueos ──────────────────────────────────────────────────────────────
+    # When verified, pre-check static blockers are irrelevant (the dynamic
+    # test bypassed them). Only keep runtime/infrastructure blockers.
+    _pre_check_markers = ("pre-check", "prechek", "no se detectaron", "probable versión parchada",
+                          "probable version parchada", "static check", "analisis estatico")
+    if verified and blockers:
+        blockers = [b for b in blockers
+                    if not any(m in b.lower() for m in _pre_check_markers)]
     blockers_section = ""
     if blockers:
         items = "".join(f'<div class="blocker-item">&#9888; {_md_rich(b)}</div>'
