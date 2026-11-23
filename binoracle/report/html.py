@@ -4090,6 +4090,16 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
             f'<li><a href="{url}" target="_blank" rel="noopener">{_esc(label)}</a></li>'
             for url, label in refs)
 
+    # Wordfence is a WordPress-specific source; only link it for WP targets.
+    _inv_tech_refs = str(getattr(inv, "tech", "") or "").lower()
+    _is_wp_target = any(t in _inv_tech_refs for t in
+                        ("wordpress", "wp", "woocommerce", "elementor", "jetpack"))
+    _wordfence_line = (
+        f'<li><a href="https://www.wordfence.com/threat-intel/vulnerabilities/search?query={cve_safe}"'
+        f' target="_blank" rel="noopener">wordfence.com — Threat Intelligence</a>'
+        f' — <span class="l-es">análisis de Wordfence</span>'
+        f'<span class="l-en">Wordfence analysis</span></li>'
+        if _is_wp_target else "")
     references_section = (
         f'<section id="sec-refs" style="margin-top:32px">'
         + _sec_heading("09", "REFERENCIAS", "REFERENCES", "refs")
@@ -4097,9 +4107,7 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
         + f'<li><a href="https://nvd.nist.gov/vuln/detail/{cve_safe}" target="_blank" rel="noopener">'
         + f'nvd.nist.gov/vuln/detail/{cve_safe}</a>'
         + f' — <span class="l-es">ficha oficial NVD</span><span class="l-en">official NVD entry</span></li>'
-        + f'<li><a href="https://www.wordfence.com/threat-intel/vulnerabilities/search?query={cve_safe}" target="_blank" rel="noopener">'
-        + f'wordfence.com — Threat Intelligence</a>'
-        + f' — <span class="l-es">análisis de Wordfence</span><span class="l-en">Wordfence analysis</span></li>'
+        + _wordfence_line
         + plugin_line
         + poc_line
         + _owasp_cwe_refs(vuln_class)

@@ -4861,26 +4861,38 @@ def fetch_vulners_cve(cve_id: str, timeout: int = 15) -> dict:
 
 
 def gather_cve_intelligence(cve_id: str, plugin_slug: str = "",
-                             timeout: int = 15) -> dict:
+                             timeout: int = 15,
+                             target_ecosystem: str = "") -> dict:
     """
-    Gather CVE intelligence from NVD, Wordfence, Patchstack, GitHub, WPScan,
-    ExploitDB, MITRE, OSV.dev, and Vulners in parallel (9 sources).
+    Gather CVE intelligence from NVD, GitHub, ExploitDB, MITRE, OSV.dev, and
+    Vulners in parallel (universal sources), plus Wordfence, Patchstack and WPScan
+    only when the target is a WordPress component (plugin_slug set, or
+    target_ecosystem contains "wordpress"/"wp").
     Returns a merged dict with the richest available information from all sources.
     """
     import concurrent.futures as _cf
+    _eco = (target_ecosystem or plugin_slug or "").lower()
+    _is_wp = bool(_eco) and any(t in _eco for t in
+                                ("wordpress", "wp-", "/wp-", "woo", "elementor",
+                                 "jetpack", "yoast", "akismet", "gravityforms"))
     sources = {}
-    with _cf.ThreadPoolExecutor(max_workers=9) as ex:
-        futures = {
-            ex.submit(fetch_nvd_cve_details, cve_id, timeout): "nvd",
-            ex.submit(fetch_wordfence_advisory, cve_id, timeout): "wordfence",
-            ex.submit(fetch_patchstack_advisory, cve_id, timeout): "patchstack",
-            ex.submit(fetch_github_advisories, cve_id, timeout): "github",
-            ex.submit(fetch_wpscan_advisory, cve_id, timeout): "wpscan",
-            ex.submit(fetch_exploitdb_data, cve_id, timeout): "exploitdb",
-            ex.submit(fetch_vulndb_mitre, cve_id, timeout): "mitre",
-            ex.submit(fetch_osv_advisory, cve_id, timeout): "osv",
-            ex.submit(fetch_vulners_cve, cve_id, timeout): "vulners",
-        }
+    # Universal sources — always queried
+    _futures_map: dict = {
+        "nvd":      fetch_nvd_cve_details,
+        "github":   fetch_github_advisories,
+        "exploitdb":fetch_exploitdb_data,
+        "mitre":    fetch_vulndb_mitre,
+        "osv":      fetch_osv_advisory,
+        "vulners":  fetch_vulners_cve,
+    }
+    # WordPress-only sources — only when target is a WP component
+    if _is_wp:
+        _futures_map["wordfence"] = fetch_wordfence_advisory
+        _futures_map["patchstack"] = fetch_patchstack_advisory
+        _futures_map["wpscan"]    = fetch_wpscan_advisory
+    with _cf.ThreadPoolExecutor(max_workers=len(_futures_map)) as ex:
+        futures = {ex.submit(fn, cve_id, timeout): name
+                   for name, fn in _futures_map.items()}
         for fut, name in futures.items():
             try:
                 sources[name] = fut.result(timeout=timeout + 5)

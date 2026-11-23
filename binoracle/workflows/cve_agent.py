@@ -7132,9 +7132,18 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             # La intel enriquece los notes (param/endpoint) Y se pasa al synthesizer mas abajo.
             try:
                 _slug_intel = (fr.plugin_dir or fr.source or source or "").strip().lower()
-                step(("recopilando inteligencia CVE de NVD, Wordfence, Patchstack, GitHub, WPScan, ExploitDB, MITRE, OSV, Vulners...") if es else
-                     ("gathering CVE intelligence from NVD, Wordfence, Patchstack, GitHub, WPScan, ExploitDB, MITRE, OSV, Vulners..."))
-                _cve_intel = gather_cve_intelligence(cve_id, plugin_slug=_slug_intel)
+                _tech_intel = str(getattr(inv, "tech", "") or "").lower()
+                _eco_intel = _slug_intel or _tech_intel
+                _is_wp_intel = any(t in _eco_intel for t in
+                                   ("wordpress", "wp-", "woo", "elementor",
+                                    "jetpack", "yoast", "akismet"))
+                _src_list = ("NVD, Wordfence, Patchstack, GitHub, WPScan, ExploitDB, MITRE, OSV, Vulners"
+                             if _is_wp_intel else
+                             "NVD, GitHub, ExploitDB, MITRE, OSV, Vulners")
+                step((f"recopilando inteligencia CVE de {_src_list}...") if es else
+                     (f"gathering CVE intelligence from {_src_list}..."))
+                _cve_intel = gather_cve_intelligence(cve_id, plugin_slug=_slug_intel,
+                                                     target_ecosystem=_eco_intel)
                 _intel_ok = sum(1 for v in _cve_intel["sources"].values() if v)
                 _n_sources = len(_cve_intel["sources"])
                 step((f"inteligencia CVE: {_intel_ok}/{_n_sources} fuentes — "
@@ -10312,6 +10321,10 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
              "public exploit exists: downloading and reading the real PoC (GitHub)...")
         poc_text = fetch_public_poc_source(info.exploit_refs, on_step=step)
         if poc_text:
+            # Record that we found a public PoC regardless of whether hint extraction works.
+            _github_ref_early = next((r for r in info.exploit_refs if r.source == "github"), None)
+            if _github_ref_early:
+                inv.poc_source_used = _github_ref_early.url
             poc_hints = _extract_hints_from_real_poc(llm, poc_text)
             if poc_hints:
                 poc_hints, dropped_version = _drop_unreliable_poc_version(
