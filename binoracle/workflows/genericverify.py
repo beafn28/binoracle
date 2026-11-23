@@ -1128,6 +1128,24 @@ def verify_generic_command_injection(
                           f"'{res.evidence['parametro_ganador']}' hizo que {canary_path} "
                           f"apareciera DENTRO del contenedor con el secreto exacto -- prueba "
                           f"inequivoca de ejecucion de comandos, no una deduccion por status code")
+            _ci_url = base_url + endpoint
+            _ci_body = (f"COMMAND INJECTION — CANARIO CONFIRMADO\n\n"
+                        f"Parametro: {res.evidence.get('parametro_ganador','')}\n"
+                        f"Payload: {res.evidence.get('payload_ganador','')}\n\n"
+                        f"Verificacion: docker exec -> {canary_path}\n"
+                        f"Secreto plantado '{secret}' encontrado dentro del contenedor.\n\n"
+                        f"Respuesta HTTP (primer intento):\n"
+                        f"{res.evidence.get('respuesta_cuerpo_recorte','')[:300]}")
+            _add_exploit_evidence(
+                res=res, method=m, url=_ci_url,
+                resp_or_body=_ci_body,
+                highlight=secret,
+                caption_es=(f"COMMAND INJECTION confirmada: payload en '{res.evidence.get('parametro_ganador','')}' "
+                            f"ejecuto comando en el servidor — secreto '{secret}' encontrado en {canary_path}."),
+                caption_en=(f"COMMAND INJECTION confirmed: payload in '{res.evidence.get('parametro_ganador','')}' "
+                            f"executed server command — secret '{secret}' found in {canary_path}."),
+                extra_terminal=_ci_body,
+            )
         else:
             res.ok = True
             res.detail = (f"se probaron {len(tried)} combinaciones de parametro/forma de "
@@ -1628,15 +1646,18 @@ def verify_generic_lfi_rce(
                           f"'{marker}' aparecio como resultado de system(), no como texto PHP "
                           f"crudo) -- ejecucion remota de codigo real, no una lectura de fichero")
             _body = res.evidence.get("respuesta_cuerpo_recorte", "")
-            _png = _screenshot_response(base_url + endpoint_path, m, 200, _body,
-                                        highlight=marker, lang="es")
-            if _png:
-                res.evidence.setdefault("screenshots", []).append({
-                    "png_b64": _png,
-                    "caption_es": f"RESULTADO: LFI-a-RCE CONFIRMADO — marcador '{marker}' ejecutado por PHP",
-                    "caption_en": f"RESULT: LFI-to-RCE CONFIRMED — marker '{marker}' executed by PHP",
-                    "url": base_url + endpoint_path,
-                })
+            _add_exploit_evidence(
+                res=res, method=m, url=base_url + endpoint_path,
+                resp_or_body=_body, highlight=marker,
+                caption_es=(f"LFI-a-RCE CONFIRMADO: log envenenado incluido y PHP ejecuto "
+                            f"el payload — marcador '{marker}' presente en la respuesta."),
+                caption_en=(f"LFI-to-RCE CONFIRMED: poisoned log included and PHP executed "
+                            f"the payload — marker '{marker}' present in response."),
+                extra_terminal=(f"Path param: {path_param}\n"
+                                f"Payload: {res.evidence.get('payload_ganador','')}\n"
+                                f"Marcador: {marker}\n"
+                                f"Respuesta:\n{_body[:300]}"),
+            )
         else:
             any_raw = any(t.get("reflejado_crudo_sin_ejecutar") for t in tried)
             res.ok = True
@@ -1860,15 +1881,18 @@ def verify_generic_file_upload(
             _file_body = (f"fichero '{res.evidence['fichero_ganador']}' guardado en\n"
                           f"{res.evidence['ruta_real_en_el_contenedor']}\n"
                           f"(verificado con secreto canario dentro del contenedor)")
-            _png = _screenshot_terminal_step(
-                "FILE UPLOAD — subida peligrosa CONFIRMADA", _file_body,
-                highlight=res.evidence.get("fichero_ganador", ""), lang="es")
-            if _png:
-                res.evidence.setdefault("screenshots", []).append({
-                    "png_b64": _png,
-                    "caption_es": f"RESULTADO: FILE UPLOAD CONFIRMADO — fichero guardado en {res.evidence.get('ruta_real_en_el_contenedor','')}",
-                    "caption_en": f"RESULT: FILE UPLOAD CONFIRMED — file stored at {res.evidence.get('ruta_real_en_el_contenedor','')}",
-                })
+            _add_exploit_evidence(
+                res=res, method=m, url=base_url + endpoint,
+                resp_or_body=_file_body,
+                highlight=res.evidence.get("fichero_ganador", ""),
+                caption_es=(f"FILE UPLOAD CONFIRMADO: '{res.evidence.get('fichero_ganador','')}' "
+                            f"guardado en {res.evidence.get('ruta_real_en_el_contenedor','')} "
+                            f"con el secreto canario."),
+                caption_en=(f"FILE UPLOAD CONFIRMED: '{res.evidence.get('fichero_ganador','')}' "
+                            f"stored at {res.evidence.get('ruta_real_en_el_contenedor','')} "
+                            f"with canary secret."),
+                extra_terminal=_file_body,
+            )
         else:
             res.ok = True
             res.detail = (f"se probaron {len(tried)} nombres/extensiones de fichero contra "
@@ -3012,17 +3036,15 @@ def verify_generic_open_redirect(
             _redir_body = (f"HTTP/1.1 {confirmed_entry['status']} Found\n"
                            f"Location: {confirmed_entry['location']}\n\n"
                            f"Redirect to attacker-controlled domain confirmed")
-            _redir_png = _screenshot_response(
-                base_url + (endpoint or "/"), m,
-                confirmed_entry["status"], _redir_body,
-                highlight=confirmed_entry["location"], lang="es")
-            if _redir_png:
-                res.evidence.setdefault("screenshots", []).append({
-                    "png_b64": _redir_png,
-                    "caption_es": f"RESULTADO: OPEN REDIRECT CONFIRMADO — Location: {confirmed_entry['location']}",
-                    "caption_en": f"RESULT: OPEN REDIRECT CONFIRMED — Location: {confirmed_entry['location']}",
-                    "url": base_url + (endpoint or "/"),
-                })
+            _add_exploit_evidence(
+                res=res, method=m, url=base_url + (endpoint or "/"),
+                resp_or_body=_redir_body,
+                highlight=confirmed_entry["location"],
+                caption_es=(f"OPEN REDIRECT CONFIRMADO: {redirect_param}={confirmed_entry['target']!r} "
+                            f"→ {confirmed_entry['status']} Location: {confirmed_entry['location']}"),
+                caption_en=(f"OPEN REDIRECT CONFIRMED: {redirect_param}={confirmed_entry['target']!r} "
+                            f"→ {confirmed_entry['status']} Location: {confirmed_entry['location']}"),
+            )
         else:
             res.ok = True
             res.detail = (f"se probaron {len(tried)} variantes de bypass (directa, "
@@ -3127,10 +3149,10 @@ def verify_generic_xss(
                     res.evidence["payload_ganador"] = payload_value
                     step(f"VERIFICADO: el navegador EJECUTO el script inyectado -- document.title "
                          f"cambio exactamente a '{marker}'.")
+                    from urllib.parse import urlencode
+                    _xss_url = base_url + endpoint + ("&" if "?" in endpoint else "?") + urlencode(params)
                     _, _xss_png = xb.render(base_url, endpoint, m, params, [], capture=True)
                     if _xss_png:
-                        from urllib.parse import urlencode
-                        _xss_url = base_url + endpoint + ("&" if "?" in endpoint else "?") + urlencode(params)
                         res.evidence.setdefault("screenshots", []).append({
                             "png_b64": _xss_png, "url": _xss_url,
                             "caption_es": (f"XSS confirmado: el navegador Chromium headless "
@@ -3142,6 +3164,18 @@ def verify_generic_xss(
                                            f"changed to '{marker}' (proof of real JS execution, "
                                            f"not just text reflection)."),
                         })
+                    _xss_body = (f"XSS EJECUTADO — document.title = '{marker}'\n\n"
+                                 f"Parametro: {xss_param}\n"
+                                 f"Payload: {payload_value}\n"
+                                 f"URL completa:\n{_xss_url}")
+                    _add_exploit_evidence(
+                        res=res, method=m, url=_xss_url,
+                        resp_or_body=_xss_body, highlight=marker,
+                        caption_es=(f"XSS CONFIRMADO: script ejecutado en '{xss_param}' — "
+                                    f"document.title cambio a '{marker}' en Chromium headless."),
+                        caption_en=(f"XSS CONFIRMED: script executed in '{xss_param}' — "
+                                    f"document.title changed to '{marker}' in headless Chromium."),
+                    )
                     break
         res.evidence.update({"base_url": base_url, "contenedor": container, "endpoint": endpoint,
                              "xss_param": xss_param, "token": token, "metodo": m,
@@ -3302,22 +3336,17 @@ def verify_generic_ssti(
                     step(f"VERIFICADO: la respuesta contiene {payload_expected}, calculado por el "
                          f"motor de plantillas -- ese numero no aparece en el payload enviado.")
                     _ssti_url = base_url + ep_path
-                    _ssti_png = _screenshot_response(
-                        url=_ssti_url, method=cand_meth, status=resp.status_code,
-                        body=(resp.text or "")[:4000], highlight=str(payload_expected),
+                    _add_exploit_evidence(
+                        res=res, method=cand_meth, url=_ssti_url,
+                        resp_or_body=resp, highlight=str(payload_expected),
+                        caption_es=(f"SSTI CONFIRMADA: '{cand_p}'={payload_value!r} — "
+                                    f"motor evaluo expresion y devolvio {payload_expected} "
+                                    f"(no estaba en el payload enviado)."),
+                        caption_en=(f"SSTI CONFIRMED: '{cand_p}'={payload_value!r} — "
+                                    f"engine evaluated expression and returned {payload_expected} "
+                                    f"(not in the sent payload)."),
                     )
-                    if _ssti_png:
-                        res.evidence.setdefault("screenshots", []).append({
-                            "png_b64": _ssti_png, "url": _ssti_url,
-                            "caption_es": (f"SSTI confirmado: el motor de plantillas evaluo "
-                                           f"'{payload_value}' y devolvio {payload_expected} "
-                                           f"(resultado en amarillo) -- ese numero no estaba "
-                                           f"en el payload enviado."),
-                            "caption_en": (f"SSTI confirmed: template engine evaluated "
-                                           f"'{payload_value}' and returned {payload_expected} "
-                                           f"(highlighted) -- that number was not in the payload."),
-                        })
-                        step("captura web guardada -- usa --html/-o para verla en el informe.")
+                    step("captura HTTP guardada en el informe.")
                     break
             tried_all.extend(tried)
             if found:
@@ -3397,22 +3426,16 @@ def verify_generic_ssti(
                                             _rend_resp.text or "")[:500]
                                         step(f"VERIFICADO (multi-step): upload {_nc!r} + render "
                                              f"{_rend_url!r} devolvio {expected}.")
-                                        _ms_png = _screenshot_response(
-                                            url=_rend_url, method="GET",
-                                            status=_rend_resp.status_code,
-                                            body=(_rend_resp.text or "")[:4000],
-                                            highlight=str(expected),
+                                        _add_exploit_evidence(
+                                            res=res, method="GET", url=_rend_url,
+                                            resp_or_body=_rend_resp, highlight=str(expected),
+                                            caption_es=(f"SSTI multi-step CONFIRMADA: upload "
+                                                        f"'{_nc}' + render devolvio {expected} "
+                                                        f"— motor evaluo '{_ssti_pl}'."),
+                                            caption_en=(f"Multi-step SSTI CONFIRMED: upload "
+                                                        f"'{_nc}' + render returned {expected} "
+                                                        f"— engine evaluated '{_ssti_pl}'."),
                                         )
-                                        if _ms_png:
-                                            res.evidence.setdefault("screenshots", []).append({
-                                                "png_b64": _ms_png, "url": _rend_url,
-                                                "caption_es": (f"SSTI multi-step: plantilla renderizada "
-                                                               f"tras upload traversal -- el motor evaluo "
-                                                               f"'{_ssti_pl}' y devolvio {expected} (amarillo)."),
-                                                "caption_en": (f"Multi-step SSTI: template rendered "
-                                                               f"after upload traversal -- engine evaluated "
-                                                               f"'{_ssti_pl}' and returned {expected} (highlighted)."),
-                                            })
                                         break
                             except Exception:
                                 pass
@@ -3732,15 +3755,14 @@ def verify_generic_graphql_bypass(
                           f"con el vector de bypass (campo '{confirm_field}' presente). "
                           f"Sin bypass: status={s_anon}. Con bypass: status={s_byp}.")
             step(f"VERIFICADO: GraphQL auth-bypass confirmado — '{confirm_field}' en respuesta")
-            _png = _screenshot_response(endpoint_url, "POST", s_byp, byp_body[:2000],
-                                        highlight=confirm_field, lang="es")
-            if _png:
-                res.evidence.setdefault("screenshots", []).append({
-                    "png_b64": _png,
-                    "caption_es": f"RESULTADO: GRAPHQL AUTH-BYPASS — campo '{confirm_field}' accesible sin auth",
-                    "caption_en": f"RESULT: GRAPHQL AUTH-BYPASS — field '{confirm_field}' accessible without auth",
-                    "url": endpoint_url,
-                })
+            _add_exploit_evidence(
+                res=res, method="POST", url=endpoint_url,
+                resp_or_body=byp_body[:3000], highlight=confirm_field,
+                caption_es=(f"GRAPHQL AUTH-BYPASS CONFIRMADO: campo '{confirm_field}' accesible "
+                            f"sin autenticacion via bypass — status {s_byp}."),
+                caption_en=(f"GRAPHQL AUTH-BYPASS CONFIRMED: field '{confirm_field}' accessible "
+                            f"without auth via bypass — status {s_byp}."),
+            )
         else:
             res.ok = True
             res.detail = (f"el vector de bypass no confirmo acceso no autorizado al campo "
@@ -3955,16 +3977,21 @@ def verify_generic_cors_misconfig(
                               f"el Origin (ACAO={rd['acao']!r}) pero sin Credentials:true — "
                               f"riesgo menor (no afecta requests autenticados).")
                 step(f"VERIFICADO (cors-reflection): {rd['endpoint']} — reflection sin credentials")
-            _png = _screenshot_response(base_url + rd["endpoint"], m, 200,
-                                        f"ACAO: {rd['acao']}\nACAC: {rd['acac']}",
-                                        highlight=cors_token.split("//")[1], lang="es")
-            if _png:
-                res.evidence.setdefault("screenshots", []).append({
-                    "png_b64": _png,
-                    "caption_es": f"CORS reflection confirmada: Origin reflejado en Access-Control-Allow-Origin",
-                    "caption_en": f"CORS reflection confirmed: Origin reflected in Access-Control-Allow-Origin",
-                    "url": base_url + rd["endpoint"],
-                })
+            _cors_body = (f"Access-Control-Allow-Origin: {rd['acao']}\n"
+                          f"Access-Control-Allow-Credentials: {rd['acac']}\n\n"
+                          f"Origin enviado: {cors_token}\n"
+                          f"Endpoint: {rd['endpoint']}")
+            _add_exploit_evidence(
+                res=res, method=m, url=base_url + rd["endpoint"],
+                resp_or_body=_cors_body,
+                highlight=cors_token.split("//")[1] if "//" in cors_token else cors_token,
+                caption_es=(f"CORS MISCONFIGURATION CONFIRMADA: ACAO={rd['acao']!r} "
+                            f"refleja el Origin del atacante"
+                            + (" con Credentials:true." if rd.get("credentials") else " (sin credentials).")),
+                caption_en=(f"CORS MISCONFIGURATION CONFIRMED: ACAO={rd['acao']!r} "
+                            f"reflects attacker Origin"
+                            + (" with Credentials:true." if rd.get("credentials") else " (no credentials).")),
+            )
         else:
             res.ok = True
             res.detail = (f"CORS reflection no detectada en {len(tried)} endpoints — "
@@ -4053,7 +4080,20 @@ def verify_generic_http_confirm(
             res.verified = True
             res.detail = (f"confirm_string {confirm_string!r} encontrado en la respuesta "
                           f"de {m} {endpoint} -- vulnerabilidad confirmada")
-            res.evidence = body[:800]
+            res.evidence = {
+                "respuesta_cuerpo_recorte": body[:800],
+                "confirm_string": confirm_string,
+                "status_code": resp.status_code if hasattr(resp, "status_code") else 200,
+                "url": url, "metodo": m,
+            }
+            _add_exploit_evidence(
+                res=res, method=m, url=url, resp_or_body=resp,
+                highlight=confirm_string,
+                caption_es=(f"VULNERABILIDAD CONFIRMADA: '{confirm_string}' encontrado en "
+                            f"respuesta de {m} {endpoint}."),
+                caption_en=(f"VULNERABILITY CONFIRMED: '{confirm_string}' found in "
+                            f"response of {m} {endpoint}."),
+            )
             return res
 
         res.detail = (f"confirm_string {confirm_string!r} NO encontrado en la respuesta "

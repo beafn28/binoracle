@@ -3243,6 +3243,9 @@ def verify_wordpress_unauthenticated_login_bypass(
             res.detail = (f"la peticion no autenticada devolvio {resp.status_code} pero "
                           f"/wp-admin/profile.php no confirmo la identidad de la victima "
                           f"(logueado como alguien: {logged_in_as_someone})")
+        if boot is not None:
+            res.evidence["screenshots"] = boot.shots
+            res.evidence["http_captures"] = boot.http_captures
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = f"timeout de infraestructura: {e}"
@@ -3425,6 +3428,9 @@ def verify_wordpress_header_auth_bypass(
                                            "/wp-json/wp/v2/users/me")
         except requests.RequestException as exc:
             res.detail = f"error de red probando header auth bypass: {exc}"
+        if boot is not None:
+            res.evidence["screenshots"] = boot.shots
+            res.evidence["http_captures"] = boot.http_captures
         return res
     finally:
         if not (keep_lab_on_failure and not res.verified):
@@ -3570,6 +3576,9 @@ def verify_wordpress_url_param_login(
             res.limitations.append(
                 "url-param-login fallido: el parametro encontrado no disparo una sesion de admin; "
                 "comprueba si el token OTA ya esta configurado (no vacio) en la instalacion lab")
+        if boot is not None:
+            res.evidence["screenshots"] = boot.shots
+            res.evidence["http_captures"] = boot.http_captures
         return res
     finally:
         if not (keep_lab_on_failure and not res.verified):
@@ -7126,6 +7135,9 @@ def verify_wordpress_fetch_and_write_rce(
                         res.detail += f" (SSRF confirmado: el listener recibio la peticion con el token {marker})"
         except requests.RequestException as exc:
             res.detail = f"error verificando fichero escrito: {exc}"
+        if boot is not None:
+            res.evidence["screenshots"] = boot.shots
+            res.evidence["http_captures"] = boot.http_captures
         return res
     finally:
         if not (keep_lab_on_failure and not res.verified):
@@ -7365,6 +7377,8 @@ def verify_wordpress_xss_elementor(
         if png:
             shots.append(("elementor-xss-chromium", png))
         res.evidence["screenshots"] = shots
+        if boot is not None:
+            res.evidence["http_captures"] = boot.http_captures
         res.evidence["page_url"] = page_url
         res.evidence["widget_type"] = widget_type
         res.evidence["xss_post_id"] = xss_post_id
@@ -9582,6 +9596,9 @@ def verify_wordpress_deserialization(
                           f"canario apareciera con el secreto -- la deserializacion no se confirmo "
                           f"(puede que el endpoint/parametro no sean los reales, o que el valor "
                           f"no se pase a unserialize() sin filtrar)")
+        if boot is not None:
+            res.evidence["screenshots"] = boot.shots
+            res.evidence["http_captures"] = boot.http_captures
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = f"timeout de infraestructura: {e}"
@@ -9785,6 +9802,9 @@ def verify_wordpress_deserialization_custom_table(
                           "no se confirmo (puede que la tabla/columna no sean las reales, que "
                           "el valor se guarde escapado/modificado antes del INSERT, o que la "
                           "columna tenga un tipo que trunque el valor)")
+        if boot is not None:
+            res.evidence["screenshots"] = boot.shots
+            res.evidence["http_captures"] = boot.http_captures
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = f"timeout de infraestructura: {e}"
