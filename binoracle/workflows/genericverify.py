@@ -2897,6 +2897,7 @@ def verify_generic_xxe(
     source_dir: str, endpoint: str, http_method: str, parameters,
     xml_param_hint: str = "", on_step: Optional[Callable[[str], None]] = None,
     budget_s: float = 900.0,
+    dockerfile_body: str = "", extra_files: Optional[dict] = None,
 ) -> WpVerifyResult:
     """Analogo generico de verify_wordpress_xxe: planta un canario dentro del contenedor real
     del objetivo y prueba las mismas variantes de entidad externa (DOCTYPE normal, parametro-
@@ -2914,7 +2915,8 @@ def verify_generic_xxe(
 
     xml_param = xml_param_hint or _pick_param(parameters, _XML_HINTS)
 
-    boot = _bootstrap_generic_lab(source_dir, step, res, budget_s)
+    boot = _bootstrap_generic_lab(source_dir, step, res, budget_s,
+                                  dockerfile_body=dockerfile_body, extra_files=extra_files)
     if boot is None:
         return res
     lab, base_url, container = boot
@@ -3059,6 +3061,7 @@ def verify_generic_open_redirect(
     source_dir: str, endpoint: str, http_method: str, parameters,
     redirect_param_hint: str = "", on_step: Optional[Callable[[str], None]] = None,
     budget_s: float = 900.0, custom_headers: Optional[dict] = None,
+    dockerfile_body: str = "", extra_files: Optional[dict] = None,
 ) -> WpVerifyResult:
     """Analogo generico de verify_wordpress_open_redirect: manda la misma bateria de variantes de
     URL externa/bypass (directa, protocol-relative, backslash, userinfo, espacios/tabs,
@@ -3081,7 +3084,8 @@ def verify_generic_open_redirect(
                                "(redirect_param_hint)")
         return res
 
-    boot = _bootstrap_generic_lab(source_dir, step, res, budget_s)
+    boot = _bootstrap_generic_lab(source_dir, step, res, budget_s,
+                                  dockerfile_body=dockerfile_body, extra_files=extra_files)
     if boot is None:
         return res
     lab, base_url, container = boot
@@ -3184,6 +3188,7 @@ def verify_generic_xss(
     source_dir: str, endpoint: str, http_method: str, parameters,
     xss_param_hint: str = "", on_step: Optional[Callable[[str], None]] = None,
     budget_s: float = 900.0,
+    dockerfile_body: str = "", extra_files: Optional[dict] = None,
 ) -> WpVerifyResult:
     """Analogo generico de verify_wordpress_xss: carga la respuesta en un Chromium headless REAL
     (ver _xss_render) y prueba la misma bateria de variantes elegidas a mano (rotura de HTML/
@@ -3217,7 +3222,8 @@ def verify_generic_xss(
                                "(pip install playwright && playwright install chromium)")
         return res
 
-    boot = _bootstrap_generic_lab(source_dir, step, res, budget_s)
+    boot = _bootstrap_generic_lab(source_dir, step, res, budget_s,
+                                  dockerfile_body=dockerfile_body, extra_files=extra_files)
     if boot is None:
         return res
     lab, base_url, container = boot

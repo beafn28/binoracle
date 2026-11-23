@@ -1760,19 +1760,165 @@ _LAB_SCAFFOLD_MISSING_AUTH_SYS = (
     "\"confirm_string\": \"...\", \"server_port\": 3000, \"parameters\": {}}"
 )
 
+_LAB_SCAFFOLD_XSS_SYS = (
+    "Eres un experto en seguridad. Genera un servidor para un lab de XSS ALMACENADO (stored). "
+    "El servidor almacena un comentario/mensaje del usuario y lo renderiza SIN escapar en otra "
+    "pagina. REGLAS:\n"
+    "1. Endpoint POST /api/comment que guarda el payload en memoria (array en RAM)\n"
+    "2. Endpoint GET /view que devuelve HTML con TODOS los comentarios sin escapar (innerHTML)\n"
+    "3. SIN Content-Security-Policy ni X-XSS-Protection en headers\n"
+    "4. El atacante envia <script>document.title='MARKER'</script> y el verificador comprueba "
+    "que el titulo de la pagina cambia al MARKER exacto con Playwright\n"
+    "5. Para reflected XSS: el endpoint GET /api/search?q=... devuelve el q sin escapar en el HTML\n"
+    "Responde SOLO con JSON sin markdown: "
+    "{\"server_code\": \"...\", \"dockerfile\": \"...\", \"endpoint\": \"/view\", "
+    "\"xss_param\": \"comment\", \"server_port\": 3000, \"parameters\": {\"comment\": \"test\"}}"
+)
+
+_LAB_SCAFFOLD_XXE_SYS = (
+    "Eres un experto en seguridad. Genera un servidor para un lab de XXE. "
+    "El servidor parsea XML del usuario con entidades externas HABILITADAS. REGLAS:\n"
+    "1. El endpoint recibe XML en el body (Content-Type: application/xml o text/xml)\n"
+    "2. Parsea el XML con libexpat/lxml/DOMParser/etc CON external entities HABILITADAS\n"
+    "3. El atacante envia un DOCTYPE con una ENTITY que lea /tmp/canary y la incluye en el doc\n"
+    "4. El servidor devuelve el contenido del documento parseado (con la entidad resuelta)\n"
+    "5. Para Node.js usa 'xml2js' con 'xmlns:$': true o 'libxmljs' sin disableExternalEntities\n"
+    "6. Para Python usa 'lxml.etree.parse' con load_dtd=True, resolve_entities=True\n"
+    "Responde SOLO con JSON sin markdown: "
+    "{\"server_code\": \"...\", \"dockerfile\": \"...\", \"endpoint\": \"/api/parse\", "
+    "\"xml_param\": \"data\", \"server_port\": 3000}"
+)
+
+_LAB_SCAFFOLD_OPEN_REDIRECT_SYS = (
+    "Eres un experto en seguridad. Genera un servidor para un lab de open redirect. "
+    "El servidor redirige al usuario a la URL que el parametro indica SIN validacion. REGLAS:\n"
+    "1. El endpoint recibe un parametro con la URL de destino (ej: ?url=... o ?next=... o ?redirect=...)\n"
+    "2. El servidor responde con HTTP 302 y Location = la URL del parametro SIN filtrar ni validar\n"
+    "3. SIN lista blanca de dominios, SIN verificacion del protocolo\n"
+    "4. El verificador comprueba que Location contiene un dominio externo controlado\n"
+    "Responde SOLO con JSON sin markdown: "
+    "{\"server_code\": \"...\", \"dockerfile\": \"...\", \"endpoint\": \"/redirect\", "
+    "\"redirect_param\": \"url\", \"server_port\": 3000, \"parameters\": {\"url\": \"https://example.com\"}}"
+)
+
+_LAB_SCAFFOLD_FILE_UPLOAD_SYS = (
+    "Eres un experto en seguridad. Genera un servidor para un lab de file upload arbitrario. "
+    "El servidor acepta subidas de ficheros SIN validar la extension ni el contenido. REGLAS:\n"
+    "1. El endpoint POST /api/upload acepta multipart/form-data con el fichero\n"
+    "2. Guarda el fichero en /app/uploads/ con el nombre original (sin sanitizar)\n"
+    "3. SIN lista blanca de extensiones, SIN validacion de magic bytes\n"
+    "4. El verificador sube un fichero con contenido especial y lo busca con docker exec grep\n"
+    "5. Para PHP: acepta .php files. Para Node: acepta cualquier extension\n"
+    "Responde SOLO con JSON sin markdown: "
+    "{\"server_code\": \"...\", \"dockerfile\": \"...\", \"endpoint\": \"/api/upload\", "
+    "\"file_param\": \"file\", \"server_port\": 3000}"
+)
+
+_LAB_SCAFFOLD_CORS_SYS = (
+    "Eres un experto en seguridad. Genera un servidor para un lab de CORS misconfiguration. "
+    "El servidor refleja CUALQUIER Origin en Access-Control-Allow-Origin con credentials. REGLAS:\n"
+    "1. El endpoint tiene datos sensibles (incluye el CONFIRM_STRING en la respuesta JSON)\n"
+    "2. El servidor lee el header Origin y lo devuelve en Access-Control-Allow-Origin EXACTO\n"
+    "3. Access-Control-Allow-Credentials: true SIEMPRE\n"
+    "4. SIN lista blanca de origenes -- refleja literalmente cualquier Origin recibido\n"
+    "5. El verificador envia Origin: https://attacker.com y verifica la reflexion + credentials\n"
+    "Responde SOLO con JSON sin markdown: "
+    "{\"server_code\": \"...\", \"dockerfile\": \"...\", \"endpoint\": \"/api/data\", "
+    "\"confirm_string\": \"...\", \"server_port\": 3000}"
+)
+
+_LAB_SCAFFOLD_GRAPHQL_SYS = (
+    "Eres un experto en seguridad. Genera un servidor GraphQL para un lab de auth-bypass. "
+    "El servidor expone datos privados via GraphQL SIN autenticacion. REGLAS:\n"
+    "1. Endpoint /graphql con apollo-server o graphql-http\n"
+    "2. Query 'users' o 'admin' devuelve datos que contienen el CONFIRM_STRING\n"
+    "3. SIN autenticacion requerida -- cualquier query funciona sin Authorization header\n"
+    "4. Introspection HABILITADA para que el verificador pueda explorar el schema\n"
+    "5. El verificador envia la query y busca el CONFIRM_STRING en la respuesta\n"
+    "Responde SOLO con JSON sin markdown: "
+    "{\"server_code\": \"...\", \"dockerfile\": \"...\", \"endpoint\": \"/graphql\", "
+    "\"confirm_string\": \"...\", \"graphql_query\": \"{ users { id name secret } }\", "
+    "\"server_port\": 4000}"
+)
+
+_LAB_SCAFFOLD_PROTOTYPE_POLLUTION_SYS = (
+    "Eres un experto en seguridad. Genera un servidor Node.js para un lab de prototype pollution. "
+    "El servidor tiene una funcion de merge/assign vulnerable que permite contaminar Object.prototype. REGLAS:\n"
+    "1. El endpoint POST /api/merge recibe JSON con una clave '__proto__' o 'constructor.prototype'\n"
+    "2. El servidor hace un deepMerge(target, body) sin filtrar __proto__\n"
+    "3. Tras el merge, otro endpoint GET /api/status devuelve propiedades del objeto para verificar\n"
+    "4. El atacante envia {'__proto__': {'pwned': 'binoracle-polluted'}} y verifica que \n"
+    "   un objeto vacio ({}).pwned === 'binoracle-polluted' (confirmacion de contaminacion)\n"
+    "Responde SOLO con JSON sin markdown: "
+    "{\"server_code\": \"...\", \"dockerfile\": \"...\", \"endpoint\": \"/api/merge\", "
+    "\"confirm_string\": \"binoracle-polluted\", \"server_port\": 3000}"
+)
+
 _LAB_FEEDBACK_GENERIC_SYS = (
     "Una verificacion de vulnerabilidad fallo contra un laboratorio Docker. "
-    "Diagnostica el motivo del fallo y genera una version corregida del servidor. "
-    "CAUSAS COMUNES: "
-    "404 -> ruta del endpoint incorrecta; "
-    "500 -> error de sintaxis en el servidor; "
-    "sin diferencial/no confirmado -> el parametro no llega al codigo vulnerable o "
-    "el servidor normaliza/sanitiza el input antes de procesarlo; "
-    "timeout -> el servidor no arranca o no responde en el puerto indicado; "
-    "path-traversal: si usas Express, cambia a http.createServer. "
+    "Diagnostica el motivo EXACTO del fallo y genera una version corregida del servidor.\n\n"
+    "CATALOGO COMPLETO DE CAUSAS Y SOLUCIONES (basado en fallos reales observados):\n\n"
+    "=== PARAMETROS ===\n"
+    "- 'diff=0, size_true==size_false' o 'sin diferencial' -> el parametro no llega al codigo "
+    "vulnerable. Causas: (a) nombre del param tiene brackets que Python requests codifica como "
+    "%5B%5D (Express qs no los parsea): usar nombre plano sin brackets; (b) el param esta mal "
+    "escrito; (c) el servidor normaliza/sanitiza el input antes de usarlo\n"
+    "- El param llega pero no produce diferencial -> quiza el servidor tiene otro mecanismo de "
+    "proteccion (prepared statements, escaping). Revisar que el SQL sea vulnerable\n\n"
+    "=== ENDPOINT / RUTAS ===\n"
+    "- '404 en endpoint' -> ruta incorrecta. Revisar app.get/app.post/router\n"
+    "- El endpoint para URL_PATH mode (path-traversal) DEBE terminar en '/' -- sin slash "
+    "el verificador concatena directamente y rompe el path. Ej: '/static/' no '/static'\n"
+    "- El verificador envio el payload a /static/ pero el servidor lo sirve en /files/ -> cambiar\n\n"
+    "=== SERVIDOR / ARRANQUE ===\n"
+    "- '500 siempre' o 'SyntaxError' -> error de sintaxis en el codigo del servidor. Revisar\n"
+    "- 'timeout / no responde' -> (a) servidor no hace listen en 0.0.0.0 (usa 'localhost' -> "
+    "inaccesible desde fuera del contenedor); (b) puerto incorrecto; (c) crash al arrancar\n"
+    "- 'Connection refused' -> el servidor no arranco o murio; revisar CMD del Dockerfile\n\n"
+    "=== PATH TRAVERSAL ===\n"
+    "- 'canario no encontrado' con Express -> NUNCA uses Express para path-traversal (Express "
+    "normaliza %2e%2e antes del handler). Cambiar a http.createServer nativo\n"
+    "- 'path.join resuelve fuera del directorio base' -> normal si es vulnerable; si NO sale fuera "
+    "es que hay path.normalize o path.resolve bloqueando\n"
+    "- Profundidad incorrecta -> 4 niveles desde /app/static/abc/ llegan a /; ajustar base dir\n\n"
+    "=== SSRF ===\n"
+    "- 'listener no recibio peticion' -> el servidor valida/bloquea IPs privadas o 127.0.0.1. "
+    "Eliminar toda validacion de hostname. Usar node-fetch@2 o axios sin httpsAgent restrictivo\n"
+    "- El listener esta en la misma red Docker pero la URL apunta a 'localhost' -> usar la IP "
+    "del listener que el verificador proporciona (no 127.0.0.1)\n\n"
+    "=== XSS ===\n"
+    "- 'titulo no cambio' -> (a) el servidor escapa el HTML antes de renderizar (usar innerHTML, "
+    "no textContent ni res.send(escape(input))); (b) CSP bloquea el script; eliminar CSP\n"
+    "- El payload se almacena pero no se renderiza sin recargar -> asegurar que /view muestra "
+    "todos los comentarios al cargar\n\n"
+    "=== XXE ===\n"
+    "- 'entidad no resuelta' -> el parser tiene external entities deshabilitadas. Para lxml: "
+    "usar XMLParser(load_dtd=True, resolve_entities=True, no_network=False). Para xml2js: "
+    "alternativa es usar libxmljs o saxes con procesamiento manual\n"
+    "- El canario no aparece en la respuesta -> quiza el servidor no imprime el contenido del "
+    "elemento parseado; asegurar que res.json({result: doc.root().text()}) devuelve el contenido\n\n"
+    "=== OPEN REDIRECT ===\n"
+    "- 'Location no contiene el dominio externo' -> el servidor valida el dominio o solo permite "
+    "rutas relativas. Eliminar toda validacion. Devolver res.redirect(302, url_param)\n\n"
+    "=== CORS ===\n"
+    "- 'ACAO no refleja el Origin' -> el servidor usa CORS con origen fijo o '*'. Cambiar a leer "
+    "req.headers.origin y devolverlo en Access-Control-Allow-Origin. ACAC: true es obligatorio\n\n"
+    "=== COMMAND INJECTION ===\n"
+    "- 'canario no creado' -> (a) el servidor no ejecuta con shell: true (Node: exec necesita "
+    "shell); (b) whitelist de caracteres bloquea ';'. Usar child_process.exec({shell: true})\n"
+    "- Los chars especiales se escapan antes del exec -> quitar escaping\n\n"
+    "=== SSTI ===\n"
+    "- '{{7*7}} devuelve 7*7 sin evaluar' -> el motor de plantillas tiene autoescape o el input "
+    "se trata como string literal. Para Jinja2: usar render_template_string(input) directamente. "
+    "Para Nunjucks: usar nunjucks.renderString(input, {})\n\n"
+    "=== GENERAL ===\n"
+    "- 'mejor-sqlite3 no encontrado' -> falta en package.json/npm install; añadir al Dockerfile\n"
+    "- 'Module not found' -> dependencia faltante en package.json o requirements.txt\n"
+    "- El servidor arranca pero el endpoint raiz responde HTML de bienvenida, no JSON -> el "
+    "verificador necesita el subpath correcto (/api/...) no '/'\n\n"
     "Responde SOLO con JSON sin markdown: "
-    "{\"diagnosis\": \"causa especifica del fallo\", \"server_code\": \"...\", "
-    "\"dockerfile\": \"...\", \"endpoint\": \"...\", \"parameters\": {}}"
+    "{\"diagnosis\": \"causa especifica del fallo (cita el error exacto)\", "
+    "\"server_code\": \"...\", \"dockerfile\": \"...\", \"endpoint\": \"...\", \"parameters\": {}}"
 )
 
 # Retry para herramientas CLI cuyo vector es el VALOR de un argumento (verify_cli_argv_*).
@@ -7082,22 +7228,65 @@ def _lab_debug_feedback(llm, fail_reason: str, lab_config: dict,
 
 # Mapa vuln_class → system prompt del scaffold (unico punto de extension para nuevas clases)
 _SCAFFOLD_SYS_FOR_CLASS = {
-    "sqli":                  None,  # usa _scaffold_llm_lab directamente (tiene trace en 2 pasos)
-    "sql-injection":         None,
-    "path-traversal":        "_LAB_SCAFFOLD_PATH_TRAVERSAL_SYS",
-    "lfi":                   "_LAB_SCAFFOLD_PATH_TRAVERSAL_SYS",
-    "directory-traversal":   "_LAB_SCAFFOLD_PATH_TRAVERSAL_SYS",
-    "arbitrary-file-read":   "_LAB_SCAFFOLD_PATH_TRAVERSAL_SYS",
-    "ssrf":                  "_LAB_SCAFFOLD_SSRF_SYS",
+    # SQLi: usa _scaffold_llm_lab directamente (tiene trace en 2 pasos)
+    "sqli":                        None,
+    "sql-injection":               None,
+    # Path traversal / LFI
+    "path-traversal":              "_LAB_SCAFFOLD_PATH_TRAVERSAL_SYS",
+    "lfi":                         "_LAB_SCAFFOLD_PATH_TRAVERSAL_SYS",
+    "directory-traversal":         "_LAB_SCAFFOLD_PATH_TRAVERSAL_SYS",
+    "arbitrary-file-read":         "_LAB_SCAFFOLD_PATH_TRAVERSAL_SYS",
+    "local-file-inclusion":        "_LAB_SCAFFOLD_PATH_TRAVERSAL_SYS",
+    # SSRF
+    "ssrf":                        "_LAB_SCAFFOLD_SSRF_SYS",
     "server-side-request-forgery": "_LAB_SCAFFOLD_SSRF_SYS",
-    "command-injection":     "_LAB_SCAFFOLD_CMDI_SYS",
-    "rce":                   "_LAB_SCAFFOLD_CMDI_SYS",
-    "code-injection":        "_LAB_SCAFFOLD_CMDI_SYS",
-    "ssti":                  "_LAB_SCAFFOLD_SSTI_SYS",
-    "template-injection":    "_LAB_SCAFFOLD_SSTI_SYS",
-    "missing-authorization": "_LAB_SCAFFOLD_MISSING_AUTH_SYS",
-    "auth-bypass":           "_LAB_SCAFFOLD_MISSING_AUTH_SYS",
-    "idor":                  "_LAB_SCAFFOLD_MISSING_AUTH_SYS",
+    # Command injection / RCE
+    "command-injection":           "_LAB_SCAFFOLD_CMDI_SYS",
+    "rce":                         "_LAB_SCAFFOLD_CMDI_SYS",
+    "code-injection":              "_LAB_SCAFFOLD_CMDI_SYS",
+    "remote-code-execution":       "_LAB_SCAFFOLD_CMDI_SYS",
+    "os-command-injection":        "_LAB_SCAFFOLD_CMDI_SYS",
+    # SSTI
+    "ssti":                        "_LAB_SCAFFOLD_SSTI_SYS",
+    "template-injection":          "_LAB_SCAFFOLD_SSTI_SYS",
+    "server-side-template-injection": "_LAB_SCAFFOLD_SSTI_SYS",
+    # Missing auth / IDOR
+    "missing-authorization":       "_LAB_SCAFFOLD_MISSING_AUTH_SYS",
+    "auth-bypass":                 "_LAB_SCAFFOLD_MISSING_AUTH_SYS",
+    "idor":                        "_LAB_SCAFFOLD_MISSING_AUTH_SYS",
+    "broken-access-control":       "_LAB_SCAFFOLD_MISSING_AUTH_SYS",
+    "authorization-bypass":        "_LAB_SCAFFOLD_MISSING_AUTH_SYS",
+    "insecure-direct-object-reference": "_LAB_SCAFFOLD_MISSING_AUTH_SYS",
+    # XSS
+    "xss":                         "_LAB_SCAFFOLD_XSS_SYS",
+    "cross-site-scripting":        "_LAB_SCAFFOLD_XSS_SYS",
+    "stored-xss":                  "_LAB_SCAFFOLD_XSS_SYS",
+    "reflected-xss":               "_LAB_SCAFFOLD_XSS_SYS",
+    # XXE
+    "xxe":                         "_LAB_SCAFFOLD_XXE_SYS",
+    "xml-external-entity":         "_LAB_SCAFFOLD_XXE_SYS",
+    "xml-injection":               "_LAB_SCAFFOLD_XXE_SYS",
+    # Open redirect
+    "open-redirect":               "_LAB_SCAFFOLD_OPEN_REDIRECT_SYS",
+    "redirect":                    "_LAB_SCAFFOLD_OPEN_REDIRECT_SYS",
+    "url-redirect":                "_LAB_SCAFFOLD_OPEN_REDIRECT_SYS",
+    # File upload
+    "file-upload":                 "_LAB_SCAFFOLD_FILE_UPLOAD_SYS",
+    "arbitrary-file-upload":       "_LAB_SCAFFOLD_FILE_UPLOAD_SYS",
+    "unrestricted-file-upload":    "_LAB_SCAFFOLD_FILE_UPLOAD_SYS",
+    # CORS
+    "cors":                        "_LAB_SCAFFOLD_CORS_SYS",
+    "cors-misconfiguration":       "_LAB_SCAFFOLD_CORS_SYS",
+    "cors-misconfig":              "_LAB_SCAFFOLD_CORS_SYS",
+    "cors-reflection":             "_LAB_SCAFFOLD_CORS_SYS",
+    # GraphQL
+    "graphql-bypass":              "_LAB_SCAFFOLD_GRAPHQL_SYS",
+    "graphql-injection":           "_LAB_SCAFFOLD_GRAPHQL_SYS",
+    "graphql-auth":                "_LAB_SCAFFOLD_GRAPHQL_SYS",
+    "graphql":                     "_LAB_SCAFFOLD_GRAPHQL_SYS",
+    # Prototype pollution (Node.js)
+    "prototype-pollution":         "_LAB_SCAFFOLD_PROTOTYPE_POLLUTION_SYS",
+    "property-injection":          "_LAB_SCAFFOLD_PROTOTYPE_POLLUTION_SYS",
 }
 
 
@@ -7111,11 +7300,18 @@ def _scaffold_llm_lab_for_class(llm, source_dir: str, notes: dict, cve_id: str,
     posibles (las no relevantes para la clase quedan en ""), o None si falla.
     """
     _SYS_MAP = {
-        "_LAB_SCAFFOLD_PATH_TRAVERSAL_SYS": _LAB_SCAFFOLD_PATH_TRAVERSAL_SYS,
-        "_LAB_SCAFFOLD_SSRF_SYS":           _LAB_SCAFFOLD_SSRF_SYS,
-        "_LAB_SCAFFOLD_CMDI_SYS":           _LAB_SCAFFOLD_CMDI_SYS,
-        "_LAB_SCAFFOLD_SSTI_SYS":           _LAB_SCAFFOLD_SSTI_SYS,
-        "_LAB_SCAFFOLD_MISSING_AUTH_SYS":   _LAB_SCAFFOLD_MISSING_AUTH_SYS,
+        "_LAB_SCAFFOLD_PATH_TRAVERSAL_SYS":      _LAB_SCAFFOLD_PATH_TRAVERSAL_SYS,
+        "_LAB_SCAFFOLD_SSRF_SYS":                _LAB_SCAFFOLD_SSRF_SYS,
+        "_LAB_SCAFFOLD_CMDI_SYS":                _LAB_SCAFFOLD_CMDI_SYS,
+        "_LAB_SCAFFOLD_SSTI_SYS":                _LAB_SCAFFOLD_SSTI_SYS,
+        "_LAB_SCAFFOLD_MISSING_AUTH_SYS":        _LAB_SCAFFOLD_MISSING_AUTH_SYS,
+        "_LAB_SCAFFOLD_XSS_SYS":                 _LAB_SCAFFOLD_XSS_SYS,
+        "_LAB_SCAFFOLD_XXE_SYS":                 _LAB_SCAFFOLD_XXE_SYS,
+        "_LAB_SCAFFOLD_OPEN_REDIRECT_SYS":       _LAB_SCAFFOLD_OPEN_REDIRECT_SYS,
+        "_LAB_SCAFFOLD_FILE_UPLOAD_SYS":         _LAB_SCAFFOLD_FILE_UPLOAD_SYS,
+        "_LAB_SCAFFOLD_CORS_SYS":                _LAB_SCAFFOLD_CORS_SYS,
+        "_LAB_SCAFFOLD_GRAPHQL_SYS":             _LAB_SCAFFOLD_GRAPHQL_SYS,
+        "_LAB_SCAFFOLD_PROTOTYPE_POLLUTION_SYS": _LAB_SCAFFOLD_PROTOTYPE_POLLUTION_SYS,
     }
     sys_key = _SCAFFOLD_SYS_FOR_CLASS.get(vuln_class)
     sys_prompt = _SYS_MAP.get(sys_key) if sys_key else None
@@ -10227,16 +10423,58 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                      "headless, el objetivo se construye desde su propio Dockerfile/compose..."
                      if es else "attempting GENERIC DYNAMIC verification -- real headless-"
                      "browser execution, the target is built from its own Dockerfile/compose..."))
+                _xss_ep = notes.get("endpoint")
+                _xss_dockerfile = notes.get("dockerfile_body") or ""
+                _xss_extra_files = notes.get("extra_files") or None
+                _scf_xss = False
+                if not _xss_dockerfile and llm is not None:
+                    _scf = _scaffold_llm_lab_for_class(
+                        llm, str(fr.local_path), notes, inv.cve_id, "xss", step, es)
+                    if _scf:
+                        _xss_dockerfile  = _scf["dockerfile_body"]
+                        _xss_extra_files = _scf["extra_files"]
+                        _xss_ep          = _scf.get("endpoint") or _xss_ep
+                        if _scf.get("xss_param"):
+                            xss_p = _scf["xss_param"]
+                        if _scf.get("parameters"):
+                            params = _scf["parameters"]
+                        _scf_xss = True
                 wr = verify_generic_xss(
-                    fr.local_path, notes.get("endpoint"), notes.get("http_method") or "GET",
-                    params, xss_param_hint=xss_p or "", on_step=step, budget_s=budget_s)
+                    fr.local_path, _xss_ep, notes.get("http_method") or "GET",
+                    params, xss_param_hint=xss_p or "", on_step=step, budget_s=budget_s,
+                    dockerfile_body=_xss_dockerfile, extra_files=_xss_extra_files)
+                if _scf_xss and not wr.verified:
+                    _lab_cfg_xss = {
+                        "dockerfile_body": _xss_dockerfile, "extra_files": _xss_extra_files,
+                        "endpoint": _xss_ep, "confirm_string": notes.get("confirm_string") or "",
+                        "parameters": params if isinstance(params, dict) else {},
+                    }
+                    for _fb_i in range(2):
+                        _fb = _lab_feedback_for_class(
+                            llm, getattr(wr, 'detail', '') or "", _lab_cfg_xss, step, es)
+                        if not _fb:
+                            break
+                        _xss_dockerfile  = _fb["dockerfile_body"]
+                        _xss_extra_files = _fb["extra_files"]
+                        _xss_ep          = _fb.get("endpoint") or _xss_ep
+                        if _fb.get("parameters"):
+                            params = _fb["parameters"]
+                        _lab_cfg_xss = _fb
+                        wr_fb = verify_generic_xss(
+                            fr.local_path, _xss_ep, notes.get("http_method") or "GET",
+                            params, xss_param_hint=xss_p or "", on_step=step, budget_s=budget_s,
+                            dockerfile_body=_xss_dockerfile, extra_files=_xss_extra_files)
+                        wr = wr_fb
+                        if wr_fb.verified:
+                            break
                 def _attempt_xss_generic(ep, pr):
                     return verify_generic_xss(
                         fr.local_path, ep, notes.get("http_method") or "GET", params,
-                        xss_param_hint=pr or "", on_step=step, budget_s=budget_s)
+                        xss_param_hint=pr or "", on_step=step, budget_s=budget_s,
+                        dockerfile_body=_xss_dockerfile, extra_files=_xss_extra_files)
                 wr = _run_evidence_retry_loop(
                     llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
-                    _attempt_xss_generic, wr, notes.get("endpoint"), xss_p,
+                    _attempt_xss_generic, wr, _xss_ep, xss_p,
                     technique_label="XSS generico")
                 _apply_wpverify_result(inv, wr, es, llm)
             elif (is_drupal and fr.kind in ("drupal-module", "local-zip", "zip-url") and plugin_dir
@@ -10439,16 +10677,54 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                      "externa, el objetivo se construye desde su propio Dockerfile/compose..."
                      if es else "attempting GENERIC DYNAMIC verification -- canary file via "
                      "external entity, the target is built from its own Dockerfile/compose..."))
+                _xxe_ep = notes.get("endpoint")
+                _xxe_dockerfile = notes.get("dockerfile_body") or ""
+                _xxe_extra_files = notes.get("extra_files") or None
+                _scf_xxe = False
+                if not _xxe_dockerfile and llm is not None:
+                    _scf = _scaffold_llm_lab_for_class(
+                        llm, str(fr.local_path), notes, inv.cve_id, "xxe", step, es)
+                    if _scf:
+                        _xxe_dockerfile  = _scf["dockerfile_body"]
+                        _xxe_extra_files = _scf["extra_files"]
+                        _xxe_ep          = _scf.get("endpoint") or _xxe_ep
+                        if _scf.get("xml_param"):
+                            xml_p = _scf["xml_param"]
+                        _scf_xxe = True
                 wr = verify_generic_xxe(
-                    fr.local_path, notes.get("endpoint"), notes.get("http_method") or "GET",
-                    params, xml_param_hint=xml_p or "", on_step=step, budget_s=budget_s)
+                    fr.local_path, _xxe_ep, notes.get("http_method") or "GET",
+                    params, xml_param_hint=xml_p or "", on_step=step, budget_s=budget_s,
+                    dockerfile_body=_xxe_dockerfile, extra_files=_xxe_extra_files)
+                if _scf_xxe and not wr.verified:
+                    _lab_cfg_xxe = {
+                        "dockerfile_body": _xxe_dockerfile, "extra_files": _xxe_extra_files,
+                        "endpoint": _xxe_ep, "confirm_string": notes.get("confirm_string") or "",
+                        "parameters": params if isinstance(params, dict) else {},
+                    }
+                    for _fb_i in range(2):
+                        _fb = _lab_feedback_for_class(
+                            llm, getattr(wr, 'detail', '') or "", _lab_cfg_xxe, step, es)
+                        if not _fb:
+                            break
+                        _xxe_dockerfile  = _fb["dockerfile_body"]
+                        _xxe_extra_files = _fb["extra_files"]
+                        _xxe_ep          = _fb.get("endpoint") or _xxe_ep
+                        _lab_cfg_xxe     = _fb
+                        wr_fb = verify_generic_xxe(
+                            fr.local_path, _xxe_ep, notes.get("http_method") or "GET",
+                            params, xml_param_hint=xml_p or "", on_step=step, budget_s=budget_s,
+                            dockerfile_body=_xxe_dockerfile, extra_files=_xxe_extra_files)
+                        wr = wr_fb
+                        if wr_fb.verified:
+                            break
                 def _attempt_xxe_generic(ep, pr):
                     return verify_generic_xxe(
                         fr.local_path, ep, notes.get("http_method") or "GET", params,
-                        xml_param_hint=pr or "", on_step=step, budget_s=budget_s)
+                        xml_param_hint=pr or "", on_step=step, budget_s=budget_s,
+                        dockerfile_body=_xxe_dockerfile, extra_files=_xxe_extra_files)
                 wr = _run_evidence_retry_loop(
                     llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
-                    _attempt_xxe_generic, wr, notes.get("endpoint"), xml_p,
+                    _attempt_xxe_generic, wr, _xxe_ep, xml_p,
                     technique_label="XXE generico")
                 _apply_wpverify_result(inv, wr, es, llm)
             elif (is_drupal and fr.kind in ("drupal-module", "local-zip", "zip-url") and plugin_dir
@@ -10520,18 +10796,59 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                      "Location header without following redirects, the target is built from its "
                      "own Dockerfile/compose..."))
                 _or_custom_hdrs = notes.get("custom_headers") or None
+                _or_ep = notes.get("endpoint")
+                _or_dockerfile = notes.get("dockerfile_body") or ""
+                _or_extra_files = notes.get("extra_files") or None
+                _scf_or = False
+                if not _or_dockerfile and llm is not None:
+                    _scf = _scaffold_llm_lab_for_class(
+                        llm, str(fr.local_path), notes, inv.cve_id, "open-redirect", step, es)
+                    if _scf:
+                        _or_dockerfile  = _scf["dockerfile_body"]
+                        _or_extra_files = _scf["extra_files"]
+                        _or_ep          = _scf.get("endpoint") or _or_ep
+                        if _scf.get("redirect_param"):
+                            redir_p = _scf["redirect_param"]
+                        if _scf.get("parameters"):
+                            params = _scf["parameters"]
+                        _scf_or = True
                 wr = verify_generic_open_redirect(
-                    fr.local_path, notes.get("endpoint"), notes.get("http_method") or "GET",
+                    fr.local_path, _or_ep, notes.get("http_method") or "GET",
                     params, redirect_param_hint=redir_p or "", on_step=step, budget_s=budget_s,
-                    custom_headers=_or_custom_hdrs)
+                    custom_headers=_or_custom_hdrs,
+                    dockerfile_body=_or_dockerfile, extra_files=_or_extra_files)
+                if _scf_or and not wr.verified:
+                    _lab_cfg_or = {
+                        "dockerfile_body": _or_dockerfile, "extra_files": _or_extra_files,
+                        "endpoint": _or_ep, "confirm_string": notes.get("confirm_string") or "",
+                        "parameters": params if isinstance(params, dict) else {},
+                    }
+                    for _fb_i in range(2):
+                        _fb = _lab_feedback_for_class(
+                            llm, getattr(wr, 'detail', '') or "", _lab_cfg_or, step, es)
+                        if not _fb:
+                            break
+                        _or_dockerfile  = _fb["dockerfile_body"]
+                        _or_extra_files = _fb["extra_files"]
+                        _or_ep          = _fb.get("endpoint") or _or_ep
+                        _lab_cfg_or     = _fb
+                        wr_fb = verify_generic_open_redirect(
+                            fr.local_path, _or_ep, notes.get("http_method") or "GET",
+                            params, redirect_param_hint=redir_p or "", on_step=step, budget_s=budget_s,
+                            custom_headers=_or_custom_hdrs,
+                            dockerfile_body=_or_dockerfile, extra_files=_or_extra_files)
+                        wr = wr_fb
+                        if wr_fb.verified:
+                            break
                 def _attempt_or_generic(ep, pr):
                     return verify_generic_open_redirect(
                         fr.local_path, ep, notes.get("http_method") or "GET", params,
                         redirect_param_hint=pr or "", on_step=step, budget_s=budget_s,
-                        custom_headers=_or_custom_hdrs)
+                        custom_headers=_or_custom_hdrs,
+                        dockerfile_body=_or_dockerfile, extra_files=_or_extra_files)
                 wr = _run_evidence_retry_loop(
                     llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
-                    _attempt_or_generic, wr, notes.get("endpoint"), redir_p,
+                    _attempt_or_generic, wr, _or_ep, redir_p,
                     technique_label="open redirect generico")
                 _apply_wpverify_result(inv, wr, es, llm)
             elif (is_drupal and fr.kind in ("drupal-module", "local-zip", "zip-url") and plugin_dir
@@ -10832,9 +11149,50 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                      "(introspección → query restringida → bypass)..." if es else
                      "attempting GENERIC DYNAMIC verification -- GraphQL auth-bypass "
                      "(introspection → restricted query → bypass)..."))
+                _gql_dockerfile = notes.get("dockerfile_body") or ""
+                _gql_extra_files = notes.get("extra_files") or None
+                _scf_gql = False
+                if not _gql_dockerfile and llm is not None:
+                    _scf = _scaffold_llm_lab_for_class(
+                        llm, str(fr.local_path), notes, inv.cve_id, "graphql", step, es)
+                    if _scf:
+                        _gql_dockerfile  = _scf["dockerfile_body"]
+                        _gql_extra_files = _scf["extra_files"]
+                        gql_ep           = _scf.get("endpoint") or gql_ep
+                        if _scf.get("graphql_query"):
+                            forbidden_q = _scf["graphql_query"]
+                        if _scf.get("confirm_string"):
+                            confirm_f = _scf["confirm_string"]
+                        _scf_gql = True
+                if _gql_dockerfile:
+                    _inject_custom_docker_lab_body(str(fr.local_path), _gql_dockerfile,
+                                                   _gql_extra_files, step)
                 wr = verify_generic_graphql_bypass(
                     fr.local_path, gql_ep, forbidden_q, confirm_field=confirm_f,
                     on_step=step, budget_s=budget_s)
+                if _scf_gql and not wr.verified:
+                    _lab_cfg_gql = {
+                        "dockerfile_body": _gql_dockerfile, "extra_files": _gql_extra_files,
+                        "endpoint": gql_ep, "confirm_string": confirm_f,
+                        "graphql_query": forbidden_q,
+                    }
+                    for _fb_i in range(2):
+                        _fb = _lab_feedback_for_class(
+                            llm, getattr(wr, 'detail', '') or "", _lab_cfg_gql, step, es)
+                        if not _fb:
+                            break
+                        _gql_dockerfile  = _fb["dockerfile_body"]
+                        _gql_extra_files = _fb["extra_files"]
+                        gql_ep           = _fb.get("endpoint") or gql_ep
+                        _lab_cfg_gql     = _fb
+                        _inject_custom_docker_lab_body(str(fr.local_path), _gql_dockerfile,
+                                                       _gql_extra_files, step)
+                        wr_fb = verify_generic_graphql_bypass(
+                            fr.local_path, gql_ep, forbidden_q, confirm_field=confirm_f,
+                            on_step=step, budget_s=budget_s)
+                        wr = wr_fb
+                        if wr_fb.verified:
+                            break
                 _apply_wpverify_result(inv, wr, es, llm)
             # Boolean oracle / data-leak: diferencia TRUE/FALSE en respuesta filtra datos privados
             elif (not plugin_dir and fr.local_path and
@@ -10876,10 +11234,41 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                      "(Origin reflected in Access-Control-Allow-Origin + Credentials)..."))
                 _cors_dockerfile = notes.get("dockerfile_body") or ""
                 _cors_extra_files = notes.get("extra_files") or None
+                _scf_cors = False
+                if not _cors_dockerfile and llm is not None:
+                    _scf = _scaffold_llm_lab_for_class(
+                        llm, str(fr.local_path), notes, inv.cve_id, "cors", step, es)
+                    if _scf:
+                        _cors_dockerfile  = _scf["dockerfile_body"]
+                        _cors_extra_files = _scf["extra_files"]
+                        cors_ep           = _scf.get("endpoint") or cors_ep
+                        _scf_cors         = True
                 wr = verify_generic_cors_misconfig(
                     fr.local_path, cors_ep, cors_method,
                     on_step=step, budget_s=budget_s, custom_headers=cors_hdrs,
                     dockerfile_body=_cors_dockerfile, extra_files=_cors_extra_files)
+                if _scf_cors and not wr.verified:
+                    _lab_cfg_cors = {
+                        "dockerfile_body": _cors_dockerfile, "extra_files": _cors_extra_files,
+                        "endpoint": cors_ep, "confirm_string": notes.get("confirm_string") or "",
+                        "parameters": {},
+                    }
+                    for _fb_i in range(2):
+                        _fb = _lab_feedback_for_class(
+                            llm, getattr(wr, 'detail', '') or "", _lab_cfg_cors, step, es)
+                        if not _fb:
+                            break
+                        _cors_dockerfile  = _fb["dockerfile_body"]
+                        _cors_extra_files = _fb["extra_files"]
+                        cors_ep           = _fb.get("endpoint") or cors_ep
+                        _lab_cfg_cors     = _fb
+                        wr_fb = verify_generic_cors_misconfig(
+                            fr.local_path, cors_ep, cors_method,
+                            on_step=step, budget_s=budget_s, custom_headers=cors_hdrs,
+                            dockerfile_body=_cors_dockerfile, extra_files=_cors_extra_files)
+                        wr = wr_fb
+                        if wr_fb.verified:
+                            break
                 _apply_wpverify_result(inv, wr, es, llm)
         else:
             step(f"no se pudo obtener el codigo: {fr.note}" if es else
