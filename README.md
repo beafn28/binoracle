@@ -346,8 +346,8 @@ pip install -r requirements.txt    # installs all required packages
 - [x] Multi-CVE chains (web RCE → local privilege escalation)
 - [x] CVSS v4 scoring
 - [x] Burp Suite MCP bridge
-- [ ] JEB decompiler (Android native)
-- [ ] Fine-tuned model checkpoint distribution
+- [x] JEB decompiler (Android native)
+- [x] Fine-tuned model checkpoint distribution
 
 ---
 
