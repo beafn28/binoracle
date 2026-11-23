@@ -9347,15 +9347,62 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                      f"Dockerfile/compose..." if es else
                      f"attempting GENERIC DYNAMIC verification -- authorization bypass via "
                      f"{_bypass_kind}, the target is built from its own Dockerfile/compose..."))
+                _auth_ep = notes.get("endpoint")
+                _auth_dockerfile = notes.get("dockerfile_body") or ""
+                _auth_extra_files = notes.get("extra_files") or None
+                _auth_bypass_hdr = notes.get("bypass_header", "")
+                _auth_bypass_val = notes.get("bypass_value", "")
+                _auth_confirm = notes.get("confirm_string", "")
+                _auth_bypass_url = notes.get("bypass_url") or None
+                _scf_auth = False
+                # Solo scaffold si no hay bypass_header/url ya definido (el analista sabe mejor)
+                if not _auth_dockerfile and not _auth_bypass_hdr and not _auth_bypass_url and llm is not None:
+                    _scf = _scaffold_llm_lab_for_class(
+                        llm, str(fr.local_path), notes, inv.cve_id,
+                        inv.vuln_class or "missing-authorization", step, es)
+                    if _scf:
+                        _auth_dockerfile  = _scf["dockerfile_body"]
+                        _auth_extra_files = _scf["extra_files"]
+                        _auth_ep          = _scf.get("endpoint") or _auth_ep
+                        _auth_confirm     = _scf.get("confirm_string") or _auth_confirm
+                        _scf_auth         = True
                 wr = verify_generic_header_bypass(
-                    fr.local_path, notes.get("endpoint"), notes.get("http_method") or "GET",
-                    bypass_header=notes.get("bypass_header", ""),
-                    bypass_value=notes.get("bypass_value", ""),
-                    confirm_string=notes.get("confirm_string", ""),
+                    fr.local_path, _auth_ep, notes.get("http_method") or "GET",
+                    bypass_header=_auth_bypass_hdr,
+                    bypass_value=_auth_bypass_val,
+                    confirm_string=_auth_confirm,
                     on_step=step, budget_s=budget_s,
-                    bypass_url=notes.get("bypass_url") or None,
-                    dockerfile_body=notes.get("dockerfile_body") or "",
-                    extra_files=notes.get("extra_files") or None)
+                    bypass_url=_auth_bypass_url,
+                    dockerfile_body=_auth_dockerfile,
+                    extra_files=_auth_extra_files)
+                if _scf_auth and not wr.verified:
+                    _lab_cfg_auth = {
+                        "dockerfile_body": _auth_dockerfile, "extra_files": _auth_extra_files,
+                        "endpoint": _auth_ep, "confirm_string": _auth_confirm,
+                        "parameters": {},
+                    }
+                    for _fb_i in range(2):
+                        _fb = _lab_feedback_for_class(
+                            llm, getattr(wr, 'detail', '') or "", _lab_cfg_auth, step, es)
+                        if not _fb:
+                            break
+                        _auth_dockerfile  = _fb["dockerfile_body"]
+                        _auth_extra_files = _fb["extra_files"]
+                        _auth_ep          = _fb.get("endpoint") or _auth_ep
+                        _auth_confirm     = _fb.get("confirm_string") or _auth_confirm
+                        _lab_cfg_auth     = _fb
+                        wr_fb = verify_generic_header_bypass(
+                            fr.local_path, _auth_ep, notes.get("http_method") or "GET",
+                            bypass_header=_auth_bypass_hdr,
+                            bypass_value=_auth_bypass_val,
+                            confirm_string=_auth_confirm,
+                            on_step=step, budget_s=budget_s,
+                            bypass_url=_auth_bypass_url,
+                            dockerfile_body=_auth_dockerfile,
+                            extra_files=_auth_extra_files)
+                        wr = wr_fb
+                        if wr_fb.verified:
+                            break
                 _apply_wpverify_result(inv, wr, es, llm)
             # mismo laboratorio efimero, para command injection en Drupal (cuarta clase de
             # Drupal, "poco a poco" -- ver drupalverify.py).
@@ -10978,9 +11025,48 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                      "attempting GENERIC DYNAMIC verification -- uploaded file with a real "
                      "secret, confirmed inside the container (grep), the target is built from "
                      "its own Dockerfile/compose..."))
+                _fu_ep = notes.get("endpoint")
+                _fu_dockerfile = notes.get("dockerfile_body") or ""
+                _fu_extra_files = notes.get("extra_files") or None
+                _scf_fu = False
+                if not _fu_dockerfile and llm is not None:
+                    _scf = _scaffold_llm_lab_for_class(
+                        llm, str(fr.local_path), notes, inv.cve_id, "file-upload", step, es)
+                    if _scf:
+                        _fu_dockerfile  = _scf["dockerfile_body"]
+                        _fu_extra_files = _scf["extra_files"]
+                        _fu_ep          = _scf.get("endpoint") or _fu_ep
+                        if _scf.get("file_param"):
+                            file_p = _scf["file_param"]
+                        if _scf.get("parameters"):
+                            params = _scf["parameters"]
+                        _scf_fu = True
                 wr = verify_generic_file_upload(
-                    fr.local_path, notes.get("endpoint"), file_param_hint=file_p or "",
-                    other_parameters=params, on_step=step, budget_s=budget_s)
+                    fr.local_path, _fu_ep, file_param_hint=file_p or "",
+                    other_parameters=params, on_step=step, budget_s=budget_s,
+                    dockerfile_body=_fu_dockerfile, extra_files=_fu_extra_files)
+                if _scf_fu and not wr.verified:
+                    _lab_cfg_fu = {
+                        "dockerfile_body": _fu_dockerfile, "extra_files": _fu_extra_files,
+                        "endpoint": _fu_ep, "confirm_string": notes.get("confirm_string") or "",
+                        "parameters": params if isinstance(params, dict) else {},
+                    }
+                    for _fb_i in range(2):
+                        _fb = _lab_feedback_for_class(
+                            llm, getattr(wr, 'detail', '') or "", _lab_cfg_fu, step, es)
+                        if not _fb:
+                            break
+                        _fu_dockerfile  = _fb["dockerfile_body"]
+                        _fu_extra_files = _fb["extra_files"]
+                        _fu_ep          = _fb.get("endpoint") or _fu_ep
+                        _lab_cfg_fu     = _fb
+                        wr_fb = verify_generic_file_upload(
+                            fr.local_path, _fu_ep, file_param_hint=file_p or "",
+                            other_parameters=params, on_step=step, budget_s=budget_s,
+                            dockerfile_body=_fu_dockerfile, extra_files=_fu_extra_files)
+                        wr = wr_fb
+                        if wr_fb.verified:
+                            break
                 _apply_wpverify_result(inv, wr, es, llm)
             elif (is_drupal and fr.kind in ("drupal-module", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class == "csrf" and notes.get("endpoint")):
@@ -11164,12 +11250,10 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         if _scf.get("confirm_string"):
                             confirm_f = _scf["confirm_string"]
                         _scf_gql = True
-                if _gql_dockerfile:
-                    _inject_custom_docker_lab_body(str(fr.local_path), _gql_dockerfile,
-                                                   _gql_extra_files, step)
                 wr = verify_generic_graphql_bypass(
                     fr.local_path, gql_ep, forbidden_q, confirm_field=confirm_f,
-                    on_step=step, budget_s=budget_s)
+                    on_step=step, budget_s=budget_s,
+                    dockerfile_body=_gql_dockerfile, extra_files=_gql_extra_files)
                 if _scf_gql and not wr.verified:
                     _lab_cfg_gql = {
                         "dockerfile_body": _gql_dockerfile, "extra_files": _gql_extra_files,
@@ -11185,11 +11269,63 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         _gql_extra_files = _fb["extra_files"]
                         gql_ep           = _fb.get("endpoint") or gql_ep
                         _lab_cfg_gql     = _fb
-                        _inject_custom_docker_lab_body(str(fr.local_path), _gql_dockerfile,
-                                                       _gql_extra_files, step)
                         wr_fb = verify_generic_graphql_bypass(
                             fr.local_path, gql_ep, forbidden_q, confirm_field=confirm_f,
-                            on_step=step, budget_s=budget_s)
+                            on_step=step, budget_s=budget_s,
+                            dockerfile_body=_gql_dockerfile, extra_files=_gql_extra_files)
+                        wr = wr_fb
+                        if wr_fb.verified:
+                            break
+                _apply_wpverify_result(inv, wr, es, llm)
+            # Prototype pollution (Node.js deepMerge vulnerable → contaminacion de Object.prototype)
+            elif (not plugin_dir and fr.local_path and
+                  inv.vuln_class in ("prototype-pollution", "property-injection") and
+                  notes.get("endpoint")):
+                from .genericverify import verify_generic_prototype_pollution
+                _inject_custom_docker_lab(str(fr.local_path), notes, step)
+                step(("intentando verificacion DINAMICA GENERICA -- prototype pollution "
+                     "(Object.prototype contaminado via __proto__)..." if es else
+                     "attempting GENERIC DYNAMIC verification -- prototype pollution "
+                     "(Object.prototype contaminated via __proto__)..."))
+                _pp_ep = notes.get("endpoint")
+                _pp_dockerfile = notes.get("dockerfile_body") or ""
+                _pp_extra_files = notes.get("extra_files") or None
+                _pp_poll_ep = notes.get("poll_endpoint") or "/api/status"
+                _pp_prop = notes.get("poll_prop") or "binoracle_pwned"
+                _scf_pp = False
+                if not _pp_dockerfile and llm is not None:
+                    _scf = _scaffold_llm_lab_for_class(
+                        llm, str(fr.local_path), notes, inv.cve_id, "prototype-pollution", step, es)
+                    if _scf:
+                        _pp_dockerfile  = _scf["dockerfile_body"]
+                        _pp_extra_files = _scf["extra_files"]
+                        _pp_ep          = _scf.get("endpoint") or _pp_ep
+                        _scf_pp         = True
+                wr = verify_generic_prototype_pollution(
+                    fr.local_path, _pp_ep, http_method=notes.get("http_method") or "POST",
+                    poll_prop=_pp_prop, poll_endpoint=_pp_poll_ep,
+                    on_step=step, budget_s=budget_s,
+                    dockerfile_body=_pp_dockerfile, extra_files=_pp_extra_files)
+                if _scf_pp and not wr.verified:
+                    _lab_cfg_pp = {
+                        "dockerfile_body": _pp_dockerfile, "extra_files": _pp_extra_files,
+                        "endpoint": _pp_ep, "confirm_string": notes.get("confirm_string") or "",
+                        "parameters": {},
+                    }
+                    for _fb_i in range(2):
+                        _fb = _lab_feedback_for_class(
+                            llm, getattr(wr, 'detail', '') or "", _lab_cfg_pp, step, es)
+                        if not _fb:
+                            break
+                        _pp_dockerfile  = _fb["dockerfile_body"]
+                        _pp_extra_files = _fb["extra_files"]
+                        _pp_ep          = _fb.get("endpoint") or _pp_ep
+                        _lab_cfg_pp     = _fb
+                        wr_fb = verify_generic_prototype_pollution(
+                            fr.local_path, _pp_ep, http_method=notes.get("http_method") or "POST",
+                            poll_prop=_pp_prop, poll_endpoint=_pp_poll_ep,
+                            on_step=step, budget_s=budget_s,
+                            dockerfile_body=_pp_dockerfile, extra_files=_pp_extra_files)
                         wr = wr_fb
                         if wr_fb.verified:
                             break

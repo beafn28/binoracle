@@ -1849,6 +1849,7 @@ def verify_generic_idor(
 def verify_generic_file_upload(
     source_dir: str, endpoint: str, file_param_hint: str = "", other_parameters=None,
     on_step: Optional[Callable[[str], None]] = None, budget_s: float = 900.0,
+    dockerfile_body: str = "", extra_files: Optional[dict] = None,
 ) -> WpVerifyResult:
     """Sube un fichero BENIGNO con doble extension (p.ej. 'poc.php.jpg') y contenido PHP real
     que solo imprime un secreto aleatorio -- misma idea que verify_generic_command_injection:
@@ -1869,7 +1870,8 @@ def verify_generic_file_upload(
         res.limitations.append("verificacion dinamica NO intentada: sin daemon Docker")
         return res
 
-    boot = _bootstrap_generic_lab(source_dir, step, res, budget_s)
+    boot = _bootstrap_generic_lab(source_dir, step, res, budget_s,
+                                  dockerfile_body=dockerfile_body, extra_files=extra_files)
     if boot is None:
         return res
     lab, base_url, container = boot
@@ -3782,6 +3784,7 @@ def verify_generic_graphql_bypass(
     anon_expected_status: int = 403,
     on_step: Optional[Callable[[str], None]] = None,
     budget_s: float = 900.0,
+    dockerfile_body: str = "", extra_files: Optional[dict] = None,
 ) -> WpVerifyResult:
     """Verifica un auth-bypass en un endpoint GraphQL (p.ej. Craft CMS CVE-2026-124427).
 
@@ -3808,7 +3811,8 @@ def verify_generic_graphql_bypass(
         res.limitations.append("verificacion dinamica NO intentada: sin daemon Docker")
         return res
 
-    tup = _bootstrap_generic_lab(source_dir, step, res, budget_s)
+    tup = _bootstrap_generic_lab(source_dir, step, res, budget_s,
+                                  dockerfile_body=dockerfile_body, extra_files=extra_files)
     if tup is None:
         return res
     lab, base_url, container = tup
@@ -4222,6 +4226,88 @@ def verify_generic_http_confirm(
         return res
     except Exception as e:
         res.detail = f"error inesperado en verify_generic_http_confirm: {e}"
+        return res
+    finally:
+        step("desmontando el laboratorio generico...")
+        lab.teardown()
+
+
+def verify_generic_prototype_pollution(
+    source_dir: str, endpoint: str, http_method: str = "POST",
+    poll_prop: str = "pwned", poll_endpoint: str = "/api/status",
+    on_step: Optional[Callable[[str], None]] = None,
+    budget_s: float = 900.0,
+    dockerfile_body: str = "", extra_files: Optional[dict] = None,
+) -> WpVerifyResult:
+    """Verifica prototype pollution en Node.js mediante un deepMerge vulnerable.
+
+    Mecanismo:
+    1) Levanta el lab efimero con _bootstrap_generic_lab.
+    2) Envia POST al endpoint con payload {"__proto__": {"<poll_prop>": "<token>"}}.
+    3) Envia GET a poll_endpoint para leer el estado del servidor.
+    4) CONFIRMADO si la respuesta de poll_endpoint contiene el token (Object.prototype contaminado).
+
+    poll_prop:     nombre de la propiedad que se inyecta en Object.prototype.
+    poll_endpoint: endpoint que expone propiedades del objeto (GET /api/status).
+    """
+    step = on_step or (lambda _m: None)
+    res = WpVerifyResult()
+    if not _docker_daemon_ok():
+        res.available = False
+        res.detail = "sin daemon Docker alcanzable"
+        res.limitations.append("verificacion dinamica NO intentada: sin daemon Docker")
+        return res
+
+    boot = _bootstrap_generic_lab(source_dir, step, res, budget_s,
+                                  dockerfile_body=dockerfile_body, extra_files=extra_files)
+    if boot is None:
+        return res
+    lab, base_url, container = boot
+    try:
+        import json as _json
+        token = _token()
+        poll_prop = poll_prop or "binoracle_pwned"
+
+        # Step 1: enviar el payload de prototype pollution
+        payload = _json.dumps({"__proto__": {poll_prop: token}})
+        step(f"Paso 1: enviando payload de prototype pollution a {endpoint}")
+        s1, _, b1 = _http_request(
+            base_url, endpoint, http_method,
+            headers={"Content-Type": "application/json"},
+            body=payload.encode(), timeout=15.0)
+        if s1 == 0:
+            res.detail = f"endpoint {endpoint} no responde al payload de pollution"
+            res.ok = True
+            return res
+        step(f"Paso 1: respuesta {s1} ({len(b1 or b'')} bytes)")
+
+        # Step 2: comprobar si Object.prototype fue contaminado
+        step(f"Paso 2: comprobando contaminacion de Object.prototype en {poll_endpoint}")
+        s2, _, b2 = _http_request(
+            base_url, poll_endpoint, "GET", timeout=10.0)
+        body2 = (b2 or b"").decode("utf-8", errors="replace")
+        if token in body2:
+            res.verified = True
+            res.ok = True
+            res.detail = (f"PROTOTYPE POLLUTION CONFIRMADA: token {token!r} encontrado en "
+                          f"respuesta de {poll_endpoint} — Object.prototype contaminado.")
+            step(f"VERIFICADO: token en respuesta de {poll_endpoint}")
+            _add_exploit_evidence(
+                res=res, method=http_method, url=base_url + endpoint,
+                resp_or_body=body2,
+                highlight=token,
+                caption_es=(f"PROTOTYPE POLLUTION CONFIRMADA: token {token!r} propagado "
+                            f"a Object.prototype, visible en {poll_endpoint}."),
+                caption_en=(f"PROTOTYPE POLLUTION CONFIRMED: token {token!r} propagated "
+                            f"to Object.prototype, visible at {poll_endpoint}."),
+            )
+        else:
+            res.ok = True
+            res.detail = (f"prototype pollution no detectada: token {token!r} NO encontrado "
+                          f"en respuesta de {poll_endpoint} (len={len(body2)})")
+        return res
+    except Exception as e:
+        res.detail = f"error inesperado en verify_generic_prototype_pollution: {e}"
         return res
     finally:
         step("desmontando el laboratorio generico...")
