@@ -2719,9 +2719,14 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
         )
 
         # Evidence differential table (SQLi boolean / SSRF token)
+        # ssrf_token: only shown for SSRF class — for path-traversal the canary appears in the
+        # HTTP response body directly, NOT via an outbound callback, so the SSRF table is wrong.
         ev_table_html = ""
         sqli_ev = verified_ev.get("sqli_differential") or verified_ev.get("differential") or {}
-        ssrf_token = verified_ev.get("ssrf_token") or verified_ev.get("canary_secret") or ""
+        _ev_vc = str(getattr(inv, "vuln_class", "") or "").lower()
+        _is_ssrf_class = "ssrf" in _ev_vc and not any(x in _ev_vc for x in ("traversal", "lfi", "path"))
+        ssrf_token = (verified_ev.get("ssrf_token") or
+                      (verified_ev.get("canary_secret") if _is_ssrf_class else "")) or ""
         if sqli_ev:
             true_len  = sqli_ev.get("true_bytes") or sqli_ev.get("true_len") or "?"
             false_len = sqli_ev.get("false_bytes") or sqli_ev.get("false_len") or "?"
@@ -3523,20 +3528,30 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
 
         # Build curl command
         def _q(s): return _shlex.quote(str(s))
+
+        # URL-path traversal: payload goes in the URL path (h3, Rack, Vite...),
+        # not as a query/body param. Detect when path_param is unset in evidence.
+        _is_url_path_traversal = (
+            any(x in _vc_r for x in ("traversal", "lfi", "path"))
+            and _mth_r == "GET"
+            and not (verified_ev.get("path_param") or "").strip()
+        )
+
         _curl_parts = ["curl", "-s", "-i"]
-        _curl_parts += ["-X", _mth_r]
-        if _mth_r in ("POST", "PUT", "PATCH"):
-            if _pl_r:
-                _curl_parts += ["-d", f"{_pk_r}={_pl_r}"]
-            else:
-                _curl_parts += ["-d", f"{_pk_r}=PAYLOAD"]
-        elif _pl_r:
-            _full_url_r = f"{_url_r}?{_pk_r}={_pl_r}"
+        if _is_url_path_traversal:
+            _curl_parts += ["--path-as-is"]
+            _full_url_r = f"{_url_r.rstrip('/')}/{_pl_r}" if _pl_r else _url_r
+            _curl_parts.append(_q(_full_url_r))
         else:
-            _full_url_r = _url_r
-        _full_url_r = (_url_r if (_mth_r in ("POST", "PUT", "PATCH") or not _pl_r) else
-                       f"{_url_r}?{_pk_r}={_pl_r}")
-        _curl_parts.append(_q(_full_url_r))
+            _curl_parts += ["-X", _mth_r]
+            if _mth_r in ("POST", "PUT", "PATCH"):
+                if _pl_r:
+                    _curl_parts += ["-d", f"{_pk_r}={_pl_r}"]
+                else:
+                    _curl_parts += ["-d", f"{_pk_r}=PAYLOAD"]
+            _full_url_r = (_url_r if (_mth_r in ("POST", "PUT", "PATCH") or not _pl_r) else
+                           f"{_url_r}?{_pk_r}={_pl_r}")
+            _curl_parts.append(_q(_full_url_r))
 
         # HTTP capture for Burp-style (if any real capture stored)
         _first_hcap = None
@@ -3774,32 +3789,32 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
             "es": [
                 "Usar consultas parametrizadas (prepared statements) en todas las interacciones con la base de datos — nunca interpolar datos del usuario directamente en SQL.",
                 "Validar y sanear todos los parámetros de entrada en el lado del servidor antes de cualquier operación de base de datos.",
-                "Aplicar el principio de mínimo privilegio: el usuario de base de datos del plugin no debe tener permisos de lectura en tablas sensibles (wp_users, wp_usermeta).",
-                "Actualizar el plugin a la versión parcheada de inmediato. Deshabilitar el plugin si no hay parche disponible hasta que se libere una versión segura.",
+                "Aplicar el principio de mínimo privilegio: el usuario de base de datos del componente no debe tener permisos de lectura en tablas sensibles (wp_users, wp_usermeta).",
+                "Actualizar el componente a la versión parcheada de inmediato. Deshabilitarlo si no hay parche disponible hasta que se libere una versión segura.",
                 "Configurar un WAF (p. ej. Cloudflare, ModSecurity) con reglas SQLi como capa de defensa adicional.",
-                "Auditar todos los puntos de entrada HTTP del plugin (acciones AJAX, endpoints REST) con un escáner SAST/DAST."
+                "Auditar todos los puntos de entrada HTTP del componente (acciones AJAX, endpoints REST) con un escáner SAST/DAST."
             ],
             "en": [
                 "Use parameterized queries (prepared statements) for all database interactions — never interpolate user-supplied data directly into SQL.",
                 "Validate and sanitize all input parameters server-side before any database operation.",
-                "Apply the principle of least privilege: the plugin's database user must not have read access to sensitive tables (wp_users, wp_usermeta).",
-                "Update the plugin to the patched version immediately. Disable the plugin if no patch is available until a secure version is released.",
+                "Apply the principle of least privilege: the component's database user must not have read access to sensitive tables (wp_users, wp_usermeta).",
+                "Update the component to the patched version immediately. Disable it if no patch is available until a secure version is released.",
                 "Configure a WAF (e.g. Cloudflare, ModSecurity) with SQLi rules as an additional defense layer.",
-                "Audit all plugin HTTP entry points (AJAX actions, REST endpoints) with a SAST/DAST scanner."
+                "Audit all component HTTP entry points (AJAX actions, REST endpoints) with a SAST/DAST scanner."
             ]
         },
         "xss": {
             "es": [
-                "Escapar toda salida HTML usando wp_kses_post() o esc_html() antes de renderizar datos del usuario.",
+                "Escapar toda salida HTML usando las funciones del framework (esc_html, htmlspecialchars, etc.) antes de renderizar datos del usuario.",
                 "Implementar una Content Security Policy (CSP) estricta que bloquee scripts inline no autorizados.",
-                "Validar y limpiar los datos en el momento de la inserción (sanitize_text_field, sanitize_textarea_field) y en el de la salida (esc_html, esc_attr).",
-                "Actualizar el plugin a la versión parcheada de inmediato."
+                "Validar y limpiar los datos en el momento de la inserción y en el de la salida (esc_html, esc_attr o equivalente del framework).",
+                "Actualizar el componente a la versión parcheada de inmediato."
             ],
             "en": [
-                "Escape all HTML output using wp_kses_post() or esc_html() before rendering user-controlled data.",
+                "Escape all HTML output using framework functions (esc_html, htmlspecialchars, etc.) before rendering user-controlled data.",
                 "Implement a strict Content Security Policy (CSP) that blocks unauthorized inline scripts.",
-                "Validate and sanitize data at insert time (sanitize_text_field, sanitize_textarea_field) and at output time (esc_html, esc_attr).",
-                "Update the plugin to the patched version immediately."
+                "Validate and sanitize data at insert time and at output time (esc_html, esc_attr or framework equivalent).",
+                "Update the component to the patched version immediately."
             ]
         },
         "ssrf": {
@@ -3807,55 +3822,93 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
                 "Validar y restringir las URLs aceptadas: solo permitir esquemas HTTPS y dominios en allowlist explícita.",
                 "Bloquear peticiones a rangos de IP privados (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 127.0.0.0/8, 169.254.0.0/16) y al metadata endpoint de AWS/GCP (169.254.169.254).",
                 "Realizar las peticiones HTTP salientes desde un worker aislado sin acceso a la red interna.",
-                "Actualizar el plugin a la versión parcheada de inmediato."
+                "Actualizar el componente a la versión parcheada de inmediato."
             ],
             "en": [
                 "Validate and restrict accepted URLs: allow only HTTPS scheme and an explicit domain allowlist.",
                 "Block requests to private IP ranges (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 127.0.0.0/8, 169.254.0.0/16) and cloud metadata endpoints (169.254.169.254).",
                 "Perform outbound HTTP requests from an isolated worker with no access to the internal network.",
-                "Update the plugin to the patched version immediately."
+                "Update the component to the patched version immediately."
             ]
         },
         "lfi": {
             "es": [
                 "No pasar rutas de archivo controladas por el usuario a funciones include/require. Usar un mapa estático de identificadores a rutas permitidas.",
-                "Configurar open_basedir en PHP para limitar el acceso del proceso web al directorio del plugin.",
-                "Actualizar el plugin a la versión parcheada de inmediato."
+                "Configurar open_basedir en PHP para limitar el acceso del proceso web al directorio de trabajo.",
+                "Actualizar el componente a la versión parcheada de inmediato."
             ],
             "en": [
                 "Never pass user-controlled file paths to include/require. Use a static map from identifiers to allowed paths.",
-                "Set open_basedir in PHP to restrict the web process to the plugin directory.",
-                "Update the plugin to the patched version immediately."
+                "Set open_basedir in PHP to restrict the web process to the working directory.",
+                "Update the component to the patched version immediately."
             ]
         },
         "auth-bypass": {
             "es": [
                 "Verificar autenticación y autorización en cada acción sensible con current_user_can() y check_ajax_referer().",
                 "No depender únicamente de parámetros ocultos o tokens predecibles para controlar el acceso.",
-                "Actualizar el plugin a la versión parcheada de inmediato."
+                "Actualizar el componente a la versión parcheada de inmediato."
             ],
             "en": [
                 "Verify authentication and authorization for every sensitive action using current_user_can() and check_ajax_referer().",
                 "Do not rely solely on hidden parameters or predictable tokens to control access.",
-                "Update the plugin to the patched version immediately."
+                "Update the component to the patched version immediately."
+            ]
+        },
+        "path-traversal": {
+            "es": [
+                "Resolver la ruta final y verificar que sigue dentro del directorio base permitido (comparación de ruta canónica, no solo filtrar '../'); usar un identificador indirecto (ID de base de datos) en vez del nombre de fichero real cuando sea posible.",
+                "Actualizar el componente/librería/paquete a la versión más reciente disponible, comprobando en el changelog/advisory del proveedor que corrige esta CVE concreta.",
+                "Si actualizar no es viable de inmediato, valorar una regla de WAF/mitigación temporal específica para el patrón de ataque mientras se despliega el parche, y restringir el acceso al endpoint afectado a quien realmente lo necesite."
+            ],
+            "en": [
+                "Resolve the final path and verify it remains within the allowed base directory (canonical path comparison, not just filtering '../'); use an indirect identifier (database ID) instead of the real filename when possible.",
+                "Update the component/library/package to the latest available version, verifying in the vendor's changelog/advisory that it fixes this specific CVE.",
+                "If immediate update is not feasible, consider a temporary WAF rule specific to the attack pattern while the patch is deployed, and restrict access to the affected endpoint to those who actually need it."
+            ]
+        },
+        "missing-authorization": {
+            "es": [
+                "Añadir comprobaciones de autorización (current_user_can, middleware de roles) en cada endpoint o acción sensible antes de ejecutar la operación.",
+                "No confiar en datos controlados por el cliente (IDs, campos hidden) para inferir privilegios — verificar siempre en el servidor.",
+                "Actualizar el componente a la versión parcheada de inmediato y revisar el changelog para detectar endpoints similares sin parchear."
+            ],
+            "en": [
+                "Add authorization checks (current_user_can, role middleware) on every sensitive endpoint or action before executing the operation.",
+                "Never trust client-controlled data (IDs, hidden fields) to infer privileges — always verify server-side.",
+                "Update the component to the patched version immediately and review the changelog for similarly unpatched endpoints."
+            ]
+        },
+        "ssti": {
+            "es": [
+                "No renderizar datos controlados por el usuario directamente con el motor de plantillas. Pasar los datos como variables del contexto, nunca como parte de la plantilla.",
+                "Configurar el motor de plantillas en modo sandbox (Jinja2: SandboxedEnvironment) para limitar el acceso a atributos de objetos internos.",
+                "Actualizar el componente a la versión parcheada de inmediato."
+            ],
+            "en": [
+                "Never render user-controlled data directly through the template engine. Pass data as context variables, never as part of the template string.",
+                "Configure the template engine in sandbox mode (Jinja2: SandboxedEnvironment) to restrict access to internal object attributes.",
+                "Update the component to the patched version immediately."
             ]
         },
     }
     vc_key = (vuln_class or "").lower()
     if vc_key not in _REMEDIATION:
         for k in _REMEDIATION:
-            if k in vc_key:
+            if k in vc_key or vc_key in k:
                 vc_key = k
                 break
     rem_items = _REMEDIATION.get(vc_key, {})
+    _comp_label_es = "componente/paquete"
+    _comp_label_en = "component/package"
     rem_es = rem_items.get("es", [
-        "Actualizar el plugin a la versión parcheada de inmediato.",
-        "Revisar todos los puntos de entrada HTTP del plugin para validar y sanear los parámetros de entrada.",
+        f"Actualizar el {_comp_label_es} a la versión más reciente disponible, comprobando que corrige esta CVE concreta.",
+        f"Revisar todos los puntos de entrada HTTP del {_comp_label_es} para validar y sanear los parámetros de entrada.",
         "Aplicar el principio de defensa en profundidad: WAF, mínimo privilegio y monitorización de logs."
     ])
     rem_en = rem_items.get("en", [
-        "Update the plugin to the patched version immediately.",
-        "Review all plugin HTTP entry points to validate and sanitize input parameters.",
+        f"Update the {_comp_label_en} to the latest version available, verifying it fixes this specific CVE.",
+        f"Review all {_comp_label_en} HTTP entry points to validate and sanitize input parameters.",
         "Apply defence-in-depth: WAF, least privilege, and log monitoring."
     ])
 
