@@ -1872,7 +1872,7 @@ CWE_TO_VULN_CLASS: dict = {
     # A03 Injection
     "CWE-89":  "sqli",
     "CWE-564": "sqli",          # SQL Injection in Hibernate
-    "CWE-943": "sqli",          # NoSQL query injection
+    "CWE-943": "nosql-injection",  # NoSQL query injection (MongoDB $operator, etc.)
     "CWE-78":  "command-injection",
     "CWE-77":  "command-injection",
     "CWE-88":  "command-injection",
@@ -2034,6 +2034,10 @@ _DESCRIPTION_KEYWORDS: List[tuple] = [
      "race-condition", 0.75),
     (("graphql", "introspection", "graphql injection", "graphql authorization"),
      "graphql-injection", 0.75),
+    # RCE / code execution without a more specific class
+    (("remote code execution", "arbitrary code execution", "code execution",
+      "execute arbitrary", "execute code", "run arbitrary code"),
+     "rce", 0.75),
 ]
 
 
@@ -2111,12 +2115,35 @@ def _classify_pipeline_error(error_text: str) -> dict:
         result["remediation_hint"] = (
             "servidor no levantó a tiempo — añadir HEALTHCHECK en Dockerfile o "
             "incrementar HEALTH_CHECK_RETRIES en el lab")
+    elif ("not found" in err and ("copy" in err or "package.json" in err or "checksum" in err)
+          or "failed to calculate checksum" in err):
+        result["category"] = "dockerfile_copy_missing"
+        result["remediation_hint"] = (
+            "COPY apunta a fichero que no existe en el contexto Docker — "
+            "usar RUN npm install <pkgs> en lugar de COPY package.json; "
+            "el contexto de build SOLO contiene los ficheros de extra_files")
+    elif "dockerfile parse error" in err or "unknown instruction" in err:
+        result["category"] = "syntax_error"
+        result["remediation_hint"] = (
+            "Dockerfile invalido — JSON multilínea dentro de RUN provoca que Docker "
+            "interprete líneas como instrucciones; usar RUN npm install <pkgs> en su lugar")
+    elif "exec format error" in err or "exec /bin/sh" in err:
+        result["category"] = "dockerfile_arch"
+        result["severity"] = "HIGH"
+        result["remediation_hint"] = (
+            "incompatibilidad de arquitectura ARM/AMD64 — añadir --platform=linux/amd64 "
+            "al FROM del Dockerfile")
+    elif "pull access denied" in err or "repository does not exist" in err:
+        result["category"] = "image_pull_failure"
+        result["severity"] = "HIGH"
+        result["remediation_hint"] = (
+            "imagen Docker no encontrada — verificar nombre/tag, usar node:18-alpine o python:3.11-slim")
     elif "modulenotfounderror" in err or "cannot find module" in err:
         result["category"] = "missing_dependency"
         result["remediation_hint"] = (
             "dependencia faltante — añadir al package.json o requirements.txt del lab, "
             "o instalar en RUN del Dockerfile")
-    elif "syntax" in err and ("error" in err or "unexpected" in err):
+    elif ("syntax" in err and ("error" in err or "unexpected" in err)):
         result["category"] = "syntax_error"
         result["remediation_hint"] = (
             "error de sintaxis en el servidor generado — revisar server.js/app.py generado por LLM")
@@ -12261,6 +12288,68 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     if not wr.verified:
                         _escalate_to_analyst(inv, getattr(wr, 'detail', '') or "", _lab_cfg_nosql, es)
                 _apply_wpverify_result(inv, wr, es, llm)
+            # OAuth bypass / OIDC state confusion
+            elif (not plugin_dir and fr.local_path and
+                  inv.vuln_class in ("oauth-bypass", "oauth", "oidc", "oauth2-bypass",
+                                     "oauth-state-confusion", "oauth-token-forgery")):
+                from .genericverify import verify_generic_confirm_string
+                _oauth_ep     = notes.get("endpoint") or "/auth/callback"
+                _oauth_method = notes.get("http_method") or "GET"
+                _oauth_cs     = notes.get("confirm_string") or ""
+                step(("intentando verificacion DINAMICA GENERICA -- OAuth bypass "
+                      "(state/CSRF confusion)..." if es else
+                      "attempting GENERIC DYNAMIC verification -- OAuth bypass "
+                      "(state/CSRF confusion)..."))
+                _oauth_dockerfile  = notes.get("dockerfile_body") or ""
+                _oauth_extra_files = notes.get("extra_files") or None
+                _scf_oauth = False
+                if not _oauth_dockerfile and llm is not None:
+                    _scf = _scaffold_llm_lab_for_class(
+                        llm, str(fr.local_path), notes, inv.cve_id, "oauth-bypass", step, es)
+                    if _scf:
+                        _oauth_dockerfile  = _scf["dockerfile_body"]
+                        _oauth_extra_files = _scf["extra_files"]
+                        _oauth_ep          = _scf.get("endpoint") or _oauth_ep
+                        _oauth_cs          = _scf.get("confirm_string") or _oauth_cs
+                        _scf_oauth         = True
+                if _oauth_cs:
+                    wr = verify_generic_confirm_string(
+                        fr.local_path, _oauth_ep, _oauth_method,
+                        confirm_string=_oauth_cs,
+                        on_step=step, budget_s=budget_s,
+                        dockerfile_body=_oauth_dockerfile, extra_files=_oauth_extra_files)
+                    if _scf_oauth and not wr.verified:
+                        _lab_cfg_oauth = {
+                            "dockerfile_body": _oauth_dockerfile, "extra_files": _oauth_extra_files,
+                            "endpoint": _oauth_ep, "confirm_string": _oauth_cs, "parameters": {},
+                        }
+                        for _fb_i in range(2):
+                            _fb = _lab_feedback_for_class(
+                                llm, getattr(wr, 'detail', '') or "", _lab_cfg_oauth, step, es)
+                            if not _fb:
+                                break
+                            _oauth_dockerfile  = _fb["dockerfile_body"]
+                            _oauth_extra_files = _fb["extra_files"]
+                            _oauth_ep          = _fb.get("endpoint") or _oauth_ep
+                            _oauth_cs          = _fb.get("confirm_string") or _oauth_cs
+                            _lab_cfg_oauth     = _fb
+                            wr_fb = verify_generic_confirm_string(
+                                fr.local_path, _oauth_ep, _oauth_method,
+                                confirm_string=_oauth_cs,
+                                on_step=step, budget_s=budget_s,
+                                dockerfile_body=_oauth_dockerfile, extra_files=_oauth_extra_files)
+                            wr = wr_fb
+                            if wr_fb.verified:
+                                break
+                        if not wr.verified:
+                            _escalate_to_analyst(inv, getattr(wr, 'detail', '') or "",
+                                                 _lab_cfg_oauth, es)
+                    _apply_wpverify_result(inv, wr, es, llm)
+                else:
+                    inv.blockers.append(("oauth-bypass: se necesita confirm_string del "
+                                         "estado autenticado para verificar" if es else
+                                         "oauth-bypass: confirm_string of authenticated state "
+                                         "needed to verify"))
             # Deserialization genérico (node-serialize IIFE / Python pickle)
             elif (not plugin_dir and fr.local_path and
                   inv.vuln_class in ("deserialization", "insecure-deserialization",

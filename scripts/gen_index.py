@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Generate index.html — filterable table of all CVEs (history + batch)."""
-import json, os, html as html_mod
+"""Generate index.html — filterable table of all CVEs (history + batch + standalone HTML)."""
+import json, os, re, html as html_mod
 
 HISTORY   = "/Users/beatrizfresnonaumova/.binoracle/history"
 BATCH_DIR = os.path.join(os.path.dirname(__file__), "..", "binoracle_batch_reports")
@@ -14,6 +14,12 @@ seen = set()
 
 def add_row(cve, cls, tech, score, sev, poc, auth, aff, desc, pub, endpoint, verified, gap=False, is_gap=False):
     if cve in seen:
+        # Allow an HTML-scan entry to upgrade a history entry from verified=False to True
+        if verified:
+            for r in rows:
+                if r["cve"] == cve and not r.get("verified"):
+                    r["verified"] = True
+                    r["is_gap"] = False
         return
     seen.add(cve)
     rows.append(dict(cve=cve,cls=cls,tech=tech,score=score,sev=sev,poc=poc,
@@ -74,6 +80,34 @@ if os.path.isdir(batch_dir):
         gap_b    = is_gap_b or not poc
         add_row(cve, cls, tech, score, sev, poc, auth, aff, desc, pub, endpoint, verified=verified,
                 gap=gap_b, is_gap=is_gap_b)
+
+# 3. Standalone _informe_pdf.html files not covered by history/batch
+_sev_re  = re.compile(r'CVSS[^0-9]*([0-9]+\.[0-9])\s+(CRITICAL|HIGH|MEDIUM|LOW)', re.I)
+_cls_re  = re.compile(r'ibadge-gray[^>]*>([^<]+)<')
+_ver_re  = re.compile(r'ibadge-verified|EXPLOTACION CONFIRMADA|lab-container|EXPLOTACI[OÓ]N CONFIRMADA', re.I)
+_desc_re = re.compile(r'cover-title[^>]*>([^<]{20,})<')
+_aff_re  = re.compile(r'VERSIONES AFECTADAS.*?<strong>([^<]+)</strong>', re.S)
+for fname in sorted(os.listdir(OUT)):
+    if not fname.endswith("_informe_pdf.html"):
+        continue
+    cve = fname.replace("_informe_pdf.html", "")
+    try:
+        raw = open(os.path.join(OUT, fname), encoding="utf-8", errors="ignore").read(60000)
+    except Exception:
+        continue
+    _sm = _sev_re.search(raw)
+    score = _sm.group(1) if _sm else "?"
+    sev   = (_sm.group(2).upper() if _sm else "HIGH")
+    _classes = _cls_re.findall(raw)
+    cls  = _classes[0].strip() if _classes else "?"
+    ver  = bool(_ver_re.search(raw))
+    if not ver:
+        continue
+    _dm = _desc_re.search(raw)
+    desc = (_dm.group(1).strip()[:120] if _dm else "")
+    _am = _aff_re.search(raw)
+    aff  = (_am.group(1).strip() if _am else "?")
+    add_row(cve, cls, "", score, sev, False, False, aff, desc, "?", "?", verified=True)
 
 # Keep only 100% dynamically verified CVEs (no HUECO, no unverified)
 rows = [r for r in rows if r.get("verified") and not r.get("is_gap")]

