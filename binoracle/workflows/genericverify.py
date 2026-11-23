@@ -1243,7 +1243,12 @@ def verify_generic_path_traversal(
         return res
 
     # --- Descubrimiento autonomo de rutas desde el codigo fuente ---
-    scanned = _scan_web_routes(source_dir) if source_dir else []
+    # Skip when the caller provided a custom dockerfile_body: the analyst owns the lab
+    # and the endpoint hint is authoritative. Scanning the scaffolded directory would
+    # find spurious Flask routes written by _scaffold_pip_lab and place them AHEAD of
+    # the analyst-provided endpoint in the candidate list.
+    _analyst_owns_lab = bool(dockerfile_body)
+    scanned = (_scan_web_routes(source_dir) if (source_dir and not _analyst_owns_lab) else [])
     if scanned:
         step(f"escaneo de fuente: {len(scanned)} ruta(s) encontrada(s): " +
              ", ".join(ep for ep, _, _ in scanned))
@@ -3303,6 +3308,7 @@ def verify_generic_ssti(
 
     _params_list_ssti = list(parameters.keys()) if isinstance(parameters, dict) else list(parameters or [])
     ssti_param = ssti_param_hint or _pick_param(parameters, _XSS_HINTS) or (_params_list_ssti[0] if _params_list_ssti else "")
+    _analyst_owns_lab = False  # only path-traversal skips scan; SSTI always uses scan
 
     # Si el LLM no identifico parametro pero el escaneo si, usar la primera ruta con parametro
     if not ssti_param and scanned:

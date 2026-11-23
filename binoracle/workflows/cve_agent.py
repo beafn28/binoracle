@@ -8522,9 +8522,13 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 # require() de PHP + un servidor Apache/nginx que loguee el User-Agent SIN
                 # sanitizar). Para Node.js, Python, Ruby, Go u otros runtimes este intento
                 # siempre falla y solo genera un blocker ruidoso e inutil.
+                # Cuando el analista provee dockerfile_body, conoce el runtime: no asumir PHP.
                 _target_tech = (inv.tech or "").lower()
-                _is_php_target = (not _target_tech or any(
-                    t in _target_tech for t in ("php", "wordpress", "drupal", "joomla", "laravel")))
+                _analyst_has_dockerfile = bool(notes.get("dockerfile_body"))
+                _is_php_target = (not _analyst_has_dockerfile and
+                                  (not _target_tech or any(
+                                      t in _target_tech for t in
+                                      ("php", "wordpress", "drupal", "joomla", "laravel"))))
                 if wr.available and _is_php_target:
                     from .genericverify import verify_generic_lfi_rce
                     step(("probando escalada LFI-a-RCE -- envenenamiento del log de acceso "
