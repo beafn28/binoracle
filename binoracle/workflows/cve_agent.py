@@ -2091,6 +2091,22 @@ def _apply_wpverify_result(inv, wr, es: bool, llm=None) -> None:
         _attach_grounded_source_snippets(inv, es)
 
 
+def _tech_code_fence(tech: str) -> str:
+    """Devuelve el identificador de lenguaje para un bloque de codigo Markdown segun la tecnologia."""
+    t = (tech or "").lower()
+    if any(x in t for x in ("node", "js", "javascript", "typescript", "h3", "express", "next")):
+        return "js"
+    if any(x in t for x in ("python", "django", "flask", "fastapi", "gradio")):
+        return "python"
+    if any(x in t for x in ("ruby", "rails", "rack", "sinatra")):
+        return "ruby"
+    if any(x in t for x in ("java", "spring", "gradle", "maven")):
+        return "java"
+    if any(x in t for x in ("go", "golang")):
+        return "go"
+    return "php"  # default: WordPress/Drupal/Joomla son la mayoria de los casos
+
+
 def _attach_grounded_source_snippets(inv: "Investigation", es: bool) -> None:
     """Cuando una verificacion dinamica se intento pero NO se confirmo, adjunta el codigo REAL de
     cada funcion ya confirmada por grounding (inv.source_grounding['found'], fichero:linea exactos
@@ -2114,11 +2130,13 @@ def _attach_grounded_source_snippets(inv: "Investigation", es: bool) -> None:
             continue
         body = extract_function_body(local_path, rel_file, int(line_str))
         if body:
+            _fence = _tech_code_fence(inv.tech or "")
+            _comp = "plugin/paquete" if es else "plugin/package"
             inv.blockers.append(
                 (f"codigo real de '{name}' ({loc}), para diagnosticar el negativo sin tener que "
-                 f"descargar el plugin a mano:\n```php\n{body}\n```" if es else
+                 f"descargar el {_comp} a mano:\n```{_fence}\n{body}\n```" if es else
                  (f"real code of '{name}' ({loc}), to diagnose the negative without having to "
-                 f"download the plugin by hand:\n```php\n{body}\n```")))
+                 f"download the {_comp} by hand:\n```{_fence}\n{body}\n```")))
 
     # para SQLi en concreto: la funcion que el LLM/el PoC publico citan puede estar bien
     # parametrizada (ej. $wpdb->prepare(..., '%d', ...)) aunque la CVE sea real -- confirmado en
@@ -3207,7 +3225,7 @@ def _synthesize_exploit_from_intel(
         f"Security advisory (Wordfence/Patchstack/WPScan/MITRE):\n"
         f"{cve_intel.get('advisory_notes', 'N/A')[:1500]}\n\n"
         f"{patch_summary}\n\n"
-        f"Vulnerable code:\n```php\n{vulnerable_code[:2500] if vulnerable_code else 'N/A'}\n```\n\n"
+        f"Vulnerable code:\n```{_tech_code_fence(cve_intel.get('tech') or cve_intel.get('target') or '')}\n{vulnerable_code[:2500] if vulnerable_code else 'N/A'}\n```\n\n"
         + (f"Public PoC code (ExploitDB reference):\n```\n{_poc_code[:1500]}\n```\n\n"
            if _poc_code else "")
         + f"Endpoint: {endpoint}\nVulnerable parameter: {param}\n{schema_str}\n\n"
@@ -3935,7 +3953,7 @@ def _hueco_code_analysis(inv: "Investigation", fr: Any, llm: Any, step: Any, es:
                     f"Descripcion NVD: {(inv.description or '')[:300]}\n\n"
                     f"Parametro taintado encontrado por escaner: '{taint['param']}'\n"
                     f"Hook/endpoint detectado: {taint_hook or '(desconocido)'}\n\n"
-                    f"=== CODIGO REAL DEL PLUGIN ===\n```php\n{snippet[:4000]}\n```\n\n"
+                    f"=== CODIGO REAL DEL COMPONENTE ===\n```{_tech_code_fence(inv.tech or '')}\n{snippet[:4000]}\n```\n\n"
                     f"Extrae los datos exactos del exploit en JSON."
                 )),
             ], json_mode=True)
@@ -4060,7 +4078,7 @@ def _hueco_code_analysis(inv: "Investigation", fr: Any, llm: Any, step: Any, es:
                         f"CVE: {inv.cve_id}\n"
                         f"Descripcion NVD: {(inv.description or '')[:300]}\n\n"
                         f"{_audit_str}\n\n"
-                        f"=== CODIGO DEL HANDLER '{_cand}' ===\n```php\n{_snippet[:3500]}\n```\n\n"
+                        f"=== CODIGO DEL HANDLER '{_cand}' ===\n```{_tech_code_fence(inv.tech or '')}\n{_snippet[:3500]}\n```\n\n"
                         f"Analiza usando el checklist del sistema. Extrae datos del exploit en JSON."
                     )),
                 ], json_mode=True)
@@ -8491,13 +8509,14 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     if _wr_extra.verified or (not wr.verified and _wr_extra.ok):
                         wr = _wr_extra
                 _apply_wpverify_result(inv, wr, es, llm)
-                # escalada: path-traversal (clase de la hipotesis) puede en realidad ser LFI-a-
-                # RCE si el parametro INCLUYE el fichero como codigo en vez de solo servirlo --
-                # envenenamiento del log de acceso propio, prueba independiente y mas fuerte (ver
-                # verify_generic_lfi_rce). Se intenta SIEMPRE que haya Docker, confirmado o no el
-                # traversal de solo-lectura -- si confirma, pisa el resultado con el hallazgo mas
-                # fuerte (RCE, no solo lectura); si no, anade el intento como blocker extra.
-                if wr.available:
+                # escalada LFI-a-RCE: solo aplica a PHP (log poisoning requiere include() o
+                # require() de PHP + un servidor Apache/nginx que loguee el User-Agent SIN
+                # sanitizar). Para Node.js, Python, Ruby, Go u otros runtimes este intento
+                # siempre falla y solo genera un blocker ruidoso e inutil.
+                _target_tech = (inv.tech or "").lower()
+                _is_php_target = (not _target_tech or any(
+                    t in _target_tech for t in ("php", "wordpress", "drupal", "joomla", "laravel")))
+                if wr.available and _is_php_target:
                     from .genericverify import verify_generic_lfi_rce
                     step(("probando escalada LFI-a-RCE -- envenenamiento del log de acceso "
                          "propio..." if es else
