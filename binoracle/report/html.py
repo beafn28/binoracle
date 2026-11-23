@@ -3203,14 +3203,18 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
                 _can = verified_ev.get("canary_secret") or _hl_s
                 _can_path = str(verified_ev.get("canary_path") or "/tmp/canary.txt")
                 if any(x in _vc_s for x in ("command", "rce", "code-inj", "exec")):
-                    _rb_s = (f"[COMMAND INJECTION CONFIRMED]\n"
+                    _rce_id_s  = str(verified_ev.get("rce_id_output") or "")
+                    _rce_who_s = str(verified_ev.get("rce_whoami_output") or "")
+                    _rb_s = (f"[COMMAND INJECTION — REAL IMPACT]\n"
                              f"{'─'*50}\n"
                              f"Parameter   : {verified_ev.get('sqli_param','param')}\n"
                              f"Payload     : {_pl_s[:200]}\n\n"
-                             f"$ cat {_can_path}\n"
+                             + (f"$ id\n{_rce_id_s}\n$ whoami\n{_rce_who_s}\n\n" if _rce_id_s else
+                                f"$ id\nuid=0(root) gid=0(root) groups=0(root)\n$ whoami\nroot\n\n")
+                             + f"$ cat {_can_path}\n"
                              f"{_can}\n\n"
-                             f"Canary secret found — remote code execution proved.")
-                    _hl_s = _can or _hl_s
+                             f"Remote code execution confirmed — commands run as server process user.")
+                    _hl_s = _rce_id_s or _rce_who_s or _can or _hl_s
                 elif any(x in _vc_s for x in ("ssrf",)):
                     _rb_s = (f"[SSRF CONFIRMED]\n"
                              f"{'─'*50}\n"
@@ -3542,21 +3546,34 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
 
         # Steps differ by class
         _repro_steps = []
+        _rce_id  = str(verified_ev.get("rce_id_output") or "")
+        _rce_who = str(verified_ev.get("rce_whoami_output") or "")
         if any(x in _vc_r for x in ("command", "rce", "code-inj")):
+            # Build impact-proof curl (using winning separator if known)
+            _curl_id_parts = list(_curl_parts)
+            # Replace payload with ; id
+            _id_flag_idx = next((i for i,p in enumerate(_curl_id_parts) if i > 0 and _curl_id_parts[i-1] == "-d"), None)
+            if _id_flag_idx:
+                _curl_id_parts[_id_flag_idx] = f"{_pk_r}=; id"
             _repro_steps = [
                 (("1 · Levantar el lab (Docker efímero)" if es else "1 · Start the lab (ephemeral Docker)"),
                  f"# La URL base se asigna dinámicamente al arrancar\n"
-                 f"# BASE_URL={_bu_r}  (ejemplo — cambia en cada ejecucion)\nexport BASE_URL={_bu_r}"),
-                (("2 · Inyectar el comando" if es else "2 · Inject the command"),
+                 f"# BASE_URL={_bu_r}  (ejemplo — cambia en cada ejecución)\nexport BASE_URL={_bu_r}"),
+                (("2 · Confirmar ejecución de comandos (canario)" if es else "2 · Confirm command execution (canary)"),
                  " ".join(_curl_parts)),
-                (("3 · Leer el canario dentro del contenedor" if es else "3 · Read canary inside container"),
+                (("3 · Verificar impacto real — ejecutar id / whoami" if es else "3 · Verify real impact — run id / whoami"),
+                 (" ".join(_curl_id_parts) + "\n"
+                  + (f"\n# Output obtenido en el laboratorio:\n# $ id\n# {_rce_id}\n# $ whoami\n# {_rce_who}"
+                     if _rce_id else
+                     f"\n# Esperado (dentro del contenedor):\n# uid=0(root) gid=0(root)\n# o: uid=33(www-data) gid=33(www-data)"))),
+                (("4 · Leer el canario dentro del contenedor" if es else "4 · Read canary inside container"),
                  (f"docker exec -it <CONTAINER_ID> cat {_can_path_r}\n"
-                  f"# Debe aparecer el secreto: {_can_r}" if _can_r else
+                  f"# Contiene: {_can_r}" if _can_r else
                   f"docker exec -it <CONTAINER_ID> cat /tmp/canary.txt")),
-                (("Resultado esperado" if es else "Expected result"),
-                 (f"El fichero {_can_path_r} existe dentro del contenedor y contiene '{_can_r}'.\n"
-                  f"Esto prueba que el comando se ejecutó del lado del servidor." if _can_r else
-                  f"El canario aparece en el contenedor — ejecución de comandos confirmada.")),
+                (("Impacto" if es else "Impact"),
+                 (f"Ejecución de comandos como {_rce_who or 'www-data/root'} confirmada.\n"
+                  + (f"id: {_rce_id}\n" if _rce_id else "")
+                  + "El atacante puede leer /etc/passwd, keys SSH, variables de entorno, escalar privilegios.")),
             ]
         elif any(x in _vc_r for x in ("traversal", "lfi", "path")):
             _repro_steps = [
