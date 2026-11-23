@@ -2808,18 +2808,34 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
             _param = (verified_ev.get("sqli_param") or verified_ev.get("path_param")
                       or verified_ev.get("lfi_param") or verified_ev.get("xss_param")
                       or verified_ev.get("url_param") or "payload")
-            if _mth == "GET" and _pl:
+            # URL path traversal: payload is in the URL path, not a query param.
+            # Check same condition as repro section curl builder.
+            _synth_vc = str(getattr(inv, "vuln_class", "") or "").lower()
+            _synth_is_url_path_traversal = (
+                any(x in _synth_vc for x in ("traversal", "lfi", "path"))
+                and _mth == "GET"
+                and not (verified_ev.get("path_param") or "").strip()
+            )
+            if _synth_is_url_path_traversal and _pl:
+                _url = _bu.rstrip("/") + _ep.rstrip("/") + "/" + _pl
+            elif _mth == "GET" and _pl:
                 _url += "?" + _up.urlencode({_param: _pl})
             _synthetic_body = _pl if _mth != "GET" else ""
             _st_code = int(_st or 200)
-            # Build realistic response headers based on evidence
+            # Build realistic response headers based on evidence.
+            # X-Powered-By removed (PHP/8.x is wrong for Node.js/Python/Ruby targets).
+            # Server header derived from inv.tech when known.
             _rsp_ctype = "text/html; charset=UTF-8"
             if _rb.strip().startswith("{") or _rb.strip().startswith("["):
                 _rsp_ctype = "application/json"
+            _inv_tech_low = str(getattr(inv, "tech", "") or "").lower()
+            _server_hdr = ("Node.js" if any(t in _inv_tech_low for t in ("node", "h3", "express", "next"))
+                           else "Python" if any(t in _inv_tech_low for t in ("python", "django", "flask", "fastapi"))
+                           else "Ruby" if any(t in _inv_tech_low for t in ("ruby", "rails", "rack"))
+                           else "Apache/2.4")
             _rsp_hdrs = {
                 "Content-Type": _rsp_ctype,
-                "X-Powered-By": "PHP/8.x",
-                "Server": "Apache/2.4",
+                "Server": _server_hdr,
             }
             _vuln_cls = str(verified_ev.get("tecnica") or "")
             if "cors" in _vuln_cls.lower() or "cors" in str(_rb).lower():
@@ -2869,21 +2885,23 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
                 url_display = _urlparse.unquote_plus(url_raw)
             except Exception:
                 url_display = url_raw
-            # Separate path from host for the request line
+            # Separate path from host for the request line.
+            # Keep percent-encoding raw in the request line — it shows the actual
+            # bytes sent and is the bypass technique (e.g. %2e%2e for path traversal).
+            # Only decode for the UI tab label (url_display) where readability matters.
             try:
                 _parsed = _urlparse.urlparse(url_raw)
                 _host   = _parsed.netloc or "target-lab"
-                _path   = (_parsed.path or "/") + (f"?{_parsed.query}" if _parsed.query else "")
-                # Decode path for display (+ as space in query string)
-                _path_display = _urlparse.unquote_plus(_path)
+                # Raw path preserves %2e%2e, %2F, etc. — do NOT unquote here
+                _path_raw = (_parsed.path or "/") + (f"?{_parsed.query}" if _parsed.query else "")
             except Exception:
                 _host = "target-lab"
-                _path_display = url_raw
+                _path_raw = url_raw
 
             # Build a full HTTP request block (request line + headers + body)
             # Inject computed Host header first if not present
             _req_hdr_lines = []
-            _req_hdr_lines.append(f'{m_raw} {_path_display} HTTP/1.1')
+            _req_hdr_lines.append(f'{m_raw} {_path_raw} HTTP/1.1')
             _req_hdr_lines.append(f'Host: {_host}')
             # Add stored headers (skip Host if already added)
             _standard_first = ["content-type", "content-length", "accept",
@@ -3601,7 +3619,7 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
                 (("Impacto" if es else "Impact"),
                  "Lectura arbitraria de ficheros fuera del directorio web.\n"
                  "El atacante puede leer /etc/passwd, claves privadas SSH (~/.ssh/id_rsa),\n"
-                 "credenciales de base de datos (.env, wp-config.php), tokens de sesión."),
+                 "credenciales de base de datos (.env, config.json, wp-config.php, appsettings.json), tokens de sesión."),
             ]
         elif any(x in _vc_r for x in ("sqli", "sql")):
             _mysql_ver = str(verified_ev.get("mysql_version_extraida") or "")
@@ -3616,10 +3634,10 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
                  (f"Respuesta contiene versión MySQL: {_mysql_ver}" if _mysql_ver else
                   "Error SQL o diferencia de respuesta confirma la inyección.")),
                 (("Impacto" if es else "Impact"),
-                 ("Sin autenticación, el atacante extrae datos de cualquier tabla (wp_users, contraseñas, emails).\n"
+                 ("Sin autenticación, el atacante extrae datos de cualquier tabla de la base de datos (usuarios, contraseñas hasheadas, emails, tokens de sesión).\n"
                   if not _auth_req else
-                  f"Con credencial mínima ({_auth_req}), el atacante extrae datos de cualquier tabla.\n")
-                 + "Con sqlmap: `sqlmap -u \"URL\" --dump --tables -D wordpress`\n"
+                  f"Con credencial mínima ({_auth_req}), el atacante extrae datos de cualquier tabla de la BD.\n")
+                 + "Con sqlmap: `sqlmap -u \"URL\" --dump --tables -D <NOMBRE_BD>`  # TODO: nombre real de la BD\n"
                  + "Extracción completa de la BD, incluyendo hashes de contraseñas de administradores."),
             ]
         elif any(x in _vc_r for x in ("ssrf",)):
@@ -3681,15 +3699,21 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
                  "El atacante puede ejecutar comandos, leer ficheros, rotar a RCE completo."),
             ]
         elif any(x in _vc_r for x in ("upload", "file")):
+            _upload_shell_url = str(verified_ev.get("uploaded_file_url") or verified_ev.get("shell_url") or "")
+            _exec_step = (f"curl -s '{_upload_shell_url}?cmd=id'"
+                          if _upload_shell_url else
+                          "# Extrae la URL del archivo subido de la respuesta de la FASE 1\n"
+                          "# y accede a ella: curl -s '<URL_ARCHIVO_SUBIDO>?cmd=id'")
+            _exec_result = str(verified_ev.get("rce_id_output") or "uid=0(root) o uid=33(www-data)")
             _repro_steps = [
-                (("1 · Subir el webshell" if es else "1 · Upload the webshell"),
+                (("1 · Subir el payload" if es else "1 · Upload the payload"),
                  " ".join(_curl_parts)),
-                (("2 · Ejecutar el webshell" if es else "2 · Execute the webshell"),
-                 f"curl -s '{_url_r.rsplit('/',1)[0]}/shell.php?cmd=id'"),
+                (("2 · Ejecutar el payload subido" if es else "2 · Execute the uploaded payload"),
+                 _exec_step),
                 (("Resultado esperado" if es else "Expected result"),
-                 "uid=33(www-data) gid=33(www-data) — ejecución de comandos confirmada."),
+                 f"{_exec_result} — ejecución de comandos confirmada."),
                 (("Impacto" if es else "Impact"),
-                 "Subida de webshell PHP sin restricción → ejecución de comandos arbitrarios.\n"
+                 "Subida de payload ejecutable sin restricción → ejecución de comandos arbitrarios.\n"
                  "El atacante obtiene acceso completo al servidor web con privilegios del proceso.\n"
                  "Puede leer la base de datos, escalar privilegios, establecer persistencia."),
             ]
@@ -3789,7 +3813,7 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
             "es": [
                 "Usar consultas parametrizadas (prepared statements) en todas las interacciones con la base de datos — nunca interpolar datos del usuario directamente en SQL.",
                 "Validar y sanear todos los parámetros de entrada en el lado del servidor antes de cualquier operación de base de datos.",
-                "Aplicar el principio de mínimo privilegio: el usuario de base de datos del componente no debe tener permisos de lectura en tablas sensibles (wp_users, wp_usermeta).",
+                "Aplicar el principio de mínimo privilegio: el usuario de base de datos del componente no debe tener permisos de lectura en tablas sensibles (users, sessions u otras tablas de datos críticos de la aplicación).",
                 "Actualizar el componente a la versión parcheada de inmediato. Deshabilitarlo si no hay parche disponible hasta que se libere una versión segura.",
                 "Configurar un WAF (p. ej. Cloudflare, ModSecurity) con reglas SQLi como capa de defensa adicional.",
                 "Auditar todos los puntos de entrada HTTP del componente (acciones AJAX, endpoints REST) con un escáner SAST/DAST."
@@ -3797,7 +3821,7 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
             "en": [
                 "Use parameterized queries (prepared statements) for all database interactions — never interpolate user-supplied data directly into SQL.",
                 "Validate and sanitize all input parameters server-side before any database operation.",
-                "Apply the principle of least privilege: the component's database user must not have read access to sensitive tables (wp_users, wp_usermeta).",
+                "Apply the principle of least privilege: the component's database user must not have read access to sensitive tables (users, sessions, or other critical application data tables).",
                 "Update the component to the patched version immediately. Disable it if no patch is available until a secure version is released.",
                 "Configure a WAF (e.g. Cloudflare, ModSecurity) with SQLi rules as an additional defense layer.",
                 "Audit all component HTTP entry points (AJAX actions, REST endpoints) with a SAST/DAST scanner."
