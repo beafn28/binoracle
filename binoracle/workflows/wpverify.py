@@ -1695,18 +1695,22 @@ def _http_request_raw_path(method: str, url: str, timeout: float = 15):
     import urllib.error
 
     class _Resp:
-        def __init__(self, status, text):
+        def __init__(self, status, text, reason="", headers=None):
             self.status_code = status
             self.text = text
+            self.reason = reason
+            self.headers = headers or {}
 
     try:
         req = urllib.request.Request(url, method=method.upper())
         with urllib.request.urlopen(req, timeout=timeout) as r:
             body = r.read().decode("utf-8", errors="replace")
-            return _Resp(r.status, body)
+            _hdrs = {k: v for k, v in dict(r.info()).items()}
+            return _Resp(r.status, body, reason=getattr(r, "reason", ""), headers=_hdrs)
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", errors="replace")
-        return _Resp(e.code, body)
+        _hdrs = {k: v for k, v in dict(e.info()).items()} if hasattr(e, "info") else {}
+        return _Resp(e.code, body, reason=getattr(e, "reason", ""), headers=_hdrs)
     except Exception:
         return _Resp(0, "")
 

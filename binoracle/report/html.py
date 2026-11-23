@@ -2948,7 +2948,13 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
                 _rsp_clean = _rsp_clean[:2000]
 
             # Build response block: status line + headers + body
-            _rsp_line_parts = [f"HTTP/1.1 {st}" + (f" {reason}" if reason else "")]
+            # Fallback reason phrase when server didn't send one (urllib/raw HTTP)
+            _reason_fb = reason or {200:"OK",201:"Created",204:"No Content",
+                                    301:"Moved Permanently",302:"Found",304:"Not Modified",
+                                    400:"Bad Request",401:"Unauthorized",403:"Forbidden",
+                                    404:"Not Found",405:"Method Not Allowed",
+                                    500:"Internal Server Error",502:"Bad Gateway"}.get(st, "")
+            _rsp_line_parts = [f"HTTP/1.1 {st}" + (f" {_reason_fb}" if _reason_fb else "")]
             _rsp_hdr_priority = ["content-type", "content-length", "location",
                                   "access-control-allow-origin", "access-control-allow-credentials",
                                   "x-powered-by", "server"]
@@ -3756,9 +3762,14 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
             )
 
     # ── PoC download + inline ─────────────────────────────────────────────────
+    # Para poc_kind="http" verificado: Section 05b ya muestra el curl real con el
+    # payload ganador. El developed_script es una plantilla generada por el LLM
+    # que NO fue ejecutada — mostrarla induciría a pensar que fue el exploit real.
+    # Solo se muestra si: (a) no es http, o (b) es http pero NO verificado.
+    _script_verified_http = (poc_kind == "http" and getattr(inv, "verified", False))
     poc_section = ""
     dl = ""
-    if script:
+    if script and not _script_verified_http:
         b64  = base64.b64encode(script.encode("utf-8")).decode("ascii")
         safe = _re.sub(r"[^A-Za-z0-9_.-]", "_", cve or "target")
         if poc_kind == "html":

@@ -1648,6 +1648,133 @@ _GENERIC_RETRY_SYS = (
     "\"parametro_alternativo\": \"...\" (opcional)}"
 )
 
+# Prompts del motor autonomo de razonamiento de laboratorios -------------------------
+
+_CODE_TRACE_SYS = (
+    "Eres un experto en seguridad. Dado un fragmento de codigo fuente con una inyeccion SQL, "
+    "identifica como llega el parametro HTTP hasta la query sin sanitizar. "
+    "IMPORTANTE: si el nombre del parametro tiene brackets como 'where[x][y][equals]', "
+    "conviertelo a un nombre plano equivalente (ej: 'data_type') que Python requests envie "
+    "sin codificar brackets. "
+    "Responde SOLO con JSON valido sin markdown: "
+    "{\"http_method\": \"GET\", \"endpoint\": \"/api/items\", "
+    "\"sqli_param\": \"data_type\", \"inject_context\": \"sqlite-string\", "
+    "\"reasoning\": \"una frase\"}"
+)
+
+_LAB_SCAFFOLD_SYS = (
+    "Eres un experto en seguridad. Genera un servidor web MINIMO para verificar una SQLi. "
+    "REGLAS OBLIGATORIAS:\n"
+    "1. Solo el endpoint necesario, sin auth ni middleware extra\n"
+    "2. Mismo lenguaje que el proyecto (Node.js -> express+better-sqlite3, "
+    "Python -> flask+sqlite3, Go -> net/http+database/sql)\n"
+    "3. Dos registros en BD: tipo 'public' y tipo 'secret' "
+    "(el titulo del registro secret DEBE contener EXACTAMENTE el CONFIRM_STRING dado)\n"
+    "4. El registro secret solo aparece cuando hay SQLi exitosa\n"
+    "5. Parametro query SIEMPRE plano sin brackets ni puntos (usa 'data_type', 'q', 'item_type')\n"
+    "6. Respuesta JSON siempre: {\"docs\": [...], \"totalDocs\": N}\n"
+    "7. Dockerfile correcto segun el lenguaje detectado\n"
+    "Responde SOLO con JSON valido sin markdown: "
+    "{\"server_code\": \"...\", \"dockerfile\": \"...\", \"endpoint\": \"/api/posts\", "
+    "\"sqli_param\": \"data_type\", \"confirm_string\": \"...\", "
+    "\"server_port\": 3000, \"parameters\": {\"data_type\": \"public\"}, "
+    "\"reasoning\": \"...\"}"
+)
+
+_LAB_FEEDBACK_SYS = (
+    "Una verificacion SQLi contra un laboratorio Docker fallo. "
+    "Analiza el motivo del fallo y genera una version corregida del servidor. "
+    "CAUSAS COMUNES Y SOLUCIONES: "
+    "diff=0/size_true==size_false -> el parametro no llega al SQL, prueba un nombre mas simple; "
+    "404 en endpoint -> ruta incorrecta, revisar app.get/app.post; "
+    "500 siempre -> error de sintaxis en el servidor; "
+    "Time-based inutil -> SQLite no tiene SLEEP(), usa better-sqlite3 con query directa. "
+    "REGLAS: params planos, 2 registros, respuesta JSON, confirm_string en registro secreto. "
+    "Responde SOLO con JSON valido sin markdown: "
+    "{\"diagnosis\": \"causa especifica\", \"server_code\": \"...\", \"dockerfile\": \"...\", "
+    "\"sqli_param\": \"...\", \"endpoint\": \"...\", \"parameters\": {}, \"confirm_string\": \"...\"}"
+)
+
+_LAB_SCAFFOLD_PATH_TRAVERSAL_SYS = (
+    "Eres un experto en seguridad. Genera un servidor de ficheros MINIMO para un lab de "
+    "path-traversal. REGLAS CRITICAS:\n"
+    "1. NUNCA uses Express/fastify/koa/hapi -- usa SOLO http.createServer de Node.js nativo "
+    "(Express normaliza %2e%2e y bloquea el traversal antes del handler)\n"
+    "2. Sirve ficheros concatenando el path de la URL al directorio base /app/files/ con "
+    "path.join; NO uses path.resolve ni path.normalize; NO valides ni filtres el path\n"
+    "3. El endpoint DEBE terminar en '/' (ej: '/static/') para activar URL_PATH mode\n"
+    "4. El verificador plantara el canario en /tmp/ via docker exec -- el servidor solo "
+    "necesita servir lo que lea del filesystem (incluido /tmp/ con traversal exitoso)\n"
+    "5. Responde al metodo GET; responde 200 con el contenido del fichero o 404\n"
+    "Responde SOLO con JSON sin markdown: "
+    "{\"server_code\": \"...\", \"dockerfile\": \"...\", \"endpoint\": \"/static/\", "
+    "\"path_param\": \"\", \"server_port\": 3000, \"parameters\": {}}"
+)
+
+_LAB_SCAFFOLD_SSRF_SYS = (
+    "Eres un experto en seguridad. Genera un servidor para un lab de SSRF. "
+    "El servidor hace una peticion HTTP saliente a la URL que el usuario proporciona. REGLAS:\n"
+    "1. El endpoint recibe un parametro con la URL destino (ej: ?url=...)\n"
+    "2. El servidor hace fetch(url) o http.get(url) sin validar el hostname ni IP\n"
+    "3. SIN validacion de IPs privadas/loopback -- el servidor debe acceder a 127.0.0.1\n"
+    "4. El verificador escucha en un puerto de la red Docker y verifica si recibe la peticion\n"
+    "5. Devuelve el status de la peticion saliente o su cuerpo\n"
+    "Responde SOLO con JSON sin markdown: "
+    "{\"server_code\": \"...\", \"dockerfile\": \"...\", \"endpoint\": \"/api/fetch\", "
+    "\"url_param\": \"url\", \"server_port\": 3000, \"parameters\": {\"url\": \"http://httpbin.org\"}}"
+)
+
+_LAB_SCAFFOLD_CMDI_SYS = (
+    "Eres un experto en seguridad. Genera un servidor para un lab de command injection. "
+    "El servidor ejecuta un comando de shell con input del usuario. REGLAS:\n"
+    "1. El endpoint recibe un parametro que se pasa a exec/execSync/subprocess SIN sanitizar\n"
+    "2. El atacante inyectara '; touch /tmp/pwned;' para crear un fichero canario\n"
+    "3. El servidor ejecuta el comando y devuelve stdout/stderr en la respuesta JSON\n"
+    "4. SIN whitelist ni sanitizacion de caracteres especiales (;, |, `, $(), etc.)\n"
+    "Responde SOLO con JSON sin markdown: "
+    "{\"server_code\": \"...\", \"dockerfile\": \"...\", \"endpoint\": \"/api/ping\", "
+    "\"cmd_param\": \"host\", \"server_port\": 3000, \"parameters\": {\"host\": \"localhost\"}}"
+)
+
+_LAB_SCAFFOLD_SSTI_SYS = (
+    "Eres un experto en seguridad. Genera un servidor para un lab de SSTI. "
+    "El servidor renderiza un parametro del usuario como plantilla de template. REGLAS:\n"
+    "1. El endpoint recibe un parametro que se renderiza DIRECTAMENTE con Jinja2/Nunjucks/etc\n"
+    "2. SIN escapado -- el input del usuario va crudo al motor de plantillas\n"
+    "3. El atacante enviara '{{7*7}}' y verificara que la respuesta contiene '49'\n"
+    "4. Para Python usa Flask+Jinja2; para Node.js usa express+nunjucks o handlebars\n"
+    "Responde SOLO con JSON sin markdown: "
+    "{\"server_code\": \"...\", \"dockerfile\": \"...\", \"endpoint\": \"/api/render\", "
+    "\"ssti_param\": \"template\", \"server_port\": 3000, \"parameters\": {\"template\": \"hello\"}}"
+)
+
+_LAB_SCAFFOLD_MISSING_AUTH_SYS = (
+    "Eres un experto en seguridad. Genera un servidor para un lab de missing-authorization. "
+    "Un endpoint admin expone datos secretos SIN verificar autenticacion. REGLAS:\n"
+    "1. Un endpoint /api/admin/... devuelve datos que contienen EXACTAMENTE el CONFIRM_STRING\n"
+    "2. El endpoint NO verifica ninguna cabecera Authorization ni token\n"
+    "3. Cualquier usuario sin autenticar puede acceder y ver el CONFIRM_STRING\n"
+    "4. El verificador accede sin credenciales y busca el CONFIRM_STRING en la respuesta\n"
+    "Responde SOLO con JSON sin markdown: "
+    "{\"server_code\": \"...\", \"dockerfile\": \"...\", \"endpoint\": \"/api/admin/users\", "
+    "\"confirm_string\": \"...\", \"server_port\": 3000, \"parameters\": {}}"
+)
+
+_LAB_FEEDBACK_GENERIC_SYS = (
+    "Una verificacion de vulnerabilidad fallo contra un laboratorio Docker. "
+    "Diagnostica el motivo del fallo y genera una version corregida del servidor. "
+    "CAUSAS COMUNES: "
+    "404 -> ruta del endpoint incorrecta; "
+    "500 -> error de sintaxis en el servidor; "
+    "sin diferencial/no confirmado -> el parametro no llega al codigo vulnerable o "
+    "el servidor normaliza/sanitiza el input antes de procesarlo; "
+    "timeout -> el servidor no arranca o no responde en el puerto indicado; "
+    "path-traversal: si usas Express, cambia a http.createServer. "
+    "Responde SOLO con JSON sin markdown: "
+    "{\"diagnosis\": \"causa especifica del fallo\", \"server_code\": \"...\", "
+    "\"dockerfile\": \"...\", \"endpoint\": \"...\", \"parameters\": {}}"
+)
+
 # Retry para herramientas CLI cuyo vector es el VALOR de un argumento (verify_cli_argv_*).
 # El LLM lee stdout/stderr del setup y de la ejecucion aislada y sugiere correcciones al argv
 # y/o al setup_cmd -- distinto del bucle generico de endpoint/param que opera sobre HTTP.
@@ -6752,6 +6879,359 @@ def _affected_version_is_exclusive(raw: str) -> bool:
     return bool(raw) and bool(_EXCLUSIVE_BOUND_RE.search(raw))
 
 
+def _detect_lab_tech_stack(source_dir: str) -> str:
+    """Detecta el stack del proyecto para seleccionar el runtime del lab."""
+    import pathlib as _pathlib
+    p = _pathlib.Path(str(source_dir))
+    if (p / "package.json").exists():
+        return "nodejs"
+    if any((p / f).exists() for f in ("requirements.txt", "setup.py", "pyproject.toml")):
+        return "python"
+    if (p / "go.mod").exists():
+        return "go"
+    if (p / "Cargo.toml").exists():
+        return "rust"
+    if (p / "Gemfile").exists():
+        return "ruby"
+    if any((p / f).exists() for f in ("pom.xml", "build.gradle")):
+        return "java"
+    return "nodejs"
+
+
+def _read_vuln_snippet(source_dir: str, notes: dict) -> str:
+    """Lee el fragmento de codigo vulnerable real del repositorio para darselo al LLM."""
+    import pathlib as _pathlib
+    import subprocess as _sp
+    p = _pathlib.Path(str(source_dir))
+
+    vuln_file = (notes.get("vuln_file") or "").strip()
+    if vuln_file:
+        candidates = [p / vuln_file] + list(p.glob(f"**/{vuln_file.split('/')[-1]}"))
+        for c in candidates:
+            if c.exists() and c.is_file():
+                try:
+                    return c.read_text(encoding="utf-8", errors="replace")[:4000]
+                except Exception:
+                    pass
+
+    for pat in ("sql =", "sql=", "rawQuery", ".query(", "db.exec",
+                "SELECT * FROM", "execute("):
+        try:
+            r = _sp.run(
+                ["grep", "-rl", pat, str(p), "--include=*.js", "--include=*.ts",
+                 "--include=*.py", "--include=*.go", "--include=*.rb"],
+                capture_output=True, text=True, timeout=10)
+            for fp in (r.stdout or "").strip().split("\n")[:2]:
+                if fp and _pathlib.Path(fp).exists():
+                    try:
+                        content = _pathlib.Path(fp).read_text(encoding="utf-8", errors="replace")
+                        idx = content.find(pat)
+                        if idx >= 0:
+                            start, end = max(0, idx - 300), min(len(content), idx + 600)
+                            return f"# {fp}\n...\n{content[start:end]}\n..."
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+    return ""
+
+
+def _scaffold_llm_lab(llm, source_dir: str, notes: dict, cve_id: str,
+                      step, es: bool) -> Optional[dict]:
+    """Llama a Qwen para disenar un lab Docker minimal desde el codigo fuente real.
+
+    Paso 1: _CODE_TRACE_SYS traza el handler HTTP y el parametro exacto.
+    Paso 2: _LAB_SCAFFOLD_SYS genera el server + Dockerfile.
+    Devuelve dict con claves dockerfile_body/extra_files/endpoint/sqli_param/
+    confirm_string/server_port/parameters, o None si el LLM falla.
+    """
+    if llm is None:
+        return None
+    from ..llm.base import Message
+
+    tech    = _detect_lab_tech_stack(source_dir)
+    snippet = _read_vuln_snippet(source_dir, notes)
+    confirm = notes.get("confirm_string") or f"binoracle-sqli-secret-{cve_id}"
+    endpoint  = notes.get("endpoint") or "/api/items"
+    raw_param = notes.get("sqli_param") or notes.get("sqli_param_hint") or "id"
+    flat_param = raw_param.split("[")[0].replace(".", "_").strip("_") or "data_type"
+
+    # Paso 1: trazar el handler HTTP desde el fragmento vulnerable
+    if snippet:
+        step(("razonando estructura del lab desde codigo fuente (Qwen)..." if es
+              else "auto-reasoning lab structure from source code (Qwen)..."))
+        trace_prompt = (
+            f"CVE: {cve_id}\nStack detectado: {tech}\n"
+            f"Endpoint conocido: {endpoint}\nParametro de inyeccion: {flat_param}\n\n"
+            f"Codigo vulnerable:\n```\n{snippet[:2500]}\n```\n"
+            "Identifica el endpoint HTTP y el parametro exacto que llega sin sanitizar al SQL."
+        )
+        try:
+            raw = llm.chat([Message("system", _CODE_TRACE_SYS),
+                            Message("user", trace_prompt)], json_mode=True)
+            trace = json.loads(raw) if isinstance(raw, str) else {}
+        except Exception:
+            trace = {}
+        if isinstance(trace, dict):
+            endpoint   = trace.get("endpoint") or endpoint
+            flat_param = trace.get("sqli_param") or flat_param
+
+    # Paso 2: generar el servidor minimal
+    step(("generando servidor del lab (Qwen disena desde cero)..." if es
+          else "generating lab server (Qwen designs from scratch)..."))
+    scaffold_prompt = (
+        f"CVE: {cve_id}\nStack: {tech}\nEndpoint: {endpoint}\n"
+        f"Parametro de inyeccion (usa EXACTAMENTE este nombre): {flat_param}\n"
+        f"confirm_string: {confirm}\n"
+    )
+    if snippet:
+        scaffold_prompt += f"\nFragmento vulnerable (replica este patron SQL):\n```\n{snippet[:2000]}\n```\n"
+    else:
+        scaffold_prompt += "\nNo se encontro codigo fuente; genera un servidor generico con json_extract SQLi.\n"
+
+    try:
+        raw  = llm.chat([Message("system", _LAB_SCAFFOLD_SYS),
+                         Message("user", scaffold_prompt)], json_mode=True)
+        data = json.loads(raw) if isinstance(raw, str) else {}
+    except Exception:
+        return None
+
+    if not isinstance(data, dict):
+        return None
+
+    server_code = data.get("server_code") or ""
+    dockerfile  = data.get("dockerfile") or ""
+    if not server_code or not dockerfile:
+        return None
+
+    gen_ep      = data.get("endpoint") or endpoint
+    gen_param   = data.get("sqli_param") or flat_param
+    gen_confirm = data.get("confirm_string") or confirm
+    gen_port    = int(data.get("server_port") or 3000)
+    gen_params  = data.get("parameters") or {gen_param: "public"}
+    srv_file    = {"nodejs": "server.js", "python": "app.py", "go": "main.go",
+                   "ruby": "app.rb"}.get(tech, "server.js")
+
+    reasoning = (data.get("reasoning") or "")[:200]
+    if reasoning:
+        step(f"lab scaffolded: {reasoning}")
+
+    return {
+        "dockerfile_body": dockerfile,
+        "extra_files":     {srv_file: server_code},
+        "endpoint":        gen_ep,
+        "sqli_param":      gen_param,
+        "confirm_string":  gen_confirm,
+        "server_port":     gen_port,
+        "parameters":      gen_params,
+    }
+
+
+def _lab_debug_feedback(llm, fail_reason: str, lab_config: dict,
+                        step, es: bool) -> Optional[dict]:
+    """Llama a Qwen con el motivo del fallo para que genere una version corregida del lab."""
+    if llm is None or not lab_config:
+        return None
+    from ..llm.base import Message
+
+    srv_files   = lab_config.get("extra_files") or {}
+    server_code = next(iter(srv_files.values()), "") if srv_files else ""
+    srv_file    = next(iter(srv_files.keys()), "server.js") if srv_files else "server.js"
+
+    user_prompt = (
+        f"Error observado:\n{fail_reason[:800]}\n\n"
+        f"Servidor actual:\n```\n{server_code[:1500]}\n```\n\n"
+        f"Dockerfile:\n```\n{(lab_config.get('dockerfile_body') or '')[:500]}\n```\n\n"
+        f"Endpoint: {lab_config.get('endpoint')}\n"
+        f"Parametro: {lab_config.get('sqli_param')}\n"
+        f"confirm_string: {lab_config.get('confirm_string')}\n"
+    )
+
+    step(("diagnosticando fallo del lab y regenerando servidor (Qwen)..." if es
+          else "diagnosing lab failure and regenerating server (Qwen)..."))
+
+    try:
+        raw  = llm.chat([Message("system", _LAB_FEEDBACK_SYS),
+                         Message("user", user_prompt)], json_mode=True)
+        data = json.loads(raw) if isinstance(raw, str) else {}
+    except Exception:
+        return None
+
+    if not isinstance(data, dict):
+        return None
+
+    new_code = data.get("server_code") or server_code
+    new_df   = data.get("dockerfile") or lab_config.get("dockerfile_body", "")
+    if not new_code or not new_df:
+        return None
+
+    diagnosis = (data.get("diagnosis") or "")[:200]
+    if diagnosis:
+        step(f"diagnostico LLM: {diagnosis}")
+
+    return {
+        "dockerfile_body": new_df,
+        "extra_files":     {srv_file: new_code},
+        "endpoint":        data.get("endpoint") or lab_config.get("endpoint", ""),
+        "sqli_param":      data.get("sqli_param") or lab_config.get("sqli_param", ""),
+        "confirm_string":  data.get("confirm_string") or lab_config.get("confirm_string", ""),
+        "server_port":     lab_config.get("server_port", 3000),
+        "parameters":      data.get("parameters") or lab_config.get("parameters") or {},
+    }
+
+
+# Mapa vuln_class → system prompt del scaffold (unico punto de extension para nuevas clases)
+_SCAFFOLD_SYS_FOR_CLASS = {
+    "sqli":                  None,  # usa _scaffold_llm_lab directamente (tiene trace en 2 pasos)
+    "sql-injection":         None,
+    "path-traversal":        "_LAB_SCAFFOLD_PATH_TRAVERSAL_SYS",
+    "lfi":                   "_LAB_SCAFFOLD_PATH_TRAVERSAL_SYS",
+    "directory-traversal":   "_LAB_SCAFFOLD_PATH_TRAVERSAL_SYS",
+    "arbitrary-file-read":   "_LAB_SCAFFOLD_PATH_TRAVERSAL_SYS",
+    "ssrf":                  "_LAB_SCAFFOLD_SSRF_SYS",
+    "server-side-request-forgery": "_LAB_SCAFFOLD_SSRF_SYS",
+    "command-injection":     "_LAB_SCAFFOLD_CMDI_SYS",
+    "rce":                   "_LAB_SCAFFOLD_CMDI_SYS",
+    "code-injection":        "_LAB_SCAFFOLD_CMDI_SYS",
+    "ssti":                  "_LAB_SCAFFOLD_SSTI_SYS",
+    "template-injection":    "_LAB_SCAFFOLD_SSTI_SYS",
+    "missing-authorization": "_LAB_SCAFFOLD_MISSING_AUTH_SYS",
+    "auth-bypass":           "_LAB_SCAFFOLD_MISSING_AUTH_SYS",
+    "idor":                  "_LAB_SCAFFOLD_MISSING_AUTH_SYS",
+}
+
+
+def _scaffold_llm_lab_for_class(llm, source_dir: str, notes: dict, cve_id: str,
+                                 vuln_class: str, step, es: bool) -> Optional[dict]:
+    """Scaffold automatico para cualquier clase de vulnerabilidad excepto SQLi.
+
+    Lee el codigo fuente, detecta el stack, llama al sistema de prompts correcto
+    segun la clase (path-traversal, SSRF, CMDI, SSTI, missing-auth...) y genera
+    un servidor + Dockerfile minimal. Devuelve un dict con todas las claves
+    posibles (las no relevantes para la clase quedan en ""), o None si falla.
+    """
+    _SYS_MAP = {
+        "_LAB_SCAFFOLD_PATH_TRAVERSAL_SYS": _LAB_SCAFFOLD_PATH_TRAVERSAL_SYS,
+        "_LAB_SCAFFOLD_SSRF_SYS":           _LAB_SCAFFOLD_SSRF_SYS,
+        "_LAB_SCAFFOLD_CMDI_SYS":           _LAB_SCAFFOLD_CMDI_SYS,
+        "_LAB_SCAFFOLD_SSTI_SYS":           _LAB_SCAFFOLD_SSTI_SYS,
+        "_LAB_SCAFFOLD_MISSING_AUTH_SYS":   _LAB_SCAFFOLD_MISSING_AUTH_SYS,
+    }
+    sys_key = _SCAFFOLD_SYS_FOR_CLASS.get(vuln_class)
+    sys_prompt = _SYS_MAP.get(sys_key) if sys_key else None
+    if sys_prompt is None or llm is None:
+        return None
+
+    from ..llm.base import Message
+
+    tech    = _detect_lab_tech_stack(source_dir)
+    snippet = _read_vuln_snippet(source_dir, notes)
+    confirm = notes.get("confirm_string") or f"binoracle-{vuln_class}-secret-{cve_id}"
+    endpoint = notes.get("endpoint") or "/api/items"
+
+    step(("razonando lab autonomamente desde codigo fuente (Qwen)..." if es
+          else "auto-reasoning lab from source code (Qwen)..."))
+
+    prompt = (
+        f"CVE: {cve_id}\nClase de vulnerabilidad: {vuln_class}\nStack: {tech}\n"
+        f"Endpoint conocido: {endpoint}\nconfirm_string: {confirm}\n"
+    )
+    if snippet:
+        prompt += f"\nCodigo vulnerable (replica este patron):\n```\n{snippet[:2500]}\n```\n"
+    else:
+        prompt += "\nNo se encontro codigo fuente; genera un servidor generico para esta clase.\n"
+
+    try:
+        raw  = llm.chat([Message("system", sys_prompt),
+                         Message("user", prompt)], json_mode=True)
+        data = json.loads(raw) if isinstance(raw, str) else {}
+    except Exception:
+        return None
+
+    if not isinstance(data, dict):
+        return None
+
+    server_code = data.get("server_code") or ""
+    dockerfile  = data.get("dockerfile") or ""
+    if not server_code or not dockerfile:
+        return None
+
+    srv_file = {"nodejs": "server.js", "python": "app.py", "go": "main.go",
+                "ruby": "app.rb"}.get(tech, "server.js")
+
+    reasoning = (data.get("reasoning") or "")[:200]
+    if reasoning:
+        step(f"lab scaffolded: {reasoning}")
+
+    return {
+        "dockerfile_body": dockerfile,
+        "extra_files":     {srv_file: server_code},
+        "endpoint":        data.get("endpoint") or endpoint,
+        "confirm_string":  data.get("confirm_string") or confirm,
+        "server_port":     int(data.get("server_port") or 3000),
+        "parameters":      data.get("parameters") or {},
+        # Claves especificas por clase (valor "" si no aplica)
+        "path_param":    data.get("path_param") or "",
+        "url_param":     data.get("url_param") or "",
+        "url_suffix":    data.get("url_suffix") or "",
+        "query_suffix":  data.get("query_suffix") or "",
+        "cmd_param":     data.get("cmd_param") or "",
+        "ssti_param":    data.get("ssti_param") or "",
+        "sqli_param":    data.get("sqli_param") or "",
+    }
+
+
+def _lab_feedback_for_class(llm, fail_reason: str, lab_config: dict,
+                             step, es: bool) -> Optional[dict]:
+    """Genera una version corregida del lab usando el prompt de feedback generico."""
+    if llm is None or not lab_config:
+        return None
+    from ..llm.base import Message
+
+    srv_files   = lab_config.get("extra_files") or {}
+    server_code = next(iter(srv_files.values()), "") if srv_files else ""
+    srv_file    = next(iter(srv_files.keys()), "server.js") if srv_files else "server.js"
+
+    user_prompt = (
+        f"Error observado:\n{fail_reason[:800]}\n\n"
+        f"Servidor actual:\n```\n{server_code[:1500]}\n```\n\n"
+        f"Dockerfile:\n```\n{(lab_config.get('dockerfile_body') or '')[:500]}\n```\n\n"
+        f"Endpoint: {lab_config.get('endpoint')}\n"
+        f"confirm_string: {lab_config.get('confirm_string', '')}\n"
+    )
+
+    step(("diagnosticando fallo y regenerando servidor (Qwen)..." if es
+          else "diagnosing failure and regenerating server (Qwen)..."))
+
+    try:
+        raw  = llm.chat([Message("system", _LAB_FEEDBACK_GENERIC_SYS),
+                         Message("user", user_prompt)], json_mode=True)
+        data = json.loads(raw) if isinstance(raw, str) else {}
+    except Exception:
+        return None
+
+    if not isinstance(data, dict):
+        return None
+
+    new_code = data.get("server_code") or server_code
+    new_df   = data.get("dockerfile") or lab_config.get("dockerfile_body", "")
+    if not new_code or not new_df:
+        return None
+
+    diagnosis = (data.get("diagnosis") or "")[:200]
+    if diagnosis:
+        step(f"diagnostico: {diagnosis}")
+
+    # Preservar todas las claves del lab_config anterior; sobrescribir solo lo que el LLM corrigio
+    return {
+        **lab_config,
+        "dockerfile_body": new_df,
+        "extra_files":     {srv_file: new_code},
+        "endpoint":        data.get("endpoint") or lab_config.get("endpoint", ""),
+        "parameters":      data.get("parameters") or lab_config.get("parameters") or {},
+    }
+
+
 def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                            budget_s: float = 300.0) -> None:
     """Rama WEB/APP de investigate_cve: descarga el codigo real si se puede, fundamenta la hipotesis
@@ -8479,12 +8959,62 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _pt_custom_hdrs = notes.get("custom_headers") or None
                 _pt_dockerfile = notes.get("dockerfile_body") or ""
                 _pt_extra_files = notes.get("extra_files") or None
+                # Motor autonomo: si no hay Dockerfile, Qwen diseña el lab desde el codigo fuente
+                _scf_pt = False
+                if not _pt_dockerfile and llm is not None:
+                    _scf = _scaffold_llm_lab_for_class(
+                        llm, str(fr.local_path), notes, inv.cve_id, "path-traversal", step, es)
+                    if _scf:
+                        _pt_dockerfile   = _scf["dockerfile_body"]
+                        _pt_extra_files  = _scf["extra_files"]
+                        _pt_ep           = _scf.get("endpoint") or _pt_ep
+                        _pt_url_suffix   = _scf.get("url_suffix") or _pt_url_suffix
+                        _pt_query_suffix = _scf.get("query_suffix") or _pt_query_suffix
+                        if _scf.get("path_param"):
+                            path_p = _scf["path_param"]
+                        if _scf.get("parameters"):
+                            params = _scf["parameters"]
+                        _scf_pt = True
                 wr = verify_generic_path_traversal(
                     fr.local_path, _pt_ep, notes.get("http_method") or "GET",
                     params, path_param_hint=path_p or "", on_step=step, budget_s=budget_s,
                     url_suffix=_pt_url_suffix, custom_headers=_pt_custom_hdrs,
                     query_suffix=_pt_query_suffix,
                     dockerfile_body=_pt_dockerfile, extra_files=_pt_extra_files)
+                # Bucle de feedback: si Qwen scaffoldeo y fallo, que diagnostique y regenere
+                if _scf_pt and not wr.verified:
+                    _lab_cfg_pt = {
+                        "dockerfile_body": _pt_dockerfile,
+                        "extra_files":     _pt_extra_files,
+                        "endpoint":        _pt_ep,
+                        "confirm_string":  notes.get("confirm_string") or "",
+                        "parameters":      params if isinstance(params, dict) else {},
+                        "url_suffix":      _pt_url_suffix,
+                        "query_suffix":    _pt_query_suffix,
+                    }
+                    for _fb_i in range(2):
+                        _fb = _lab_feedback_for_class(
+                            llm, getattr(wr, 'detail', '') or "", _lab_cfg_pt, step, es)
+                        if not _fb:
+                            break
+                        _pt_dockerfile   = _fb["dockerfile_body"]
+                        _pt_extra_files  = _fb["extra_files"]
+                        _pt_ep           = _fb.get("endpoint") or _pt_ep
+                        _pt_url_suffix   = _fb.get("url_suffix") or _pt_url_suffix
+                        _pt_query_suffix = _fb.get("query_suffix") or _pt_query_suffix
+                        if _fb.get("parameters"):
+                            params = _fb["parameters"]
+                        _lab_cfg_pt = _fb
+                        wr_fb = verify_generic_path_traversal(
+                            fr.local_path, _pt_ep, notes.get("http_method") or "GET",
+                            params, path_param_hint=path_p or "", on_step=step,
+                            budget_s=budget_s,
+                            url_suffix=_pt_url_suffix, custom_headers=_pt_custom_hdrs,
+                            query_suffix=_pt_query_suffix,
+                            dockerfile_body=_pt_dockerfile, extra_files=_pt_extra_files)
+                        wr = wr_fb
+                        if wr_fb.verified:
+                            break
                 # aprendizaje y reintento, version GENERICA (cualquier tecnologia, no solo
                 # WordPress) -- mismo bucle acotado que el SQLi de WordPress: el LLM lee el
                 # cuerpo real del primer intento y solo sugiere un reintento con una pista
@@ -8781,13 +9311,55 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                      else "attempting GENERIC DYNAMIC verification -- canary file via docker "
                      "exec, the target is built from its own Dockerfile/compose..."))
                 _cmdi_custom_hdrs = notes.get("custom_headers") or None
+                _cmdi_ep = notes.get("endpoint")
                 _cmdi_dockerfile = notes.get("dockerfile_body") or ""
                 _cmdi_extra_files = notes.get("extra_files") or None
+                _scf_cmdi = False
+                if not _cmdi_dockerfile and llm is not None:
+                    _scf = _scaffold_llm_lab_for_class(
+                        llm, str(fr.local_path), notes, inv.cve_id, "command-injection", step, es)
+                    if _scf:
+                        _cmdi_dockerfile  = _scf["dockerfile_body"]
+                        _cmdi_extra_files = _scf["extra_files"]
+                        _cmdi_ep          = _scf.get("endpoint") or _cmdi_ep
+                        if _scf.get("cmd_param"):
+                            cmd_p = _scf["cmd_param"]
+                        if _scf.get("parameters"):
+                            params = _scf["parameters"]
+                        _scf_cmdi = True
                 wr = verify_generic_command_injection(
-                    fr.local_path, notes.get("endpoint"), notes.get("http_method") or "GET",
+                    fr.local_path, _cmdi_ep, notes.get("http_method") or "GET",
                     params, cmd_param_hint=cmd_p or "", on_step=step, budget_s=budget_s,
                     custom_headers=_cmdi_custom_hdrs,
                     dockerfile_body=_cmdi_dockerfile, extra_files=_cmdi_extra_files)
+                if _scf_cmdi and not wr.verified:
+                    _lab_cfg_cmdi = {
+                        "dockerfile_body": _cmdi_dockerfile,
+                        "extra_files":     _cmdi_extra_files,
+                        "endpoint":        _cmdi_ep,
+                        "confirm_string":  notes.get("confirm_string") or "",
+                        "parameters":      params if isinstance(params, dict) else {},
+                        "cmd_param":       cmd_p or "",
+                    }
+                    for _fb_i in range(2):
+                        _fb = _lab_feedback_for_class(
+                            llm, getattr(wr, 'detail', '') or "", _lab_cfg_cmdi, step, es)
+                        if not _fb:
+                            break
+                        _cmdi_dockerfile  = _fb["dockerfile_body"]
+                        _cmdi_extra_files = _fb["extra_files"]
+                        _cmdi_ep          = _fb.get("endpoint") or _cmdi_ep
+                        if _fb.get("parameters"):
+                            params = _fb["parameters"]
+                        _lab_cfg_cmdi = _fb
+                        wr_fb = verify_generic_command_injection(
+                            fr.local_path, _cmdi_ep, notes.get("http_method") or "GET",
+                            params, cmd_param_hint=cmd_p or "", on_step=step, budget_s=budget_s,
+                            custom_headers=_cmdi_custom_hdrs,
+                            dockerfile_body=_cmdi_dockerfile, extra_files=_cmdi_extra_files)
+                        wr = wr_fb
+                        if wr_fb.verified:
+                            break
                 def _attempt_cmdi_generic(ep, pr):
                     return verify_generic_command_injection(
                         fr.local_path, ep, notes.get("http_method") or "GET", params,
@@ -8796,7 +9368,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         dockerfile_body=_cmdi_dockerfile, extra_files=_cmdi_extra_files)
                 wr = _run_evidence_retry_loop(
                     llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
-                    _attempt_cmdi_generic, wr, notes.get("endpoint"), cmd_p,
+                    _attempt_cmdi_generic, wr, _cmdi_ep, cmd_p,
                     technique_label="command injection generico")
                 _apply_wpverify_result(inv, wr, es, llm)
             # mismo laboratorio efimero, para SQLi en Drupal (quinta clase de Drupal, "poco a
@@ -9174,12 +9746,68 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _is_local_lab = (fr.kind == "local-dir")
                 _sqli_custom_hdrs = notes.get("custom_headers") or None
                 _sqli_setup_cmds = notes.get("setup_cmds") or None
+                _sqli_df = notes.get("dockerfile_body") or ""
+                _sqli_ef = notes.get("extra_files") or None
+                _sqli_cs = notes.get("confirm_string") or ""
+                # Motor autonomo: si no hay Dockerfile, Qwen diseña el lab desde el codigo fuente
+                _scaffolded = False
+                if not _sqli_df and llm is not None:
+                    _scf = _scaffold_llm_lab(
+                        llm, str(fr.local_path), notes, inv.cve_id, step, es)
+                    if _scf:
+                        _sqli_df      = _scf["dockerfile_body"]
+                        _sqli_ef      = _scf["extra_files"]
+                        _sqli_cs      = _scf.get("confirm_string") or _sqli_cs
+                        _genlab_ep    = _scf.get("endpoint") or _genlab_ep
+                        _genlab_param = _scf.get("sqli_param") or _genlab_param
+                        if _scf.get("parameters"):
+                            params = _scf["parameters"]
+                        sqli_p      = _genlab_param
+                        _scaffolded = True
                 wr = verify_generic_sqli_blind(
                     fr.local_path, _genlab_ep, notes.get("http_method") or "GET",
                     params, sqli_param_hint=_genlab_param, on_step=step, budget_s=budget_s,
                     sqli_identifier_table_hint=id_table_hint,
                     custom_headers=_sqli_custom_hdrs,
-                    setup_commands=_sqli_setup_cmds)
+                    setup_commands=_sqli_setup_cmds,
+                    dockerfile_body=_sqli_df, extra_files=_sqli_ef,
+                    confirm_string=_sqli_cs)
+                # Bucle de feedback: si Qwen scaffoldeo y fallo, que diagnostique y regenere
+                if _scaffolded and not wr.verified:
+                    _lab_cfg = {
+                        "dockerfile_body": _sqli_df,
+                        "extra_files":     _sqli_ef,
+                        "endpoint":        _genlab_ep,
+                        "sqli_param":      _genlab_param,
+                        "confirm_string":  _sqli_cs,
+                        "parameters":      params if isinstance(params, dict) else {},
+                    }
+                    for _fb_i in range(2):
+                        _fb = _lab_debug_feedback(
+                            llm, getattr(wr, 'detail', '') or "",
+                            _lab_cfg, step, es)
+                        if not _fb:
+                            break
+                        _sqli_df      = _fb["dockerfile_body"]
+                        _sqli_ef      = _fb["extra_files"]
+                        _genlab_ep    = _fb.get("endpoint") or _genlab_ep
+                        _genlab_param = _fb.get("sqli_param") or _genlab_param
+                        _sqli_cs      = _fb.get("confirm_string") or _sqli_cs
+                        if _fb.get("parameters"):
+                            params = _fb["parameters"]
+                        _lab_cfg = _fb
+                        wr_fb = verify_generic_sqli_blind(
+                            fr.local_path, _genlab_ep, notes.get("http_method") or "GET",
+                            params, sqli_param_hint=_genlab_param, on_step=step,
+                            budget_s=budget_s,
+                            sqli_identifier_table_hint=id_table_hint,
+                            custom_headers=_sqli_custom_hdrs,
+                            setup_commands=_sqli_setup_cmds,
+                            dockerfile_body=_sqli_df, extra_files=_sqli_ef,
+                            confirm_string=_sqli_cs)
+                        wr = wr_fb
+                        if wr_fb.verified:
+                            break
                 def _attempt_sqli_blind_generic(ep, pr):
                     _ep  = _genlab_ep    if _is_local_lab else ep
                     _pr  = _genlab_param if _is_local_lab else pr
@@ -9188,7 +9816,9 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         sqli_param_hint=_pr or "", on_step=step, budget_s=budget_s,
                         sqli_identifier_table_hint=id_table_hint,
                         custom_headers=_sqli_custom_hdrs,
-                        setup_commands=_sqli_setup_cmds)
+                        setup_commands=_sqli_setup_cmds,
+                        dockerfile_body=_sqli_df, extra_files=_sqli_ef,
+                        confirm_string=_sqli_cs)
                 wr = _run_evidence_retry_loop(
                     llm, step, es, _SQLI_RETRY_SYS, _SQLI_RETRY_EVIDENCE_KEYS,
                     _attempt_sqli_blind_generic, wr, _genlab_ep, _genlab_param,
@@ -9319,13 +9949,55 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                      "with a random token, the target is built from its own Dockerfile/"
                      "compose..."))
                 _ssrf_custom_hdrs = notes.get("custom_headers") or None
+                _ssrf_ep = notes.get("endpoint")
                 _ssrf_dockerfile = notes.get("dockerfile_body") or ""
                 _ssrf_extra_files = notes.get("extra_files") or None
+                _scf_ssrf = False
+                if not _ssrf_dockerfile and llm is not None:
+                    _scf = _scaffold_llm_lab_for_class(
+                        llm, str(fr.local_path), notes, inv.cve_id, "ssrf", step, es)
+                    if _scf:
+                        _ssrf_dockerfile  = _scf["dockerfile_body"]
+                        _ssrf_extra_files = _scf["extra_files"]
+                        _ssrf_ep          = _scf.get("endpoint") or _ssrf_ep
+                        if _scf.get("url_param"):
+                            url_p = _scf["url_param"]
+                        if _scf.get("parameters"):
+                            params = _scf["parameters"]
+                        _scf_ssrf = True
                 wr = verify_generic_ssrf(
-                    fr.local_path, notes.get("endpoint"), notes.get("http_method") or "GET",
+                    fr.local_path, _ssrf_ep, notes.get("http_method") or "GET",
                     params, url_param_hint=url_p or "", on_step=step, budget_s=budget_s,
                     custom_headers=_ssrf_custom_hdrs,
                     dockerfile_body=_ssrf_dockerfile, extra_files=_ssrf_extra_files)
+                if _scf_ssrf and not wr.verified:
+                    _lab_cfg_ssrf = {
+                        "dockerfile_body": _ssrf_dockerfile,
+                        "extra_files":     _ssrf_extra_files,
+                        "endpoint":        _ssrf_ep,
+                        "confirm_string":  notes.get("confirm_string") or "",
+                        "parameters":      params if isinstance(params, dict) else {},
+                        "url_param":       url_p or "",
+                    }
+                    for _fb_i in range(2):
+                        _fb = _lab_feedback_for_class(
+                            llm, getattr(wr, 'detail', '') or "", _lab_cfg_ssrf, step, es)
+                        if not _fb:
+                            break
+                        _ssrf_dockerfile  = _fb["dockerfile_body"]
+                        _ssrf_extra_files = _fb["extra_files"]
+                        _ssrf_ep          = _fb.get("endpoint") or _ssrf_ep
+                        if _fb.get("parameters"):
+                            params = _fb["parameters"]
+                        _lab_cfg_ssrf = _fb
+                        wr_fb = verify_generic_ssrf(
+                            fr.local_path, _ssrf_ep, notes.get("http_method") or "GET",
+                            params, url_param_hint=url_p or "", on_step=step, budget_s=budget_s,
+                            custom_headers=_ssrf_custom_hdrs,
+                            dockerfile_body=_ssrf_dockerfile, extra_files=_ssrf_extra_files)
+                        wr = wr_fb
+                        if wr_fb.verified:
+                            break
                 def _attempt_ssrf_generic(ep, pr):
                     return verify_generic_ssrf(
                         fr.local_path, ep, notes.get("http_method") or "GET", params,
@@ -9334,7 +10006,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         dockerfile_body=_ssrf_dockerfile, extra_files=_ssrf_extra_files)
                 wr = _run_evidence_retry_loop(
                     llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
-                    _attempt_ssrf_generic, wr, notes.get("endpoint"), url_p,
+                    _attempt_ssrf_generic, wr, _ssrf_ep, url_p,
                     technique_label="SSRF generico")
                 _apply_wpverify_result(inv, wr, es, llm)
             # Fallback generico: cualquier clase web con confirm_string + (docker_image o
@@ -9639,13 +10311,55 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                      "arithmetic computed by the template engine, the target is built from its "
                      "own Dockerfile/compose..."))
                 _ssti_custom_hdrs = notes.get("custom_headers") or None
+                _ssti_ep = notes.get("endpoint")
                 _ssti_dockerfile = notes.get("dockerfile_body") or ""
                 _ssti_extra_files = notes.get("extra_files") or None
+                _scf_ssti = False
+                if not _ssti_dockerfile and llm is not None:
+                    _scf = _scaffold_llm_lab_for_class(
+                        llm, str(fr.local_path), notes, inv.cve_id, "ssti", step, es)
+                    if _scf:
+                        _ssti_dockerfile  = _scf["dockerfile_body"]
+                        _ssti_extra_files = _scf["extra_files"]
+                        _ssti_ep          = _scf.get("endpoint") or _ssti_ep
+                        if _scf.get("ssti_param"):
+                            ssti_p = _scf["ssti_param"]
+                        if _scf.get("parameters"):
+                            params = _scf["parameters"]
+                        _scf_ssti = True
                 wr = verify_generic_ssti(
-                    fr.local_path, notes.get("endpoint"), notes.get("http_method") or "GET",
+                    fr.local_path, _ssti_ep, notes.get("http_method") or "GET",
                     params, ssti_param_hint=ssti_p or "", on_step=step, budget_s=budget_s,
                     custom_headers=_ssti_custom_hdrs,
                     dockerfile_body=_ssti_dockerfile, extra_files=_ssti_extra_files)
+                if _scf_ssti and not wr.verified:
+                    _lab_cfg_ssti = {
+                        "dockerfile_body": _ssti_dockerfile,
+                        "extra_files":     _ssti_extra_files,
+                        "endpoint":        _ssti_ep,
+                        "confirm_string":  notes.get("confirm_string") or "",
+                        "parameters":      params if isinstance(params, dict) else {},
+                        "ssti_param":      ssti_p or "",
+                    }
+                    for _fb_i in range(2):
+                        _fb = _lab_feedback_for_class(
+                            llm, getattr(wr, 'detail', '') or "", _lab_cfg_ssti, step, es)
+                        if not _fb:
+                            break
+                        _ssti_dockerfile  = _fb["dockerfile_body"]
+                        _ssti_extra_files = _fb["extra_files"]
+                        _ssti_ep          = _fb.get("endpoint") or _ssti_ep
+                        if _fb.get("parameters"):
+                            params = _fb["parameters"]
+                        _lab_cfg_ssti = _fb
+                        wr_fb = verify_generic_ssti(
+                            fr.local_path, _ssti_ep, notes.get("http_method") or "GET",
+                            params, ssti_param_hint=ssti_p or "", on_step=step, budget_s=budget_s,
+                            custom_headers=_ssti_custom_hdrs,
+                            dockerfile_body=_ssti_dockerfile, extra_files=_ssti_extra_files)
+                        wr = wr_fb
+                        if wr_fb.verified:
+                            break
                 def _attempt_ssti_generic(ep, pr):
                     return verify_generic_ssti(
                         fr.local_path, ep, notes.get("http_method") or "GET", params,
@@ -9654,7 +10368,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         dockerfile_body=_ssti_dockerfile, extra_files=_ssti_extra_files)
                 wr = _run_evidence_retry_loop(
                     llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
-                    _attempt_ssti_generic, wr, notes.get("endpoint"), ssti_p,
+                    _attempt_ssti_generic, wr, _ssti_ep, ssti_p,
                     technique_label="SSTI generico")
                 _apply_wpverify_result(inv, wr, es, llm)
             elif (is_drupal and fr.kind in ("drupal-module", "local-zip", "zip-url") and plugin_dir
