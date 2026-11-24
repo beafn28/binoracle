@@ -132,9 +132,24 @@ def _count_all_verified() -> int:
 def _load_history(limit: int = 20, offset: int = 0, verified_only: bool = False) -> tuple:
     """Returns (records_page, total_count).
 
-    Two-pass load: first pass collects (mtime, path, quick-verified) without reading
-    the full JSON body; second pass loads only the page slice. This avoids loading
-    hundreds of full records into RAM just to paginate 20.
+    Two-pass load: first pass computes (mtime, path, truly-verified) WITHOUT keeping the
+    full record around afterwards; second pass loads only the page slice. This avoids
+    holding hundreds of full records in RAM simultaneously just to paginate 20.
+
+    FIX (2026-11-24): the first pass used to do a raw-text substring check on the first
+    512 bytes ('"verified": true' in head.lower()) instead of calling _is_truly_verified().
+    Both _save_history() and auto_chain.py's _save_chain_to_history() put the OUTER
+    "verified" key before "dynamic_verify" in the JSON they write, so that substring
+    check matched the outer flag -- which per this file's own _is_truly_verified() is NOT
+    enough on its own (it may come from an LLM hypothesis / unconfirmed attempt) -- while
+    completely ignoring whether dynamic_verify.verified was actually true. Reproduced:
+    a record with verified=true but dynamic_verify={"verified": false} passed the quick
+    scan as "verified" even though _is_truly_verified() correctly says False. This
+    reopened, in the "show only verified" dashboard filter specifically, the exact
+    hallucinated-verdict class of bug fixed elsewhere in this file (_is_truly_verified
+    itself). Fixed by calling the real check -- still parses the file once in this pass,
+    but immediately discards the full dict, keeping only the boolean, so the RAM-saving
+    intent of the two-pass design is preserved.
     """
     entries = []  # (mtime, path, verified_flag)
     try:
@@ -144,10 +159,10 @@ def _load_history(limit: int = 20, offset: int = 0, verified_only: bool = False)
             fpath = os.path.join(_HISTORY_DIR, fname)
             try:
                 mtime = os.path.getmtime(fpath)
-                # Cheap verified check: scan only the first 512 bytes
-                with open(fpath, encoding="utf-8", errors="replace") as fh:
-                    head = fh.read(512)
-                _verified = '"verified": true' in head.lower()
+                with open(fpath, encoding="utf-8") as fh:
+                    _rec = json.load(fh)
+                _verified = _is_truly_verified(_rec)
+                del _rec
                 entries.append((mtime, fpath, _verified))
             except Exception:
                 pass
@@ -471,9 +486,14 @@ class _Handler(BaseHTTPRequestHandler):
                 data = json.loads(body)
             except Exception:
                 data = {}
-            cve_id = str(data.get("cve_id", "")).strip()
+            cve_id = str(data.get("cve_id", "")).strip().upper()
             if not cve_id:
                 self._send_json(400, {"error": "cve_id required"})
+                return
+            import re as _re_cid
+            if not _re_cid.match(r'^(CVE-\d{4}-\d{1,7}|GHSA-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4})$',
+                                  cve_id, _re_cid.IGNORECASE):
+                self._send_json(400, {"error": f"CVE-ID inválido: {cve_id!r}"})
                 return
             job = _start_job(cve_id, self.__class__.config)
             self._send_json(200, {"job_id": job.id, "cve_id": job.cve_id})
