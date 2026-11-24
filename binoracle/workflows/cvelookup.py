@@ -303,6 +303,23 @@ def fetch_cve(cve_id: str, timeout: float = 20.0, enrich: bool = True) -> CVEInf
     vulns = data.get("vulnerabilities") or []
     if not vulns:
         info.note = "la NVD no devolvio datos para esa CVE"
+        # Intento fallback: buscar PoC en GitHub/nomi-sec aunque NVD no tenga la CVE aún.
+        # Cubre CVEs recientes (< 7 días) que tienen PoC público pero NVD aún no los indexó.
+        if enrich:
+            for r in search_github_poc(cid):
+                if r.url:
+                    info.exploit_refs.append(r)
+                    info.has_public_exploit = True
+            for r in search_searchsploit(cid):
+                if r.url:
+                    info.exploit_refs.append(r)
+                    info.has_public_exploit = True
+            if info.has_public_exploit:
+                # Descripción mínima para que el LLM pueda trabajar
+                info.description = f"{cid}: vulnerabilidad con exploit público (NVD pendiente de indexar)"
+                info.ok = True
+                info.note = ""
+                return info
         return info
     cve = vulns[0].get("cve", {})
     # descripcion (ingles)
