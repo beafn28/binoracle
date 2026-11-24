@@ -106,6 +106,52 @@ _HB_PATH = os.path.join(
     "engine_heartbeat.json")
 
 
+def get_adaptive_budget(base_s: float = 300.0) -> float:
+    """Return an adjusted budget_s based on available system resources.
+
+    Scaling rules (applied multiplicatively, capped at 2× and floored at 0.5×):
+      CPU:  ≥8 logical cores  → ×1.4   (builds faster)
+            ≤2 logical cores  → ×0.7   (builds slower)
+      RAM:  ≥16 GB free       → ×1.3
+            ≤4  GB free       → ×0.6   (kernel may OOM kill builds)
+      Disk: ≤1 GB free        → ×0.5   (layer extraction will be slow/fail)
+
+    Non-fatal: on any error returns base_s unchanged.
+    """
+    try:
+        import psutil as _ps  # optional dep — graceful fallback if missing
+        cpu_count = _ps.cpu_count(logical=True) or 4
+        ram_free_gb = _ps.virtual_memory().available / (1024 ** 3)
+        disk_free_gb = _ps.disk_usage("/").free / (1024 ** 3)
+    except Exception:
+        try:
+            import os as _os2
+            import shutil as _sh2
+            cpu_count = _os2.cpu_count() or 4
+            ram_free_gb = 8.0  # unknown — neutral
+            disk_free_gb = _sh2.disk_usage("/").free / (1024 ** 3)
+        except Exception:
+            return base_s
+
+    factor = 1.0
+    if cpu_count >= 8:
+        factor *= 1.4
+    elif cpu_count <= 2:
+        factor *= 0.7
+
+    if ram_free_gb >= 16:
+        factor *= 1.3
+    elif ram_free_gb <= 4:
+        factor *= 0.6
+
+    if disk_free_gb <= 1.0:
+        factor *= 0.5
+
+    # Clamp to [0.5×, 2×] of base
+    factor = max(0.5, min(2.0, factor))
+    return round(base_s * factor, 1)
+
+
 def _update_engine_heartbeat(stage: str = "") -> None:
     """Write a heartbeat JSON so an external watchdog can detect hangs.
 
@@ -3522,6 +3568,14 @@ def auto_queue_nvd(days_back: int = 2, min_cvss: float = 7.0,
             print(r.cve_id, '✓' if r.verified else '?')
     """
     step = on_step or print
+
+    # Adapt budget to available system resources if using the default value
+    if budget_s == 300.0:
+        budget_s = get_adaptive_budget(base_s=300.0)
+        if budget_s != 300.0:
+            step(f"auto_queue_nvd: budget adaptativo = {budget_s:.0f}s "
+                 f"(basado en CPU/RAM/disco disponibles)")
+
     try:
         from .cvefeed import poll_nvd_new
         from .cve_lessons import detect_stack, get_lessons, record_cve_result
