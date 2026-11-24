@@ -599,10 +599,21 @@ def _auto_binary_stage(cve_id: str, cve_info, llm_notes: dict,
     pkg_spec = f"{pkg_name}={pkg_version}" if pkg_version else pkg_name
 
     if "alpine" in base_img:
-        install_cmd = f"RUN apk add --no-cache {pkg_spec} 2>/dev/null || apk add --no-cache {pkg_name}"
+        # apk version format: pkg=version or pkg=version-r0
+        pkg_prefix = f"{pkg_spec}*" if pkg_version else pkg_name
+        install_cmd = (f"RUN apk add --no-cache {pkg_spec} 2>/dev/null || "
+                       f"apk add --no-cache '{pkg_prefix}' 2>/dev/null || "
+                       f"apk add --no-cache {pkg_name}")
     else:
-        install_cmd = (f"RUN apt-get update -qq && apt-get install -y --no-install-recommends "
-                       f"{pkg_spec} 2>/dev/null || apt-get install -y --no-install-recommends {pkg_name}")
+        # apt version format: pkg=version or pkg=version-1ubuntu1*
+        # Try exact, then prefix wildcard (handles epoch/revision suffixes), then unversioned
+        pkg_prefix = f"{pkg_name}={pkg_version}*" if pkg_version else pkg_name
+        install_cmd = (
+            f"RUN apt-get update -qq && apt-get install -y --no-install-recommends "
+            f"{pkg_spec} 2>/dev/null || "
+            f"apt-get install -y --no-install-recommends '{pkg_prefix}' 2>/dev/null || "
+            f"apt-get install -y --no-install-recommends {pkg_name}"
+        )
 
     dockerfile_body = f"FROM {base_img}\n{install_cmd}\n"
 

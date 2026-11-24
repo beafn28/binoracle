@@ -10938,6 +10938,11 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         _auth_ep          = _scf.get("endpoint") or _auth_ep
                         _auth_confirm     = _scf.get("confirm_string") or _auth_confirm
                         _scf_auth         = True
+                # Extract vulnerable version for image pinning
+                _auth_pkg_ver = (notes.get("version") or
+                                 notes.get("vulnerable_version") or
+                                 notes.get("pkg_version") or
+                                 getattr(inv, "pkg_version", "") or "")
                 # Si hay candidatos pero no bypass_header explicito, iterar sobre ellos
                 _auth_candidates = notes.get("_bypass_header_candidates") or []
                 _parsed_candidates = []
@@ -10959,7 +10964,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         on_step=step, budget_s=budget_s,
                         dockerfile_body=_auth_dockerfile,
                         extra_files=_auth_extra_files,
-                        vuln_class=inv.vuln_class or notes.get("vuln_class", ""))
+                        vuln_class=inv.vuln_class or notes.get("vuln_class", ""),
+                        pkg_version=_auth_pkg_ver)
                 else:
                     wr = verify_generic_header_bypass(
                         fr.local_path, _auth_ep, notes.get("http_method") or "GET",
@@ -10969,7 +10975,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         on_step=step, budget_s=budget_s,
                         bypass_url=_auth_bypass_url,
                         dockerfile_body=_auth_dockerfile,
-                        extra_files=_auth_extra_files)
+                        extra_files=_auth_extra_files,
+                        pkg_version=_auth_pkg_ver)
                 if _scf_auth and not wr.verified:
                     _lab_cfg_auth = {
                         "dockerfile_body": _auth_dockerfile, "extra_files": _auth_extra_files,
