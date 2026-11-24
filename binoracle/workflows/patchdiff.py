@@ -441,6 +441,61 @@ _FIX_RULES: List[tuple] = [
                     r"if\s+!user\s*\{|\breject\(401\)|abort\(401\))", re.I)],
         0.75,
     ),
+    (
+        "deserialization",
+        "unsafe deserialization of user-controlled data",
+        "replaced with safe deserialization or JSON parsing",
+        [re.compile(r"(?:unserialize\s*\(\s*\$|pickle\.loads\s*\(|"
+                    r"yaml\.load\s*\([^L]|ObjectInputStream\s*\(|"
+                    r"Marshal\.load\s*\(|readObject\s*\(\s*|"
+                    r"Serializer\.Deserialize\(input)", re.I)],
+        [re.compile(r"(?:json\.loads|json_decode|JSONDecoder|"
+                    r"allowed_classes\s*=\s*false|"
+                    r"yaml\.safe_load|SafeLoader|"
+                    r"ObjectInputFilter|resolveClass)", re.I)],
+        0.85,
+    ),
+    (
+        "cors_misconfiguration",
+        "overly permissive CORS allowing any origin",
+        "restricted CORS to specific origins or removed wildcard",
+        [re.compile(r"(?:Access-Control-Allow-Origin['\"]?\s*[,:]\s*['\"]?\*['\"]?|"
+                    r"origin\s*=\s*['\"]?\*['\"]?|"
+                    r"headers\[.Access-Control-Allow-Origin.\]\s*=\s*['\"]?\*|"
+                    r"req\.headers\.origin|cors\(\s*\{.*origin:\s*true)", re.I)],
+        [re.compile(r"(?:allowedOrigins|origin\s*=\s*allowlist|"
+                    r"whitelist|ALLOWED_ORIGINS|origin\.includes\(|"
+                    r"origin\s*===\s*['\"]https://|corsOptions)", re.I)],
+        0.80,
+    ),
+    (
+        "mass_assignment",
+        "unrestricted model assignment from user input",
+        "added attribute allowlist / strong parameters",
+        [re.compile(r"(?:\.update\s*\(\s*params\b|\.update_attributes\s*\(params|"
+                    r"fill\s*\(\s*request->all\s*\(\)|"
+                    r"Model\.create\s*\(\s*request\.body|"
+                    r"\$model->fill\s*\(\s*\$request->all\s*\(\))", re.I)],
+        [re.compile(r"(?:only\s*\(\s*['\"]|permit\s*\(\s*['\"]|"
+                    r"fillable\s*=\s*\[|guarded\s*=\s*\[|"
+                    r"allow_params|attr_accessible|"
+                    r"schema\.validate|pick\s*\(\s*whitelist)", re.I)],
+        0.80,
+    ),
+    (
+        "ssrf",
+        "server-side request forgery via user-controlled URL",
+        "added URL validation or allowlist for outbound requests",
+        [re.compile(r"(?:requests\.get\s*\(\s*url|urllib\.request\.urlopen\s*\(|"
+                    r"fetch\s*\(\s*url\b|http\.get\s*\(\s*url|"
+                    r"file_get_contents\s*\(\s*\$url|"
+                    r"HttpClient.*new.*url|curl_exec.*curl_setopt.*url)", re.I)],
+        [re.compile(r"(?:is_private_ip|is_internal_ip|url_allowlist|"
+                    r"validate_url|check_url|block.*169\.254|"
+                    r"ipaddress\.ip_address.*is_private|"
+                    r"private_ip|internal_ip|SSRF_PROTECTION)", re.I)],
+        0.80,
+    ),
 ]
 
 # Fallback: if nothing matches, look for generic sanitization removal
@@ -482,16 +537,20 @@ def _classify_fix(removed: List[str], added: List[str]) -> tuple:
 # ── Payload suggestion per fix class ─────────────────────────────────────────
 
 _PAYLOADS_FOR_CLASS: Dict[str, str] = {
-    "sqli":              "' OR '1'='1",
-    "xss":               "<script>alert(document.domain)</script>",
-    "ssti":              "{{7*7}}",
-    "command_injection": "; id",
-    "path_traversal":    "../../etc/passwd",
-    "open_redirect":     "https://evil.example.com",
-    "auth_bypass":       "",       # no payload needed; just omit the auth header
+    "sqli":               "' OR '1'='1",
+    "xss":                "<script>alert(document.domain)</script>",
+    "ssti":               "{{7*7}}",
+    "command_injection":  "; id",
+    "path_traversal":     "../../etc/passwd",
+    "open_redirect":      "https://evil.example.com",
+    "auth_bypass":        "",       # no payload needed; just omit the auth header
     "missing_auth_bypass": "",
-    "injection":         "'; SELECT 1--",
-    "unknown":           "",
+    "injection":          "'; SELECT 1--",
+    "deserialization":    "",       # payload depends on gadget chain
+    "cors_misconfiguration": "",    # no payload; check Origin header reflection
+    "mass_assignment":    "",       # no payload; send extra protected fields
+    "ssrf":               "http://169.254.169.254/latest/meta-data/",
+    "unknown":            "",
 }
 
 
