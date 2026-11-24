@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-"""docker_cleanup.py — limpieza proactiva de Docker antes de labs.
+"""docker_cleanup.py — limpieza proactiva y post-lab de Docker.
 
-Libera build cache y volúmenes huérfanos cuando el espacio reclaimable supera
-el umbral (por defecto 8 GB) para evitar fallos ENOSPC en MySQL al levantar labs.
+Libera: contenedores parados, imágenes dangling, volúmenes huérfanos,
+build cache — en cuanto el espacio reclaimable supera el umbral (3 GB).
+Se llama automáticamente al inicio de cada investigación y al finalizar.
 
 Uso:
-  python3 scripts/docker_cleanup.py           # umbral por defecto (8 GB)
-  python3 scripts/docker_cleanup.py --gb 4    # umbral personalizado
+  python3 scripts/docker_cleanup.py           # umbral por defecto (3 GB)
+  python3 scripts/docker_cleanup.py --gb 1    # umbral personalizado
   python3 scripts/docker_cleanup.py --dry-run # solo muestra lo que haría
+  python3 scripts/docker_cleanup.py --force   # purga siempre
 """
 import argparse
 import json
@@ -16,7 +18,7 @@ import subprocess
 import sys
 
 
-_DEFAULT_THRESHOLD_GB = 8.0
+_DEFAULT_THRESHOLD_GB = 3.0
 
 
 def _parse_size_gb(raw: str) -> float:
@@ -29,7 +31,7 @@ def _parse_size_gb(raw: str) -> float:
 
 
 def get_reclaimable_gb() -> float:
-    """Devuelve el total de espacio reclaimable en Docker (build cache + volúmenes)."""
+    """Devuelve el total de espacio reclaimable en Docker."""
     try:
         out = subprocess.check_output(
             ["docker", "system", "df", "--format", "{{json .}}"],
@@ -48,19 +50,67 @@ def get_reclaimable_gb() -> float:
     return total
 
 
+def prune_binoracle_containers() -> int:
+    """Elimina contenedores parados con nombre binoracle-*. Devuelve nº eliminados."""
+    removed = 0
+    try:
+        r = subprocess.run(
+            ["docker", "ps", "-a", "-q",
+             "--filter", "name=binoracle",
+             "--filter", "status=exited",
+             "--filter", "status=created",
+             "--filter", "status=dead"],
+            capture_output=True, text=True, timeout=15,
+        )
+        ids = [x for x in r.stdout.strip().splitlines() if x]
+        if ids:
+            subprocess.run(["docker", "rm", "-f"] + ids,
+                           capture_output=True, timeout=30)
+            removed = len(ids)
+    except Exception:
+        pass
+    return removed
+
+
 def prune(dry_run: bool = False) -> float:
-    """Ejecuta la limpieza y devuelve los GB liberados (aproximado)."""
+    """Limpieza completa: contenedores parados → imágenes dangling → volúmenes → build cache."""
     before = get_reclaimable_gb()
     if dry_run:
         print(f"[dry-run] espacio reclaimable: {before:.1f} GB (no se hace nada)")
         return 0.0
 
-    subprocess.run(["docker", "builder", "prune", "-f"],
-                   capture_output=True, timeout=120)
+    # 1. contenedores binoracle parados
+    n = prune_binoracle_containers()
+    if n:
+        pass  # silencioso en llamadas programáticas
+
+    # 2. imágenes dangling (sin tag, sin contenedor que las use)
+    subprocess.run(["docker", "image", "prune", "-f"],
+                   capture_output=True, timeout=60)
+
+    # 3. volúmenes huérfanos
     subprocess.run(["docker", "volume", "prune", "-f"],
                    capture_output=True, timeout=60)
+
+    # 4. build cache (el que más ocupa)
+    subprocess.run(["docker", "builder", "prune", "-f"],
+                   capture_output=True, timeout=120)
+
     after = get_reclaimable_gb()
     return max(0.0, before - after)
+
+
+def prune_if_needed(threshold_gb: float = _DEFAULT_THRESHOLD_GB) -> tuple:
+    """Llama a prune() solo si el espacio reclaimable supera el umbral.
+    Devuelve (did_prune: bool, freed_gb: float)."""
+    # Siempre limpia contenedores binoracle parados (coste mínimo, ganancia segura)
+    prune_binoracle_containers()
+
+    recl = get_reclaimable_gb()
+    if recl >= threshold_gb:
+        freed = prune()
+        return True, freed
+    return False, 0.0
 
 
 def main():
@@ -78,7 +128,11 @@ def main():
     print(f"[docker_cleanup] espacio reclaimable: {reclaimable:.1f} GB (umbral: {args.gb} GB)")
 
     if not args.force and reclaimable < args.gb:
-        print(f"[docker_cleanup] por debajo del umbral — sin limpieza necesaria")
+        # Aun así limpia contenedores binoracle parados
+        n = prune_binoracle_containers()
+        if n:
+            print(f"[docker_cleanup] eliminados {n} contenedor(es) binoracle parados")
+        print(f"[docker_cleanup] por debajo del umbral — sin limpieza completa necesaria")
         return 0
 
     freed = prune(dry_run=args.dry_run)

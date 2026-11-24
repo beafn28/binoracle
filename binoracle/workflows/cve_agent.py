@@ -9227,7 +9227,19 @@ def _scaffold_pip_lab(target: str, version: str, vuln_class: str,
     else:
         _lab_ep = endpoint or "search"
     _lab_param = param or "q"
-    if not notes.get("poc_raw_http_lock") and not notes.get("poc_llm_endpoint_lock"):
+    # Package-specific endpoint/param overrides that supersede PoC parsing.
+    # These are cases where the PoC parser produces wrong hints and the exploit
+    # format is well-known: map (pkg_lower, vuln_class) → (endpoint, param).
+    _PKG_ENDPOINT_OVERRIDES: dict = {
+        # CVE-2024-1561: Gradio /file= serves arbitrary files; path goes in the URL,
+        # not as a query param.  URL_PATH mode builds GET /file=/abs/path correctly.
+        ("gradio", "path-traversal"): ("/file=", "URL_PATH"),
+    }
+    _override = _PKG_ENDPOINT_OVERRIDES.get((_pkg_lower, vuln_class))
+    if _override:
+        notes["endpoint"] = _override[0]
+        notes["parameters"] = [_override[1]]
+    elif not notes.get("poc_raw_http_lock") and not notes.get("poc_llm_endpoint_lock"):
         notes["endpoint"] = f"/{_lab_ep}"
         notes["parameters"] = [_lab_param]
 
@@ -16648,14 +16660,17 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
             _os.path.abspath(__file__)))), "scripts")
         if _scripts not in _sys.path:
             _sys.path.insert(0, _scripts)
-        from docker_cleanup import get_reclaimable_gb, prune as _docker_prune
+        from docker_cleanup import get_reclaimable_gb, prune_if_needed as _docker_prune_if
         _recl = get_reclaimable_gb()
-        if _recl >= 8.0:
+        _did_prune, _freed = _docker_prune_if(threshold_gb=3.0)
+        if _did_prune:
             step((f"[INFO] auto-limpieza Docker: {_recl:.1f} GB reclaimables -- "
-                  f"purgando build cache y volumenes para evitar ENOSPC en labs...") if es else
+                  f"purgando contenedores/imagenes/cache (liberados ~{_freed:.1f} GB)...") if es else
                  (f"[INFO] Docker auto-cleanup: {_recl:.1f} GB reclaimable -- "
-                  f"purging build cache and orphan volumes to prevent ENOSPC in labs..."))
-            _docker_prune()
+                  f"pruning containers/images/cache (~{_freed:.1f} GB freed)..."))
+        elif _recl > 0:
+            step(f"[docker] {_recl:.1f} GB reclaimables en Docker (por debajo del umbral)" if es
+                 else f"[docker] {_recl:.1f} GB reclaimable in Docker (below threshold)")
     except Exception:
         pass
 

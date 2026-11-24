@@ -374,6 +374,17 @@ def _start_job(cve_id: str, config) -> _Job:
                 "correlation": getattr(inv, "_correlation", {}),
             }
             _save_history(job)
+            # Post-lab cleanup: remove stopped binoracle containers immediately
+            try:
+                import sys as _sys, os as _os
+                _scripts = _os.path.join(_os.path.dirname(_os.path.dirname(
+                    _os.path.abspath(__file__))), "scripts")
+                if _scripts not in _sys.path:
+                    _sys.path.insert(0, _scripts)
+                from docker_cleanup import prune_binoracle_containers
+                prune_binoracle_containers()
+            except Exception:
+                pass
             job._q.put(("done", job.result))
         except Exception as exc:
             # Autonomous repair: classify the exception and attempt a fix before marking done
