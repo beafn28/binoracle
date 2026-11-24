@@ -1455,6 +1455,41 @@ _VULN_CLASS_TO_CWE: dict[str, str] = {
     "information-disclosure": "CWE-200",
 }
 
+# CWE → OWASP Top 10 2021 category mapping
+# Source: https://owasp.org/www-project-top-ten/ (A01-A10 2021)
+_CWE_TO_OWASP_2021: dict[str, str] = {
+    "CWE-22":  "A01:2021 – Broken Access Control",
+    "CWE-200": "A01:2021 – Broken Access Control",
+    "CWE-284": "A01:2021 – Broken Access Control",
+    "CWE-285": "A01:2021 – Broken Access Control",
+    "CWE-287": "A01:2021 – Broken Access Control",
+    "CWE-862": "A01:2021 – Broken Access Control",
+    "CWE-863": "A01:2021 – Broken Access Control",
+    "CWE-idor": "A01:2021 – Broken Access Control",
+    "CWE-312": "A02:2021 – Cryptographic Failures",
+    "CWE-326": "A02:2021 – Cryptographic Failures",
+    "CWE-327": "A02:2021 – Cryptographic Failures",
+    "CWE-328": "A02:2021 – Cryptographic Failures",
+    "CWE-759": "A02:2021 – Cryptographic Failures",
+    "CWE-89":  "A03:2021 – Injection",
+    "CWE-78":  "A03:2021 – Injection",
+    "CWE-77":  "A03:2021 – Injection",
+    "CWE-79":  "A03:2021 – Injection",
+    "CWE-917": "A03:2021 – Injection",
+    "CWE-943": "A03:2021 – Injection",
+    "CWE-611": "A03:2021 – Injection",  # XXE
+    "CWE-918": "A10:2021 – Server-Side Request Forgery (SSRF)",
+    "CWE-502": "A08:2021 – Software and Data Integrity Failures",  # Deserialization
+    "CWE-915": "A03:2021 – Injection",  # Mass assignment
+    "CWE-1321": "A03:2021 – Injection",  # Prototype pollution
+    "CWE-384": "A07:2021 – Identification and Authentication Failures",
+    "CWE-434": "A03:2021 – Injection",   # Unrestricted file upload
+    "CWE-352": "A01:2021 – Broken Access Control",   # CSRF
+    "CWE-601": "A01:2021 – Broken Access Control",   # Open redirect
+    "CWE-94":  "A03:2021 – Injection",   # Code injection / SSTI
+    "CWE-134": "A03:2021 – Injection",   # Format string
+}
+
 
 def _run_enrich_stage(result: ChainResult, step: Callable, llm=None, lang: str = "es"):
     t = _t()
@@ -1473,7 +1508,11 @@ def _run_enrich_stage(result: ChainResult, step: Callable, llm=None, lang: str =
         _cwe = _VULN_CLASS_TO_CWE.get(_base_vc, "")
     if _cwe:
         result.evidence["cwe_id"] = _cwe
-        step(f"  vuln_class={_vuln_class_key!r} → {_cwe}")
+        _owasp = _CWE_TO_OWASP_2021.get(_cwe, "")
+        if _owasp:
+            result.evidence["owasp_category"] = _owasp
+        step(f"  vuln_class={_vuln_class_key!r} → {_cwe}"
+             + (f" / {_owasp}" if _owasp else ""))
 
     if not result.findings:
         step("  sin hallazgos para enriquecer")
@@ -1744,6 +1783,9 @@ def _render_chain_log(result: ChainResult, lang: str = "es",
     if _cwe_id:
         out.append(f"- **CWE**: [{_cwe_id}](https://cwe.mitre.org/data/definitions/"
                    f"{_cwe_id.replace('CWE-','')}.html)")
+    _owasp_cat = result.evidence.get("owasp_category", "")
+    if _owasp_cat:
+        out.append(f"- **OWASP**: {_owasp_cat}")
     # OSV packages: show affected package name + fixed version when available
     _osv_pkgs = result.evidence.get("osv_packages", [])
     if _osv_pkgs:
