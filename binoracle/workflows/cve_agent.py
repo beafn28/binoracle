@@ -1401,6 +1401,89 @@ def _static_vuln_precheck(local_path: str, plugin_dir: str, vuln_class: str,
             except Exception:
                 continue
 
+    # --- Check 9: rate-limit guard — if the endpoint already has throttling, the
+    # bypass PoC may need to work around it; flag as informational only.
+    if vuln_class in ("missing-auth", "authentication-bypass", "broken-access-control",
+                      "idor") and local_path:
+        import os as _os_rl
+        _RL_RE = re.compile(
+            r'rate.?limit|throttl|RateThrottle|IsAuthenticated.*throttle'
+            r'|@throttle|RateLimitMiddleware|rate_limit_exempt\s*=\s*False',
+            re.IGNORECASE,
+        )
+        _rl_hits: list[str] = []
+        _exts_rl = {".py", ".js", ".ts", ".php", ".rb", ".go"}
+        try:
+            for _r_rl, _d_rl, _f_rl in _os_rl.walk(local_path):
+                _d_rl[:] = [d for d in _d_rl if d not in
+                            (".git", "node_modules", "dist", "__pycache__")]
+                for _fn_rl in _f_rl:
+                    if not any(_fn_rl.endswith(e) for e in _exts_rl):
+                        continue
+                    _fp_rl = _os_rl.path.join(_r_rl, _fn_rl)
+                    try:
+                        _txt_rl = open(_fp_rl, encoding="utf-8", errors="ignore").read(100_000)
+                        if _RL_RE.search(_txt_rl):
+                            _rl_hits.append(_os_rl.path.relpath(_fp_rl, local_path))
+                            if len(_rl_hits) >= 3:
+                                break
+                    except Exception:
+                        continue
+                if len(_rl_hits) >= 3:
+                    break
+        except Exception:
+            pass
+        if _rl_hits:
+            # Informational only: rate limiting may block brute-force but not
+            # a single crafted bypass request. Don't block lab.
+            return {
+                "ok": True,
+                "reason": (f"pre-check: rate-limiting detectado en {', '.join(_rl_hits[:2])} "
+                           f"— el lab funcionará pero throttling puede bloquear payloads repetidos"),
+                "confidence": 0.0,
+            }
+
+    # --- Check 10: IP allowlist / SSRF protection — if the endpoint chains through
+    # a URL validator that blocks 127.0.0.1/localhost, SSRF is likely patched.
+    if vuln_class in ("ssrf", "server-side-request-forgery") and local_path:
+        import os as _os_ip
+        _SSRF_GUARD_RE = re.compile(
+            r'127\.0\.0\.1|localhost|::1|0\.0\.0\.0'
+            r'|SSRF|ssrf_protect|is_internal_ip|private.?range'
+            r'|blocked.*address|url.*whitelist|allowlist',
+            re.IGNORECASE,
+        )
+        _ssrf_guard_hits: list[str] = []
+        _exts_ssrf = {".py", ".js", ".ts", ".php", ".rb", ".go", ".java"}
+        try:
+            for _r_ssrf, _d_ssrf, _f_ssrf in _os_ip.walk(local_path):
+                _d_ssrf[:] = [d for d in _d_ssrf if d not in
+                              (".git", "node_modules", "dist", "__pycache__")]
+                for _fn_ssrf in _f_ssrf:
+                    if not any(_fn_ssrf.endswith(e) for e in _exts_ssrf):
+                        continue
+                    _fp_ssrf = _os_ip.path.join(_r_ssrf, _fn_ssrf)
+                    try:
+                        _txt_ssrf = open(_fp_ssrf, encoding="utf-8", errors="ignore").read(100_000)
+                        if _SSRF_GUARD_RE.search(_txt_ssrf):
+                            _ssrf_guard_hits.append(_os_ip.path.relpath(_fp_ssrf, local_path))
+                            if len(_ssrf_guard_hits) >= 3:
+                                break
+                    except Exception:
+                        continue
+                if len(_ssrf_guard_hits) >= 3:
+                    break
+        except Exception:
+            pass
+        if _ssrf_guard_hits:
+            return {
+                "ok": False,
+                "reason": (f"pre-check SSRF: se detectó protección de rango IP/localhost "
+                           f"en {', '.join(_ssrf_guard_hits[:2])} — probable que "
+                           f"127.0.0.1 esté bloqueado"),
+                "confidence": 0.70,
+            }
+
     return {"ok": True, "reason": "pre-check OK", "confidence": 1.0}
 
 
@@ -11151,6 +11234,34 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     step((f"  pythonverify: framework detectado — {_py_fw}" if es else
                           f"  pythonverify: detected framework — {_py_fw}"))
                     wr = verify_python_web_cve(
+                        str(fr.local_path),
+                        endpoint=notes.get("endpoint") or "/",
+                        vuln_class=inv.vuln_class,
+                        http_method=notes.get("http_method") or "GET",
+                        parameters=notes.get("parameters") or [],
+                        payload=notes.get("payload") or "",
+                        confirm_string=notes.get("confirm_string") or "",
+                        auth_required=bool(notes.get("auth_required") or notes.get("authenticated")),
+                        pkg_version=inv.llm_notes.get("vulnerable_version") or "",
+                        on_step=step,
+                        budget_s=budget_s,
+                    )
+                    _apply_wpverify_result(inv, wr, es, llm)
+            # Strapi headless CMS: especializado con JWT Admin API auth y lab SQLite.
+            # Se activa cuando el CMS detectado es Strapi (via package.json) y hay endpoint.
+            elif (not plugin_dir and fr.local_path and
+                  (any(w in (inv.cms or "").lower() for w in ("strapi",))
+                   or any(w in (notes.get("cms") or "").lower() for w in ("strapi",)))
+                  and inv.vuln_class in ("xss", "sqli", "sql-injection", "ssrf", "idor",
+                                         "missing-authorization", "auth-bypass",
+                                         "broken-access-control", "ssti", "rce",
+                                         "command-injection", "os-command-injection")
+                  and notes.get("endpoint")):
+                from .strapiverify import detect_strapi, verify_strapi_web_cve
+                if detect_strapi(str(fr.local_path)):
+                    step(("  strapiverify: Strapi detectado — iniciando lab" if es else
+                          "  strapiverify: Strapi detected — starting lab"))
+                    wr = verify_strapi_web_cve(
                         str(fr.local_path),
                         endpoint=notes.get("endpoint") or "/",
                         vuln_class=inv.vuln_class,
