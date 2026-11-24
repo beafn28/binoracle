@@ -2068,6 +2068,20 @@ def cmd_nvd_watch(args, config):
             priority_mode=priority, on_step=_step)
         verified = sum(1 for r in results if r.verified)
         _step(f"nvd-watch: {len(results)} CVEs procesados, {verified} verificados")
+        # Summary table of this cycle's results
+        if results:
+            _step("\n┌──────────────────────────────────────────────────────────────")
+            _step(f"│ RESUMEN DEL CICLO ({len(results)} CVEs):")
+            _step("├──────────────────────────────────────────────────────────────")
+            _step("│  CVE-ID               Resultado      Conf  Clase")
+            _step("├──────────────────────────────────────────────────────────────")
+            for _r in results:
+                _st = "✓ VERIF." if _r.verified else "✗ no conf"
+                _conf = f"{int(_r.engine_confidence * 100)}%"
+                _cls = (_r.cve_class or "?")[:18]
+                _cid = _r.cve_id[:22]
+                _step(f"│  {_cid:<22} {_st:<14} {_conf:<5} {_cls}")
+            _step("└──────────────────────────────────────────────────────────────")
 
         if do_retry:
             _step("nvd-watch: reintentando cola de fallos transitorios...")
