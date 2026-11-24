@@ -118,6 +118,18 @@ def _build_stack_signals() -> tuple:
          ["WORKDIR /app", "COPY . .",
           "RUN (command -v composer >/dev/null && composer install --no-interaction || true)",
           'CMD ["php", "-S", "0.0.0.0:8000", "-t", "."]']),
+        # Go: multi-stage build — final image keeps netcat (nc) for health checks.
+        # Tries common port env vars (PORT, SERVER_PORT) then falls back to 8080.
+        # daptin and similar REST APIs bind to whatever $PORT specifies (default 6336);
+        # we override to 3000 (most common Go PoC port) via PORT env var.
+        ("go.mod", "golang:1.22-alpine", 3000,
+         ["WORKDIR /app", "COPY . .",
+          "RUN apk add --no-cache gcc musl-dev git netcat-openbsd",
+          "RUN go build -o /app/server . 2>/dev/null || "
+          "go build -o /app/server ./cmd/... 2>/dev/null || "
+          "go build -o /app/server ./cmd/main.go 2>/dev/null || true",
+          'ENV PORT=3000 SERVER_PORT=3000 GIN_MODE=release',
+          'CMD ["sh", "-c", "/app/server || go run . || go run ./cmd/..."]']),
     )
 
 
