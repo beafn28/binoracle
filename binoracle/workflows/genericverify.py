@@ -4608,9 +4608,24 @@ def _escalate_missing_auth_impact(
     step = on_step or (lambda _m: None)
     t0 = _time.time()
 
-    _CRED_KEYWORDS = {"password", "passwd", "secret", "token", "api_key", "apikey",
-                      "access_token", "refresh_token", "private_key"}
-    _USER_KEYWORDS = {"email", "username", "user_id", "userId", "login", "account"}
+    _CRED_KEYWORDS = {
+        "password", "passwd", "secret", "token", "api_key", "apikey",
+        "access_token", "refresh_token", "private_key",
+        # REST API / cloud token patterns
+        "bearer", "authorization", "auth_token", "client_secret",
+        "aws_secret", "accesskeyid", "secretaccesskey",
+        # CMS-specific
+        "application_password", "app_password", "admin_password",
+        "hash", "encrypted_password", "user_pass",
+        # Key/signing material
+        "jwt", "signing_key", "encryption_key", "hmac",
+    }
+    _USER_KEYWORDS = {
+        "email", "username", "user_id", "userId", "login", "account",
+        # Extended user info patterns
+        "first_name", "last_name", "display_name", "user_login",
+        "user_email", "phone", "address", "profile",
+    }
 
     # Build candidate probe list from the verified endpoint + common admin paths
     ep_base = verified_endpoint.rstrip("/")
