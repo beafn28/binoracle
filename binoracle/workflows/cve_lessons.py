@@ -218,19 +218,29 @@ def suggest_endpoints(stack: str, vuln_class: str = "") -> List[str]:
     return [ep for ep, _ in ep_scores.most_common(3)]
 
 
-def suggest_bypass_headers(stack: str) -> List[Tuple[str, str]]:
-    """Return bypass (header, value) pairs that worked before for this stack."""
+def suggest_bypass_headers(stack: str, vuln_class: str = "") -> List[Tuple[str, str]]:
+    """Return bypass (header, value) pairs that worked before for this stack.
+
+    When vuln_class is provided, headers from verified runs of the same class
+    are weighted 3x higher, since a header that bypassed auth for one IDOR
+    is much more likely to work for another IDOR than for a SQLi.
+    """
     data = _load()
     entry = data.get(stack) or {}
     runs = entry.get("runs") or []
     bp_counter: Counter = Counter()
+    _vc_norm = (vuln_class or "").lower().replace("_", "-")
     for r in runs:
         if not r.get("verified"):
             continue
         bh = (r.get("bypass_header") or "").strip()
         bv = (r.get("bypass_value") or "").strip()
-        if bh:
-            bp_counter[(bh, bv)] += 1
+        if not bh:
+            continue
+        # Weight: class match counts 3x, unmatched counts 1x
+        _run_vc = (r.get("vuln_class") or "").lower().replace("_", "-")
+        _weight = 3 if (_vc_norm and _run_vc == _vc_norm) else 1
+        bp_counter[(bh, bv)] += _weight
     return [(h, v) for (h, v), _ in bp_counter.most_common(5)]
 
 
@@ -274,7 +284,7 @@ def format_lessons_for_llm(stack: str, vuln_class: str = "",
         lines.append(f"- Metodos de auth que funcionaron: {', '.join(working_auth[:3])}")
 
     # Bypass headers
-    bp_headers = suggest_bypass_headers(stack)
+    bp_headers = suggest_bypass_headers(stack, vuln_class=vuln_class)
     if bp_headers:
         bph_strs = [f"{h}: {v[:40]}" for h, v in bp_headers[:2]]
         lines.append(f"- Headers de bypass que funcionaron: {'; '.join(bph_strs)}")
