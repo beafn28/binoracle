@@ -23,6 +23,7 @@ class YwhWriteup:
     exploitation: str = ""
     impact: str = ""
     remediation: str = ""
+    references: str = ""
     cvss_vector: str = ""
     cve_id: str = ""
     asset: str = ""
@@ -43,6 +44,8 @@ class YwhWriteup:
             parts.append(f"## Impact\n\n{self.impact}")
         if self.remediation:
             parts.append(f"## Remediation\n\n{self.remediation}")
+        if self.references:
+            parts.append(f"## References\n\n{self.references}")
         return "\n\n---\n\n".join(parts)
 
     def platform_fields(self) -> dict:
@@ -264,6 +267,28 @@ def build_writeup_from_chain(result: object, target_url: str = "") -> YwhWriteup
           "sanitize" in _pa["patch_pattern"].lower()):
         wu.remediation = (f"Apply input validation/sanitization as shown in the patch: "
                           f"{_pa['patch_pattern']}")
+
+    # References: only include links with direct relevance — GHSA advisories,
+    # OSV packages, vendor patch commit — never generic OWASP/CWE links.
+    # Per YwH guidance: References only when the triager genuinely benefits.
+    _ref_lines: list[str] = []
+    # GHSA advisory (from patch analysis or evidence)
+    _ghsa_ids: list[str] = (evidence.get("ghsa_ids") or
+                             (_pa.get("ghsa_ids") or []))
+    for _gid in _ghsa_ids[:3]:
+        _ref_lines.append(
+            f"- GitHub Security Advisory [{_gid}]"
+            f"(https://github.com/advisories/{_gid})")
+    # OSV packages: exact affected package + fixed version
+    _osv_pkgs: list[str] = evidence.get("osv_packages") or []
+    for _op in _osv_pkgs[:2]:
+        _ref_lines.append(f"- OSV affected package: `{_op}`")
+    # Patch commit (from patch_analysis.patch_url)
+    _patch_url = _pa.get("patch_url") or _pa.get("diff_url") or ""
+    if _patch_url and "github.com" in _patch_url:
+        _ref_lines.append(f"- Patch commit: {_patch_url.replace('.diff', '')}")
+    if _ref_lines:
+        wu.references = "\n".join(_ref_lines)
 
     # CVSS 3.1 vector auto-generation from proven evidence.
     # Only generated when verified — Base metrics only (Temporal/Environmental left to program).
