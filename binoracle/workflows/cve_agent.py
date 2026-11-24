@@ -9799,7 +9799,8 @@ def _lab_feedback_for_class(llm, fail_reason: str, lab_config: dict,
 
 
 def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
-                           budget_s: float = 300.0) -> None:
+                           budget_s: float = 300.0,
+                           skip_source_download: bool = False) -> None:
     """Rama WEB/APP de investigate_cve: descarga el codigo real si se puede, fundamenta la hipotesis
     del LLM contra el (grep de las funciones citadas) y desarrolla el PoC HTTP/HTML. Muta `inv` in
     place.
@@ -10013,6 +10014,12 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             guessed_source = True
             step((f"source_url '{_old_src}' era placeholder/ausente — repo obtenido del advisory OSV: {_advisory_repo}") if es else
                  (f"source_url '{_old_src}' was placeholder/missing — repo resolved from OSV advisory: {_advisory_repo}"))
+
+    if source and skip_source_download:
+        step(("skip_source_download=True — descarga de fuente omitida (error previo de acceso)")
+             if es else
+             "skip_source_download=True — source download skipped (previous access error)")
+        source = ""  # proceed with Docker-only lab (no source code)
 
     if source:
         step(f"intentando obtener el codigo real ({source})..." if es else
@@ -15139,7 +15146,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
 def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
                     on_step: Optional[Callable[[str], None]] = None, lang: str = "es",
                     budget_s: float = 300.0, hints: Optional[dict] = None,
-                    use_cache: bool = True) -> Investigation:
+                    use_cache: bool = True,
+                    skip_source_download: bool = False) -> Investigation:
     """Investiga una CVE con el LLM y prueba lo que se pueda. No lanza.
 
     `hints` deja al analista aportar lo que YA SABE de la CVE (igual que un exploit developer real:
@@ -15455,7 +15463,8 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
         #   2) desarrolla el PoC HTTP (o la pagina para CSRF) a partir de la hipotesis del LLM.
         # Nunca se marca 'verificado' aqui: eso exige lanzar el PoC contra un objetivo autorizado real.
         _run_web_investigation(inv, lang=lang, step=step, llm=(llm if llm_on else None),
-                               budget_s=budget_s)
+                               budget_s=budget_s,
+                               skip_source_download=skip_source_download)
         inv.steps = []
         return inv
 
