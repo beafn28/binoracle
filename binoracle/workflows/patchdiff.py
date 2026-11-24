@@ -530,6 +530,25 @@ _FIX_RULES: List[tuple] = [
         0.85,
     ),
     (
+        "nosqli",
+        "NoSQL injection via unsanitized operator injection in MongoDB/Mongoose query",
+        "added query sanitization / allowlist-based query construction",
+        [re.compile(r"(?:req\.body\[['\"]?\$(?:where|ne|gt|lt|gte|lte|in|nin|regex)['\"]?\]|"
+                    r"find\s*\(\s*\{[^}]*\$(?:where|ne|gt|lt|regex)|"
+                    r"findOne\s*\(\s*\{[^}]*req\.|"
+                    r"collection\.find\s*\(\s*\{[^}]*request\.|"
+                    r"db\[collection\]\s*\.findOne\s*\(\s*\{[^}]*req\.|"
+                    r"mongoose\..*\.find\s*\(\s*req\.body)", re.I)],
+        [re.compile(r"(?:mongo-sanitize\s*\(|mongoSanitize|"
+                    r"\$eq\s*:\s*(?:req\.|request\.)|"
+                    r"query_sanitize|sanitize_mongo_query|"
+                    r"express-mongo-sanitize|"
+                    r"deep_equal.*typed|"
+                    r"typeof\s+\w+\s*!==?\s*['\"]object['\"]|"
+                    r"if\s*\(\s*typeof\s+\w+\s*===?\s*['\"]string['\"])", re.I)],
+        0.82,
+    ),
+    (
         "file_upload_bypass",
         "unrestricted file upload — MIME type or extension not validated",
         "added extension allowlist or MIME type validation",
@@ -618,6 +637,7 @@ _PAYLOADS_FOR_CLASS: Dict[str, str] = {
     "ssrf":               "http://169.254.169.254/latest/meta-data/",
     "jwt_bypass":             "",   # payload is a JWT with alg:none
     "xml_injection":          "<!DOCTYPE foo [<!ENTITY xxe SYSTEM 'file:///etc/passwd'>]>",
+    "nosqli":                 '{"$gt": ""}',  # MongoDB operator injection
     "file_upload_bypass":     "",   # payload is a webshell disguised as image
     "insecure_deserialization": "", # payload depends on gadget chain
     "unknown":                "",
