@@ -1252,6 +1252,45 @@ def fetch_gem_package(name: str, version: str = "",
     return res
 
 
+def _github_repo_fallback(name: str, version: str = "",
+                          on_step: Optional[Callable[[str], None]] = None,
+                          timeout: float = 90.0) -> Optional["SourceFetchResult"]:
+    """Search GitHub API for a repo matching `name` and clone it.
+
+    Returns a SourceFetchResult on success, None if not found or on error.
+    Only called when WP/Drupal/PyPI/npm paths all failed.
+    """
+    step = on_step or (lambda _m: None)
+    # Normalize: remove version suffixes like "through-v0-12-34" or "-1-2-3"
+    import re as _re
+    clean = _re.sub(r"[-_]?(through|before|prior|v)?[-_v]?\d[\d.\-]*$", "", name, flags=_re.I)
+    clean = clean.strip("-_ ").lower()
+    if not clean or len(clean) < 3:
+        return None
+    try:
+        import urllib.request as _ur
+        import json as _json
+        api_url = f"https://api.github.com/search/repositories?q={clean}+in:name&sort=stars&per_page=5"
+        req = _ur.Request(api_url, headers={"Accept": "application/vnd.github+json",
+                                             "User-Agent": "binoracle-source-fetcher/1.0"})
+        with _ur.urlopen(req, timeout=15) as resp:
+            data = _json.loads(resp.read())
+        items = data.get("items") or []
+        if not items:
+            step(f"GitHub search '{clean}': sin resultados")
+            return None
+        # Pick best match: exact name match first, else highest stars
+        exact = [r for r in items if r.get("name", "").lower() == clean]
+        repo = exact[0] if exact else items[0]
+        clone_url = repo.get("clone_url") or repo.get("html_url")
+        stars = repo.get("stargazers_count", 0)
+        step(f"GitHub fallback: '{clean}' → {repo['full_name']} ({stars}★) — clonando...")
+        return fetch_git_source(clone_url, ref=version, on_step=on_step, timeout=timeout)
+    except Exception as exc:
+        step(f"GitHub fallback error para '{clean}': {exc}")
+        return None
+
+
 def fetch_source(target: str, version: str = "", on_step: Optional[Callable[[str], None]] = None,
                  timeout: float = 90.0, cms_hint: str = "",
                  exclusive_upper_bound: bool = False) -> SourceFetchResult:
@@ -1397,10 +1436,15 @@ def fetch_source(target: str, version: str = "", on_step: Optional[Callable[[str
                     return fetch_wordpress_plugin(corrected, version=version, on_step=on_step,
                                                   timeout=timeout,
                                                   exclusive_upper_bound=exclusive_upper_bound)
+        # GitHub fallback: si el target parece el nombre de un proyecto (no un slug CMS),
+        # buscar el repo en GitHub API y clonar si se encuentra.
+        _gh = _github_repo_fallback(target, version=version, on_step=on_step, timeout=timeout)
+        if _gh is not None:
+            return _gh
         return SourceFetchResult(source=target,
                                  note=f"'{target}' no parece una URL de git, un .zip (local o "
                                      f"URL), ni un slug/machine-name de WordPress.org o "
-                                     f"Drupal.org")
+                                     f"Drupal.org; GitHub search también falló")
     # orden de intento por forma: guion bajo -> Drupal primero; si no, WordPress primero (es el
     # caso mas comun en el uso real de binoracle hasta ahora). El perdedor se intenta igual como
     # segunda pasada si el primero no resuelve -- un nombre de una sola palabra sin separadores
@@ -1415,9 +1459,11 @@ def fetch_source(target: str, version: str = "", on_step: Optional[Callable[[str
                exclusive_upper_bound=exclusive_upper_bound)
     if r2.ok:
         return r2
-    # ninguno resolvio: se devuelve el primer intento (mismo 'note' que antes de este cambio para
-    # el caso WordPress-only), pero con ambos fallos anotados para no esconder el segundo intento.
+    # ninguno resolvio: último intento via GitHub antes de rendirse.
     r1.note = (r1.note or "") + f" | tambien se probo como modulo/plugin del otro CMS: {r2.note}"
+    _gh2 = _github_repo_fallback(target, version=version, on_step=on_step, timeout=timeout)
+    if _gh2 is not None:
+        return _gh2
     return r1
 
 
