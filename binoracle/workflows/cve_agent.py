@@ -10929,7 +10929,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         confirm_string=_auth_confirm,
                         on_step=step, budget_s=budget_s,
                         dockerfile_body=_auth_dockerfile,
-                        extra_files=_auth_extra_files)
+                        extra_files=_auth_extra_files,
+                        vuln_class=inv.vuln_class or notes.get("vuln_class", ""))
                 else:
                     wr = verify_generic_header_bypass(
                         fr.local_path, _auth_ep, notes.get("http_method") or "GET",
@@ -11262,6 +11263,62 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     step(("  strapiverify: Strapi detectado — iniciando lab" if es else
                           "  strapiverify: Strapi detected — starting lab"))
                     wr = verify_strapi_web_cve(
+                        str(fr.local_path),
+                        endpoint=notes.get("endpoint") or "/",
+                        vuln_class=inv.vuln_class,
+                        http_method=notes.get("http_method") or "GET",
+                        parameters=notes.get("parameters") or [],
+                        payload=notes.get("payload") or "",
+                        confirm_string=notes.get("confirm_string") or "",
+                        auth_required=bool(notes.get("auth_required") or notes.get("authenticated")),
+                        pkg_version=inv.llm_notes.get("vulnerable_version") or "",
+                        on_step=step,
+                        budget_s=budget_s,
+                    )
+                    _apply_wpverify_result(inv, wr, es, llm)
+            # Craft CMS: PHP-based CMS with CSRF+cookie session auth
+            elif (not plugin_dir and fr.local_path and
+                  (any(w in (inv.cms or "").lower() for w in ("craft", "craftcms"))
+                   or any(w in (notes.get("cms") or "").lower() for w in ("craft", "craftcms")))
+                  and inv.vuln_class in ("xss", "sqli", "sql-injection", "ssrf", "idor",
+                                         "missing-authorization", "auth-bypass",
+                                         "broken-access-control", "ssti", "rce",
+                                         "command-injection", "os-command-injection",
+                                         "path-traversal")
+                  and notes.get("endpoint")):
+                from .craftverify import detect_craft, verify_craft_web_cve
+                if detect_craft(str(fr.local_path)):
+                    step(("  craftverify: Craft CMS detectado — iniciando lab" if es else
+                          "  craftverify: Craft CMS detected — starting lab"))
+                    wr = verify_craft_web_cve(
+                        str(fr.local_path),
+                        endpoint=notes.get("endpoint") or "/",
+                        vuln_class=inv.vuln_class,
+                        http_method=notes.get("http_method") or "GET",
+                        parameters=notes.get("parameters") or [],
+                        payload=notes.get("payload") or "",
+                        confirm_string=notes.get("confirm_string") or "",
+                        auth_required=bool(notes.get("auth_required") or notes.get("authenticated")),
+                        pkg_version=inv.llm_notes.get("vulnerable_version") or "",
+                        on_step=step,
+                        budget_s=budget_s,
+                    )
+                    _apply_wpverify_result(inv, wr, es, llm)
+            # Payload CMS: Node.js headless CMS with JWT admin auth
+            elif (not plugin_dir and fr.local_path and
+                  (any(w in (inv.cms or "").lower() for w in ("payload", "payloadcms"))
+                   or any(w in (notes.get("cms") or "").lower() for w in ("payload", "payloadcms")))
+                  and inv.vuln_class in ("xss", "sqli", "sql-injection", "ssrf", "idor",
+                                         "missing-authorization", "auth-bypass",
+                                         "broken-access-control", "ssti", "rce",
+                                         "command-injection", "os-command-injection",
+                                         "path-traversal")
+                  and notes.get("endpoint")):
+                from .payloadverify import detect_payload, verify_payload_web_cve
+                if detect_payload(str(fr.local_path)):
+                    step(("  payloadverify: Payload CMS detectado — iniciando lab" if es else
+                          "  payloadverify: Payload CMS detected — starting lab"))
+                    wr = verify_payload_web_cve(
                         str(fr.local_path),
                         endpoint=notes.get("endpoint") or "/",
                         vuln_class=inv.vuln_class,

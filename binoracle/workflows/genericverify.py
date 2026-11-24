@@ -4115,6 +4115,7 @@ def verify_generic_header_bypass_candidates(
     on_step: Optional[Callable[[str], None]] = None,
     budget_s: float = 900.0,
     dockerfile_body: str = "", extra_files: Optional[dict] = None,
+    vuln_class: str = "",
 ) -> WpVerifyResult:
     """Iterate through bypass header candidates using ONE shared lab instance.
 
@@ -4169,11 +4170,40 @@ def verify_generic_header_bypass_candidates(
         # Baseline: request without bypass (expect 3xx/4xx)
         step(f"probando SIN bypass: {m} {url}")
         status_normal = -1
+        body_normal = ""
         try:
             r_normal = _http_request(m, url, timeout=10, allow_redirects=False)
             status_normal = r_normal.status_code
+            body_normal = getattr(r_normal, "text", "") or ""
         except Exception as e:
             step(f"  error en peticion normal: {e}")
+
+        # For missing-authorization: if endpoint already responds 2xx without any
+        # auth or special header, that IS the vulnerability — no bypass header needed.
+        _is_missing_auth = vuln_class.lower().replace(" ", "-") in (
+            "missing-authorization", "broken-access-control",
+            "idor", "auth-bypass",
+        )
+        if _is_missing_auth and status_normal in range(200, 300):
+            string_hit = (not confirm_string) or (confirm_string in body_normal)
+            if string_hit:
+                ok_res = WpVerifyResult()
+                ok_res.verified = True
+                ok_res.ok = True
+                ok_res.detail = (
+                    f"ACCESO NO AUTENTICADO CONFIRMADO: {m} {endpoint} "
+                    f"responde HTTP {status_normal} sin credenciales ni bypass header"
+                    + (f" — confirm_string '{confirm_string}' presente" if confirm_string else "")
+                )
+                ok_res.evidence = {
+                    "base_url": base_url, "endpoint": endpoint, "metodo": m,
+                    "status_sin_auth": status_normal,
+                    "body_snippet": body_normal[:500],
+                    "vuln_class": vuln_class,
+                }
+                step(f"  VERIFICADO (acceso no autenticado): HTTP {status_normal}")
+                return ok_res
+            step(f"  endpoint accesible ({status_normal}) pero confirm_string '{confirm_string}' no encontrado")
 
         # Try each candidate in the same running lab
         last_res = res
