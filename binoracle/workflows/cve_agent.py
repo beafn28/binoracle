@@ -16671,7 +16671,7 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
             inv._correlation = {
                 "component": _corr.component,
                 "related": [{"cve_id": c.cve_id, "cvss": c.cvss_score,
-                              "relation": c.relation, "desc": c.description[:300]}
+                              "relation": c.relation, "desc": c.description}
                             for c in _corr.related[:15]],
                 "priority_order": _corr.priority_order[:15],
             }
