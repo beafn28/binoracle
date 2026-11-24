@@ -530,6 +530,129 @@ def _run_binary_stage(cve_id: str, binary_path: str,
     return "\n\n".join(parts)
 
 
+def _auto_binary_stage(cve_id: str, cve_info, llm_notes: dict,
+                        result: "ChainResult", step: Callable, llm=None) -> str:
+    """Auto-investigate a binary CVE when no --binary path was provided.
+
+    Uses binaryverify.verify_binary_crash_via_dockerfile to build a Docker
+    image with the vulnerable package version and run the LLM-generated PoC
+    inside it. Covers OS packages (sudo, curl, openssl, glibc, bash, etc.)
+    that can be installed via apt/apk at a specific version.
+
+    Returns a markdown report section.
+    """
+    _banner(step, f"[5/8] BINARY AUTO-LAB — {cve_id}")
+    parts: List[str] = []
+
+    if not llm:
+        step("  sin LLM: no se puede generar Dockerfile de lab automático")
+        result.add_step("binary_auto_lab", "skip", "no LLM")
+        return ""
+
+    pkg_name = (llm_notes.get("package_name") or llm_notes.get("component") or
+                llm_notes.get("affected_component") or "")
+    pkg_version = (llm_notes.get("vulnerable_version") or
+                   llm_notes.get("affected_version") or "")
+
+    if not pkg_name:
+        step("  sin nombre de paquete en llm_notes — infiriendo del CVE...")
+        try:
+            from ..llm.base import Message
+            resp = llm.chat([Message("system",
+                "Extract the vulnerable package name and version from this CVE. "
+                "Reply JSON: {\"package\": \"<apt/apk name>\", \"version\": \"<version>\", "
+                "\"os\": \"ubuntu|debian|alpine|centos|generic\", "
+                "\"poc_cmd\": \"<shell command to trigger the bug>\", "
+                "\"crash_pattern\": \"<string in stderr/stdout that confirms crash>\"}"),
+                Message("user", str(cve_info)[:2000])],
+                json_mode=True)
+            import json as _j
+            data = _j.loads(resp)
+            pkg_name = data.get("package") or ""
+            pkg_version = data.get("version") or pkg_version
+            poc_cmd = data.get("poc_cmd") or ""
+            crash_pattern = data.get("crash_pattern") or ""
+            os_hint = data.get("os") or "ubuntu"
+        except Exception as e:
+            step(f"  LLM error extrayendo paquete: {e}")
+            result.add_step("binary_auto_lab", "error", str(e)[:100])
+            return ""
+    else:
+        poc_cmd = llm_notes.get("poc_cmd") or llm_notes.get("command") or ""
+        crash_pattern = llm_notes.get("crash_pattern") or llm_notes.get("confirm_string") or ""
+        os_hint = llm_notes.get("os") or "ubuntu"
+
+    if not pkg_name:
+        step("  no se pudo determinar el paquete — saltando lab de binario")
+        result.add_step("binary_auto_lab", "skip", "unknown package")
+        return ""
+
+    step(f"  paquete: {pkg_name}=={pkg_version or '?'}, OS: {os_hint}")
+    step(f"  PoC cmd: {poc_cmd[:80] if poc_cmd else '(LLM generará)'}")
+
+    # Build Dockerfile content
+    base_map = {"ubuntu": "ubuntu:22.04", "debian": "debian:bullseye",
+                "alpine": "alpine:3.19", "centos": "centos:7", "generic": "ubuntu:22.04"}
+    base_img = base_map.get(os_hint, "ubuntu:22.04")
+    pkg_spec = f"{pkg_name}={pkg_version}" if pkg_version else pkg_name
+
+    if "alpine" in base_img:
+        install_cmd = f"RUN apk add --no-cache {pkg_spec} 2>/dev/null || apk add --no-cache {pkg_name}"
+    else:
+        install_cmd = (f"RUN apt-get update -qq && apt-get install -y --no-install-recommends "
+                       f"{pkg_spec} 2>/dev/null || apt-get install -y --no-install-recommends {pkg_name}")
+
+    dockerfile_body = f"FROM {base_img}\n{install_cmd}\n"
+
+    if not poc_cmd:
+        step("  generando PoC shell con LLM...")
+        try:
+            from ..llm.base import Message
+            resp2 = llm.chat([Message("system",
+                "Write a minimal shell command to trigger this vulnerability in a Docker container. "
+                "Reply with ONLY the shell command, no explanation."),
+                Message("user", f"CVE: {cve_id}\n{str(cve_info)[:1500]}")], json_mode=False)
+            poc_cmd = resp2.strip().split("\n")[0][:200]
+        except Exception:
+            poc_cmd = f"{pkg_name} --version"
+
+    step(f"  levantando lab efímero Docker para {pkg_name}...")
+    try:
+        from .binaryverify import verify_binary_crash_via_dockerfile
+        wr = verify_binary_crash_via_dockerfile(
+            dockerfile_body=dockerfile_body,
+            poc_command=poc_cmd,
+            crash_patterns=[crash_pattern] if crash_pattern else [],
+            on_step=step,
+            timeout_s=30,
+        )
+        if wr.verified:
+            step(f"  BINARIO VERIFICADO: {pkg_name} crash confirmado")
+            result.verified = True
+            result.add_step("binary_auto_lab", "verified",
+                            f"{pkg_name} crash via Dockerfile lab")
+            parts.append(f"## Lab Binario Auto-generado\n\n"
+                         f"**Paquete**: `{pkg_name}=={pkg_version}`  \n"
+                         f"**PoC**: `{poc_cmd}`  \n"
+                         f"**Resultado**: VERIFICADO — crash confirmado en Docker\n\n"
+                         f"```\n{wr.detail}\n```")
+        else:
+            step(f"  lab no confirmó crash: {wr.detail[:100] if wr.detail else '?'}")
+            result.add_step("binary_auto_lab", "unconfirmed", wr.detail[:100] if wr.detail else "")
+            parts.append(f"## Lab Binario Auto-generado\n\n"
+                         f"**Paquete**: `{pkg_name}=={pkg_version}`  \n"
+                         f"**PoC**: `{poc_cmd}`  \n"
+                         f"**Resultado**: no confirmado — {wr.detail[:200] if wr.detail else '?'}")
+    except Exception as exc:
+        step(f"  binary lab error: {exc}")
+        result.add_step("binary_auto_lab", "error", str(exc)[:100])
+
+    # Also run static binary analysis if we can find the binary inside Docker
+    parts.append("\n*Auto-lab: paquete instalado en Docker efímero, "
+                 "PoC ejecutado en entorno aislado*")
+    return "\n\n".join(parts)
+
+
 # ── Docker Compose multi-container lab ───────────────────────────────────────
 
 _COMPOSE_NGINX_CONF = """\
@@ -1313,15 +1436,19 @@ def run_full_chain(
                 cve_id, cve_info, llm_notes, result, step,
                 budget_s=budget_s, config=config, llm=llm, lang=lang)
         elif result.cve_class in ("native", "binary"):
-            # native binary CVE with no binary provided — doc the limitation
-            step("  CVE de binario nativo sin binario proporcionado")
-            step("  Usa --binary /path/to/binary para análisis completo")
-            result.add_step("investigation", "skip",
-                            "native/binary CVE — provide --binary")
-            # Still run the web stage as fallback (might have Docker PoC)
-            _run_web_stage(
-                cve_id, cve_info, llm_notes, result, step,
-                budget_s=budget_s, config=config, llm=llm, lang=lang)
+            # Auto-lab: attempt to install the vulnerable package in Docker and
+            # run the LLM-generated PoC — no manual --binary needed.
+            step("  CVE de binario/native: intentando auto-lab Docker...")
+            investigation_md = _auto_binary_stage(
+                cve_id, cve_info, llm_notes, result, step, llm=llm)
+            if investigation_md:
+                result.report_md = investigation_md
+            else:
+                # Fallback: web stage in case there's a Docker PoC in the repo
+                step("  auto-lab no disponible — intentando web stage como fallback")
+                _run_web_stage(
+                    cve_id, cve_info, llm_notes, result, step,
+                    budget_s=budget_s, config=config, llm=llm, lang=lang)
         else:
             result.add_step("investigation", "skip", f"class={result.cve_class}")
 
