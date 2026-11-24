@@ -243,3 +243,101 @@ def all_stacks_summary() -> List[dict]:
         if lessons:
             rows.append(lessons)
     return rows
+
+
+def format_lessons_for_llm(stack: str, vuln_class: str = "",
+                            max_tokens: int = 400) -> str:
+    """Return a compact LLM-readable string of lessons for this stack.
+
+    Injected into the investigation system prompt to bias the LLM toward
+    endpoint patterns and auth methods that are known to work for this stack.
+    Returns "" when no lessons exist (safe to pass as empty context).
+    """
+    lessons = get_lessons(stack)
+    if not lessons or lessons.get("total_runs", 0) < 1:
+        return ""
+
+    lines: list[str] = [
+        f"[LECCIONES PREVIAS para stack={stack}]",
+        f"- Tasa de verificacion: {lessons['verified_rate']:.0%} "
+        f"({lessons['total_runs']} investigaciones previas)",
+    ]
+
+    # Suggest endpoints
+    top_ep = suggest_endpoints(stack, vuln_class)
+    if top_ep:
+        lines.append(f"- Endpoints que funcionaron antes: {', '.join(top_ep[:3])}")
+
+    # Auth methods
+    working_auth = lessons.get("working_auth_methods", [])
+    if working_auth:
+        lines.append(f"- Metodos de auth que funcionaron: {', '.join(working_auth[:3])}")
+
+    # Bypass headers
+    bp_headers = suggest_bypass_headers(stack)
+    if bp_headers:
+        bph_strs = [f"{h}: {v[:40]}" for h, v in bp_headers[:2]]
+        lines.append(f"- Headers de bypass que funcionaron: {'; '.join(bph_strs)}")
+
+    # Vuln classes
+    top_vc = lessons.get("top_vuln_classes", [])
+    if top_vc:
+        lines.append(f"- Clases de vulnerabilidad frecuentes: {', '.join(top_vc[:3])}")
+
+    # HTTP methods
+    top_hm = lessons.get("top_http_methods", [])
+    if top_hm:
+        lines.append(f"- Metodos HTTP mas usados: {', '.join(top_hm)}")
+
+    # Recent verified examples (last 3)
+    data = _load()
+    entry = data.get(stack) or {}
+    runs = entry.get("runs") or []
+    verified_runs = [r for r in runs if r.get("verified")][-3:]
+    if verified_runs:
+        lines.append("- Ejemplos verificados recientes:")
+        for r in verified_runs:
+            ep = r.get("endpoint", "?")
+            vc = r.get("vuln_class", "?")
+            am = r.get("auth_method", "")
+            cve = r.get("cve_id", "?")
+            am_str = f" auth={am}" if am else ""
+            lines.append(f"    {cve}: {r.get('http_method','GET')} {ep} [{vc}]{am_str}")
+
+    summary = "\n".join(lines)
+    # Truncate to stay within token budget (approx 4 chars/token)
+    if len(summary) > max_tokens * 4:
+        summary = summary[:max_tokens * 4].rsplit("\n", 1)[0]
+    return summary
+
+
+def record_verified_lab(
+    cve_id: str,
+    stack: str,
+    endpoint: str,
+    vuln_class: str,
+    http_method: str = "GET",
+    auth_method: str = "",
+    bypass_header: str = "",
+    bypass_value: str = "",
+    confirm_string: str = "",
+    pkg_version: str = "",
+) -> None:
+    """Convenience wrapper: record a successful lab verification into lessons.
+
+    Called from auto_chain.py's _notify_verified() path so that every
+    confirmed CVE is automatically saved for future chain runs.
+    """
+    record_cve_result(
+        stack=stack or detect_stack(cve_id),
+        cve_id=cve_id,
+        endpoint=endpoint,
+        verified=True,
+        bypass_header=bypass_header,
+        bypass_value=bypass_value,
+        vuln_class=vuln_class,
+        auth_method=auth_method,
+        http_method=http_method,
+        confirm_string=confirm_string,
+        pkg_version=pkg_version,
+    )

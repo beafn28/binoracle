@@ -1719,6 +1719,17 @@ def _llm_rehypothesis(
 
     payload_line = f"\n- Payload enviado: {tried_pl}" if tried_pl else ""
 
+    # Inject prior lessons for this stack into the prompt
+    _les_hint = ""
+    try:
+        from .cve_lessons import detect_stack, format_lessons_for_llm
+        _les_stack = detect_stack(description)
+        _les_txt = format_lessons_for_llm(_les_stack, _vuln_cl, max_tokens=200)
+        if _les_txt:
+            _les_hint = f"\n\n{_les_txt}"
+    except Exception:
+        pass
+
     sys_prompt = (
         "Eres un investigador de explotacion para objetivos AUTORIZADOS (pentest/CTF/research). "
         "Se te da el contexto de un intento fallido de verificacion dinamica de una CVE. "
@@ -1728,6 +1739,7 @@ def _llm_rehypothesis(
         "bypass_header, bypass_value, confirm_string, custom_headers. "
         "IMPORTANTE: el endpoint DEBE ser distinto de '" + tried_ep + "'. "
         "No repitas la estrategia que ya fallo."
+        + _les_hint
     )
 
     user_msg = (
@@ -2248,17 +2260,47 @@ def run_full_chain(
 
     # ── Lessons: record this CVE's outcome for future runs ────────────────────
     try:
-        from .cve_lessons import detect_stack, record_cve_result
+        from .cve_lessons import detect_stack, record_cve_result, record_verified_lab
         inv = result.inv
         _les_desc = (cve_info.get("description") or "") if cve_info else ""
-        _les_stack = detect_stack(_les_desc)
+        _les_path = str(getattr(getattr(inv, "source", None), "local_path", "") or "")
+        _les_stack = detect_stack(_les_desc + " " + _les_path)
         _les_notes = (getattr(inv, "llm_notes", {}) or {}) if inv else {}
         _les_ep = _les_notes.get("endpoint") or ""
         _les_bh = _les_notes.get("bypass_header") or ""
         _les_bv = _les_notes.get("bypass_value") or ""
         _les_vc = (getattr(inv, "vuln_class", "") or _les_notes.get("vuln_class", "")) if inv else ""
-        record_cve_result(_les_stack, cve_id, _les_ep, result.verified,
-                          _les_bh, _les_bv, _les_vc)
+        _les_hm = _les_notes.get("http_method") or "GET"
+        _les_cs = _les_notes.get("confirm_string") or ""
+        _les_pv = _les_notes.get("vulnerable_version") or _les_notes.get("pkg_version") or ""
+        # Detect auth method from evidence or llm_notes
+        _les_am = ""
+        _les_ev = result.evidence or {}
+        if "ghost" in _les_stack or "ghost" in _les_path.lower():
+            _les_am = "ghost-jwt"
+        elif "strapi" in _les_stack or "strapi" in _les_path.lower():
+            _les_am = "strapi-jwt"
+        elif _les_ev.get("auth_header", "").startswith("Bearer "):
+            _les_am = "bearer-jwt"
+        elif _les_ev.get("auth_header", "").startswith("Token "):
+            _les_am = "drf-token"
+        elif _les_ev.get("cookie"):
+            _les_am = "session-cookie"
+        elif _les_notes.get("auth_required") in (False, "false", "no", "none", "0"):
+            _les_am = "none"
+        if result.verified:
+            record_verified_lab(
+                cve_id=cve_id, stack=_les_stack, endpoint=_les_ep,
+                vuln_class=_les_vc, http_method=_les_hm,
+                auth_method=_les_am, bypass_header=_les_bh,
+                bypass_value=_les_bv, confirm_string=_les_cs,
+                pkg_version=_les_pv,
+            )
+        else:
+            record_cve_result(_les_stack, cve_id, _les_ep, False,
+                              _les_bh, _les_bv, _les_vc,
+                              auth_method=_les_am, http_method=_les_hm,
+                              confirm_string=_les_cs, pkg_version=_les_pv)
     except Exception:
         pass
 
