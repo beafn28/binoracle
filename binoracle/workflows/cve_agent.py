@@ -10313,8 +10313,13 @@ def _scaffold_llm_lab(llm, source_dir: str, notes: dict, cve_id: str,
 
 
 def _lab_debug_feedback(llm, fail_reason: str, lab_config: dict,
-                        step, es: bool) -> Optional[dict]:
-    """Llama a Qwen con el motivo del fallo para que genere una version corregida del lab."""
+                        step, es: bool, logs: Optional[list] = None) -> Optional[dict]:
+    """Llama a Qwen con el motivo del fallo para que genere una version corregida del lab.
+
+    `logs` (opcional): logs REALES del contenedor (docker logs), cuando estan disponibles --
+    mismo fix que _lab_feedback_for_class (rama generica): sin esto, para el fallo mas comun
+    ("ningun puerto publicado respondio HTTP a tiempo") el LLM no tiene forma de saber la causa
+    real y termina adivinando a ciegas entre un par de excusas genericas."""
     if llm is None or not lab_config:
         return None
     from ..llm.base import Message
@@ -10323,8 +10328,15 @@ def _lab_debug_feedback(llm, fail_reason: str, lab_config: dict,
     server_code = next(iter(srv_files.values()), "") if srv_files else ""
     srv_file    = next(iter(srv_files.keys()), "server.js") if srv_files else "server.js"
 
+    _logs_excerpt = ""
+    if logs:
+        _logs_excerpt = ("\n".join(str(_l) for _l in logs))[-2500:]
+
     user_prompt = (
         f"Error observado:\n{fail_reason[:800]}\n\n"
+        + (f"LOGS REALES del contenedor (docker logs -- esto es lo que de verdad paso, "
+           f"usa esto en vez de adivinar):\n```\n{_logs_excerpt}\n```\n\n"
+           if _logs_excerpt else "") +
         f"Servidor actual:\n```\n{server_code[:1500]}\n```\n\n"
         f"Dockerfile:\n```\n{(lab_config.get('dockerfile_body') or '')[:500]}\n```\n\n"
         f"Endpoint: {lab_config.get('endpoint')}\n"
@@ -14100,7 +14112,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     for _fb_i in range(4):
                         _fb = _lab_debug_feedback(
                             llm, getattr(wr, 'detail', '') or "",
-                            _lab_cfg, step, es)
+                            _lab_cfg, step, es, logs=getattr(wr, 'logs', None))
                         if not _fb:
                             break
                         _sqli_df      = _fb["dockerfile_body"]
