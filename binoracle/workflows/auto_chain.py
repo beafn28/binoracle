@@ -3449,11 +3449,17 @@ def run_full_chain(
                                     f"conf={_bh.confidence:.0%}")
                     step(f"  autofuzz: HIT param={_bh.param!r} signal={_bh.signal} "
                          f"conf={_bh.confidence:.0%} (total {_fuzz_res.payloads_sent} reqs)")
-                    # If high-confidence hit, mark as partially verified
+                    # NOTA (regla absoluta de grounding): un hit de autofuzz, por alta que sea
+                    # su confianza, es una senal heuristica sobre la respuesta HTTP (reflexion de
+                    # canary, keyword de error, cambio de status, anomalia de longitud) -- NO una
+                    # confirmacion de un oraculo real. NUNCA debe promover result.verified = True
+                    # por si solo; solo queda como lead de alta prioridad para un verificador real
+                    # (differential_test, lab dinamico, etc.) aguas abajo.
                     if _bh.confidence >= 0.90:
-                        result.verified = True
-                        result.evidence["autofuzz"]["verified_by_fuzz"] = True
-                        step("  autofuzz: conf ≥ 90% → marcado como verificado")
+                        result.evidence["autofuzz"]["verified_by_fuzz"] = True  # usado solo como
+                        # bonus de confianza narrativa aguas abajo (linea ~3631); NO es result.verified
+                        step("  autofuzz: conf ≥ 90% — lead de alta prioridad (NO es verificacion; "
+                             "requiere confirmacion por oraculo real)")
                 else:
                     result.add_step("autofuzz", "fail",
                                     f"{_fuzz_res.payloads_sent} reqs, sin hits")
