@@ -557,11 +557,31 @@ def analyze_patch_diff(patch_text: str) -> PatchDiffAnalysis:
     if not hunks:
         return PatchDiffAnalysis()
 
-    # Pick the hunk with the most combined changed lines (highest signal content)
-    best = max(hunks, key=lambda h: len(h["removed"]) + len(h["added"]))
+    # Score every hunk — pick the one with the highest classification confidence.
+    # Previously only the "largest by line count" hunk was checked, which missed
+    # small but high-signal hunks (a single removed auth guard beats a 20-line refactor).
+    _best_hunk = hunks[0]
+    _best_fix_class = "unknown"
+    _best_vuln_pattern = ""
+    _best_patch_pattern = ""
+    _best_conf = 0.0
 
-    fix_class, vuln_pattern, patch_pattern, conf = _classify_fix(
-        best["removed"], best["added"])
+    for _hunk in hunks:
+        _fc, _vp, _pp, _c = _classify_fix(_hunk["removed"], _hunk["added"])
+        # Tie-break: prefer longer hunk when confidence is equal (more context)
+        _effective_conf = _c + (len(_hunk["removed"]) + len(_hunk["added"])) * 0.001
+        if _effective_conf > _best_conf or _best_fix_class == "unknown":
+            _best_hunk = _hunk
+            _best_fix_class = _fc
+            _best_vuln_pattern = _vp
+            _best_patch_pattern = _pp
+            _best_conf = _c
+
+    fix_class = _best_fix_class
+    vuln_pattern = _best_vuln_pattern
+    patch_pattern = _best_patch_pattern
+    conf = _best_conf
+    best = _best_hunk
 
     suggested_param = _extract_param_name(best["removed"])
     suggested_value = _PAYLOADS_FOR_CLASS.get(fix_class, "")
