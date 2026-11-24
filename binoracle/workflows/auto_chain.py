@@ -2352,6 +2352,40 @@ def run_full_chain(
                     f"func={_early_patch.get('vuln_function','?')} "
                     f"param={_early_patch.get('suggested_param','?')}"
                 )
+            # OSV.dev lookup: get affected package/version ranges (best-effort, 6s timeout)
+            # Provides package name and ecosystem (npm/PyPI/Go/Maven/etc.) for LLM context
+            try:
+                import json as _jj
+                _osv_url = f"https://api.osv.dev/v1/vulns/{cve_id}"
+                _osv_raw = _download(_osv_url, timeout=6)
+                if _osv_raw:
+                    _osv = _jj.loads(_osv_raw)
+                    _osv_affects: list[str] = []
+                    for _aff in (_osv.get("affected") or [])[:3]:
+                        _pkg = _aff.get("package", {})
+                        _eco = _pkg.get("ecosystem", "")
+                        _pname = _pkg.get("name", "")
+                        _ranges = _aff.get("ranges") or []
+                        _fixed = ""
+                        for _rng in _ranges:
+                            for _ev in _rng.get("events", []):
+                                if "fixed" in _ev:
+                                    _fixed = _ev["fixed"]
+                                    break
+                        if _pname:
+                            _osv_affects.append(
+                                f"{_eco}:{_pname}"
+                                + (f" fixed={_fixed}" if _fixed else "")
+                            )
+                    if _osv_affects:
+                        _llm_ctx_lines.append(
+                            "[OSV] paquetes afectados: " + "; ".join(_osv_affects)
+                        )
+                    # Store in result evidence for later use (report, lessons)
+                    if _osv_affects:
+                        result.evidence.setdefault("osv_packages", _osv_affects)
+            except Exception:
+                pass
             _extra_ctx = "\n\n".join(_llm_ctx_lines) if _llm_ctx_lines else ""
 
             llm_notes = _llm_research(llm, cve_id, result.description,
