@@ -5612,9 +5612,15 @@ def verify_wordpress_sqli(
             _probe_sess = boot.sub_sess or _rq_probe.Session()
             _probe_p = dict(base_params)
             _probe_p[sqli_param] = "1"  # valor neutro, sin payload
-            _probe_resp = _probe_sess.get(
-                _probe_url, params=_probe_p, allow_redirects=False,
-                timeout=5, verify=False)
+            # Bug fix: use the correct HTTP method — AJAX POST endpoints return 400 on GET
+            if m == "POST":
+                _probe_resp = _probe_sess.post(
+                    _probe_url, data=_probe_p, allow_redirects=False,
+                    timeout=5, verify=False)
+            else:
+                _probe_resp = _probe_sess.get(
+                    _probe_url, params=_probe_p, allow_redirects=False,
+                    timeout=5, verify=False)
             _probe_status = _probe_resp.status_code
             _probe_loc = _probe_resp.headers.get("Location", "")
             if _probe_status == 404:
@@ -5783,8 +5789,11 @@ def verify_wordpress_sqli(
         # When nopriv: some plugins (e.g. Ultimate Member) have capability guards that short-circuit
         # for logged-in users without the right cap, so the attack must be sent anonymously.
         import requests as _requests_mod
-        _action_m = re.search(r"[?&]action=(\w+)", endpoint or "")
-        _action_name = _action_m.group(1) if _action_m else ""
+        # Bug fix: search for action in base_params first (QS normalization strips it from endpoint)
+        _action_name = str(base_params.get("action", "")).strip()
+        if not _action_name:
+            _action_m = re.search(r"[?&]action=(\w+)", endpoint or "")
+            _action_name = _action_m.group(1) if _action_m else ""
         _anon_attack = bool(_action_name and _detect_nopriv_from_source(plugin_source_dir, _action_name))
         if _anon_attack:
             step(f"fuente del plugin detecta wp_ajax_nopriv_{_action_name} → ataque anonimo (sin sesion de usuario)")
@@ -6092,9 +6101,12 @@ def verify_wordpress_sqli(
                 and "<html" in (base_resp.text or "").lower())
         )
         _wp_access_denied = base_resp.status_code in (401, 403)
+        # Bug fix: HTTP 400 on AJAX endpoints means wrong session/params — also try admin
+        _wp_bad_request = base_resp.status_code == 400
         _needs_admin_retry = (
             not _anon_attack and boot.admin_sess and _is_admin_ep and
-            (_ctrl_body_raw in ("-1", "0") or _login_redirect or _wp_access_denied)
+            (_ctrl_body_raw in ("-1", "0") or _login_redirect or _wp_access_denied
+             or _wp_bad_request)
         )
         if _needs_admin_retry:
             _reason = ("'-1'/'0'" if _ctrl_body_raw in ("-1", "0")

@@ -2276,6 +2276,11 @@ def _update_index_html(result: "ChainResult", cve_info, llm_notes: dict,
         step(f"  index update: lectura fallida — {e}")
         return
 
+    # Only add dynamically verified CVEs to the index — no false positives
+    if not result.verified:
+        step(f"  index update: {result.cve_id} NO verificado dinámicamente — no se añade al index")
+        return
+
     # Skip if CVE already has a row
     if result.cve_id in html:
         step(f"  index update: {result.cve_id} ya existe en index.html")
