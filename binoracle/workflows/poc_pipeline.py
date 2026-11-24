@@ -166,7 +166,8 @@ def lab_slot(budget: ResourceBudget, timeout_s: float = 600.0):
                     raise TimeoutError(
                         "otro lab Docker ya esta usando el unico slot disponible "
                         f"(max_concurrent_labs={budget.max_concurrent_labs}); "
-                        "sube BINORACLE_TOTAL_RAM_GB solo si de verdad tienes mas RAM libre")
+                        "sube BINORACLE_TOTAL_RAM_GB solo si de verdad tienes mas RAM libre"
+                    ) from e
                 time.sleep(2.0)
         # re-chequeo de RAM justo antes de ceder el slot: el "ok" de arriba pudo quedar
         # obsoleto mientras esperabamos el lock.

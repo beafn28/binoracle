@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from collections import Counter
 from typing import Dict, List, Tuple
 
@@ -14,6 +15,7 @@ _STATE_DIR = os.environ.get("BINORACLE_CACHE_DIR") or os.path.join(
     os.path.expanduser("~"), ".cache", "binoracle"
 )
 _LESSONS_FILE = os.path.join(_STATE_DIR, "cve_lessons.json")
+_LESSONS_LOCK = threading.Lock()
 
 # Keywords to detect stack from CVE description or source path
 _STACK_KEYWORDS: Dict[str, List[str]] = {
@@ -63,9 +65,10 @@ def _load() -> dict:
 
 
 def _save(data: dict) -> None:
+    # Caller must hold _LESSONS_LOCK
     try:
         os.makedirs(_STATE_DIR, exist_ok=True)
-        tmp = _LESSONS_FILE + f".tmp-{os.getpid()}"
+        tmp = _LESSONS_FILE + f".tmp-{os.getpid()}-{threading.get_ident()}"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
         os.replace(tmp, _LESSONS_FILE)
@@ -97,50 +100,51 @@ def record_cve_result(
     """
     if not stack:
         return
-    data = _load()
-    entry = data.setdefault(stack, {
-        "runs": [],
-        "verified_count": 0,
-        "total_count": 0,
-    })
-    entry.setdefault("runs", [])
-    entry.setdefault("verified_count", 0)
-    entry.setdefault("total_count", 0)
+    with _LESSONS_LOCK:
+        data = _load()
+        entry = data.setdefault(stack, {
+            "runs": [],
+            "verified_count": 0,
+            "total_count": 0,
+        })
+        entry.setdefault("runs", [])
+        entry.setdefault("verified_count", 0)
+        entry.setdefault("total_count", 0)
 
-    # Avoid duplicate entries for the same CVE
-    existing_ids = {r.get("cve_id") for r in entry["runs"]}
-    if cve_id in existing_ids:
-        return
+        # Avoid duplicate entries for the same CVE
+        existing_ids = {r.get("cve_id") for r in entry["runs"]}
+        if cve_id in existing_ids:
+            return
 
-    run: dict = {
-        "cve_id": cve_id,
-        "endpoint": endpoint,
-        "verified": verified,
-        "bypass_header": bypass_header,
-        "bypass_value": bypass_value,
-        "vuln_class": vuln_class,
-    }
-    if auth_method:
-        run["auth_method"] = auth_method
-    if http_method:
-        run["http_method"] = http_method
-    if confirm_string:
-        run["confirm_string"] = confirm_string[:120]
-    if pkg_version:
-        run["pkg_version"] = pkg_version
+        run: dict = {
+            "cve_id": cve_id,
+            "endpoint": endpoint,
+            "verified": verified,
+            "bypass_header": bypass_header,
+            "bypass_value": bypass_value,
+            "vuln_class": vuln_class,
+        }
+        if auth_method:
+            run["auth_method"] = auth_method
+        if http_method:
+            run["http_method"] = http_method
+        if confirm_string:
+            run["confirm_string"] = confirm_string[:120]
+        if pkg_version:
+            run["pkg_version"] = pkg_version
 
-    entry["runs"].append(run)
-    entry["total_count"] += 1
-    if verified:
-        entry["verified_count"] += 1
+        entry["runs"].append(run)
+        entry["total_count"] += 1
+        if verified:
+            entry["verified_count"] += 1
 
-    # Keep only last 100 runs per stack to avoid unbounded growth
-    if len(entry["runs"]) > 100:
-        entry["runs"] = entry["runs"][-100:]
-        entry["total_count"] = len(entry["runs"])
-        entry["verified_count"] = sum(1 for r in entry["runs"] if r.get("verified"))
+        # Keep only last 100 runs per stack to avoid unbounded growth
+        if len(entry["runs"]) > 100:
+            entry["runs"] = entry["runs"][-100:]
+            entry["total_count"] = len(entry["runs"])
+            entry["verified_count"] = sum(1 for r in entry["runs"] if r.get("verified"))
 
-    _save(data)
+        _save(data)
 
 
 def get_lessons(stack: str) -> dict:
@@ -526,23 +530,24 @@ def learn_from_chain_result(result: object) -> None:
         if not _impact:
             _impact = ev.get("impact_class", "")
         if _impact:
-            data = _load()
-            _entry = data.get(_stack, {})
-            if _entry and _entry.get("runs"):
-                for _run in reversed(_entry["runs"]):
-                    if _run.get("cve_id") == result.cve_id:
-                        _run["impact_class"] = _impact
-                        if _confidence_bonus:
-                            _run["confidence_bonus"] = _confidence_bonus
-                        # Augment with patch diff fix_class and OSV package info
-                        _pa = ev.get("patch_analysis", {})
-                        if _pa.get("fix_class") and _pa["fix_class"] != "unknown":
-                            _run["patch_fix_class"] = _pa["fix_class"]
-                        _osv_pkgs = ev.get("osv_packages", [])
-                        if _osv_pkgs:
-                            _run["osv_packages"] = _osv_pkgs[:3]
-                        break
-                _save(data)
+            with _LESSONS_LOCK:
+                data = _load()
+                _entry = data.get(_stack, {})
+                if _entry and _entry.get("runs"):
+                    for _run in reversed(_entry["runs"]):
+                        if _run.get("cve_id") == result.cve_id:
+                            _run["impact_class"] = _impact
+                            if _confidence_bonus:
+                                _run["confidence_bonus"] = _confidence_bonus
+                            # Augment with patch diff fix_class and OSV package info
+                            _pa = ev.get("patch_analysis", {})
+                            if _pa.get("fix_class") and _pa["fix_class"] != "unknown":
+                                _run["patch_fix_class"] = _pa["fix_class"]
+                            _osv_pkgs = ev.get("osv_packages", [])
+                            if _osv_pkgs:
+                                _run["osv_packages"] = _osv_pkgs[:3]
+                            break
+                    _save(data)
 
 
 def export_lessons_csv(out_path: str = "") -> str:

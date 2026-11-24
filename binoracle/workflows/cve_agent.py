@@ -9154,8 +9154,9 @@ def _scaffold_pip_lab(target: str, version: str, vuln_class: str,
     # - Gradio (CVE-2024-1561): servidor en 7860. Con EXPOSE 5000, discover_http() nunca
     #   alcanza el servidor y el lab se cuelga esperando HTTP a tiempo.
     _pip_server_ports: dict = {"gradio": 7860}
-    if pkg_lower in _pip_server_ports:
-        _svc_port = _pip_server_ports[pkg_lower]
+    _pkg_lower = pin_name.lower()
+    if _pkg_lower in _pip_server_ports:
+        _svc_port = _pip_server_ports[_pkg_lower]
         try:
             from .genericverify import _best_python_image as _bpi
             _py_img = _bpi()

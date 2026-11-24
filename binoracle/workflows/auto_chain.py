@@ -1513,7 +1513,8 @@ def _generate_wrapper_app(cve_id: str, cve_info, llm_notes: dict,
 def _run_web_stage(cve_id: str, cve_info, llm_notes: dict,
                    result: ChainResult, step: Callable,
                    budget_s: float, config=None, llm=None, lang: str = "es",
-                   skip_source_download: bool = False) -> Any:
+                   skip_source_download: bool = False,
+                   hints: Optional[dict] = None) -> Any:
     """Full web CVE investigation. Returns the Investigation object."""
     t = _t()
     _banner(step, f"[5/8] WEB INVESTIGATION — {cve_id}")
@@ -3207,7 +3208,7 @@ def run_full_chain(
             _run_web_stage(
                 cve_id, cve_info, llm_notes, result, step,
                 budget_s=budget_s, config=config, llm=llm, lang=lang,
-                skip_source_download=skip_source_download)
+                skip_source_download=skip_source_download, hints=hints)
         elif result.cve_class in ("native", "binary"):
             # Auto-lab: attempt to install the vulnerable package in Docker and
             # run the LLM-generated PoC — no manual --binary needed.
@@ -3222,7 +3223,7 @@ def run_full_chain(
                 _run_web_stage(
                     cve_id, cve_info, llm_notes, result, step,
                     budget_s=budget_s, config=config, llm=llm, lang=lang,
-                    skip_source_download=skip_source_download)
+                    skip_source_download=skip_source_download, hints=hints)
         else:
             result.add_step("investigation", "skip", f"class={result.cve_class}")
 

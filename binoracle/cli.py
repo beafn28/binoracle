@@ -2032,7 +2032,6 @@ def cmd_investigate(args, config):
             no_cache=getattr(args, "no_cache", False),
             hints=hints or None,
         )
-        import time as _t2
         _print_chain_verdict(_cr, _inv_cve, _cr.elapsed_s, _use_col, _b2, _r2, _d2, colorlog)
         if getattr(args, "json", None):
             import json as _json2
@@ -2176,7 +2175,7 @@ def _run_investigate_batch_and_report(cve_ids, config, parallel: int, budget_s: 
                     colorlog.error(f"[{futures[fut]}] error en chain: {e}")
 
         verified = sum(1 for r in chain_results if r.verified)
-        print(f"\n── Resumen del lote (chain) ──────────────────────────────────")
+        print("\n── Resumen del lote (chain) ──────────────────────────────────")
         for cr in chain_results:
             icon = "✓" if cr.verified else "✗"
             print(f"  {icon} {cr.cve_id:<25} conf={cr.engine_confidence:.0%}  "
