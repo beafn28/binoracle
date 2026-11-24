@@ -1490,6 +1490,10 @@ def run_full_chain(
     step   = on_step or (lambda _m: None)
     result = ChainResult(cve_id=cve_id)
 
+    def _budget_ok(min_s: float = 10.0) -> bool:
+        """True when enough budget remains for the next stage."""
+        return (time.time() - t0) < (budget_s - min_s)
+
     _banner(step, f"binoracle AUTO-CHAIN — {cve_id}")
     step(f"  lang={lang} budget={budget_s}s binary={'yes' if binary else 'no'}")
 
@@ -1578,7 +1582,11 @@ def run_full_chain(
             result.add_step("investigation", "skip", f"class={result.cve_class}")
 
     # ── Stage 6: Enrich ───────────────────────────────────────────────────────
-    _run_enrich_stage(result, step, llm=llm, lang=lang)
+    if _budget_ok(min_s=20.0):
+        _run_enrich_stage(result, step, llm=llm, lang=lang)
+    else:
+        step("  [6/8] enrich: presupuesto agotado — omitido")
+        result.add_step("enrich", "skip", "budget exhausted")
 
     # ── Stage 7: Report ───────────────────────────────────────────────────────
     result.elapsed_s = time.time() - t0
