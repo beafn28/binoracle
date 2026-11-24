@@ -197,6 +197,26 @@ _bin_files_lock = threading.Lock()
 _bin_jobs: dict[str, "_BinJob"] = {}
 _bin_jobs_lock = threading.Lock()
 
+_JOB_TTL_S = 3600 * 4  # keep completed jobs for 4 hours; running jobs are never evicted
+
+
+def _evict_stale_jobs() -> None:
+    """Remove completed CVE-investigate jobs and binary jobs older than _JOB_TTL_S.
+    Called at the start of each new job to keep both dicts bounded.
+    Running jobs are never evicted regardless of age.
+    """
+    cutoff = time.time() - _JOB_TTL_S
+    with _jobs_lock:
+        stale = [jid for jid, j in _jobs.items()
+                 if j.status != "running" and j.created < cutoff]
+        for jid in stale:
+            del _jobs[jid]
+    with _bin_jobs_lock:
+        stale = [jid for jid, j in _bin_jobs.items()
+                 if j.status != "running" and j.t0 < cutoff]
+        for jid in stale:
+            del _bin_jobs[jid]
+
 
 class _BinJob:
     __slots__ = ("id", "file_id", "cmd_label", "status", "lines", "_q", "t0")
@@ -212,6 +232,7 @@ class _BinJob:
 
 
 def _start_bin_job(file_id: str, cmd_args: list[str], label: str) -> "_BinJob":
+    _evict_stale_jobs()
     job = _BinJob(file_id, label)
     with _bin_jobs_lock:
         _bin_jobs[job.id] = job
@@ -263,6 +284,7 @@ _jobs_lock = threading.Lock()
 
 
 def _start_job(cve_id: str, config) -> _Job:
+    _evict_stale_jobs()
     job = _Job(cve_id)
     with _jobs_lock:
         _jobs[job.id] = job
