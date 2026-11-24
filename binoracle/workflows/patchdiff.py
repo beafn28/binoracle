@@ -581,6 +581,25 @@ _FIX_RULES: List[tuple] = [
                     r"ObjectInputFilter|resolveClass.*throw)", re.I)],
         0.87,
     ),
+    (
+        "race_condition",
+        "race condition / TOCTOU — check-then-act without atomic lock or transaction",
+        "added atomic lock / SELECT FOR UPDATE / synchronized block",
+        [re.compile(r"(?:if\s+\w+\.exists\s*\(\s*\)\s*:\s*\n[^#]*\w+\.create\s*\(|"
+                    r"count\(\)\s*[><=]=?\s*0\s*\n[^#]*save\s*\(|"
+                    r"SELECT\s+\w+\s+FROM\s+\w+\s+WHERE.*\n.*INSERT|"
+                    r"find_by\s*\(.*\)\s*\n.*create\s*\(|"
+                    r"fs\.exists\s*\(|existsSync\s*\(.*path.*\)\s*\{[^}]*writeFile|"
+                    r"os\.path\.exists\s*\(.*\)\s*:\s*\n[^#]*open\s*\()", re.I)],
+        [re.compile(r"(?:SELECT\s+\w+.*FOR\s+UPDATE|"
+                    r"get_or_create\s*\(|"
+                    r"atomic\s*\(\s*\)|with\s+transaction\.atomic|"
+                    r"synchronized\s*\(|ReentrantLock|"
+                    r"threading\.Lock\s*\(\s*\)|asyncio\.Lock\s*\(\s*\)|"
+                    r"unique_together|UNIQUE\s+CONSTRAINT|"
+                    r"\.lock\s*\(\s*\)|FileLock\s*\(|lockfile)", re.I)],
+        0.78,
+    ),
 ]
 
 # Fallback: if nothing matches, look for generic sanitization removal
@@ -638,6 +657,7 @@ _PAYLOADS_FOR_CLASS: Dict[str, str] = {
     "jwt_bypass":             "",   # payload is a JWT with alg:none
     "xml_injection":          "<!DOCTYPE foo [<!ENTITY xxe SYSTEM 'file:///etc/passwd'>]>",
     "nosqli":                 '{"$gt": ""}',  # MongoDB operator injection
+    "race_condition":         "",             # requires concurrent requests
     "file_upload_bypass":     "",   # payload is a webshell disguised as image
     "insecure_deserialization": "", # payload depends on gadget chain
     "unknown":                "",
