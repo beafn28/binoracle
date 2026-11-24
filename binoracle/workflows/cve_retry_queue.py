@@ -32,6 +32,17 @@ _TRANSIENT_PATTERNS = [
     r"go.*build.*error",
     r"npm.*install.*fail",
     r"pip.*install.*fail",
+    # Source code availability (GitHub rate limit, temp unavailability)
+    r"rate.?limit",
+    r"github.*403",
+    r"github.*429",
+    r"source.*not.*found",
+    r"clone.*fail",
+    r"repository.*not.*found",
+    r"checkout.*error",
+    r"download.*fail",
+    r"http.*503",
+    r"http.*502",
 ]
 
 

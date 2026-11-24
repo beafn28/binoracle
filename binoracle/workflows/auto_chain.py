@@ -2589,10 +2589,14 @@ def run_full_chain(
             _alt_eps = llm_notes.get("alt_endpoints") or []
             _alt_tried = False
             if _alt_eps:
-                # Pick the top-ranked alt that wasn't the one that just failed
+                # Pick the top-ranked alt that wasn't the one that just failed.
+                # Skip alts with score < 0.40 — not worth spending budget on a low-confidence alt.
+                _MIN_ALT_SCORE = 0.40
                 _next_alt = next(
                     (a for a in _alt_eps
-                     if a.get("endpoint") and a.get("endpoint") != _tried_ep),
+                     if a.get("endpoint")
+                     and a.get("endpoint") != _tried_ep
+                     and float(a.get("score", 0.5)) >= _MIN_ALT_SCORE),
                     None,
                 )
                 if _next_alt:
