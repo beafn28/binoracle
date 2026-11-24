@@ -1604,6 +1604,7 @@ def cmd_cve(args, config):
             on_step=on_step,
             config=config,
             no_cache=_no_cache,
+            hints=hints or None,
         )
         elapsed_total = _time.time() - t_start
         _print_chain_verdict(chain_result, cve_id, elapsed_total, _use_col, _b, _r, _d, colorlog)
@@ -2029,6 +2030,7 @@ def cmd_investigate(args, config):
             on_step=lambda m: colorlog.line(m),
             config=config,
             no_cache=getattr(args, "no_cache", False),
+            hints=hints or None,
         )
         import time as _t2
         _print_chain_verdict(_cr, _inv_cve, _cr.elapsed_s, _use_col, _b2, _r2, _d2, colorlog)

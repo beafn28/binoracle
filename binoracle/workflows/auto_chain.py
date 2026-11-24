@@ -1626,6 +1626,7 @@ def _run_web_stage(cve_id: str, cve_info, llm_notes: dict,
             budget_s=budget_s,
             use_cache=False,
             skip_source_download=skip_source_download,
+            hints=hints or None,
         )
         result.verified = getattr(inv, "verified", False)
         result.findings = getattr(inv, "findings", [])
@@ -2689,6 +2690,7 @@ def run_full_chain(
     save_report:          bool  = True,
     no_cache:             bool  = False,
     skip_source_download: bool  = False,
+    hints:                Optional[dict] = None,
 ) -> ChainResult:
     """
     Cadena autónoma completa. Un investigador senior desde solo el CVE ID.
@@ -2703,6 +2705,8 @@ def run_full_chain(
         llm:         LLM backend (auto-created if None)
         save_report: save to ~/.binoracle/reports/{CVE_ID}.md
         no_cache:    force fresh investigation (bypass cache)
+        hints:       optional dict of analyst hints (source_url, endpoint, http_method,
+                     affected_version, vuln_class, etc.) forwarded to investigate_cve
 
     Returns:
         ChainResult with verified, findings, report_md, report_path, etc.
