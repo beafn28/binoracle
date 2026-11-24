@@ -3349,7 +3349,7 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
             # have the real response body in verified_evidence, render an inline dark viewer
             # instead — the check: caption says "confirmada/confirmed" for SQLi/traversal
             # and we have the response body in verified_evidence.
-            _vev = verified_ev  # noqa: captured from outer scope
+            _vev = verified_ev  # noqa: F841
             _synthetic_viewer = ""
             _cap_low_sh = (sh.get("caption_es") or "").lower() + " " + (sh.get("caption_en") or "").lower()
             # Detect any "confirmed" exploitation step — applies to ALL vuln classes

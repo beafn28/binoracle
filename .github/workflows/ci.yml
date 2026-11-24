@@ -25,11 +25,13 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: "pip"
       - name: Install radare2
         # gdb added here too -- real gap, not local noise: confirmed live by reproducing this
         # exact runner setup (gdb absent, matching a stock ubuntu-latest image, which does NOT
