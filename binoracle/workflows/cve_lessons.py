@@ -300,16 +300,30 @@ def format_lessons_for_llm(stack: str, vuln_class: str = "",
     Injected into the investigation system prompt to bias the LLM toward
     endpoint patterns and auth methods that are known to work for this stack.
     Returns "" when no lessons exist (safe to pass as empty context).
+
+    For stacks with >= 5 runs and < 10% verification rate, suppresses
+    endpoint/bypass suggestions (not useful) and shows a LOW_SIGNAL warning
+    instead — prevents the LLM from repeating known-failing strategies.
     """
     lessons = get_lessons(stack)
     if not lessons or lessons.get("total_runs", 0) < 1:
         return ""
 
+    _total = lessons.get("total_runs", 0)
+    _rate = lessons.get("verified_rate", 0.0)
+    _low_signal = _total >= 5 and _rate < 0.10
+
     lines: list[str] = [
         f"[LECCIONES PREVIAS para stack={stack}]",
-        f"- Tasa de verificacion: {lessons['verified_rate']:.0%} "
-        f"({lessons['total_runs']} investigaciones previas)",
+        f"- Tasa de verificacion: {_rate:.0%} ({_total} investigaciones previas)"
+        + (" — SEÑAL BAJA: estrategias históricas poco efectivas en este stack" if _low_signal else ""),
     ]
+
+    # For low-signal stacks, only show the warning and skip specific advice
+    # (the specific advice comes from consistently failing runs — not useful)
+    if _low_signal:
+        lines.append("- NOTA: evitar repetir estrategias anteriores para este stack sin nueva información")
+        return "\n".join(lines)
 
     # Suggest endpoints
     top_ep = suggest_endpoints(stack, vuln_class)
