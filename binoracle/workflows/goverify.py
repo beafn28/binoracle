@@ -231,13 +231,22 @@ def verify_go_web_cve(source_path: str, endpoint: str,
         # Auth
         auth_headers: dict = {}
         if auth_required:
-            token = _try_generic_jwt_auth(base_url, step)
-            if token:
-                auth_headers["Authorization"] = token
-            else:
-                api_key_hdrs = _try_api_key_auth(source_path, base_url, step)
-                if api_key_hdrs:
-                    auth_headers.update(api_key_hdrs)
+            # Try universal auth layer first, fall back to local implementations
+            try:
+                from .genericverify import _try_auto_auth
+                _auto = _try_auto_auth(base_url, source_path, step)
+                if _auto.get("headers"):
+                    auth_headers.update(_auto["headers"])
+            except Exception:
+                pass
+            if not auth_headers:
+                token = _try_generic_jwt_auth(base_url, step)
+                if token:
+                    auth_headers["Authorization"] = token
+                else:
+                    api_key_hdrs = _try_api_key_auth(source_path, base_url, step)
+                    if api_key_hdrs:
+                        auth_headers.update(api_key_hdrs)
 
         # Build request
         target_url = base_url.rstrip("/") + endpoint

@@ -209,9 +209,18 @@ def verify_node_web_cve(source_path: str, endpoint: str,
         # Auth
         auth_headers: dict = {}
         if auth_required:
-            token = _try_jwt_auth_node(base_url, step)
-            if token:
-                auth_headers["Authorization"] = token
+            # Try universal auth layer first, fall back to local JWT impl
+            try:
+                from .genericverify import _try_auto_auth
+                _auto = _try_auto_auth(base_url, source_path, step)
+                if _auto.get("headers"):
+                    auth_headers.update(_auto["headers"])
+            except Exception:
+                pass
+            if not auth_headers:
+                token = _try_jwt_auth_node(base_url, step)
+                if token:
+                    auth_headers["Authorization"] = token
 
         # Build request
         target_url = base_url.rstrip("/") + endpoint

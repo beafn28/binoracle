@@ -122,17 +122,20 @@ def _build_stack_signals() -> tuple:
         # Uses golang:alpine (latest stable) so go.mod toolchain constraints are met.
         # CGO_ENABLED=1 for sqlite3 and other CGO dependencies.
         # Port 8080 is used; apps that read --port or $PORT get it via env/arg.
+        # Go: use /usr/local/bin/app as output — avoids colliding with any source
+        # subdirectory named 'server' (e.g. daptin has a server/ dir; -o /app/server
+        # would treat it as a directory and place the binary inside it as /app/server/<name>).
         ("go.mod", "golang:alpine", 8080,
          ["WORKDIR /app",
           "RUN apk add --no-cache gcc musl-dev git netcat-openbsd sqlite-dev",
           "COPY . .",
-          "RUN CGO_ENABLED=1 go build -o /app/server . || "
-          "CGO_ENABLED=1 go build -o /app/server ./cmd/... || true",
+          "RUN CGO_ENABLED=1 go build -o /usr/local/bin/app . || "
+          "CGO_ENABLED=1 go build -o /usr/local/bin/app ./cmd/... || true",
           'ENV PORT=8080 SERVER_PORT=8080 GIN_MODE=release CGO_ENABLED=1',
           'CMD ["sh", "-c", '
-          '"/app/server --port :8080 || '
-          '/app/server -port :8080 || '
-          '/app/server"]']),
+          '"/usr/local/bin/app -port :8080 || '
+          '/usr/local/bin/app --port :8080 || '
+          '/usr/local/bin/app"]']),
     )
 
 
@@ -4783,6 +4786,128 @@ def verify_generic_prototype_pollution(
 # ---------------------------------------------------------------------------
 # JWT BYPASS verifier
 # ---------------------------------------------------------------------------
+
+def _try_auto_auth(base_url: str, source_dir: str = "", on_step=None) -> dict:
+    """Try to authenticate automatically against an unknown REST API.
+
+    Returns {"cookie": "", "bearer": "", "api_key": "", "headers": {}}
+    with whatever auth was obtained. All fields empty if nothing found.
+
+    Strategy (in order):
+    1. OAuth2 form-encoded /token (FastAPI pattern)
+    2. JSON /login, /auth/login, /api/auth/login
+    3. GET /api/key, /api/apikey, /admin/key
+    4. Scan source_dir for API_KEY / DEFAULT_KEY in .env.example / config files
+    5. Unauthenticated GET / and /api/ — may work without auth
+    """
+    import json as _j
+    step = on_step or (lambda _m: None)
+    result: dict = {"cookie": "", "bearer": "", "api_key": "", "headers": {}}
+    _user = "binoracle_test"
+    _pwd = "Binoracle123!"
+    _email = "test@binoracle.dev"
+
+    # 1. OAuth2 form-encoded /token
+    for _ep in ["/token", "/api/token", "/auth/token", "/api/auth/token",
+                "/api/v1/token", "/oauth/token"]:
+        try:
+            r = _http_request("POST", base_url.rstrip("/") + _ep,
+                              data=f"username={_user}&password={_pwd}&grant_type=password",
+                              headers={"Content-Type": "application/x-www-form-urlencoded"},
+                              timeout=5)
+            if r.status in (200, 201):
+                body = _j.loads(r.body or "{}")
+                tok = body.get("access_token") or body.get("token") or ""
+                if tok:
+                    step(f"  auto-auth: Bearer token via {_ep}")
+                    result["bearer"] = f"Bearer {tok}"
+                    result["headers"] = {"Authorization": result["bearer"]}
+                    return result
+        except Exception:
+            pass
+
+    # 2. JSON login
+    for _ep in ["/login", "/auth/login", "/api/login", "/api/auth/login",
+                "/api/v1/login", "/signin", "/api/signin"]:
+        try:
+            r = _http_request("POST", base_url.rstrip("/") + _ep,
+                              data=_j.dumps({"username": _user, "password": _pwd,
+                                             "email": _email}),
+                              headers={"Content-Type": "application/json"}, timeout=5)
+            if r.status in (200, 201):
+                body = _j.loads(r.body or "{}")
+                tok = (body.get("access_token") or body.get("token") or
+                       (body.get("data") or {}).get("token") or "")
+                if tok:
+                    step(f"  auto-auth: Bearer token via {_ep} (JSON)")
+                    result["bearer"] = f"Bearer {tok}"
+                    result["headers"] = {"Authorization": result["bearer"]}
+                    return result
+                # Session cookie
+                cookie_hdr = r.headers.get("set-cookie", "")
+                for ck in ["sessionid", "session", "token", "auth", "jwt"]:
+                    import re as _re_ck
+                    _m = _re_ck.search(rf"{ck}=([^;]+)", cookie_hdr, _re_ck.I)
+                    if _m:
+                        step(f"  auto-auth: cookie {ck} via {_ep}")
+                        result["cookie"] = f"{ck}={_m.group(1)}"
+                        result["headers"] = {"Cookie": result["cookie"]}
+                        return result
+        except Exception:
+            pass
+
+    # 3. GET /api/key endpoints
+    for _ep in ["/api/key", "/api/apikey", "/admin/key", "/api/admin/key"]:
+        try:
+            r = _http_request("GET", base_url.rstrip("/") + _ep, timeout=5)
+            if r.status == 200:
+                body = _j.loads(r.body or "{}")
+                key = body.get("key") or body.get("api_key") or body.get("apiKey") or ""
+                if key and len(key) > 8:
+                    step(f"  auto-auth: API key via {_ep}")
+                    result["api_key"] = key
+                    result["headers"] = {"X-API-Key": key}
+                    return result
+        except Exception:
+            pass
+
+    # 4. Scan source for hardcoded keys
+    if source_dir and os.path.isdir(source_dir):
+        import re as _re_src
+        _KEY_RE = _re_src.compile(
+            r'(?:API_KEY|DEFAULT_KEY|MASTER_KEY|SECRET_KEY|ADMIN_KEY|DEFAULT_API_KEY)'
+            r'\s*[=:]\s*["\']?([A-Za-z0-9_\-]{8,})["\']?',
+            _re_src.I)
+        for _fn in [".env.example", ".env.sample", "config.example.yaml",
+                    "config.example.json", "appsettings.Development.json"]:
+            _fp = os.path.join(source_dir, _fn)
+            if not os.path.isfile(_fp):
+                continue
+            try:
+                content = open(_fp, encoding="utf-8", errors="replace").read(4000)
+                _m = _KEY_RE.search(content)
+                if _m:
+                    key = _m.group(1)
+                    step(f"  auto-auth: API key from {_fn}: {key[:12]}...")
+                    result["api_key"] = key
+                    result["headers"] = {"X-API-Key": key,
+                                         "Authorization": f"ApiKey {key}"}
+                    return result
+            except Exception:
+                pass
+
+    # 5. Check if unauthenticated access works
+    for _ep in ["/api/", "/api", "/api/v1/", "/"]:
+        try:
+            r = _http_request("GET", base_url.rstrip("/") + _ep, timeout=5)
+            if r.status == 200:
+                step(f"  auto-auth: no auth needed ({_ep} → 200)")
+                return result  # empty headers = unauthenticated
+        except Exception:
+            pass
+
+    return result
+
 
 def verify_generic_jwt_bypass(
     source_dir: str,
