@@ -1221,6 +1221,11 @@ def _bootstrap_generic_lab(source_dir: str, step, res: WpVerifyResult,
         _gql_eps = _discover_graphql_endpoints(base_url, step)
         if _gql_eps:
             res.evidence["graphql_endpoints"] = _gql_eps
+            # Deep schema probe: extract queries/mutations/sensitive fields
+            _gql_schema = _graphql_schema_probe(
+                base_url, _gql_eps[0], step=step)
+            if _gql_schema.get("queries") or _gql_schema.get("mutations"):
+                res.evidence["graphql_schema"] = _gql_schema
     except Exception:
         pass
 
@@ -4302,6 +4307,19 @@ def verify_generic_header_bypass(
                         f"'{confirm_string}' no aparece en la respuesta -- el lab puede no estar "
                         f"sirviendo el recurso esperado en '{endpoint}'"
                     )
+                    # Semantic analysis: even without confirm_string, check if
+                    # the response body has interesting exploitability signals
+                    _analysis = _analyze_response_body(
+                        body_bypass, vuln_class,
+                        payload="", confirm_string=confirm_string,
+                        status_code=status_bypass,
+                    )
+                    if _analysis.get("interesting"):
+                        res.evidence["response_analysis"] = _analysis
+                        _diag.append(
+                            f"analisis semantico: {_analysis['partial_confidence']:.0%} confianza "
+                            f"— señales: {'; '.join(_analysis['signals'][:3])}"
+                        )
                 elif status_bypass not in range(200, 300):
                     _diag.append(
                         f"bypass no dio 2xx (status {status_bypass}) -- el servidor sigue "
@@ -4363,7 +4381,7 @@ def _analyze_response_body(
         # Payload appears unescaped
         if payload and payload in _body:
             score += 0.60
-            signals.append(f"payload appears verbatim in body (unescaped)")
+            signals.append("payload appears verbatim in body (unescaped)")
         # Script/event handler patterns
         if "<script" in _bl and ("alert" in _bl or "onerror" in _bl):
             score += 0.45
@@ -5214,6 +5232,113 @@ def _discover_graphql_endpoints(base_url: str,
         except Exception:
             continue
     return confirmed
+
+
+def _graphql_schema_probe(base_url: str, endpoint: str,
+                           auth_header: str = "",
+                           step: Optional[Callable] = None) -> dict:
+    """Deep GraphQL schema introspection: extract types, queries, mutations with args.
+
+    Returns:
+    {
+      "queries":   [{"name": "...", "args": ["id", "filter", ...]}, ...],
+      "mutations": [{"name": "...", "args": ["input", "id", ...]}, ...],
+      "sensitive_fields": ["accessToken", "password", "apiKey", ...],
+      "auth_required_queries": ["adminUsers", "secretConfig", ...],
+    }
+
+    Useful for CVEs where the vulnerable query is not documented:
+    extract all mutations with 'file', 'path', 'url' args → LFI/SSRF candidates.
+    Extract all queries without auth → missing-auth candidates.
+    """
+    _step = step or (lambda _m: None)
+    _INTROSPECT_QUERY = {
+        "query": """
+        {
+          __schema {
+            queryType { fields { name args { name type { name kind } } } }
+            mutationType { fields { name args { name type { name kind } } } }
+          }
+        }
+        """
+    }
+    headers: dict = {"Content-Type": "application/json", "Accept": "application/json"}
+    if auth_header:
+        # auth_header format: "Bearer token" or "Token token" etc.
+        headers["Authorization"] = auth_header
+
+    result: dict = {
+        "queries": [], "mutations": [],
+        "sensitive_fields": [], "auth_required_queries": [],
+    }
+
+    _SENSITIVE_PATTERNS = {
+        "credential": ["password", "passwd", "secret", "token", "apikey", "api_key",
+                        "accesstoken", "access_token", "privatekey", "private_key"],
+        "admin": ["admin", "root", "superuser", "privilege"],
+        "pii": ["email", "phone", "ssn", "creditcard"],
+    }
+    _INJECTION_PATTERNS = {
+        "lfi_ssrf": ["file", "path", "url", "uri", "src", "source", "redirect"],
+        "sqli": ["query", "filter", "search", "where", "id", "ids"],
+    }
+
+    try:
+        import json as _json
+        _body = _json.dumps(_INTROSPECT_QUERY).encode()
+        _status, _, _resp_b = _http_request(
+            base_url, endpoint, "POST",
+            headers=headers, body=_body, timeout=10.0)
+        if _status not in (200, 201):
+            return result
+        _resp = _json.loads((_resp_b or b"").decode("utf-8", "replace"))
+        _schema = (_resp.get("data") or {}).get("__schema") or {}
+
+        # Extract queries
+        _qt = _schema.get("queryType") or {}
+        for _field in (_qt.get("fields") or []):
+            _name = _field.get("name", "")
+            _args = [a.get("name", "") for a in (_field.get("args") or [])]
+            result["queries"].append({"name": _name, "args": _args})
+            # Flag sensitive
+            _n_low = _name.lower()
+            if any(sp in _n_low for sp in _SENSITIVE_PATTERNS["credential"]):
+                result["sensitive_fields"].append(_name)
+            if any(sp in _n_low for sp in _SENSITIVE_PATTERNS["admin"]):
+                result["auth_required_queries"].append(_name)
+
+        # Extract mutations
+        _mt = _schema.get("mutationType") or {}
+        for _field in (_mt.get("fields") or []):
+            _name = _field.get("name", "")
+            _args = [a.get("name", "") for a in (_field.get("args") or [])]
+            result["mutations"].append({"name": _name, "args": _args})
+
+        # Find injection-candidate args across all operations
+        _all_ops = result["queries"] + result["mutations"]
+        _lfi_candidates = []
+        for _op in _all_ops:
+            for _arg in _op.get("args", []):
+                _a_low = _arg.lower()
+                if any(pat in _a_low for pat in _INJECTION_PATTERNS["lfi_ssrf"]):
+                    _lfi_candidates.append(f"{_op['name']}.{_arg}")
+        if _lfi_candidates:
+            result["lfi_ssrf_candidates"] = _lfi_candidates[:10]
+
+        _total = len(result["queries"]) + len(result["mutations"])
+        _step(f"  graphql-schema: {_total} operaciones extraídas "
+              f"({len(result['queries'])} queries, {len(result['mutations'])} mutations)")
+        if result.get("auth_required_queries"):
+            _step(f"  graphql-schema: posibles operaciones admin: "
+                  f"{result['auth_required_queries'][:3]}")
+        if result.get("lfi_ssrf_candidates"):
+            _step(f"  graphql-schema: args de file/path/url: "
+                  f"{result['lfi_ssrf_candidates'][:3]}")
+
+    except Exception as _e:
+        _step(f"  graphql-schema: error: {_e}")
+
+    return result
 
 
 # ── GraphQL auth-bypass verifier ──────────────────────────────────────────────

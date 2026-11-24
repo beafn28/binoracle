@@ -2381,6 +2381,12 @@ def run_full_chain(
         _conf += 0.03   # precise patch diff analysis available
     if result.evidence.get("correlation_hint", {}).get("relevance", 0) >= 0.70:
         _conf += 0.02   # similar CVE in same project confirmed the pattern
+    # Semantic response analysis bonus: partial match without exact confirm_string
+    _resp_analysis = result.evidence.get("response_analysis", {})
+    if not result.verified and _resp_analysis.get("interesting"):
+        _partial_conf = float(_resp_analysis.get("partial_confidence", 0.0))
+        # Cap contribution at +0.15 so LLM-only cases don't exceed 0.55
+        _conf += min(0.15, _partial_conf * 0.20)
     result.engine_confidence = round(max(0.0, min(1.0, _conf)), 2)
 
     # ── Lessons: record this CVE's outcome for future runs ────────────────────
