@@ -65,16 +65,17 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
     <div class="brand-sub">CVE Verification Engine</div>
   </div>
   <div class="hdr-spacer"></div>
-  <div class="hdr-date">22 NOVIEMBRE 2026 &mdash; 75 CVEs verificados dinámicamente</div>
+  <div class="hdr-date">22 NOVIEMBRE 2026 &mdash; 75 CVEs investigados</div>
 </header>
 
 <div class="stats-bar">
-  <div class="stat"><div class="stat-n s-green">75</div><div class="stat-l">Verificados</div></div>
-  <div class="stat"><div class="stat-n s-crit">40</div><div class="stat-l">Critical</div></div>
-  <div class="stat"><div class="stat-n s-high">26</div><div class="stat-l">High</div></div>
-  <div class="stat"><div class="stat-n s-blue">23</div><div class="stat-l">SQLi</div></div>
-  <div class="stat"><div class="stat-n s-purple">63</div><div class="stat-l">Con PoC</div></div>
-  <div class="stat"><div class="stat-n s-green">58</div><div class="stat-l">Unauthenticated</div></div>
+  <div class="stat"><div class="stat-n s-white" id="stat-total">75</div><div class="stat-l">Total</div></div>
+  <div class="stat"><div class="stat-n s-green" id="stat-dinamico">—</div><div class="stat-l">Dinámico ✓</div></div>
+  <div class="stat"><div class="stat-n s-purple" id="stat-hipotesis">—</div><div class="stat-l">Hipótesis</div></div>
+  <div class="stat"><div class="stat-n s-crit" id="stat-critical">40</div><div class="stat-l">Critical</div></div>
+  <div class="stat"><div class="stat-n s-high" id="stat-high">26</div><div class="stat-l">High</div></div>
+  <div class="stat"><div class="stat-n s-blue" id="stat-poc">—</div><div class="stat-l">Con PoC</div></div>
+  <div class="stat"><div class="stat-n s-green" id="stat-unauth">—</div><div class="stat-l">Unauthenticated</div></div>
 </div>
 
 <div class="filters">
@@ -1424,6 +1425,67 @@ function applyFilters() {
   document.getElementById('filter-count').innerHTML =
     `<span id="vis-count">${visible}</span> / ${total} CVEs`;
 }
+
+// Ground-truth dynamic verification map — built from dynamic_verify.verified in backend JSONs
+// false = NOT dynamically verified (may be static analysis, LLM hypothesis, or test inconclusive)
+// true  = Docker lab confirmed exploit executed successfully
+const DYN_VERIFIED = {"CVE-2021-41773": false, "CVE-2022-45808": false, "CVE-2023-32590": true, "CVE-2024-10516": false, "CVE-2024-10586": false, "CVE-2024-1071": false, "CVE-2024-10784": false, "CVE-2024-12025": true, "CVE-2024-12157": false, "CVE-2024-12209": false, "CVE-2024-12270": false, "CVE-2024-12404": true, "CVE-2024-12542": false, "CVE-2024-12849": true, "CVE-2024-13800": false, "CVE-2024-1561": false, "CVE-2024-2044": false, "CVE-2024-23334": false, "CVE-2024-23340": false, "CVE-2024-28255": false, "CVE-2024-29041": false, "CVE-2024-32640": false, "CVE-2024-35184": false, "CVE-2024-49607": false, "CVE-2024-50450": false, "CVE-2024-50491": false, "CVE-2024-50493": false, "CVE-2024-50498": true, "CVE-2024-50507": false, "CVE-2024-52380": false, "CVE-2024-54239": false, "CVE-2024-54292": false, "CVE-2024-54374": true, "CVE-2024-55972": true, "CVE-2024-55976": false, "CVE-2024-55978": false, "CVE-2024-55980": true, "CVE-2024-55981": false, "CVE-2024-55988": false, "CVE-2024-56145": false, "CVE-2024-6330": false, "CVE-2024-9234": false, "CVE-2024-9932": true, "CVE-2024-9933": true, "CVE-2025-12630": false, "CVE-2025-22785": false, "CVE-2025-27516": true, "CVE-2025-27610": false, "CVE-2025-29927": false, "CVE-2025-30208": false, "CVE-2025-32432": false, "CVE-2025-39471": false, "CVE-2025-53092": false, "CVE-2025-55746": false, "CVE-2025-57633": true, "CVE-2025-64459": false, "CVE-2025-67494": false, "CVE-2025-67923": false, "CVE-2025-8422": false, "CVE-2026-10795": false, "CVE-2026-114516": false, "CVE-2026-129502": true, "CVE-2026-130082": true, "CVE-2026-130647": true, "CVE-2026-132165": false, "CVE-2026-134694": true, "CVE-2026-2413": false, "CVE-2026-27641": true, "CVE-2026-35409": false, "CVE-2026-39732": false, "CVE-2026-39942": false, "CVE-2026-55849": true, "CVE-2026-70595": false, "CVE-2026-71209": false, "CVE-2026-77355": true, "CVE-2026-86253": false, "CVE-2026-94259": false};
+
+// Apply data-dyn attribute and visual indicators, then compute accurate stats
+(function computeStats() {
+  let dinamico = 0, hipotesis = 0, conPoc = 0, unauth = 0;
+  document.querySelectorAll('.cve-row').forEach(row => {
+    const cveEl = row.querySelector('code');
+    const cveId = cveEl ? cveEl.textContent.trim() : '';
+    const isDyn = DYN_VERIFIED[cveId] === true;
+    row.dataset.dyn = isDyn ? 'true' : 'false';
+
+    // PoC badge text
+    const badges = row.querySelectorAll('.badge-sm');
+    let pocTxt = '';
+    for (const b of badges) {
+      const t = b.textContent.trim();
+      if (t.includes('PoC') || t.includes('LLM') || t.includes('HUECO')) { pocTxt = t; break; }
+    }
+
+    const isLLM = pocTxt.includes('LLM-razonado');
+    row.dataset.pocType = isLLM ? 'llm' : (pocTxt.includes('HUECO') ? 'hueco' : 'poc');
+
+    // Stats
+    if (isDyn) dinamico++;
+    if (isLLM) hipotesis++;
+    if (!isLLM) conPoc++;
+
+    // Visual: add "⚠ Hipótesis" row tint for LLM-reasoned entries
+    if (isLLM) {
+      row.style.opacity = '0.80';
+      const pocBadge = Array.from(badges).find(b => b.textContent.includes('LLM'));
+      if (pocBadge) pocBadge.title = 'Hipótesis LLM — no verificado dinámicamente en lab Docker';
+    }
+    // Visual: add ✓ indicator to dynamically confirmed rows
+    if (isDyn && cveEl) {
+      const td = cveEl.closest('td');
+      if (td && !td.querySelector('.dyn-badge')) {
+        const mark = document.createElement('span');
+        mark.className = 'dyn-badge';
+        mark.style.cssText = 'display:inline-block;margin-left:5px;padding:1px 5px;border-radius:3px;font-size:8px;font-weight:800;background:#065f46;color:#4ade80;border:1px solid #16a34a;letter-spacing:.05em;vertical-align:middle';
+        mark.textContent = 'DYN';
+        mark.title = 'Verificado dinámicamente — exploit ejecutado en lab Docker aislado';
+        td.appendChild(mark);
+      }
+    }
+
+    // Unauthenticated
+    for (const b of badges) {
+      if (b.textContent.trim() === 'unauthenticated') { unauth++; break; }
+    }
+  });
+  document.getElementById('stat-dinamico').textContent = dinamico;
+  document.getElementById('stat-hipotesis').textContent = hipotesis;
+  document.getElementById('stat-poc').textContent = conPoc;
+  document.getElementById('stat-unauth').textContent = unauth;
+  document.getElementById('stat-total').textContent = total;
+})();
 </script>
 </body>
 </html>

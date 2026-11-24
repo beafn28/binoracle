@@ -63,10 +63,25 @@ def _save_history(job: "_Job"):
 _BATCH_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "binoracle_batch_reports")
 
 
+def _is_truly_verified(rec: dict) -> bool:
+    """
+    A CVE is TRULY VERIFIED only when dynamic_verify.verified=True.
+    outer verified=True alone is NOT enough — it may be set by static/LLM analysis.
+    This prevents false positives from LLM-reasoned hypotheses.
+    """
+    dv = rec.get("dynamic_verify") or {}
+    if isinstance(dv, dict):
+        return bool(dv.get("verified", False))
+    # Legacy records: trust outer verified only if dynamic_verify not present at all
+    return bool(rec.get("verified", False))
+
+
 def _count_all_verified() -> int:
-    """Count unique verified CVEs across history and batch reports."""
+    """Count unique DYNAMICALLY VERIFIED CVEs across history and batch reports.
+    Only counts CVEs where dynamic_verify.verified=True to prevent false positives
+    from LLM-reasoned hypotheses or static analysis."""
     seen: set[str] = set()
-    # From history (primary source — batch CVEs are imported here too)
+    # From history
     try:
         for fname in os.listdir(_HISTORY_DIR):
             if not fname.endswith(".json"):
@@ -74,7 +89,7 @@ def _count_all_verified() -> int:
             try:
                 with open(os.path.join(_HISTORY_DIR, fname), encoding="utf-8") as fh:
                     rec = json.load(fh)
-                if rec.get("verified"):
+                if _is_truly_verified(rec):
                     cve = rec.get("cve_id", "")
                     if cve:
                         seen.add(cve)
@@ -82,7 +97,7 @@ def _count_all_verified() -> int:
                 pass
     except Exception:
         pass
-    # Also check batch for any not yet imported into history
+    # Also check batch
     try:
         for fname in os.listdir(_BATCH_DIR):
             if not fname.endswith(".json"):
@@ -90,7 +105,7 @@ def _count_all_verified() -> int:
             try:
                 with open(os.path.join(_BATCH_DIR, fname), encoding="utf-8") as fh:
                     rec = json.load(fh)
-                if rec.get("verified"):
+                if _is_truly_verified(rec):
                     seen.add(fname[:-5])
             except Exception:
                 pass
