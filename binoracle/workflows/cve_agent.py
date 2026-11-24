@@ -11741,14 +11741,37 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                           f"el retry loop no podra cambiarlo -- {notes.get('endpoint')}") if es else
                          (f"endpoint locked (poc/analyst lock): "
                           f"retry loop cannot change it -- {notes.get('endpoint')}"))
-                wr = _retry_or_keep_lab_alive(
-                    keep_lab_on_failure, step, es, wr, lambda: _run_evidence_retry_loop(
+                def _do_wppt_retry():
+                    _use_auto_dev_pt = (
+                        llm is not None
+                        and getattr(llm, "available", lambda: False)()
+                        and not keep_lab_on_failure
+                    )
+                    if _use_auto_dev_pt:
+                        try:
+                            from .exploit_dev import run_wp_exploit_dev, ExploitParams as _EP
+                            _ep0 = _EP.from_notes(notes)
+                            _ep0.param = path_p or _ep0.param
+                            return run_wp_exploit_dev(
+                                llm=llm, cve_id=inv.cve_id, vuln_class=inv.vuln_class,
+                                on_step=step, lang=lang,
+                                attempt_fn_ep_param=_attempt_wppt,
+                                initial=_ep0,
+                                extra_nonce_pages=pt_extra_nonce_pages,
+                                extra_setup_trigger_paths=pt_extra_setup_trigger_paths,
+                                lock_endpoint=_pt_ep_lock,
+                                max_attempts=_RETRY_MAX_ATTEMPTS,
+                            )
+                        except Exception:
+                            pass
+                    return _run_evidence_retry_loop(
                         llm, step, es, _PATH_TRAVERSAL_RETRY_SYS,
                         _PATH_TRAVERSAL_RETRY_EVIDENCE_KEYS, _attempt_wppt, wr,
                         notes.get("endpoint"), path_p, technique_label="path-traversal WordPress",
                         on_suggestion=_on_wppt_suggestion,
                         lock_endpoint=_pt_ep_lock,
-                        lock_param=_pt_param_lock))
+                        lock_param=_pt_param_lock)
+                wr = _retry_or_keep_lab_alive(keep_lab_on_failure, step, es, wr, _do_wppt_retry)
                 inv.dynamic_verify = {"attempted": True, "available": wr.available,
                                       "ok": wr.ok, "verified": wr.verified, "detail": wr.detail,
                                       "logs": wr.logs}
@@ -13039,8 +13062,36 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     _hueco_ctx += (" Razona desde el codigo real del plugin para corregir el "
                                    "intento — no desde un PoC publico (no existe).")
                     _sqli_retry_sys_wp = _SQLI_RETRY_SYS.rstrip() + _hueco_ctx
-                wr = _retry_or_keep_lab_alive(
-                    keep_lab_on_failure, step, es, wr, lambda: _run_evidence_retry_loop(
+                # Autonomous exploit dev loop: replaces _run_evidence_retry_loop for SQLi.
+                # Gives the LLM full attempt history + can mutate endpoint/param/technique/
+                # method/payload/auth/nonce_page/setup_page instead of only endpoint+param.
+                def _do_sqli_retry():
+                    _use_auto_dev = (
+                        llm is not None
+                        and getattr(llm, "available", lambda: False)()
+                        and not keep_lab_on_failure
+                    )
+                    if _use_auto_dev:
+                        try:
+                            from .exploit_dev import run_wp_exploit_dev, ExploitParams as _EP
+                            _ep0 = _EP.from_notes(notes)
+                            _ep0.param = sqli_p or _ep0.param
+                            _ep0.endpoint = notes.get("endpoint") or ""
+                            _ep0.technique = (notes.get("sqli_technique") or "")
+                            return run_wp_exploit_dev(
+                                llm=llm, cve_id=inv.cve_id, vuln_class=inv.vuln_class,
+                                on_step=step, lang=lang,
+                                attempt_fn_ep_param=_attempt_sqli,
+                                initial=_ep0,
+                                extra_nonce_pages=extra_nonce_pages,
+                                extra_setup_trigger_paths=extra_setup_trigger_paths,
+                                lock_endpoint=_ep_lock_active,
+                                alt_endpoints=list(notes.get("alt_endpoints") or []),
+                                max_attempts=_SQLI_RETRY_MAX_ATTEMPTS,
+                            )
+                        except Exception:
+                            pass  # fall through to legacy loop on import/runtime error
+                    return _run_evidence_retry_loop(
                         llm, step, es, _sqli_retry_sys_wp, _SQLI_RETRY_EVIDENCE_KEYS, _attempt_sqli,
                         wr, notes.get("endpoint"), sqli_p, technique_label="SQLi WordPress",
                         max_attempts=_SQLI_RETRY_MAX_ATTEMPTS, on_suggestion=_on_sqli_suggestion,
@@ -13048,7 +13099,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         lock_endpoint=_ep_lock_active,
                         lock_param=bool((notes.get("analyst_endpoint_lock")
                                          or notes.get("poc_raw_http_lock")) and sqli_p),
-                        alt_endpoints=notes.get("alt_endpoints") or []))
+                        alt_endpoints=notes.get("alt_endpoints") or [])
+                wr = _retry_or_keep_lab_alive(keep_lab_on_failure, step, es, wr, _do_sqli_retry)
                 # Fix 4: acumular señal parcial del ultimo intento para cross-lab diagnosis
                 if not wr.verified and wr.available:
                     _ev_acc = getattr(wr, "evidence", {}) or {}
