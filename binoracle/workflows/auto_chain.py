@@ -1799,6 +1799,17 @@ def _render_chain_log(result: ChainResult, lang: str = "es",
     if _osv_pkgs:
         out.append(f"- **Paquetes OSV**: {'; '.join(_osv_pkgs[:2])}")
     out.append(f"- **Risk**: {result.risk_label}")
+    # Exploitation urgency signal — only shown when signals exceed thresholds
+    _epss_val = result.epss_score or 0.0
+    _epss_pct_val = result.epss_pct or 0.0
+    if result.in_cisa_kev:
+        out.append("- **Urgencia**: ACTIVAMENTE EXPLOTADA (CISA KEV) — parchear inmediatamente")
+    elif _epss_val >= 0.90:
+        out.append(f"- **Urgencia**: EXPLOTACIÓN MUY PROBABLE ({_epss_val:.0%} EPSS) — "
+                   f"mayor probabilidad de explotación que el {_epss_pct_val:.0f}% de CVEs")
+    elif _epss_val >= 0.60:
+        out.append(f"- **Urgencia**: EXPLOTACIÓN PROBABLE ({_epss_val:.0%} EPSS, "
+                   f"percentil {_epss_pct_val:.0f})")
     out.append(f"- **Verificado**: {'SÍ ✓' if result.verified else 'NO ✗'}")
     _conf_pct = int(result.engine_confidence * 100)
     _conf_level = ("ALTO" if result.engine_confidence >= 0.80 else
