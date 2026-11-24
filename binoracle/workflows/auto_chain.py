@@ -3321,15 +3321,29 @@ def auto_queue_nvd(days_back: int = 2, min_cvss: float = 7.0,
 
     # Boost web-relevant CVEs within the filtered list.
     # Additional boost from historical stack verification rate (learned from past runs).
+    # Vuln class keywords that the engine can verify — exact matches score +1.5 each
+    _VERIFIABLE_VULN_CLASSES = [
+        "sql injection", "sqli", "xss", "cross-site scripting",
+        "path traversal", "directory traversal", "lfi", "local file inclusion",
+        "ssrf", "server-side request forgery",
+        "rce", "remote code execution", "command injection",
+        "insecure deserialization", "authentication bypass", "auth bypass",
+        "missing authorization", "broken access control", "idor",
+        "open redirect", "csrf", "cross-site request forgery",
+        "ssti", "server-side template injection",
+        "jwt", "privilege escalation", "nosql injection",
+    ]
     def _triage_score(e) -> float:
         _d = e.description.lower()
         _web_score = sum(1 for _pw in _PREFER_PATTERNS if _pw in _d)
+        # Bonus for explicitly named verifiable vuln classes — the engine has precheck rules for these
+        _vc_score = sum(1.5 for _vc in _VERIFIABLE_VULN_CLASSES if _vc in _d)
         # Dynamic boost: if we have good verification rate on this stack, prioritize
         _stack_boost = max(
             (_vr * 2.0 for _st, _vr in _verified_stacks.items() if _st in _d),
             default=0.0,
         )
-        return _web_score + _stack_boost + e.cvss_score / 10.0
+        return _web_score + _vc_score + _stack_boost + e.cvss_score / 10.0
 
     # Apply priority_mode sort
     _cms_kws = ("wordpress", "drupal", "joomla", "wp-")
