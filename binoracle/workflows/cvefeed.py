@@ -229,6 +229,11 @@ class NVDCVEEntry:
     cvss_score: float
     published: str
     web_related: bool
+    references: list = None          # type: ignore[assignment]
+    in_cisa_kev: bool = False
+    epss_score: float = 0.0
+    epss_pct: float = 0.0
+    source: str = "nvd"              # "nvd" | "ghsa" | "osv"
 
 
 def fetch_nvd_recent(days_back: int = 3, min_cvss: float = 6.0,
@@ -323,3 +328,234 @@ def poll_nvd_new(days_back: int = 2, min_cvss: float = 7.0,
     if new:
         _nvd_save_seen(new[0].cve_id)
     return new
+
+
+# ── GitHub Security Advisories (GHSA) ─────────────────────────────────────────
+
+_GHSA_STATE_FILE = os.path.join(
+    os.environ.get("BINORACLE_CACHE_DIR") or os.path.join(
+        os.path.expanduser("~"), ".cache", "binoracle"),
+    "ghsa_last_seen.json")
+
+_WEB_ECOSYSTEMS = frozenset(
+    ["npm", "pip", "composer", "rubygems", "go", "rust", "maven", "nuget",
+     "pub", "hex", "erlang", "swift", "actions"])
+
+_WEB_CWE_IDS = frozenset(
+    ["CWE-79", "CWE-89", "CWE-22", "CWE-78", "CWE-918", "CWE-611",
+     "CWE-502", "CWE-94", "CWE-287", "CWE-434", "CWE-601",
+     "CWE-352", "CWE-362", "CWE-776", "CWE-400"])
+
+
+def fetch_ghsa_recent(days_back: int = 3, min_cvss: float = 6.0,
+                      timeout: float = 20.0) -> List[NVDCVEEntry]:
+    """Fetch recent advisories from the GitHub Advisory Database (GHSA) API.
+
+    Uses the public GraphQL API — no authentication required for public advisories.
+    Returns NVDCVEEntry objects (source="ghsa") filtered to web ecosystems.
+    Best-effort: returns [] on any error.
+    """
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+    cutoff = (_dt.now(_tz.utc) - _td(days=days_back)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    query = """
+    query($after: String) {
+      securityAdvisories(
+        publishedSince: "%s"
+        orderBy: {field: PUBLISHED_AT, direction: DESC}
+        first: 100
+        after: $after
+      ) {
+        nodes {
+          ghsaId
+          summary
+          severity
+          cvss { score }
+          cwes(first: 5) { nodes { cweId } }
+          identifiers { type value }
+          publishedAt
+          vulnerabilities(first: 5) {
+            nodes { package { ecosystem name } }
+          }
+        }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+    """ % cutoff
+
+    entries: List[NVDCVEEntry] = []
+    try:
+        import json as _j
+        body = _j.dumps({"query": query, "variables": {"after": None}}).encode()
+        req = urllib.request.Request(
+            "https://api.github.com/graphql",
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": "binoracle/cvefeed",
+                # Public advisories don't need a token; add Accept to avoid 406
+                "Accept": "application/json",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = _j.loads(resp.read())
+        nodes = (data.get("data") or {}).get("securityAdvisories", {}).get("nodes") or []
+        for node in nodes:
+            cvss = float((node.get("cvss") or {}).get("score") or 0)
+            if cvss < min_cvss:
+                continue
+            # Resolve CVE-ID from identifiers
+            cve_id = ""
+            for ident in (node.get("identifiers") or []):
+                if ident.get("type") == "CVE":
+                    cve_id = ident["value"]
+                    break
+            if not cve_id:
+                cve_id = node.get("ghsaId", "")
+            ecosystems = {
+                (v.get("package") or {}).get("ecosystem", "").lower()
+                for v in (node.get("vulnerabilities") or {}).get("nodes") or []
+            }
+            cwes = [
+                c.get("cweId", "") for c in
+                (node.get("cwes") or {}).get("nodes") or []
+            ]
+            web_related = bool(
+                ecosystems & _WEB_ECOSYSTEMS or
+                set(cwes) & _WEB_CWE_IDS
+            )
+            entries.append(NVDCVEEntry(
+                cve_id=cve_id,
+                description=node.get("summary", ""),
+                cvss_score=cvss,
+                published=node.get("publishedAt", ""),
+                web_related=web_related,
+                references=[],
+                source="ghsa",
+            ))
+    except Exception:
+        pass
+    return entries
+
+
+def poll_ghsa_new(days_back: int = 2, min_cvss: float = 7.0) -> List[NVDCVEEntry]:
+    """Return GHSA advisories not seen since last call."""
+    entries = fetch_ghsa_recent(days_back=days_back, min_cvss=min_cvss)
+    try:
+        import json as _j
+        seen_ids: set = set()
+        if os.path.exists(_GHSA_STATE_FILE):
+            seen_ids = set(_j.load(open(_GHSA_STATE_FILE)))
+        new = [e for e in entries if e.cve_id not in seen_ids]
+        if new:
+            seen_ids.update(e.cve_id for e in new)
+            os.makedirs(os.path.dirname(_GHSA_STATE_FILE), exist_ok=True)
+            _j.dump(list(seen_ids)[-500:], open(_GHSA_STATE_FILE, "w"))
+        return new
+    except Exception:
+        return entries
+
+
+# ── OSV.dev ────────────────────────────────────────────────────────────────────
+
+_OSV_STATE_FILE = os.path.join(
+    os.environ.get("BINORACLE_CACHE_DIR") or os.path.join(
+        os.path.expanduser("~"), ".cache", "binoracle"),
+    "osv_last_seen.json")
+
+_OSV_ECOSYSTEMS = ["npm", "PyPI", "Packagist", "RubyGems", "Go",
+                   "Maven", "NuGet", "Pub", "Hex", "crates.io"]
+
+
+def fetch_osv_recent(days_back: int = 3, min_cvss: float = 6.0,
+                     timeout: float = 25.0) -> List[NVDCVEEntry]:
+    """Fetch recent advisories from OSV.dev for web ecosystems.
+
+    Queries the OSV batch API for each web ecosystem. Best-effort: returns []
+    on error. Rate-limit: OSV allows ~1000 req/min unauthenticated.
+    """
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+    import json as _j
+
+    cutoff = (_dt.now(_tz.utc) - _td(days=days_back)).isoformat()
+    entries: List[NVDCVEEntry] = []
+    seen_cve_ids: set = set()
+
+    for ecosystem in _OSV_ECOSYSTEMS[:6]:  # limit to 6 ecosystems to avoid hammering API
+        try:
+            payload = _j.dumps({
+                "query": {
+                    "package": {"ecosystem": ecosystem},
+                },
+                "page_size": 50,
+            }).encode()
+            req = urllib.request.Request(
+                "https://api.osv.dev/v1/query",
+                data=payload,
+                headers={"Content-Type": "application/json",
+                         "User-Agent": "binoracle/cvefeed"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = _j.loads(resp.read())
+            vulns = data.get("vulns") or []
+            for vuln in vulns:
+                modified = vuln.get("modified", "")
+                if modified and modified < cutoff:
+                    continue
+                # Resolve CVE-ID
+                cve_id = ""
+                for alias in (vuln.get("aliases") or []):
+                    if alias.startswith("CVE-"):
+                        cve_id = alias
+                        break
+                if not cve_id:
+                    cve_id = vuln.get("id", "")
+                if cve_id in seen_cve_ids:
+                    continue
+                # Score: use database_specific.severity or fall back to 7.0
+                cvss = 0.0
+                for sev in (vuln.get("severity") or []):
+                    if sev.get("type") == "CVSS_V3":
+                        import re as _re
+                        _sm = _re.search(r"/CVSS:3\.[01]/.*", sev.get("score", ""))
+                        if _sm:
+                            # Parse score from vector — just use 7.5 as default for CVSS_V3
+                            cvss = 7.5
+                        break
+                if cvss < min_cvss:
+                    cvss = 7.0  # treat as medium when no score available
+                summary = (vuln.get("summary") or
+                           (vuln.get("details") or "")[:200])
+                seen_cve_ids.add(cve_id)
+                entries.append(NVDCVEEntry(
+                    cve_id=cve_id,
+                    description=summary,
+                    cvss_score=cvss,
+                    published=vuln.get("published", ""),
+                    web_related=True,  # already filtered by web ecosystem
+                    references=[r.get("url", "") for r in (vuln.get("references") or [])[:5]],
+                    source="osv",
+                ))
+        except Exception:
+            continue
+    return entries
+
+
+def poll_osv_new(days_back: int = 2, min_cvss: float = 7.0) -> List[NVDCVEEntry]:
+    """Return OSV advisories not seen since last call."""
+    entries = fetch_osv_recent(days_back=days_back, min_cvss=min_cvss)
+    try:
+        import json as _j
+        seen_ids: set = set()
+        if os.path.exists(_OSV_STATE_FILE):
+            seen_ids = set(_j.load(open(_OSV_STATE_FILE)))
+        new = [e for e in entries if e.cve_id not in seen_ids]
+        if new:
+            seen_ids.update(e.cve_id for e in new)
+            os.makedirs(os.path.dirname(_OSV_STATE_FILE), exist_ok=True)
+            _j.dump(list(seen_ids)[-500:], open(_OSV_STATE_FILE, "w"))
+        return new
+    except Exception:
+        return entries

@@ -3605,6 +3605,23 @@ def auto_queue_nvd(days_back: int = 2, min_cvss: float = 7.0,
 
     step(f"auto_queue_nvd: consultando NVD (últimos {days_back}d, CVSS≥{min_cvss}, modo={priority_mode})…")
     entries = poll_nvd_new(days_back=days_back, min_cvss=min_cvss, web_only=web_only)
+
+    # Additional sources: GHSA + OSV.dev (opt-in via BINORACLE_EXTRA_SOURCES=1)
+    if os.environ.get("BINORACLE_EXTRA_SOURCES", "").strip() in ("1", "true", "yes"):
+        try:
+            from .cvefeed import poll_ghsa_new, poll_osv_new
+            _ghsa = poll_ghsa_new(days_back=days_back, min_cvss=min_cvss)
+            _osv = poll_osv_new(days_back=days_back, min_cvss=min_cvss)
+            _extra = _ghsa + _osv
+            if _extra:
+                # Deduplicate: skip if CVE-ID already in NVD batch
+                _nvd_ids = {e.cve_id for e in entries}
+                _extra_new = [e for e in _extra if e.cve_id not in _nvd_ids]
+                entries = entries + _extra_new
+                step(f"auto_queue_nvd: +{len(_ghsa)} GHSA, +{len(_osv)} OSV "
+                     f"({len(_extra_new)} nuevos tras dedup con NVD)")
+        except Exception as _src_e:
+            step(f"auto_queue_nvd: fuentes extra error (non-fatal): {_src_e}")
     if not entries:
         step("auto_queue_nvd: sin CVEs nuevos")
         return []
