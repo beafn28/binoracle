@@ -132,8 +132,28 @@ def gate_findings(findings, ledger: "GroundingLedger"):
     for f in findings:
         ev = (f.evidence or "").strip()
         # 1) evidence must be non-empty and correspond to something we actually observed.
+        # FIX (2026-11-24): the old fallback was `or "src" in ev.lower()` -- a bare substring
+        # check that passes for ANY evidence text containing the literal "src" anywhere, which
+        # includes every well-formed citation like "[src: gdb]" -- exactly the format the
+        # system prompt instructs the model to use. In practice this made the traceability
+        # check a near no-op: a finding citing a fully fabricated symbol/address (e.g.
+        # "[src: gdb]" attached to a sym. name that never appeared in any tool output) still
+        # passed as "traceable" purely because it contained the word "src". Reproduced live
+        # with a synthetic fabricated-symbol evidence string before fixing. Replaced with the
+        # same real check `fabricated_citations()` already uses elsewhere in this file for the
+        # final-answer prose: extract the actual `[src: X]` citation and verify X against a
+        # source/tool the agent genuinely ran, instead of just checking the tag's presence.
+        cited_ok = False
+        for _cite in re.findall(r"\[src:\s*([^\]]+)\]", ev, re.IGNORECASE):
+            _cl = _cite.strip().lower()
+            if not _cl:
+                continue
+            if (_cl in ledger_sources or any(_cl in s or s in _cl for s in ledger.sources())
+                    or bool(set(re.findall(r"[a-z0-9_]{4,}", _cl)) & ledger._known_tokens())):
+                cited_ok = True
+                break
         traceable = bool(ev) and (any(tok and tok.lower() in ledger_blob
-                                      for tok in _evidence_tokens(ev)) or "src" in ev.lower())
+                                      for tok in _evidence_tokens(ev)) or cited_ok)
         if not ev or not traceable:
             if f.verdict != "unverified":
                 notes.append(f"downgraded '{f.title}' to unverified (evidence not traceable to a tool result)")
