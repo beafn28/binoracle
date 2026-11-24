@@ -2092,32 +2092,35 @@ main {
 .corr-hint  { font-size: 10px; color: var(--dim); font-weight: 400; }
 .corr-grid  { display: flex; flex-direction: column; gap: 2px; margin-top: 6px; }
 .corr-row   {
-  display: flex; flex-direction: column; gap: 3px;
-  padding: 7px 10px; border-radius: 5px; cursor: pointer;
+  display: flex; flex-direction: column;
+  padding: 6px 10px; border-radius: 5px; cursor: pointer;
   border: 1px solid transparent;
   transition: background .12s, border-color .12s;
 }
-.corr-row:hover { background: rgba(99,179,237,.06); border-color: rgba(99,179,237,.2); }
+.corr-row:hover,
+.corr-row.corr-row-open { background: rgba(99,179,237,.05); border-color: rgba(99,179,237,.15); }
 .corr-row:hover .corr-investigate-btn { opacity: 1; }
-.corr-row-top   { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.corr-row-open .corr-investigate-btn  { opacity: .8; }
+.corr-row-arrow { font-size: 9px; color: var(--cyan); flex-shrink: 0; min-width: 12px; }
+.corr-row-top   { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
 .corr-cve-id    { font-family: var(--mono); font-size: 12px; color: var(--cyan); font-weight: 700; }
-.corr-row:hover .corr-cve-id { text-decoration: underline; }
 .corr-score-badge { font-size: 10px; font-weight: 700; font-family: var(--mono); }
 .corr-rel-tag   { font-size: 10px; color: var(--dim); background: rgba(255,255,255,.05); padding: 1px 5px; border-radius: 3px; }
 .corr-hist-badge { font-size: 9px; font-weight: 700; padding: 1px 5px; border-radius: 3px; font-family: var(--mono); }
 .corr-hist-conf  { background: rgba(74,222,128,.15); color: #4ade80; }
 .corr-hist-fail  { background: rgba(255,255,255,.07); color: var(--dim); }
 .corr-investigate-btn {
-  margin-left: auto; font-size: 10px; color: var(--cyan); opacity: 0;
-  transition: opacity .15s; white-space: nowrap;
+  margin-left: auto; background: none; border: 1px solid rgba(99,179,237,.3);
+  border-radius: 3px; padding: 2px 8px; cursor: pointer;
+  font-size: 10px; color: var(--cyan); opacity: 0;
+  transition: opacity .15s, background .12s; white-space: nowrap; font-family: var(--mono);
 }
-.corr-desc { font-size: 11px; color: var(--dim); line-height: 1.5; padding-left: 2px; }
-.corr-expand-btn {
-  background: none; border: none; cursor: pointer; color: var(--cyan);
-  font-size: 10px; padding: 0 0 0 4px; opacity: .7;
-  font-family: var(--mono);
+.corr-investigate-btn:hover { background: rgba(99,179,237,.12); }
+.corr-desc-body {
+  font-size: 11px; color: var(--dim); line-height: 1.6;
+  padding: 6px 4px 2px 16px; border-left: 2px solid rgba(99,179,237,.2);
+  margin-top: 4px;
 }
-.corr-expand-btn:hover { opacity: 1; }
 .pi-link { color: var(--cyan); text-decoration: none; font-family: var(--mono); font-size: 11px; }
 .pi-link:hover { text-decoration: underline; }
 .pi-msg { color: var(--dim); font-size: 11px; }
@@ -2947,7 +2950,7 @@ main {
       </button>
       <div class="corr-grid" id="${gridId}" style="display:none">`;
 
-    for (const c of related.slice(0, 8)) {
+    for (const c of related.slice(0, 12)) {
       const sc = scoreLabel(c.cvss);
       const hist = histLookup[(c.cve_id||'').toUpperCase()];
       const histBadge = hist ? (hist.verified
@@ -2955,32 +2958,25 @@ main {
         : '<span class="corr-hist-badge corr-hist-fail">tested</span>')
         : '';
       const fullDesc = (c.desc || '').trim();
-      const previewLen = 85;
-      const needsExpand = fullDesc.length > previewLen;
-      const preview = needsExpand ? fullDesc.slice(0, previewLen).replace(/\s\S+$/, '') + '…' : fullDesc;
       const uid = 'corr-' + c.cve_id.replace(/[^a-z0-9]/gi,'');
       html += `
-        <div class="corr-row" onclick="investigateRelated(${JSON.stringify(c.cve_id)})">
+        <div class="corr-row" id="${uid}-row" onclick="
+          const body=document.getElementById('${uid}-body');
+          const arrow=document.getElementById('${uid}-arrow');
+          const open=body.style.display!=='none';
+          body.style.display=open?'none':'block';
+          arrow.textContent=open?'▸':'▾';
+          document.getElementById('${uid}-row').classList.toggle('corr-row-open',!open);
+        ">
           <div class="corr-row-top">
+            <span class="corr-row-arrow" id="${uid}-arrow">▸</span>
             <span class="pi-cve-id corr-cve-id">${escHtml(c.cve_id)}</span>
             <span class="corr-score-badge" style="color:${sc.col}">${sc.label}</span>
             <span class="corr-rel-tag">${relIcon(c.relation)} ${escHtml(c.relation||'')}</span>
             ${histBadge}
-            <span class="corr-investigate-btn">Investigate →</span>
+            <button class="corr-investigate-btn" onclick="event.stopPropagation();investigateRelated(${JSON.stringify(c.cve_id)})">Investigate →</button>
           </div>
-          <div class="corr-desc">
-            <span id="${uid}-preview">${escHtml(preview)}</span>
-            ${needsExpand ? `<span id="${uid}-full" style="display:none">${escHtml(fullDesc)}</span>
-            <button class="corr-expand-btn" id="${uid}-btn"
-              onclick="event.stopPropagation();
-                const p=document.getElementById('${uid}-preview'),
-                      f=document.getElementById('${uid}-full'),
-                      b=document.getElementById('${uid}-btn');
-                const open=f.style.display!=='none';
-                p.style.display=open?'':'none';
-                f.style.display=open?'none':'';
-                b.textContent=open?'▾ more':'▴ less';">▾ more</button>` : ''}
-          </div>
+          <div class="corr-desc-body" id="${uid}-body" style="display:none">${escHtml(fullDesc)}</div>
         </div>`;
     }
     html += '</div></div>';

@@ -9172,6 +9172,11 @@ def _scaffold_pip_lab(target: str, version: str, vuln_class: str,
     # - Gradio (CVE-2024-1561): servidor en 7860. Con EXPOSE 5000, discover_http() nunca
     #   alcanza el servidor y el lab se cuelga esperando HTTP a tiempo.
     _pip_server_ports: dict = {"gradio": 7860}
+    # Transitive dependency pins for packages with known upstream breakage.
+    # gradio<4.20 imports huggingface_hub.HfFolder which was removed in >=0.26.0.
+    _pip_extra_constraints: dict = {
+        "gradio": "huggingface_hub<0.26.0",
+    }
     _pkg_lower = pin_name.lower()
     if _pkg_lower in _pip_server_ports:
         _svc_port = _pip_server_ports[_pkg_lower]
@@ -9180,8 +9185,10 @@ def _scaffold_pip_lab(target: str, version: str, vuln_class: str,
             _py_img = _bpi()
         except Exception:
             _py_img = "python:3.11-slim"
-        _pip_install_line = (f"RUN pip install --no-cache-dir '{pin_name}=={version}'"
-                             if version else f"RUN pip install --no-cache-dir '{pin_name}'")
+        _extra_pin = _pip_extra_constraints.get(_pkg_lower, "")
+        _base_pin = f"'{pin_name}=={version}'" if version else f"'{pin_name}'"
+        _all_pins = f"{_base_pin} '{_extra_pin}'" if _extra_pin else _base_pin
+        _pip_install_line = f"RUN pip install --no-cache-dir {_all_pins}"
         _df = "\n".join([
             f"FROM {_py_img}",
             "WORKDIR /app",
@@ -16664,9 +16671,9 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
             inv._correlation = {
                 "component": _corr.component,
                 "related": [{"cve_id": c.cve_id, "cvss": c.cvss_score,
-                              "relation": c.relation, "desc": c.description[:120]}
-                            for c in _corr.related[:8]],
-                "priority_order": _corr.priority_order[:8],
+                              "relation": c.relation, "desc": c.description[:300]}
+                            for c in _corr.related[:15]],
+                "priority_order": _corr.priority_order[:15],
             }
             step(f"[correlate] {len(_corr.related)} CVEs relacionados con {_corr.component}" if es else
                  f"[correlate] {len(_corr.related)} related CVEs for {_corr.component}")
