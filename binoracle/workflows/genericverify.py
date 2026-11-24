@@ -4086,6 +4086,7 @@ def verify_generic_header_bypass(
     bypass_url: Optional[str] = None,
     dockerfile_body: str = "", extra_files: Optional[dict] = None,
     pkg_version: str = "",
+    vuln_class: str = "",
 ) -> WpVerifyResult:
     """Verifica un bypass de autorizacion via CABECERA HTTP o URL manipulada.
 
@@ -4197,6 +4198,19 @@ def verify_generic_header_bypass(
                 (f" y el cuerpo contiene '{confirm_string}'" if confirm_string else "") +
                 " -- el control de autorizacion fue eludido"
             )
+            # Impact escalation: probe what this unprotected access can actually do
+            _ESCALATE_CLASSES = {"missing-authorization", "auth-bypass",
+                                  "broken-access-control", "idor"}
+            if vuln_class and vuln_class.lower().replace(" ", "-") in _ESCALATE_CLASSES:
+                _bypass_hdrs = {}
+                if bypass_header and bypass_value:
+                    _bypass_hdrs[bypass_header] = bypass_value
+                _esc = _escalate_missing_auth_impact(
+                    base_url, endpoint, _bypass_hdrs, step, budget_s=60.0)
+                if _esc:
+                    res.evidence["impact_escalation"] = _esc
+                    res.detail += f"\n\nImpacto escalado: {_esc['escalation_summary']}"
+                    step(f"  escalación: {_esc['impact_class']} / {_esc['max_impact_found']}")
             step("capturando evidencia visual (screenshots del laboratorio)...")
             shots, http_caps = _take_generic_screenshots_bypass(
                 base_url, endpoint, m, bypass_header or "bypass_url", bypass_url or bypass_value,
@@ -4254,6 +4268,185 @@ def verify_generic_header_bypass(
     finally:
         step("desmontando el laboratorio generico (contenedores/red/imagen)...")
         lab.teardown()
+
+
+def _escalate_missing_auth_impact(
+    base_url: str,
+    verified_endpoint: str,
+    bypass_headers: dict,
+    on_step,
+    budget_s: float = 60.0,
+) -> dict:
+    """After a missing-auth bypass is confirmed, probe what that access can actually do.
+
+    Strategy (runs inside the lab while the container is still up):
+    1. Enumerate data from the verified endpoint and sibling resource paths.
+    2. Try POST to common creation endpoints (unauthorized write = higher impact).
+    3. Classify the worst impact found across all probes.
+
+    Returns a dict:
+      impact_class: "credential_exposure" | "user_enumeration" | "data_enumeration" |
+                    "unauthorized_creation" | "admin_access" | "unknown"
+      evidence_snippets: list of {url, status, data_preview}
+      max_impact_found: "critical" | "high" | "medium" | "low"
+      escalation_summary: one-line human-readable summary
+    """
+    import time as _time
+    import json as _json
+
+    step = on_step or (lambda _m: None)
+    t0 = _time.time()
+
+    _CRED_KEYWORDS = {"password", "passwd", "secret", "token", "api_key", "apikey",
+                      "access_token", "refresh_token", "private_key"}
+    _USER_KEYWORDS = {"email", "username", "user_id", "userId", "login", "account"}
+
+    # Build candidate probe list from the verified endpoint + common admin paths
+    ep_base = verified_endpoint.rstrip("/")
+    # Sub-paths of the verified endpoint
+    _sub_paths = [
+        ep_base,
+        ep_base + "?limit=10",
+        ep_base + "?page=1&per_page=10",
+        ep_base + "/1",
+        ep_base + "/me",
+        ep_base + "/profile",
+    ]
+    # Sibling/admin resource paths always worth trying
+    _sibling_paths = [
+        "/api/users", "/api/v1/users", "/api/v2/users",
+        "/api/admin/users", "/admin/users", "/api/admin",
+        "/api/keys", "/api/apikeys", "/api/api-keys",
+        "/api/settings", "/api/config", "/api/configuration",
+        "/api/secrets", "/api/tokens",
+        "/api/accounts", "/api/members",
+    ]
+    # POST creation probes (try these last, only if budget permits)
+    _creation_paths = [
+        (ep_base, "POST"),
+        ("/api/users", "POST"),
+        ("/api/admin/users", "POST"),
+        ("/api/accounts", "POST"),
+    ]
+
+    get_probes = _sub_paths + _sibling_paths
+
+    snippets: list = []
+    impact_class = "unknown"
+    max_impact = "low"
+    worst_evidence: dict = {}
+
+    # GET probes
+    for path in get_probes[:12]:  # cap at 12 GET probes
+        if _time.time() - t0 > budget_s * 0.75:
+            break
+        url = base_url.rstrip("/") + path
+        try:
+            r = _http_request("GET", url, headers=bypass_headers, timeout=8,
+                              allow_redirects=False)
+            if r.status_code not in range(200, 300):
+                continue
+            body = (getattr(r, "text", "") or "")[:2000]
+            preview = body[:200]
+
+            # Classify this response
+            body_lower = body.lower()
+            _has_cred = any(k in body_lower for k in _CRED_KEYWORDS)
+            _has_user = any(k in body_lower for k in _USER_KEYWORDS)
+            _has_email = "@" in body and ".com" in body
+            _has_array = body.strip().startswith("[") or '"items"' in body or '"data":[' in body
+            _has_admin = "admin" in path.lower()
+
+            if _has_cred:
+                _cls = "credential_exposure"
+                _imp = "critical"
+            elif _has_admin and _has_user:
+                _cls = "admin_access"
+                _imp = "critical"
+            elif _has_email and _has_user:
+                _cls = "user_enumeration"
+                _imp = "high"
+            elif _has_array and len(body) > 200:
+                _cls = "data_enumeration"
+                _imp = "high"
+            elif r.status_code == 200:
+                _cls = "unknown"
+                _imp = "medium"
+            else:
+                continue
+
+            # Update worst impact
+            _imp_rank = {"critical": 4, "high": 3, "medium": 2, "low": 1}
+            if _imp_rank.get(_imp, 0) > _imp_rank.get(max_impact, 0):
+                max_impact = _imp
+                impact_class = _cls
+                worst_evidence = {"url": url, "status": r.status_code,
+                                  "data_preview": preview}
+
+            snippets.append({"url": url, "status": r.status_code,
+                              "data_preview": preview})
+            step(f"  escalación: {path} → {r.status_code} [{_cls}]")
+        except Exception:
+            continue
+
+    # POST creation probes (only if time allows)
+    for path, method in _creation_paths:
+        if _time.time() - t0 > budget_s * 0.90:
+            break
+        if len(snippets) >= 15:
+            break
+        url = base_url.rstrip("/") + path
+        try:
+            test_body = _json.dumps({"email": "test@binoracle.dev",
+                                     "username": "binoracle_test",
+                                     "password": "Test1234!", "role": "admin"})
+            hdrs = dict(bypass_headers)
+            hdrs["Content-Type"] = "application/json"
+            r = _http_request(method, url, headers=hdrs, data=test_body,
+                              timeout=8, allow_redirects=False)
+            if r.status_code in (200, 201, 204):
+                _cls = "unauthorized_creation"
+                _imp = "critical"
+                preview = (getattr(r, "text", "") or "")[:200]
+                snippets.append({"url": url, "status": r.status_code,
+                                  "data_preview": preview,
+                                  "method": method})
+                if _imp == "critical":
+                    impact_class = _cls
+                    max_impact = _imp
+                    worst_evidence = {"url": url, "status": r.status_code,
+                                      "data_preview": preview}
+                step(f"  escalación: POST {path} → {r.status_code} [unauthorized_creation]")
+        except Exception:
+            continue
+
+    if not snippets:
+        return {}
+
+    # Build human-readable summary
+    _cls_labels = {
+        "credential_exposure": "exposición de credenciales/tokens",
+        "user_enumeration": "enumeración de usuarios/emails",
+        "data_enumeration": "enumeración de datos sin autenticación",
+        "unauthorized_creation": "creación no autorizada de recursos/usuarios",
+        "admin_access": "acceso no autorizado a recursos de administración",
+        "unknown": "acceso sin autenticación",
+    }
+    summary = (
+        f"{_cls_labels.get(impact_class, impact_class)} "
+        f"({len(snippets)} endpoint(s) expuesto(s), impacto máx: {max_impact.upper()})"
+    )
+    if worst_evidence:
+        summary += f" — ej. {worst_evidence['url']} → HTTP {worst_evidence['status']}"
+
+    step(f"  escalación completa: {impact_class} / {max_impact} / {len(snippets)} evidencias")
+
+    return {
+        "impact_class": impact_class,
+        "evidence_snippets": snippets[:15],
+        "max_impact_found": max_impact,
+        "escalation_summary": summary,
+    }
 
 
 def _check_xss_reflected(response_body: str, payload: str) -> bool:
@@ -4492,6 +4685,13 @@ def verify_generic_header_bypass_candidates(
                     "vuln_class": vuln_class,
                 }
                 step(f"  VERIFICADO (acceso no autenticado): HTTP {status_normal}")
+                # Escalate impact while lab is still up
+                _esc = _escalate_missing_auth_impact(
+                    base_url, endpoint, {}, step, budget_s=60.0)
+                if _esc:
+                    ok_res.evidence["impact_escalation"] = _esc
+                    ok_res.detail += f"\n\nImpacto escalado: {_esc['escalation_summary']}"
+                    step(f"  escalación: {_esc['impact_class']} / {_esc['max_impact_found']}")
                 return ok_res
             step(f"  endpoint accesible ({status_normal}) pero confirm_string '{confirm_string}' no encontrado")
 
