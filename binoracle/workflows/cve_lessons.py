@@ -500,5 +500,12 @@ def learn_from_chain_result(result: object) -> None:
                         _run["impact_class"] = _impact
                         if _confidence_bonus:
                             _run["confidence_bonus"] = _confidence_bonus
+                        # Augment with patch diff fix_class and OSV package info
+                        _pa = ev.get("patch_analysis", {})
+                        if _pa.get("fix_class") and _pa["fix_class"] != "unknown":
+                            _run["patch_fix_class"] = _pa["fix_class"]
+                        _osv_pkgs = ev.get("osv_packages", [])
+                        if _osv_pkgs:
+                            _run["osv_packages"] = _osv_pkgs[:3]
                         break
                 _save(data)
