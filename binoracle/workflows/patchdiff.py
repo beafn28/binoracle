@@ -269,6 +269,321 @@ def _explain_diff(llm, res: DiffResult) -> str:
     return llm.chat([Message("system", sys), Message("user", user)])
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# SOURCE-LEVEL PATCH DIFF ANALYSIS
+# Parses git diff text (not binaries) to extract vulnerable code patterns and
+# generate precise PoC parameters. Called from auto_chain._run_patch_stage()
+# immediately after the diff text is downloaded.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@dataclass
+class PatchDiffAnalysis:
+    vuln_function: str = ""         # name of changed function
+    vuln_file: str = ""             # path of changed file
+    removed_lines: List[str] = field(default_factory=list)   # - lines (vuln code)
+    added_lines: List[str] = field(default_factory=list)     # + lines (fix code)
+    vuln_pattern: str = ""          # one-line: what was vulnerable
+    patch_pattern: str = ""         # one-line: what was fixed
+    suggested_param: str = ""       # parameter name from removed code
+    suggested_value: str = ""       # payload based on vuln pattern
+    confidence: float = 0.0         # 0-1
+    raw_hunk: str = ""              # the best hunk (for LLM context)
+    fix_class: str = ""             # e.g. "auth_bypass", "sqli", "xss", ...
+
+
+def _parse_hunks(patch_text: str) -> List[dict]:
+    """Split a git diff into per-hunk dicts with file, function context, +/- lines."""
+    hunks: List[dict] = []
+    current_file = ""
+    current_hunk: Optional[dict] = None
+
+    for line in patch_text.splitlines():
+        # Track file being modified
+        if line.startswith("--- a/") or line.startswith("--- "):
+            current_file = line[6:] if line.startswith("--- a/") else line[4:]
+        elif line.startswith("+++ b/") or line.startswith("+++ "):
+            # Prefer the b/ path as the canonical filename
+            current_file = line[6:] if line.startswith("+++ b/") else line[4:]
+        elif line.startswith("diff --git"):
+            # e.g. diff --git a/src/foo.py b/src/foo.py
+            m = re.search(r" b/(.+)$", line)
+            if m:
+                current_file = m.group(1)
+        elif line.startswith("@@"):
+            # Save previous hunk
+            if current_hunk is not None:
+                current_hunk["net_change"] = (
+                    len(current_hunk["added"]) - len(current_hunk["removed"]))
+                hunks.append(current_hunk)
+            # Extract function context from @@ -a,b +c,d @@ context_string
+            ctx_m = re.search(r"@@[^@]+@@\s*(.+)", line)
+            func_ctx = ctx_m.group(1).strip() if ctx_m else ""
+            # Extract just the function name from context (first word after def/func/function)
+            fn_m = re.search(
+                r"(?:def|func|function|void|int|public|private|protected|async\s+function|"
+                r"async\s+def|fn|sub|proc)\s+(\w+)",
+                func_ctx, re.I)
+            func_name = fn_m.group(1) if fn_m else func_ctx.split("(")[0].strip()[:40]
+            current_hunk = {
+                "file": current_file,
+                "function_context": func_name,
+                "removed": [],
+                "added": [],
+                "net_change": 0,
+                "raw": line + "\n",
+            }
+        elif current_hunk is not None:
+            current_hunk["raw"] += line + "\n"
+            if line.startswith("-") and not line.startswith("---"):
+                current_hunk["removed"].append(line[1:])
+            elif line.startswith("+") and not line.startswith("+++"):
+                current_hunk["added"].append(line[1:])
+
+    if current_hunk is not None:
+        current_hunk["net_change"] = (
+            len(current_hunk["added"]) - len(current_hunk["removed"]))
+        hunks.append(current_hunk)
+
+    return hunks
+
+
+# Fix-classification rules: (fix_class, vuln_description, patch_description,
+#                             removed_patterns, added_patterns, confidence)
+_FIX_RULES: List[tuple] = [
+    (
+        "auth_bypass",
+        "missing authorization check",
+        "added auth/permission check",
+        [re.compile(r"(?:if|unless)\s+(?:current_user|user|request\.user|@user|is_logged|"
+                    r"session\[.user|authenticate|require_login)", re.I)],
+        [re.compile(r"(?:authorize|require_permission|check_auth|forbidden|"
+                    r"raise\s+Forbidden|return\s+403|abort\(403\)|"
+                    r"if\s+!?\s*(?:current_user|user|session))", re.I)],
+        0.85,
+    ),
+    (
+        "sqli",
+        "unsanitized SQL parameter interpolation",
+        "added prepared statement / parameterized query",
+        [re.compile(r'(?:f"|f\'|%s\s*%|\.format\(|"\s*\+\s*\w+\s*\+\s*"|'
+                    r'sprintf.*SELECT|query\s*=\s*["\'].*\$|query\s*\+=)', re.I)],
+        [re.compile(r"(?:prepare\(|execute\(\s*\[|executeQuery\(|"
+                    r'"\s*\?\s*"|parameterized|bindParam|'
+                    r"pg\.query\(sql,\s*\[|db\.execute\(sql,\s*\()", re.I)],
+        0.85,
+    ),
+    (
+        "xss",
+        "unescaped user input reflected in HTML output",
+        "added HTML escaping / sanitization",
+        [re.compile(r"(?:echo\s+\$|\.innerHTML\s*=|res\.send\(.*req\.|"
+                    r"Response\.Write\(request|render_template_string\(user|"
+                    r"Markup\(|\.html\(user_)", re.I)],
+        [re.compile(r"(?:htmlspecialchars|htmlentities|escape\(|"
+                    r"sanitize_html|DOMPurify|bleach\.clean|"
+                    r"markupsafe\.escape|html\.escape|encodeURIComponent)", re.I)],
+        0.85,
+    ),
+    (
+        "ssti",
+        "template injection via unsanitized render input",
+        "added template escaping or autoescape",
+        [re.compile(r"(?:render_template_string\(|Environment\(autoescape=False|"
+                    r"Jinja2\.from_string\(user|nunjucks\.renderString\(user|"
+                    r"\.render\(\s*user_input|Template\(request\.)", re.I)],
+        [re.compile(r"(?:autoescape=True|escape_string|markupsafe|"
+                    r"sandbox|SandboxedEnvironment|Markup\.escape)", re.I)],
+        0.85,
+    ),
+    (
+        "command_injection",
+        "unsanitized user input passed to shell/exec",
+        "added shell escaping or input whitelist",
+        [re.compile(r"(?:os\.system\(|subprocess\.[a-z]+\([^)]*\+|"
+                    r"exec\(.*\$|shell=True.*user|`.*\$\{|"
+                    r"popen\(.*\+\s*user|Runtime\.exec\(.*input)", re.I)],
+        [re.compile(r"(?:shlex\.quote|shlex\.split|whitelist|"
+                    r"shell=False|re\.match.*\^\\w|escapeshellarg|"
+                    r"subprocess\.run\(\[|allowlist)", re.I)],
+        0.85,
+    ),
+    (
+        "path_traversal",
+        "path traversal via missing normalization",
+        "added path normalization / sandbox check",
+        [re.compile(r"(?:open\(.*\+\s*user|readFile\(.*\+|"
+                    r"file_get_contents\(\$|include\s*\(\s*\$|"
+                    r"send_file\(user|StreamingResponse\(open\(user)", re.I)],
+        [re.compile(r"(?:os\.path\.normpath|os\.path\.realpath|os\.path\.basename|"
+                    r"Path\(.*resolve|abspath|realpath|"
+                    r"startswith\(base_dir|safe_join)", re.I)],
+        0.85,
+    ),
+    (
+        "open_redirect",
+        "unvalidated redirect to user-supplied URL",
+        "added URL validation / whitelist",
+        [re.compile(r"(?:redirect\(\s*request\.|HttpResponseRedirect\(url|"
+                    r"res\.redirect\(req\.|header\(.Location.*\$)", re.I)],
+        [re.compile(r"(?:is_safe_url|url_has_allowed_host|"
+                    r"urlparse.*netloc|redirect_whitelist|"
+                    r"urllib\.parse\.urlparse\(url\))", re.I)],
+        0.80,
+    ),
+    (
+        "missing_auth_bypass",
+        "missing authentication/authorization guard",
+        "added login-required or permission check",
+        [],  # catch-all with looser scoring below
+        [re.compile(r"(?:@login_required|@require_auth|requireAuth|"
+                    r"ensureAuthenticated|middleware\.auth|"
+                    r"if\s+!user\s*\{|\breject\(401\)|abort\(401\))", re.I)],
+        0.75,
+    ),
+]
+
+# Fallback: if nothing matches, look for generic sanitization removal
+_GENERIC_SANITIZE = re.compile(
+    r"(?:sanitize|validate|filter|strip|clean|escape|encode|decode)", re.I)
+
+
+def _classify_fix(removed: List[str], added: List[str]) -> tuple:
+    """Classify what kind of security fix was applied.
+
+    Returns (fix_class, vuln_pattern, patch_pattern, confidence).
+    """
+    removed_text = "\n".join(removed)
+    added_text = "\n".join(added)
+
+    for fix_class, vuln_desc, patch_desc, removed_pats, added_pats, base_conf in _FIX_RULES:
+        removed_hit = any(p.search(removed_text) for p in removed_pats) if removed_pats else True
+        added_hit = any(p.search(added_text) for p in added_pats) if added_pats else False
+        if removed_hit and added_hit:
+            # Boost confidence if BOTH sides match
+            conf = base_conf + (0.05 if removed_pats and added_pats else 0.0)
+            return fix_class, vuln_desc, patch_desc, min(conf, 0.95)
+
+    # Generic: sanitization function ADDED in diff
+    if _GENERIC_SANITIZE.search(added_text) and not _GENERIC_SANITIZE.search(removed_text):
+        return "injection", "missing input sanitization", "added input sanitization", 0.65
+
+    # Last resort: check if auth-related functions only appear in added
+    _auth_added = re.search(
+        r"(?:auth|permission|access|token|session|login|credential)", added_text, re.I)
+    _auth_removed = re.search(
+        r"(?:auth|permission|access|token|session|login|credential)", removed_text, re.I)
+    if _auth_added and not _auth_removed:
+        return "auth_bypass", "missing auth guard", "added auth check", 0.60
+
+    return "unknown", "unclassified change", "unclassified fix", 0.30
+
+
+# ── Payload suggestion per fix class ─────────────────────────────────────────
+
+_PAYLOADS_FOR_CLASS: Dict[str, str] = {
+    "sqli":              "' OR '1'='1",
+    "xss":               "<script>alert(document.domain)</script>",
+    "ssti":              "{{7*7}}",
+    "command_injection": "; id",
+    "path_traversal":    "../../etc/passwd",
+    "open_redirect":     "https://evil.example.com",
+    "auth_bypass":       "",       # no payload needed; just omit the auth header
+    "missing_auth_bypass": "",
+    "injection":         "'; SELECT 1--",
+    "unknown":           "",
+}
+
+
+# ── Parameter name extractor ─────────────────────────────────────────────────
+
+_PARAM_PATTERNS: List[re.Pattern] = [
+    # PHP superglobals
+    re.compile(r'\$_(?:GET|POST|REQUEST)\s*\[\s*["\'](\w+)["\']'),
+    re.compile(r'\$request->(\w+)(?:\s|\()'),
+    re.compile(r'\$this->input->get\s*\(\s*["\'](\w+)["\']'),
+    # Python / Flask / Django / FastAPI
+    re.compile(r'request\.args\.get\s*\(\s*["\'](\w+)["\']'),
+    re.compile(r'request\.form\s*\[\s*["\'](\w+)["\']'),
+    re.compile(r'request\.POST\s*\.get\s*\(\s*["\'](\w+)["\']'),
+    re.compile(r'request\.GET\s*\.get\s*\(\s*["\'](\w+)["\']'),
+    re.compile(r'data\s*\[\s*["\'](\w+)["\']'),
+    re.compile(r'params\s*\[\s*["\'](\w+)["\']'),
+    # JavaScript / TypeScript (Express, Fastify, Hapi)
+    re.compile(r'req\.query\.(\w+)'),
+    re.compile(r'req\.body\.(\w+)'),
+    re.compile(r'req\.params\.(\w+)'),
+    re.compile(r"ctx\.query\s*\[?\s*['\"](\w+)['\"]"),
+    re.compile(r"ctx\.request\.body\.(\w+)"),
+    # Go (Gin, Echo, Fiber, net/http)
+    re.compile(r'r\.URL\.Query\(\)\.Get\s*\(\s*"(\w+)"'),
+    re.compile(r'c\.Query\s*\(\s*"(\w+)"'),
+    re.compile(r'c\.Param\s*\(\s*"(\w+)"'),
+    re.compile(r'c\.FormValue\s*\(\s*"(\w+)"'),
+    # Ruby (Rails params)
+    re.compile(r'params\s*\[:(\w+)\]'),
+    re.compile(r'params\s*\[\s*["\'](\w+)["\']'),
+]
+
+
+def _extract_param_name(removed: List[str]) -> str:
+    """Scan removed (vulnerable) lines for parameter access patterns."""
+    for line in removed:
+        for pat in _PARAM_PATTERNS:
+            m = pat.search(line)
+            if m:
+                return m.group(1)
+    return ""
+
+
+# ── Main entry point ──────────────────────────────────────────────────────────
+
+def analyze_patch_diff(patch_text: str) -> PatchDiffAnalysis:
+    """Parse a git diff to extract the vulnerable code pattern and suggest a PoC.
+
+    Workflow:
+    1. Split diff into hunks.
+    2. Pick the most significant hunk (most removed+added lines combined).
+    3. Classify the fix type from removed vs added line patterns.
+    4. Extract parameter names from the vulnerable (removed) lines.
+    5. Suggest a payload based on the fix class.
+
+    Returns PatchDiffAnalysis; confidence reflects how certain the classification is.
+    """
+    if not patch_text or len(patch_text) < 20:
+        return PatchDiffAnalysis()
+
+    hunks = _parse_hunks(patch_text)
+    if not hunks:
+        return PatchDiffAnalysis()
+
+    # Pick the hunk with the most combined changed lines (highest signal content)
+    best = max(hunks, key=lambda h: len(h["removed"]) + len(h["added"]))
+
+    fix_class, vuln_pattern, patch_pattern, conf = _classify_fix(
+        best["removed"], best["added"])
+
+    suggested_param = _extract_param_name(best["removed"])
+    suggested_value = _PAYLOADS_FOR_CLASS.get(fix_class, "")
+
+    # Confidence bonus: if we extracted a param name, more confident
+    if suggested_param:
+        conf = min(conf + 0.05, 0.98)
+
+    return PatchDiffAnalysis(
+        vuln_function=best["function_context"],
+        vuln_file=best["file"],
+        removed_lines=best["removed"][:20],   # cap at 20 lines to avoid huge objects
+        added_lines=best["added"][:20],
+        vuln_pattern=vuln_pattern,
+        patch_pattern=patch_pattern,
+        suggested_param=suggested_param,
+        suggested_value=suggested_value,
+        confidence=conf,
+        raw_hunk=best["raw"][:2000],
+        fix_class=fix_class,
+    )
+
+
 def render_patchdiff(res: DiffResult) -> str:
     cve_hdr = f" ({res.cve_id})" if res.cve_id else ""
     out = [

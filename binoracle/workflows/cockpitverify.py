@@ -1,8 +1,10 @@
 """cockpitverify.py — Cockpit CMS web CVE verifier.
 
 Cockpit CMS v2 is a headless PHP CMS (agentejo/cockpit or Cockpit-HQ/Cockpit).
-Authentication: POST /api/user/login → {"token": "..."} (API-key/JWT).
-No database config required — ships with SQLite as default driver.
+Authentication:
+  v1: GET/POST /api/cockpit/authToken?user=admin&password=admin → {"token": "..."}
+  v2: POST /api/user/login → {"_id": ..., "token": "..."}
+No separate database config required — ships with SQLite as default driver.
 
 Supported vuln classes: xss, sqli, ssrf, missing-authorization,
 path-traversal, rce, ssti.
@@ -23,16 +25,36 @@ _COCKPIT_ADMIN_EMAIL = "binoracle@test.local"
 
 def detect_cockpit(source_dir: str) -> bool:
     """Return True if source looks like a Cockpit CMS project."""
-    for marker in ("cockpit.php", "bootstrap/app.php", "modules/Cockpit"):
+    for marker in (
+        "cockpit.php",           # v1 entry point
+        "cockpit/bootstrap.php", # nested install
+        "modules/Cockpit",       # v1 module structure
+        "lib/Cockpit",           # v1 lib structure
+        "storage/cockpit.sqlite",
+        "bootstrap/app.php",     # v2 (Laravel-like bootstrap)
+    ):
         if os.path.exists(os.path.join(source_dir, marker)):
             return True
-    # Composer check
+    # Composer check: agentejo/cockpit (v1) or cockpit-hq/cockpit (v2)
     composer = os.path.join(source_dir, "composer.json")
     if os.path.isfile(composer):
         try:
-            data = json.loads(open(composer).read())
+            data = json.loads(open(composer).read())  # noqa: WPS515
             reqs = {**data.get("require", {}), **data.get("require-dev", {})}
+            name = data.get("name", "").lower()
             if any("cockpit" in k.lower() for k in reqs):
+                return True
+            if "cockpit" in name:
+                return True
+        except Exception:
+            pass
+    # package.json check for "cockpit-core"
+    pkg = os.path.join(source_dir, "package.json")
+    if os.path.isfile(pkg):
+        try:
+            data = json.loads(open(pkg).read())  # noqa: WPS515
+            deps = {**data.get("dependencies", {}), **data.get("devDependencies", {})}
+            if any("cockpit" in k.lower() for k in deps):
                 return True
         except Exception:
             pass
@@ -50,21 +72,18 @@ RUN apt-get update -qq && apt-get install -y -qq \\
     && rm -rf /var/lib/apt/lists/*
 RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
 WORKDIR /var/www/html
-# Install Cockpit CMS v2 (Cockpit-HQ/Cockpit)
-RUN composer create-project cockpit-hq/cockpit cockpit --no-interaction --prefer-dist 2>&1 \\
-    || (echo "cockpit download failed" && exit 1)
-WORKDIR /var/www/html/cockpit
-COPY . /var/www/html/cockpit/
-RUN mkdir -p storage && chmod 777 storage
-# Bootstrap Cockpit with admin user via CLI install script
-RUN php cockpit.php install --username="{_COCKPIT_ADMIN_USER}" \\
+COPY . .
+RUN composer install --no-dev --no-interaction 2>/dev/null || true
+RUN mkdir -p storage/data/cockpit/users storage/cache storage/tmp && chmod -R 777 storage
+# Bootstrap admin user via CLI or fallback JSON write
+RUN php cockpit.php install \\
+    --username="{_COCKPIT_ADMIN_USER}" \\
     --password="{_COCKPIT_ADMIN_PASSWORD}" \\
     --email="{_COCKPIT_ADMIN_EMAIL}" 2>/dev/null || true
-# Fallback: write config manually if CLI fails
+# Fallback: write admin user JSON directly (Cockpit v1 & v2 storage format)
 RUN php -r "
-define('COCKPIT_DIR', '/var/www/html/cockpit');
-\\$storage = COCKPIT_DIR . '/storage';
-\\$users_dir = \\$storage . '/data/cockpit/users';
+define('STORAGE', getcwd() . '/storage');
+\\$users_dir = STORAGE . '/data/cockpit/users';
 if (!is_dir(\\$users_dir)) mkdir(\\$users_dir, 0777, true);
 \\$user = [
     '_id'      => '000000000000000000000001',
@@ -80,46 +99,115 @@ if (!is_dir(\\$users_dir)) mkdir(\\$users_dir, 0777, true);
 file_put_contents(\\$users_dir . '/admin.json', json_encode(\\$user, JSON_PRETTY_PRINT));
 echo 'admin user written';
 " || true
-RUN chown -R www-data:www-data /var/www/html/cockpit
-# Apache config to handle Cockpit's front controller
-RUN echo 'Options -Indexes\\nDirectoryIndex index.php\\n<IfModule mod_rewrite.c>\\nRewriteEngine On\\nRewriteBase /\\nRewriteCond %{{REQUEST_FILENAME}} !-f\\nRewriteRule ^(.*)$ index.php [QSA,L]\\n</IfModule>' \\
-    > /etc/apache2/conf-available/cockpit.conf \\
-    && a2enconf cockpit
+RUN chown -R www-data:www-data /var/www/html
+# Apache rewrite for Cockpit front controller
+RUN echo '<Directory /var/www/html>\\n  Options -Indexes\\n  AllowOverride All\\n  Require all granted\\n</Directory>' \\
+    >> /etc/apache2/apache2.conf && a2enmod rewrite
 EXPOSE {port}
 CMD ["apache2-foreground"]
 """
 
 
 def _get_cockpit_token(base_url: str, step: Callable) -> Optional[str]:
-    """Authenticate to Cockpit API, return API token."""
-    # Cockpit v2 login: POST /api/user/login
-    for login_path in ("/api/user/login", "/auth/login", "/api/auth"):
-        url = base_url + login_path
-        payload = json.dumps({"user": _COCKPIT_ADMIN_USER,
-                              "password": _COCKPIT_ADMIN_PASSWORD})
-        try:
-            r = _http_request(
-                "POST", url, data=payload,
-                headers={"Content-Type": "application/json",
-                         "Accept": "application/json"},
-                timeout=10,
-            )
-            if r.status_code not in range(200, 300):
-                continue
-            body = getattr(r, "body", "") or getattr(r, "text", "") or ""
+    """Authenticate to Cockpit API, return API token.
+
+    Tries v1 endpoints (authToken GET/POST) then v2 (user/login),
+    then tries unauthenticated access as a last resort.
+    """
+    # Strategy 1: Cockpit v1 — GET /api/cockpit/authToken?user=...&password=...
+    v1_get = (f"{base_url}/api/cockpit/authToken"
+              f"?user={_COCKPIT_ADMIN_USER}&password={_COCKPIT_ADMIN_PASSWORD}")
+    try:
+        r = _http_request("GET", v1_get, timeout=10,
+                          headers={"Accept": "application/json"})
+        if r.status in range(200, 300):
             try:
-                data = json.loads(body)
-                # Cockpit v2 returns {"_id":..., "token": "..."}
-                token = (data.get("token") or data.get("api_key") or
-                         data.get("access_token") or "")
+                data = json.loads(r.body or "")
+                token = data.get("token") or data.get("api_key") or ""
                 if token:
-                    step(f"  token Cockpit obtenido via {login_path} (len={len(token)})")
+                    step(f"  cockpit v1 GET authToken OK (len={len(token)})")
                     return str(token)
             except Exception:
                 pass
-        except Exception as e:
-            step(f"  error en Cockpit {login_path}: {e}")
+    except Exception:
+        pass
+
+    # Strategy 2: Cockpit v1 — POST /api/cockpit/authToken
+    try:
+        r = _http_request("POST", base_url + "/api/cockpit/authToken",
+                          data=json.dumps({"user": _COCKPIT_ADMIN_USER,
+                                           "password": _COCKPIT_ADMIN_PASSWORD}),
+                          headers={"Content-Type": "application/json",
+                                   "Accept": "application/json"},
+                          timeout=10)
+        if r.status in range(200, 300):
+            try:
+                data = json.loads(r.body or "")
+                token = data.get("token") or data.get("api_key") or ""
+                if token:
+                    step(f"  cockpit v1 POST authToken OK (len={len(token)})")
+                    return str(token)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # Strategy 3: Cockpit v2 — POST /api/user/login
+    for login_path in ("/api/user/login", "/auth/login", "/api/auth"):
+        try:
+            r = _http_request("POST", base_url + login_path,
+                              data=json.dumps({"user": _COCKPIT_ADMIN_USER,
+                                               "password": _COCKPIT_ADMIN_PASSWORD}),
+                              headers={"Content-Type": "application/json",
+                                       "Accept": "application/json"},
+                              timeout=10)
+            if r.status in range(200, 300):
+                try:
+                    data = json.loads(r.body or "")
+                    token = (data.get("token") or data.get("api_key") or
+                             data.get("access_token") or "")
+                    if token:
+                        step(f"  cockpit v2 login OK via {login_path} (len={len(token)})")
+                        return str(token)
+                except Exception:
+                    pass
+        except Exception:
             continue
+
+    # Strategy 4: Try to create admin via POST /api/accounts/create
+    try:
+        r = _http_request("POST", base_url + "/api/accounts/create",
+                          data=json.dumps({
+                              "user": _COCKPIT_ADMIN_USER,
+                              "email": _COCKPIT_ADMIN_EMAIL,
+                              "password": _COCKPIT_ADMIN_PASSWORD,
+                              "group": "admin",
+                          }),
+                          headers={"Content-Type": "application/json"},
+                          timeout=10)
+        if r.status in range(200, 300):
+            step("  cockpit admin created via /api/accounts/create, retrying login…")
+            # Retry login after creation
+            for lp in ("/api/user/login", "/api/cockpit/authToken"):
+                try:
+                    rl = _http_request("POST", base_url + lp,
+                                       data=json.dumps({"user": _COCKPIT_ADMIN_USER,
+                                                        "password": _COCKPIT_ADMIN_PASSWORD}),
+                                       headers={"Content-Type": "application/json"},
+                                       timeout=10)
+                    if rl.status in range(200, 300):
+                        try:
+                            token = json.loads(rl.body or "").get("token", "")
+                            if token:
+                                return str(token)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    step("  cockpit auth: sin token obtenido")
     return None
 
 
@@ -140,8 +228,8 @@ def verify_cockpit_cve(
 ) -> WpVerifyResult:
     """Verify a Cockpit CMS CVE in a fresh Docker lab.
 
-    Spins up a Cockpit CMS v2 container, optionally authenticates via
-    the REST API, sends the probe request, and checks the response.
+    Spins up a Cockpit CMS container, optionally authenticates via
+    the REST API (v1 or v2 token), sends the probe request, and checks the response.
     """
     step = on_step or (lambda _m: None)
     res = WpVerifyResult()
@@ -155,7 +243,7 @@ def verify_cockpit_cve(
     step("[Cockpit lab] generando Dockerfile…")
     df_body = _cockpit_dockerfile(_COCKPIT_PORT)
 
-    from .genericverify import _bootstrap_generic_lab
+    from .genericverify import _bootstrap_generic_lab, _escalate_missing_auth_impact
     boot = _bootstrap_generic_lab(
         source_dir, step, res, budget_s,
         dockerfile_body=df_body,
@@ -174,9 +262,10 @@ def verify_cockpit_cve(
             step("[Cockpit lab] autenticando…")
             token = _get_cockpit_token(base_url, step)
             if token:
-                # Cockpit accepts Cockpit-Token header or api_key query param
+                # Cockpit accepts Cockpit-Token header, Bearer, or api_key query param
                 headers["Cockpit-Token"] = token
                 headers["Authorization"] = f"Bearer {token}"
+                headers["Api-Key"] = token
             else:
                 res.limitations.append("autenticacion Cockpit fallida — continuando sin token")
                 step("  autenticacion fallida, continuando sin token")
@@ -191,8 +280,8 @@ def verify_cockpit_cve(
         try:
             r = _http_request(m, url, headers=headers, data=body_data,
                               timeout=15, allow_redirects=True)
-            status = r.status_code
-            body = getattr(r, "body", "") or getattr(r, "text", "") or ""
+            status = r.status
+            body = r.body or ""
         except Exception as e:
             res.detail = f"error de red: {e}"
             return res
@@ -219,6 +308,20 @@ def verify_cockpit_cve(
                 + (f" — confirm_string '{confirm_string}' presente" if confirm_string else "")
             )
             step(f"[Cockpit lab] VERIFICADO: HTTP {status}")
+
+            # Impact escalation for missing-auth class
+            _ESCALATE = {"missing-authorization", "auth-bypass",
+                         "broken-access-control", "idor"}
+            if vuln_class and vuln_class.lower().replace(" ", "-") in _ESCALATE:
+                _bypass_hdrs = {}
+                if bypass_header and bypass_value:
+                    _bypass_hdrs[bypass_header] = bypass_value
+                _esc = _escalate_missing_auth_impact(
+                    base_url, endpoint, _bypass_hdrs, step, budget_s=60.0)
+                if _esc:
+                    res.evidence["impact_escalation"] = _esc
+                    res.detail += f"\n\nImpacto escalado: {_esc['escalation_summary']}"
+                    step(f"  escalación: {_esc['impact_class']} / {_esc['max_impact_found']}")
         else:
             res.ok = True
             res.detail = (

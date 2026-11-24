@@ -1177,6 +1177,38 @@ def _run_report_stage(result: ChainResult, step: Callable,
     # Patch diff
     if result.patch_summary:
         md_parts.append(result.patch_summary)
+    # Deep patch analysis section (when available and confident)
+    _pa = result.evidence.get("patch_analysis", {})
+    if _pa and _pa.get("confidence", 0) >= 0.60:
+        _pa_es = lang == "es"
+        _pa_hdr = "## Análisis del parche" if _pa_es else "## Patch Analysis"
+        _pa_rows = [
+            (_pa_hdr, ""),
+            ("| Campo | Valor |" if _pa_es else "| Field | Value |", ""),
+            ("|-------|-------|", ""),
+        ]
+        if _pa.get("vuln_function"):
+            _lbl = "Función vulnerable" if _pa_es else "Vulnerable function"
+            _pa_rows.append((f"| {_lbl} | `{_pa['vuln_function']}` |", ""))
+        if _pa.get("vuln_file"):
+            _lbl = "Archivo" if _pa_es else "File"
+            _pa_rows.append((f"| {_lbl} | `{_pa['vuln_file']}` |", ""))
+        if _pa.get("vuln_pattern"):
+            _lbl = "Patrón vulnerable" if _pa_es else "Vuln pattern"
+            _pa_rows.append((f"| {_lbl} | {_pa['vuln_pattern']} |", ""))
+        if _pa.get("patch_pattern"):
+            _lbl = "Fix aplicado" if _pa_es else "Fix applied"
+            _pa_rows.append((f"| {_lbl} | {_pa['patch_pattern']} |", ""))
+        if _pa.get("suggested_param"):
+            _lbl = "Parámetro sugerido" if _pa_es else "Suggested param"
+            _pa_rows.append((f"| {_lbl} | `{_pa['suggested_param']}` |", ""))
+        if _pa.get("suggested_value"):
+            _lbl = "Payload sugerido" if _pa_es else "Suggested payload"
+            _pa_rows.append((f"| {_lbl} | `{_pa['suggested_value']}` |", ""))
+        _conf_pct = f"{_pa['confidence']:.0%}"
+        _lbl = "Confianza" if _pa_es else "Confidence"
+        _pa_rows.append((f"| {_lbl} | {_conf_pct} |", ""))
+        md_parts.append("\n".join(r[0] for r in _pa_rows))
     # Mitigation bypass
     if result.mitigation_report:
         md_parts.append(result.mitigation_report)

@@ -81,8 +81,20 @@ def record_cve_result(
     bypass_header: str = "",
     bypass_value: str = "",
     vuln_class: str = "",
+    auth_method: str = "",
+    http_method: str = "",
+    confirm_string: str = "",
+    pkg_version: str = "",
 ) -> None:
-    """Record the outcome of one CVE investigation for future learning."""
+    """Record the outcome of one CVE investigation for future learning.
+
+    Extended fields (all optional):
+      auth_method   — e.g. "ghost-jwt", "drf-token", "django-session",
+                       "fastapi-oauth2", "basic-auth", "none"
+      http_method   — e.g. "GET", "POST", "PUT"
+      confirm_string — snippet/keyword that confirmed the vuln
+      pkg_version   — specific package version the lab ran on
+    """
     if not stack:
         return
     data = _load()
@@ -100,14 +112,24 @@ def record_cve_result(
     if cve_id in existing_ids:
         return
 
-    entry["runs"].append({
+    run: dict = {
         "cve_id": cve_id,
         "endpoint": endpoint,
         "verified": verified,
         "bypass_header": bypass_header,
         "bypass_value": bypass_value,
         "vuln_class": vuln_class,
-    })
+    }
+    if auth_method:
+        run["auth_method"] = auth_method
+    if http_method:
+        run["http_method"] = http_method
+    if confirm_string:
+        run["confirm_string"] = confirm_string[:120]
+    if pkg_version:
+        run["pkg_version"] = pkg_version
+
+    entry["runs"].append(run)
     entry["total_count"] += 1
     if verified:
         entry["verified_count"] += 1
@@ -135,6 +157,8 @@ def get_lessons(stack: str) -> dict:
     ep_counter: Counter = Counter()
     bp_counter: Counter = Counter()
     class_counter: Counter = Counter()
+    auth_counter: Counter = Counter()
+    method_counter: Counter = Counter()
     for r in runs:
         ep = (r.get("endpoint") or "").strip()
         if ep and ep not in ("?", "", "unknown", "n/a"):
@@ -146,8 +170,14 @@ def get_lessons(stack: str) -> dict:
         vc = (r.get("vuln_class") or "").strip()
         if vc:
             class_counter[vc] += 1
+        am = (r.get("auth_method") or "").strip()
+        if am and r.get("verified"):
+            auth_counter[am] += 1
+        hm = (r.get("http_method") or "").strip()
+        if hm and r.get("verified"):
+            method_counter[hm] += 1
 
-    return {
+    result = {
         "stack": stack,
         "total_runs": total,
         "verified_rate": verified / total if total else 0.0,
@@ -157,6 +187,11 @@ def get_lessons(stack: str) -> dict:
         ],
         "top_vuln_classes": [vc for vc, _ in class_counter.most_common(3)],
     }
+    if auth_counter:
+        result["working_auth_methods"] = [am for am, _ in auth_counter.most_common(3)]
+    if method_counter:
+        result["top_http_methods"] = [hm for hm, _ in method_counter.most_common(2)]
+    return result
 
 
 def suggest_endpoints(stack: str, vuln_class: str = "") -> List[str]:
