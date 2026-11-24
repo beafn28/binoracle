@@ -2257,6 +2257,22 @@ def run_full_chain(
                     llm_notes["endpoint"] = _bh.endpoint_pattern
                 if not llm_notes.get("confirm_string") and _bh.confirm_string:
                     llm_notes["confirm_string"] = _bh.confirm_string
+
+                # Re-rank alt_endpoints using historical endpoint similarity
+                if llm_notes.get("alt_endpoints"):
+                    try:
+                        from .cve_correlation import rank_alt_endpoints_by_history
+                        _reranked = rank_alt_endpoints_by_history(
+                            llm_notes["alt_endpoints"],
+                            project_name=_corr_project,
+                            vuln_class=llm_notes.get("vuln_class", ""),
+                        )
+                        if _reranked:
+                            llm_notes["alt_endpoints"] = _reranked
+                            step(f"  [2.5] alt endpoints re-rankeados: "
+                                 f"{[a['endpoint'] for a in _reranked[:2]]}")
+                    except Exception:
+                        pass
             else:
                 result.add_step("correlation", "skip", _corr.reasoning[:60])
         except Exception as _ce:

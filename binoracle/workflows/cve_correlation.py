@@ -364,3 +364,116 @@ def find_correlated_cves(
     )
 
     return CorrelationResult(hints=hints, best_hint=best, reasoning=reasoning)
+
+
+def _endpoint_similarity(ep_a: str, ep_b: str) -> float:
+    """Score two API endpoints for structural similarity (0–1).
+
+    Uses path segment overlap rather than string edit distance because
+    /api/admin/users and /api/v2/admin/users are more similar than
+    their edit distance suggests.
+    """
+    if not ep_a or not ep_b:
+        return 0.0
+    # Normalize: lowercase, strip query string and trailing slash
+    def _norm(ep: str) -> list:
+        ep = ep.lower().split("?")[0].rstrip("/")
+        return [seg for seg in ep.split("/") if seg]
+
+    segs_a = _norm(ep_a)
+    segs_b = _norm(ep_b)
+    if not segs_a or not segs_b:
+        return 0.0
+
+    # Exact match
+    if segs_a == segs_b:
+        return 1.0
+
+    # Count overlapping segments (with position weighting: later segments = less weight)
+    _set_a = set(segs_a)
+    _set_b = set(segs_b)
+    _common = _set_a & _set_b
+    if not _common:
+        return 0.0
+
+    # Jaccard coefficient weighted by segment count
+    _union = _set_a | _set_b
+    jaccard = len(_common) / len(_union)
+
+    # Boost if prefix matches (the first segments align)
+    _prefix_match = 0
+    for sa, sb in zip(segs_a, segs_b, strict=False):
+        if sa == sb:
+            _prefix_match += 1
+        else:
+            break
+    _prefix_boost = min(0.20, _prefix_match * 0.08)
+
+    return min(1.0, jaccard + _prefix_boost)
+
+
+def rank_alt_endpoints_by_history(
+    alt_endpoints: list,
+    project_name: str,
+    vuln_class: str = "",
+    cache_dir: Optional[str] = None,
+) -> list:
+    """Re-rank a list of alternative endpoint candidates using historical evidence.
+
+    Takes the LLM-generated alt_endpoints list (from llm_notes['alt_endpoints'])
+    and boosts entries whose endpoint path matches previously-verified endpoints
+    for the same project/stack.
+
+    Returns the same list with an added 'history_boost' field, sorted by
+    (original_score + history_boost) descending.
+
+    Args:
+        alt_endpoints:  list of {endpoint, param, score, reason} dicts
+        project_name:   project/stack to look up in history
+        vuln_class:     CVE class for filtering relevant history
+        cache_dir:      override for cache directory
+    """
+    if not alt_endpoints:
+        return []
+
+    past = _load_past_results(cache_dir)
+    # Filter to records for this project
+    relevant_pasts = []
+    for rec in past:
+        if not rec.get("endpoint"):
+            continue
+        proj_score = _project_match_score(project_name, rec.get("project", ""))
+        if proj_score < 0.50:
+            continue
+        class_s = _vuln_class_score(vuln_class, rec.get("vuln_class", ""))
+        relevant_pasts.append({
+            "endpoint": rec["endpoint"],
+            "proj_score": proj_score,
+            "class_score": class_s,
+        })
+
+    if not relevant_pasts:
+        return alt_endpoints  # no history → return unchanged
+
+    # Score each alt endpoint against history
+    result = []
+    for alt in alt_endpoints:
+        ep = alt.get("endpoint", "")
+        if not ep:
+            continue
+        # Find best matching historical endpoint
+        best_hist_score = 0.0
+        for hist in relevant_pasts:
+            ep_sim = _endpoint_similarity(ep, hist["endpoint"])
+            # Combined: ep_sim * (proj_score + class_score/2)
+            combined = ep_sim * (hist["proj_score"] + hist["class_score"] * 0.5)
+            best_hist_score = max(best_hist_score, combined)
+
+        alt_copy = dict(alt)
+        alt_copy["history_boost"] = round(best_hist_score * 0.30, 3)  # up to +0.30
+        alt_copy["_total"] = alt.get("score", 0.5) + alt_copy["history_boost"]
+        result.append(alt_copy)
+
+    # Sort by combined score descending
+    result.sort(key=lambda a: a.get("_total", 0.0), reverse=True)
+    return result
