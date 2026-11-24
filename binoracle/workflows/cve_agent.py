@@ -10700,9 +10700,21 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             # en bypass_header/bypass_value de la hipotesis). La prueba es simple: sin la
             # cabecera el servidor responde 3xx/401/403; con ella, 2xx.
             elif (not plugin_dir and fr.local_path and
-                  inv.vuln_class in ("missing-authorization", "auth-bypass", "idor") and
-                  notes.get("endpoint") and
-                  (notes.get("bypass_header") or notes.get("bypass_url"))):
+                  inv.vuln_class in ("missing-authorization", "auth-bypass", "idor",
+                                     "broken-access-control") and
+                  notes.get("endpoint")):
+                # Auto-inject common bypass header candidates when LLM didn't name one.
+                # For pure missing-authorization CVEs (no special header needed) this
+                # block still runs — verify_generic_header_bypass with bypass_header=""
+                # sends a plain unauthenticated request and checks for 2xx.
+                if not notes.get("bypass_header") and not notes.get("bypass_url"):
+                    notes.setdefault("_bypass_header_candidates",
+                                     ["", "X-Forwarded-For: 127.0.0.1",
+                                      "X-Original-URL: " + (notes.get("endpoint") or "/"),
+                                      "X-Rewrite-URL: " + (notes.get("endpoint") or "/"),
+                                      "X-Custom-IP-Authorization: 127.0.0.1",
+                                      "X-Forwarded-Host: localhost",
+                                      "X-Host: localhost"])
                 from .genericverify import verify_generic_header_bypass
                 _inject_custom_docker_lab(str(fr.local_path), notes, step)
                 _bypass_kind = ("URL manipulada" if notes.get("bypass_url") else "cabecera HTTP")
