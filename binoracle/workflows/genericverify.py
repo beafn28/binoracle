@@ -1614,52 +1614,67 @@ def _bootstrap_generic_lab(source_dir: str, step, res: WpVerifyResult,
         lab.teardown()
         return None
 
-    _cms_hint = target.get("cms")
-    step(f"esperando a que el objetivo responda HTTP{' (CMS: ' + _cms_hint + ')' if _cms_hint else ''}...")
-    found_http = lab.discover_http(cms=_cms_hint)
-    if found_http is None:
-        res.detail = "el objetivo arranco pero ningun puerto publicado respondio HTTP a tiempo"
-        for c in lab.running_containers():
-            res.logs.append(f"docker logs ({c}):\n" + lab.logs_tail(c))
-        lab.teardown()
-        return None
-    container, port = found_http
-    base_url = f"http://{_lab_host()}:{port}"
-    step(f"objetivo arriba: {base_url} (contenedor '{container}')")
-
-    # Store discovered OpenAPI routes on res so callers can seed endpoint candidates
+    # Wrap the post-build steps in a try/finally so that any unexpected exception
+    # (e.g. discover_http() throwing, setup_commands raising) tears the container down
+    # instead of leaving it as a zombie. _lab_ok is only set True on the success path,
+    # so the finally only skips teardown when we hand the lab to the caller.
+    _lab_ok = False
     try:
-        _openapi_routes = _discover_routes_from_openapi(base_url, step)
-        if _openapi_routes:
-            res.evidence["openapi_routes"] = _openapi_routes[:20]
-    except Exception:
-        pass
-
-    # Also probe for GraphQL endpoints — many modern CMSs expose /graphql
-    try:
-        _gql_eps = _discover_graphql_endpoints(base_url, step)
-        if _gql_eps:
-            res.evidence["graphql_endpoints"] = _gql_eps
-            # Deep schema probe: extract queries/mutations/sensitive fields
-            _gql_schema = _graphql_schema_probe(
-                base_url, _gql_eps[0], step=step)
-            if _gql_schema.get("queries") or _gql_schema.get("mutations"):
-                res.evidence["graphql_schema"] = _gql_schema
-    except Exception:
-        pass
-
-    for cmd in (setup_commands or []):
-        step(f"ejecutando paso de configuracion real dentro del contenedor: {cmd!r}...")
-        r = lab.sh("exec", container, "sh", "-c", cmd, timeout=180)
-        if r.returncode != 0:
-            res.detail = (f"el paso de configuracion {cmd!r} fallo (codigo {r.returncode}): "
-                          f"{(r.stderr or r.stdout or '')[-500:]}")
-            res.logs.append(f"setup_commands[{cmd!r}] stdout/stderr:\n"
-                            f"{(r.stdout or '')}\n{(r.stderr or '')}")
-            lab.teardown()
+        _cms_hint = target.get("cms")
+        step(f"esperando a que el objetivo responda HTTP{' (CMS: ' + _cms_hint + ')' if _cms_hint else ''}...")
+        found_http = lab.discover_http(cms=_cms_hint)
+        if found_http is None:
+            res.detail = "el objetivo arranco pero ningun puerto publicado respondio HTTP a tiempo"
+            for c in lab.running_containers():
+                res.logs.append(f"docker logs ({c}):\n" + lab.logs_tail(c))
             return None
+        container, port = found_http
+        base_url = f"http://{_lab_host()}:{port}"
+        step(f"objetivo arriba: {base_url} (contenedor '{container}')")
 
-    return (lab, base_url, container)
+        # Store discovered OpenAPI routes on res so callers can seed endpoint candidates
+        try:
+            _openapi_routes = _discover_routes_from_openapi(base_url, step)
+            if _openapi_routes:
+                res.evidence["openapi_routes"] = _openapi_routes[:20]
+        except Exception:
+            pass
+
+        # Also probe for GraphQL endpoints — many modern CMSs expose /graphql
+        try:
+            _gql_eps = _discover_graphql_endpoints(base_url, step)
+            if _gql_eps:
+                res.evidence["graphql_endpoints"] = _gql_eps
+                # Deep schema probe: extract queries/mutations/sensitive fields
+                _gql_schema = _graphql_schema_probe(
+                    base_url, _gql_eps[0], step=step)
+                if _gql_schema.get("queries") or _gql_schema.get("mutations"):
+                    res.evidence["graphql_schema"] = _gql_schema
+        except Exception:
+            pass
+
+        for cmd in (setup_commands or []):
+            step(f"ejecutando paso de configuracion real dentro del contenedor: {cmd!r}...")
+            r = lab.sh("exec", container, "sh", "-c", cmd, timeout=180)
+            if r.returncode != 0:
+                res.detail = (f"el paso de configuracion {cmd!r} fallo (codigo {r.returncode}): "
+                              f"{(r.stderr or r.stdout or '')[-500:]}")
+                res.logs.append(f"setup_commands[{cmd!r}] stdout/stderr:\n"
+                                f"{(r.stdout or '')}\n{(r.stderr or '')}")
+                return None
+
+        _lab_ok = True
+        return (lab, base_url, container)
+    except Exception as _e_boot:
+        step(f"[error inesperado] fallo en bootstrap post-build: {str(_e_boot)[:150]}")
+        res.detail = f"fallo inesperado en bootstrap: {str(_e_boot)[:300]}"
+        return None
+    finally:
+        if not _lab_ok:
+            try:
+                lab.teardown()
+            except Exception:
+                pass
 
 
 def verify_generic_command_injection(

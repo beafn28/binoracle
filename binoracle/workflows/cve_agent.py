@@ -8264,6 +8264,22 @@ def _gen_pip_app(pkg: str, vuln_class: str, endpoint: str, param: str, pkg_versi
                 "if __name__ == '__main__':\n"
                 "    web.run_app(app, host='0.0.0.0', port=5000)\n"
             )
+        # CVE-2024-1561: Gradio < 4.19.2 — ruta /file= sirve ficheros arbitrarios sin validar.
+        # El servidor lo proporciona Gradio directamente (no hay que envolverlo en Flask); solo
+        # hay que lanzar cualquier interfaz minimal para que el daemon HTTP arranque con la ruta
+        # vulnerable integrada.  Puerto 7860 (default de Gradio).
+        if "gradio" in pkg_lower:
+            return (
+                "import gradio as gr\n\n"
+                "demo = gr.Interface(\n"
+                "    fn=lambda x: x,\n"
+                "    inputs=gr.Textbox(),\n"
+                "    outputs=gr.Textbox(),\n"
+                "    title='binoracle-gradio-lab',\n"
+                ")\n"
+                "demo.launch(server_name='0.0.0.0', server_port=7860,\n"
+                "            share=False, show_error=True)\n"
+            )
         return (
             "from flask import Flask, send_from_directory\n"
             "import os\n\n"
@@ -8563,7 +8579,7 @@ def _scaffold_pip_lab(target: str, version: str, vuln_class: str,
     # de golpe y Flask tampoco se instala. El lab solo necesita Flask (subprocess es stdlib).
     # Reemplazamos req_lines por solo Flask si el paquete principal no es un paquete web conocido.
     _KNOWN_PIP_WEB = {"aiohttp", "flask", "jinja2", "jinja", "django", "bottle", "tornado",
-                      "fastapi", "starlette", "werkzeug", "flask-reuploaded"}
+                      "fastapi", "starlette", "werkzeug", "flask-reuploaded", "gradio"}
     if (vuln_class in ("command-injection", "os-command-injection",
                        "sqli", "sql-injection", "xss", "path-traversal", "ssrf")
             and pin_name.lower() not in _KNOWN_PIP_WEB):
@@ -8603,6 +8619,33 @@ def _scaffold_pip_lab(target: str, version: str, vuln_class: str,
     app_path = _os.path.join(lab_dir, "app.py")
     with open(app_path, "w") as f:
         f.write(app_code)
+
+    # Paquetes con servidor propio en puerto no estandar: escribir un Dockerfile explicito con
+    # el puerto correcto en lugar de confiar en el auto-Dockerfile de _find_build_target (que
+    # siempre inyecta EXPOSE 5000, rompiendo `docker run -P` cuando el servidor escucha en otro).
+    # - Gradio (CVE-2024-1561): servidor en 7860. Con EXPOSE 5000, discover_http() nunca
+    #   alcanza el servidor y el lab se cuelga esperando HTTP a tiempo.
+    _pip_server_ports: dict = {"gradio": 7860}
+    if pkg_lower in _pip_server_ports:
+        _svc_port = _pip_server_ports[pkg_lower]
+        try:
+            from .genericverify import _best_python_image as _bpi
+            _py_img = _bpi()
+        except Exception:
+            _py_img = "python:3.11-slim"
+        _pip_install_line = (f"RUN pip install --no-cache-dir '{pin_name}=={version}'"
+                             if version else f"RUN pip install --no-cache-dir '{pin_name}'")
+        _df = "\n".join([
+            f"FROM {_py_img}",
+            "WORKDIR /app",
+            _pip_install_line,
+            "COPY app.py .",
+            f"EXPOSE {_svc_port}",
+            'CMD ["python", "app.py"]',
+            "",
+        ])
+        with open(_os.path.join(lab_dir, "Dockerfile"), "w") as _dff:
+            _dff.write(_df)
 
     # Sobreescribe notes con el endpoint/param que el lab realmente usa,
     # SALVO que el PoC ya fijo un endpoint de alta confianza (poc_llm_endpoint_lock /
