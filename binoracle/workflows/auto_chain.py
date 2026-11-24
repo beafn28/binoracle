@@ -532,17 +532,43 @@ def _run_binary_stage(cve_id: str, binary_path: str,
 
 # ── Library wrapper app generator ────────────────────────────────────────────
 
-_WRAPPER_SYSTEM_PROMPT = (
-    "You are a security researcher building minimal vulnerable demo apps for CVE lab testing. "
-    "Given a CVE description, generate a self-contained Python Flask app (single file, app.py) "
-    "that exposes the vulnerable library functionality over HTTP so the exploit can be tested. "
-    "The app MUST: (1) import and use the vulnerable library, (2) accept attacker-controlled "
-    "input via HTTP (GET/POST parameter), (3) pass that input to the vulnerable function "
-    "without sanitization, (4) run with Flask dev server on port 5000. "
-    "Return ONLY the Python code, no explanation, no markdown fences."
-)
+_WRAPPER_PROMPTS = {
+    "python": (
+        "You are a security researcher building minimal vulnerable demo apps for CVE lab testing. "
+        "Generate a self-contained Python Flask app (single file, app.py) that exposes the "
+        "vulnerable library over HTTP. The app MUST: (1) import and use the vulnerable library, "
+        "(2) accept attacker-controlled input via HTTP (GET/POST parameter), (3) pass that input "
+        "to the vulnerable function without sanitization, (4) run on port 5000. "
+        "Return ONLY Python code, no markdown fences."
+    ),
+    "node": (
+        "You are a security researcher building minimal vulnerable demo apps for CVE lab testing. "
+        "Generate a self-contained Node.js app (single file, app.js) using Express that exposes "
+        "the vulnerable npm package over HTTP. The app MUST: (1) require and use the vulnerable "
+        "package, (2) accept attacker-controlled input via HTTP query/body, (3) pass that input "
+        "to the vulnerable function without sanitization, (4) listen on port 5000. "
+        "Return ONLY JavaScript code, no markdown fences."
+    ),
+    "go": (
+        "You are a security researcher building minimal vulnerable demo apps for CVE lab testing. "
+        "Generate a self-contained Go HTTP server (single file, main.go) that exposes the "
+        "vulnerable functionality over HTTP. The app MUST: (1) import and use the vulnerable "
+        "package, (2) register at least one HTTP handler that accepts attacker input, "
+        "(3) pass that input to the vulnerable code path, (4) listen on :5000. "
+        "Return ONLY Go code (package main + imports + handlers), no markdown fences."
+    ),
+    "java": (
+        "You are a security researcher building minimal vulnerable demo apps for CVE lab testing. "
+        "Generate a minimal Spring Boot application (App.java, single file) that exposes the "
+        "vulnerable library over HTTP. The app MUST: (1) use the vulnerable dependency, "
+        "(2) expose a REST endpoint accepting attacker input, (3) pass that input to the "
+        "vulnerable code path without sanitization, (4) listen on port 5000. "
+        "Return ONLY Java code, no markdown fences."
+    ),
+}
 
-_WRAPPER_DOCKERFILE = """\
+_WRAPPER_DOCKERFILES = {
+    "python": """\
 FROM python:3.11-slim
 WORKDIR /app
 COPY requirements.txt .
@@ -551,7 +577,78 @@ COPY app.py .
 ENV FLASK_ENV=development
 EXPOSE 5000
 CMD ["python", "app.py"]
+""",
+    "node": """\
+FROM node:20-slim
+WORKDIR /app
+COPY package.json .
+RUN npm install
+COPY app.js .
+EXPOSE 5000
+CMD ["node", "app.js"]
+""",
+    "go": """\
+FROM golang:1.22-alpine AS build
+WORKDIR /app
+COPY go.mod go.sum* ./
+RUN go mod download 2>/dev/null || true
+COPY main.go .
+RUN go build -o server .
+FROM alpine:3.19
+COPY --from=build /app/server /server
+EXPOSE 5000
+CMD ["/server"]
+""",
+    "java": """\
+FROM maven:3.9-eclipse-temurin-21-alpine AS build
+WORKDIR /app
+COPY pom.xml .
+RUN mvn dependency:go-offline -q 2>/dev/null || true
+COPY src ./src
+RUN mvn package -DskipTests -q
+FROM eclipse-temurin:21-jre-alpine
+COPY --from=build /app/target/*.jar /app.jar
+EXPOSE 5000
+CMD ["java","-jar","/app.jar"]
+""",
+}
+
+_SPRING_POM_XML = """\
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent><groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-parent</artifactId><version>3.2.0</version></parent>
+  <groupId>com.binoracle</groupId><artifactId>wrapper</artifactId><version>0.0.1</version>
+  <properties><java.version>21</java.version></properties>
+  <dependencies>
+    <dependency><groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-web</artifactId></dependency>
+  </dependencies>
+  <build><plugins><plugin><groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-maven-plugin</artifactId></plugin></plugins></build>
+</project>
 """
+
+# Fallback legacy alias
+_WRAPPER_SYSTEM_PROMPT = _WRAPPER_PROMPTS["python"]
+_WRAPPER_DOCKERFILE = _WRAPPER_DOCKERFILES["python"]
+
+
+def _detect_wrapper_stack(cve_info, llm_notes: dict) -> str:
+    """Detect which tech stack to use for the wrapper app."""
+    text = ((getattr(cve_info, "description", "") or "") + " " + str(llm_notes)).lower()
+    if any(k in text for k in ("node", "npm", "javascript", "typescript", "express",
+                                "nestjs", "fastify", "koa", "socket.io")):
+        return "node"
+    if any(k in text for k in ("golang", " go ", "go module", "go package",
+                                "gin ", "echo ", "fiber ", "gorilla")):
+        return "go"
+    if any(k in text for k in ("java", "spring", "maven", "gradle", "quarkus",
+                                "micronaut", "struts", "jersey")):
+        return "java"
+    return "python"
 
 
 def _generate_wrapper_app(cve_id: str, cve_info, llm_notes: dict,
@@ -567,17 +664,21 @@ def _generate_wrapper_app(cve_id: str, cve_info, llm_notes: dict,
 
     desc = getattr(cve_info, "description", "") or ""
     exploit_hint = llm_notes.get("exploitation_steps", "") or llm_notes.get("payload", "")
+    stack = _detect_wrapper_stack(cve_info, llm_notes)
+    sys_prompt = _WRAPPER_PROMPTS.get(stack, _WRAPPER_PROMPTS["python"])
+    main_file = {"python": "app.py", "node": "app.js", "go": "main.go", "java": "App.java"}.get(stack, "app.py")
+    step(f"  wrapper: stack={stack}, archivo={main_file}")
 
     from ..llm.base import Message
     prompt = (
         f"CVE: {cve_id}\n"
         f"Description: {desc[:800]}\n"
         f"Exploitation hint: {exploit_hint[:400]}\n\n"
-        "Generate the Flask app.py code."
+        f"Generate the {main_file} code."
     )
     try:
         code = llm.chat([
-            Message("system", _WRAPPER_SYSTEM_PROMPT),
+            Message("system", sys_prompt),
             Message("user", prompt),
         ]).strip()
     except Exception as e:
@@ -594,20 +695,40 @@ def _generate_wrapper_app(cve_id: str, cve_info, llm_notes: dict,
     app_dir = os.path.join(tmpdir, "wrapper_app")
     os.makedirs(app_dir, exist_ok=True)
 
-    with open(os.path.join(app_dir, "app.py"), "w") as fh:
+    with open(os.path.join(app_dir, main_file), "w") as fh:
         fh.write(code)
 
-    # Determine dependencies: always flask + the vulnerable package from description
-    pkgs = ["flask"]
+    # Write dependency manifest per stack
     desc_lower = (desc + " " + code).lower()
-    for pkg in _LIBRARY_PACKAGES:
-        if pkg in desc_lower:
-            pkgs.append(pkg)
-    with open(os.path.join(app_dir, "requirements.txt"), "w") as fh:
-        fh.write("\n".join(dict.fromkeys(pkgs)))  # deduplicate
+    if stack == "python":
+        pkgs = ["flask"]
+        for pkg in _LIBRARY_PACKAGES:
+            if pkg in desc_lower:
+                pkgs.append(pkg)
+        with open(os.path.join(app_dir, "requirements.txt"), "w") as fh:
+            fh.write("\n".join(dict.fromkeys(pkgs)))
+    elif stack == "node":
+        # Minimal package.json — LLM code determines actual deps
+        import json as _json
+        pkg_name = cve_id.lower().replace("-", "_")
+        with open(os.path.join(app_dir, "package.json"), "w") as fh:
+            _json.dump({"name": pkg_name, "version": "1.0.0", "dependencies": {"express": "^4.18.0"}}, fh)
+    elif stack == "go":
+        # Minimal go.mod
+        with open(os.path.join(app_dir, "go.mod"), "w") as fh:
+            fh.write("module wrapper\n\ngo 1.22\n")
+    elif stack == "java":
+        # Minimal pom.xml with Spring Boot
+        os.makedirs(os.path.join(app_dir, "src", "main", "java"), exist_ok=True)
+        # Move App.java to correct path
+        import shutil as _shutil
+        _shutil.move(os.path.join(app_dir, main_file),
+                     os.path.join(app_dir, "src", "main", "java", main_file))
+        with open(os.path.join(app_dir, "pom.xml"), "w") as fh:
+            fh.write(_SPRING_POM_XML)
 
     with open(os.path.join(app_dir, "Dockerfile"), "w") as fh:
-        fh.write(_WRAPPER_DOCKERFILE)
+        fh.write(_WRAPPER_DOCKERFILES.get(stack, _WRAPPER_DOCKERFILES["python"]))
 
     # Find a free port
     import socket
