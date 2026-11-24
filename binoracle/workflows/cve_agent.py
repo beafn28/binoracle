@@ -4796,30 +4796,41 @@ def _refine_web_hints_from_source(llm, local_path: str, found: dict, context_lin
                         break
                 if len(snippets) >= 3:
                     break
-            # If no static router found, use test files with /api/ literals
-            if not snippets:
-                for _rel, _content in test_candidates[:3]:
-                    snippets.append(f"# {_rel} (test file — endpoints /api/ literales)\n{_content[:3000]}")
+            # Always include test files with /api/ literals alongside router files —
+            # for data-driven routers the specific resource paths (/api/usergroup etc.)
+            # only appear in test files, not in the generic router registration code.
+            for _rel, _content in test_candidates[:2]:
+                snippets.append(f"# {_rel} (test file — endpoints /api/ literales)\n{_content[:3000]}")
         except Exception:
             pass
     if not snippets:
         return None
 
     # Fast-path for Go test-file snippets: extract /api/ literals deterministically
-    # without calling the LLM. This covers data-driven JSONAPI routers (e.g. daptin)
-    # where there are no static router registrations but test files contain path literals.
-    _go_snippets = [s for s in snippets if "test file — endpoints /api/" in s or "registro de rutas Go" in s]
-    if _go_snippets and not found:
+    # without calling the LLM. Scan FULL test files (not truncated snippets) since the
+    # target endpoints often appear deep in the file (e.g. daptin /api/usergroup at byte 12277).
+    if not found and local_path:
         import re as _ref_re
         _api_lit = _ref_re.compile(r'["`](/api/[a-zA-Z_][a-zA-Z0-9_/]*)["`]')
-        _seen: list = []
-        for _snip in _go_snippets:
-            for _m in _api_lit.finditer(_snip):
-                _ep = _m.group(1)
-                if _ep not in _seen:
-                    _seen.append(_ep)
-        if _seen:
-            return {"endpoint": _seen[0], "http_method": "GET"}
+        _seen_ep: list = []
+        for _snip_hdr in snippets:
+            if "test file — endpoints /api/" not in _snip_hdr:
+                continue
+            # Extract filename from snippet header "# path/file.go (test file...)"
+            _hdr_line = _snip_hdr.split("\n", 1)[0]
+            _rel_path = _hdr_line.lstrip("# ").split(" (")[0].strip()
+            _full_path = _os.path.join(local_path, _rel_path)
+            try:
+                with open(_full_path, encoding="utf-8", errors="replace") as _fh:
+                    _full = _fh.read()
+                for _m in _api_lit.finditer(_full):
+                    _ep = _m.group(1).rstrip("/")
+                    if _ep and _ep not in _seen_ep:
+                        _seen_ep.append(_ep)
+            except OSError:
+                pass
+        if _seen_ep:
+            return {"endpoint": _seen_ep[0], "http_method": "GET"}
 
     code = "\n\n".join(snippets)[:6000]     # tope generoso pero acotado para el contexto del LLM
     from ..llm.base import Message
@@ -11004,6 +11015,33 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     _attempt_cmdi_generic, wr, _cmdi_ep, cmd_p,
                     technique_label="command injection generico")
                 _apply_wpverify_result(inv, wr, es, llm)
+            # Python web frameworks (Django/FastAPI/Flask): verificacion especializada con
+            # auto-deteccion de framework, generacion de Dockerfile a medida y setup de
+            # autenticacion Django cuando el CVE la requiere -- ver pythonverify.py.
+            elif (not plugin_dir and fr.local_path and
+                  inv.vuln_class in ("xss", "sqli", "sql-injection", "ssrf", "idor",
+                                     "missing-authorization", "auth-bypass",
+                                     "broken-access-control", "ssti")
+                  and notes.get("endpoint")):
+                from .pythonverify import detect_python_framework, verify_python_web_cve
+                _py_fw = detect_python_framework(str(fr.local_path))
+                if _py_fw in ("django", "fastapi", "flask"):
+                    step((f"  pythonverify: framework detectado — {_py_fw}" if es else
+                          f"  pythonverify: detected framework — {_py_fw}"))
+                    wr = verify_python_web_cve(
+                        str(fr.local_path),
+                        endpoint=notes.get("endpoint") or "/",
+                        vuln_class=inv.vuln_class,
+                        http_method=notes.get("http_method") or "GET",
+                        parameters=notes.get("parameters") or [],
+                        payload=notes.get("payload") or "",
+                        confirm_string=notes.get("confirm_string") or "",
+                        auth_required=bool(notes.get("auth_required") or notes.get("authenticated")),
+                        pkg_version=inv.llm_notes.get("vulnerable_version") or "",
+                        on_step=step,
+                        budget_s=budget_s,
+                    )
+                    _apply_wpverify_result(inv, wr, es, llm)
             # mismo laboratorio efimero, para SQLi en Drupal (quinta clase de Drupal, "poco a
             # poco" -- ver drupalverify.py).
             elif (is_drupal and fr.kind in ("drupal-module", "local-zip", "zip-url") and plugin_dir
