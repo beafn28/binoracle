@@ -3169,7 +3169,25 @@ def auto_queue_nvd(days_back: int = 2, min_cvss: float = 7.0,
         "rails", "ruby on rails", "express", "nestjs", "graphql", "rest api",
         "web application", "web app", "authentication", "authorization",
         "api endpoint", "http request", "sql injection", "xss", "csrf",
+        # Additional high-value targets
+        "mattermost", "nextcloud", "gitea", "keycloak", "authentik", "jellyfin",
+        "audiobookshelf", "h3", "fastify", "hapi", "koa", "nuxt",
+        "privilege escalation", "unauthenticated", "pre-auth", "remote code",
+        "arbitrary file", "path traversal", "server-side request", "injection",
     ]
+
+    # Build stack verification rate map for dynamic triage boosting
+    _verified_stacks: dict[str, float] = {}
+    try:
+        from .cve_lessons import all_stacks_summary
+        for _srow in all_stacks_summary():
+            _st = _srow.get("stack", "")
+            _vr = float(_srow.get("verified_rate", 0))
+            if _st and _vr > 0:
+                _verified_stacks[_st] = _vr
+    except Exception:
+        pass
+
     _before = len(entries)
     _filtered = []
     for _e in entries:
@@ -3183,11 +3201,18 @@ def auto_queue_nvd(days_back: int = 2, min_cvss: float = 7.0,
     if _after < _before:
         step(f"auto_queue_nvd: smart triage eliminó {_before - _after} CVEs fuera de scope "
              f"(firmware/kernel/native) — quedan {_after}")
-    # Boost web-relevant CVEs within the filtered list
+
+    # Boost web-relevant CVEs within the filtered list.
+    # Additional boost from historical stack verification rate (learned from past runs).
     def _triage_score(e) -> float:
         _d = e.description.lower()
         _web_score = sum(1 for _pw in _PREFER_PATTERNS if _pw in _d)
-        return _web_score + e.cvss_score / 10.0  # web relevance + CVSS weight
+        # Dynamic boost: if we have good verification rate on this stack, prioritize
+        _stack_boost = max(
+            (_vr * 2.0 for _st, _vr in _verified_stacks.items() if _st in _d),
+            default=0.0,
+        )
+        return _web_score + _stack_boost + e.cvss_score / 10.0
 
     # Apply priority_mode sort
     _cms_kws = ("wordpress", "drupal", "joomla", "wp-")
