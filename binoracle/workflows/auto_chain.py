@@ -186,15 +186,70 @@ def _gather_intelligence(cve_id: str, result: ChainResult, step: Callable) -> Op
 # ── CVE classification ────────────────────────────────────────────────────────
 
 _WEB_SIGNALS = [
-    "wordpress", "plugin", "theme", "drupal", "joomla", "ghost", "strapi",
-    "django", "flask", "rails", "laravel", "php", "http", "web", "sqli", "xss",
-    "ssrf", "path traversal", "file upload", "auth bypass", "csrf",
-    "open redirect", "injection", "cms", "rest api", "graphql", "oauth",
-    "api endpoint", "rest endpoint", "json api", "web application",
+    # ── Vulnerability classes (always web) ───────────────────────────────────
+    "sqli", "xss", "ssrf", "csrf", "path traversal", "file upload",
+    "auth bypass", "open redirect", "injection", "graphql", "oauth",
+    "rest api", "api endpoint", "rest endpoint", "json api", "web application",
     "improper authorization", "access control", "broken access",
-    "daptin", "headless cms", "baas", "backend as a service",
-    "self-hosted", "node.js", "nodejs", "media server", "audiobookshelf",
-    "express", "fastify", "nextjs", "nuxt", "svelte", "astro",
+    "http", "web", "endpoint", "request handler", "authentication bypass",
+    "unauthorized access", "privilege escalation via web", "idor",
+    "insecure direct object", "missing authorization", "server-side",
+    # ── Generic CMS ──────────────────────────────────────────────────────────
+    "cms", "plugin", "theme", "wordpress", "drupal", "joomla",
+    "magento", "typo3", "contao", "october cms", "craft cms", "statamic",
+    "wagtail", "umbraco", "kentico", "sitecore", "prestashop", "opencart",
+    "woocommerce", "spree", "solidus", "shopware", "sylius",
+    # ── Headless CMS / BaaS / API platforms ──────────────────────────────────
+    "headless cms", "baas", "backend as a service", "strapi", "ghost",
+    "directus", "payload cms", "keystone", "pocketbase", "appwrite",
+    "hasura", "daptin", "xano", "supabase", "nhost",
+    # ── Node.js ecosystem ────────────────────────────────────────────────────
+    "node.js", "nodejs", "express", "fastify", "koa", "hapi", "nestjs",
+    "feathers", "loopback", "sails", "meteor", "adonis", "remix", "nuxt",
+    "nextjs", "svelte", "astro", "vite", "socket.io",
+    # ── Python web frameworks ────────────────────────────────────────────────
+    "django", "flask", "fastapi", "starlette", "tornado", "sanic",
+    "pyramid", "bottle", "cherrypy", "falcon", "aiohttp server",
+    # ── PHP frameworks ───────────────────────────────────────────────────────
+    "php", "laravel", "symfony", "codeigniter", "yii", "cakephp",
+    "slim", "lumen", "phalcon", "fuelphp", "zend", "laminas",
+    # ── Ruby / Java / Go / Rust ──────────────────────────────────────────────
+    "rails", "sinatra", "grape", "hanami",
+    "spring", "spring boot", "struts", "jersey", "quarkus", "micronaut",
+    "play framework", "dropwizard", "vertx", "vert.x", "helidon",
+    "gin", "echo", "fiber", "chi", "gorilla", "buffalo", "revel", "beego",
+    "actix", "rocket", "axum", "warp", "tide",
+    # ── .NET ─────────────────────────────────────────────────────────────────
+    "asp.net", "aspnet", ".net core", "blazor", "razor pages",
+    # ── Collaboration / communication ────────────────────────────────────────
+    "mattermost", "rocket.chat", "matrix", "element", "zulip", "discourse",
+    "wiki.js", "bookstack", "outline", "confluence", "xwiki", "dokuwiki",
+    "mediawiki", "tiddlywiki",
+    # ── File / cloud storage ─────────────────────────────────────────────────
+    "nextcloud", "owncloud", "seafile", "pydio", "filebrowser",
+    # ── DevOps / infra portals ───────────────────────────────────────────────
+    "gitea", "gogs", "forgejo", "gitlab", "harbor", "portainer",
+    "rancher", "argocd", "backstage", "drone", "woodpecker", "jenkins",
+    "sonarqube", "nexus", "artifactory", "minio", "vault", "consul",
+    # ── Auth / identity ───────────────────────────────────────────────────────
+    "keycloak", "authentik", "authelia", "passbolt", "zitadel", "gluu",
+    # ── Media / streaming ────────────────────────────────────────────────────
+    "audiobookshelf", "media server", "jellyfin", "emby", "plex",
+    "navidrome", "subsonic", "ampache", "airsonic", "funkwhale",
+    "peertube", "owncast",
+    # ── Monitoring / observability ───────────────────────────────────────────
+    "grafana", "kibana", "prometheus", "opensearch dashboards",
+    "zabbix", "nagios", "checkmk", "icinga", "librenms", "netdata",
+    "graylog", "loki", "jaeger", "zipkin",
+    # ── Database / search web UIs ────────────────────────────────────────────
+    "phpmyadmin", "adminer", "pgadmin", "redisinsight", "mongo express",
+    "elasticsearch", "opensearch", "typesense", "meilisearch",
+    # ── IoT / home automation ────────────────────────────────────────────────
+    "home assistant", "homeassistant", "openhab", "domoticz", "node-red",
+    "mosquitto", "emqx",
+    # ── eCommerce / SaaS extras ──────────────────────────────────────────────
+    "odoo", "erpnext", "dolibarr", "invoiceninja", "snipe-it", "glpi",
+    "netbox", "nautobot", "device42", "racktables",
 ]
 _BIN_SIGNALS = [
     "buffer overflow", "heap overflow", "stack overflow", "heap corruption",

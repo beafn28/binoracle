@@ -4765,7 +4765,8 @@ def _refine_web_hints_from_source(llm, local_path: str, found: dict, context_lin
     if not snippets and local_path:
         import re as _re
         _go_route_re = _re.compile(
-            r'''(?:router|r|mux|e|v\d+)\s*\.\s*(GET|POST|PUT|PATCH|DELETE|Handle|HandleFunc)\s*\(\s*"([^"/][^"]*)"''')
+            r'''(?:router|r|mux|e|app|g|api|v\d+|public|private|auth|group|sub)\s*\.\s*'''
+            r'''(GET|POST|PUT|PATCH|DELETE|Handle|HandleFunc|Any|OPTIONS|HEAD)\s*\(\s*"([^"/][^"]*)"''')
         _api_lit_re = _re.compile(r'["`](/api/[a-zA-Z_][a-zA-Z0-9_/]*)["`]')
         try:
             test_candidates = []
@@ -4915,20 +4916,43 @@ def _prescan_source_for_llm_context(source_dir: str, vuln_class: str,
             if fn and fn not in seen_fns:
                 seen_fns.add(fn)
 
-    # Scan rapido de rutas HTTP en Node.js, Go y Python
+    # ── Route scanners for all major web stacks ──────────────────────────────
+    # Node.js / Express / Koa / Hapi / Fastify
     _ROUTE_RE = re.compile(
-        r'''(?:router|app|Router)\s*\.\s*(get|post|put|patch|delete)\s*\(\s*['"`]([^'"`]+)['"`]''',
+        r'''(?:router|app|Router|server|fastify)\s*\.\s*(get|post|put|patch|delete|all)\s*\(\s*['"`]([^'"`]+)['"`]''',
         re.IGNORECASE)
-    # Go: router.GET("/path", ...) / r.GET("/path", ...) / mux.Handle("/path", ...)
+    # Go: Gin, Echo, Fiber, Chi, Gorilla, net/http, Buffalo, Revel, Beego
     _GO_ROUTE_RE = re.compile(
-        r'''(?:router|r|mux|e|v\d+)\s*\.\s*(GET|POST|PUT|PATCH|DELETE|Handle|HandleFunc)\s*\(\s*"([^"]+)"''')
+        r'''(?:router|r|mux|e|app|g|api|v\d+|public|private|auth|group|sub|admin)\s*\.\s*'''
+        r'''(GET|POST|PUT|PATCH|DELETE|Handle|HandleFunc|Any|OPTIONS|HEAD)\s*\(\s*"([^"]+)"''')
+    # Python: Flask (@app.route), FastAPI (@router.get / @app.get)
+    _PY_ROUTE_RE = re.compile(
+        r'''@(?:app|router|blueprint|bp|api)\s*\.\s*(route|get|post|put|patch|delete)\s*\(\s*['"]([^'"]+)['"]''',
+        re.IGNORECASE)
+    # Java Spring: @GetMapping, @PostMapping, @RequestMapping
+    _JAVA_ROUTE_RE = re.compile(
+        r'''@(?:Get|Post|Put|Patch|Delete|Request)Mapping\s*\(\s*(?:value\s*=\s*)?["']([^"']+)["']''',
+        re.IGNORECASE)
+    # PHP Laravel: Route::get, Route::post, Route::any
+    _PHP_ROUTE_RE = re.compile(
+        r'''Route\s*::\s*(get|post|put|patch|delete|any)\s*\(\s*['"]([^'"]+)['"]''',
+        re.IGNORECASE)
+    # Ruby Rails routes.rb: get '/', post '/path'
+    _RUBY_ROUTE_RE = re.compile(
+        r'''^\s*(get|post|put|patch|delete)\s+['"]([^'"]+)['"]''',
+        re.IGNORECASE | re.MULTILINE)
+    # Generic test literals: "/api/xxx" in any test file
+    _API_LIT_RE = re.compile(r'["`](/(?:api|v\d+|rest|graphql)/[a-zA-Z_][a-zA-Z0-9_/:-]*)["`]')
+
     _desc_lower = (description or "").lower()
     try:
         for _root, _dirs, _fnames in _os.walk(source_dir):
             _dirs[:] = [d for d in _dirs if d not in
                         ("node_modules", ".git", "dist", "build", "__pycache__", "vendor")]
             for _fn in _fnames:
-                if not _fn.endswith((".js", ".ts", ".mjs", ".py", ".php", ".rb", ".go")):
+                _ext = _fn.rsplit(".", 1)[-1] if "." in _fn else ""
+                if _ext not in ("js", "ts", "mjs", "cjs", "py", "php", "rb", "go",
+                                "java", "kt", "cs", "rs"):
                     continue
                 _fpath = _os.path.join(_root, _fn)
                 try:
@@ -4936,26 +4960,77 @@ def _prescan_source_for_llm_context(source_dir: str, vuln_class: str,
                         _content = fh.read(32_000)
                 except OSError:
                     continue
-                for _m in _ROUTE_RE.finditer(_content):
-                    _route = _m.group(2).strip()
-                    if _route and len(result["routes"]) < 12:
-                        result["routes"].append(f"{_m.group(1).upper()} {_route}")
-                # Go routes — static registrations
-                if _fn.endswith(".go"):
+                # Node.js / Express / Fastify
+                if _ext in ("js", "ts", "mjs", "cjs"):
+                    for _m in _ROUTE_RE.finditer(_content):
+                        _route = _m.group(2).strip()
+                        if _route and len(result["routes"]) < 30:
+                            result["routes"].append(f"{_m.group(1).upper()} {_route}")
+                # Python Flask / FastAPI
+                elif _ext == "py":
+                    for _m in _PY_ROUTE_RE.finditer(_content):
+                        _route = _m.group(2).strip()
+                        if _route and len(result["routes"]) < 30:
+                            result["routes"].append(f"{_m.group(1).upper()} {_route}")
+                # PHP Laravel
+                elif _ext == "php":
+                    for _m in _PHP_ROUTE_RE.finditer(_content):
+                        _route = _m.group(2).strip()
+                        if _route and len(result["routes"]) < 30:
+                            result["routes"].append(f"{_m.group(1).upper()} {_route}")
+                # Ruby Rails
+                elif _ext == "rb":
+                    for _m in _RUBY_ROUTE_RE.finditer(_content):
+                        _route = _m.group(2).strip()
+                        if _route and len(result["routes"]) < 30:
+                            result["routes"].append(f"{_m.group(1).upper()} {_route}")
+                # Java / Kotlin Spring
+                elif _ext in ("java", "kt"):
+                    for _m in _JAVA_ROUTE_RE.finditer(_content):
+                        _route = _m.group(1).strip()
+                        if _route and len(result["routes"]) < 30:
+                            result["routes"].append(f"? {_route}")
+                # Go
+                elif _ext == "go":
                     for _m in _GO_ROUTE_RE.finditer(_content):
                         _route = _m.group(2).strip()
                         _method = _m.group(1).upper()
-                        if _route.startswith("/") and len(result["routes"]) < 20:
+                        if _route.startswith("/") and len(result["routes"]) < 30:
                             result["routes"].append(f"{_method} {_route}")
-                    # Data-driven routers (e.g. JSONAPI): extract /api/<resource> literals
-                    # from test files — these reveal the runtime-generated endpoints.
+                    # Data-driven / test file literals
                     if _fn.endswith("_test.go") or "test" in _fn.lower():
-                        import re as _re2
-                        _api_lit_re = _re2.compile(r'["`](/api/[a-zA-Z_][a-zA-Z0-9_/]*)["`]')
-                        for _m in _api_lit_re.finditer(_content):
+                        for _m in _API_LIT_RE.finditer(_content):
                             _route = _m.group(1).strip()
-                            if len(result["routes"]) < 25:
+                            if len(result["routes"]) < 35:
                                 result["routes"].append(f"GET {_route}")
+                # Rust: Actix (#[get("/path")]), Rocket (#[get("/path")]), Axum (Router::new().route)
+                elif _ext == "rs":
+                    _rust_attr_re = re.compile(
+                        r'''#\[\s*(?:get|post|put|patch|delete)\s*\(\s*["']([^"']+)["']''',
+                        re.IGNORECASE)
+                    _rust_axum_re = re.compile(
+                        r'''\.route\s*\(\s*["']([^"']+)["']\s*,\s*(?:get|post|put|patch|delete)''',
+                        re.IGNORECASE)
+                    for _m in _rust_attr_re.finditer(_content):
+                        if len(result["routes"]) < 30:
+                            result["routes"].append(f"? {_m.group(1).strip()}")
+                    for _m in _rust_axum_re.finditer(_content):
+                        if len(result["routes"]) < 30:
+                            result["routes"].append(f"? {_m.group(1).strip()}")
+                # C# .NET: [HttpGet("/path")], [Route("/path")], [HttpPost]
+                elif _ext == "cs":
+                    _cs_route_re = re.compile(
+                        r'''(?:\[Http(?:Get|Post|Put|Patch|Delete)|@\[Route)\s*\(\s*["']([^"']+)["']''',
+                        re.IGNORECASE)
+                    for _m in _cs_route_re.finditer(_content):
+                        if len(result["routes"]) < 30:
+                            result["routes"].append(f"? {_m.group(1).strip()}")
+                # Any test file: scan for /api/ /v1/ /rest/ literals
+                if ("test" in _fn.lower() or "spec" in _fn.lower()) and len(result["routes"]) < 35:
+                    for _m in _API_LIT_RE.finditer(_content):
+                        _route = _m.group(1).strip()
+                        if _route not in result["routes"]:
+                            result["routes"].append(f"? {_route}")
     except Exception:
         pass
 
@@ -9686,27 +9761,28 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         step("sin LLM disponible o sin nada que afinar: se mantiene la hipotesis "
                              "inicial" if es else "no LLM available or nothing to refine: keeping "
                              "the initial hypothesis")
-                elif (fr.ok and fr.local_path
-                      and inv.vuln_class in ("missing-authorization", "idor", "auth-bypass",
-                                             "broken-access-control")
-                      and (notes.get("endpoint") or "?") in ("?", "", "unknown", "n/a")):
-                    # Unconditional route discovery for missing-authorization CVEs when grounding
-                    # found nothing (e.g. Go data-driven JSONAPI routers, permission-helper-only
-                    # codebases). Pass empty found={} so _refine_web_hints_from_source falls
-                    # through to the Go router/test-file fallback immediately.
-                    step(("route discovery incondicional para missing-authorization sin grounding"
-                          ) if es else "unconditional route discovery for missing-authorization")
-                    llm_refined_ungrounded = _refine_web_hints_from_source(
-                        llm, fr.local_path, found={})
-                    if llm_refined_ungrounded:
-                        _ep_ungrounded = (llm_refined_ungrounded.get("endpoint") or "").strip()
-                        if _ep_ungrounded and _ep_ungrounded not in ("?", "", "unknown"):
-                            notes = {**notes, **llm_refined_ungrounded}
-                            inv.llm_notes.update(
-                                {k: notes[k] for k in ("endpoint", "http_method")
-                                 if k in notes})
-                            step((f"route discovery: endpoint={notes.get('endpoint')}") if es
-                                 else (f"route discovery: endpoint={notes.get('endpoint')}"))
+            # Unconditional route discovery: runs OUTSIDE if fn_names, so it fires even
+            # when the LLM didn't cite specific functions. Covers data-driven JSONAPI routers
+            # (e.g. daptin Go) and other frameworks where permission helpers are grounded but
+            # the route is registered elsewhere or auto-generated at runtime.
+            if (fr.ok and fr.local_path
+                    and (inv.vuln_class or notes.get("vuln_class", "")).lower() in (
+                        "missing-authorization", "idor", "auth-bypass",
+                        "broken-access-control", "broken access control")
+                    and (notes.get("endpoint") or "?") in ("?", "", "unknown", "n/a")):
+                step(("route discovery incondicional para missing-authorization sin grounding"
+                      ) if es else "unconditional route discovery for missing-authorization")
+                llm_refined_ungrounded = _refine_web_hints_from_source(
+                    llm, fr.local_path, found={})
+                if llm_refined_ungrounded:
+                    _ep_ungrounded = (llm_refined_ungrounded.get("endpoint") or "").strip()
+                    if _ep_ungrounded and _ep_ungrounded not in ("?", "", "unknown"):
+                        notes = {**notes, **llm_refined_ungrounded}
+                        inv.llm_notes.update(
+                            {k: notes[k] for k in ("endpoint", "http_method")
+                             if k in notes})
+                        step((f"route discovery: endpoint={notes.get('endpoint')}") if es
+                             else (f"route discovery: endpoint={notes.get('endpoint')}"))
             # Synthesis mode: dado el código fuente vulnerable + toda la inteligencia CVE,
             # pedir al LLM que sintetice el payload EXACTO para esta vulnerabilidad concreta.
             # El resultado propaga sql_context, bypass_needed y setup_steps a notes para que
