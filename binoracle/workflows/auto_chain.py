@@ -2707,6 +2707,80 @@ def run_full_chain(
             step(f"  autofuzz: error — {_fe}")
             result.add_step("autofuzz", "error", str(_fe)[:80])
 
+    # ── Stage 5c: Post-verify impact escalation ──────────────────────────────
+    # Fires when:
+    # - result.verified = True
+    # - vuln class is missing-auth / auth-bypass / broken-access-control / IDOR
+    # - evidence already has an escalation source (impact_escalation) OR
+    #   we can derive a base_url + verified endpoint from evidence
+    # - Budget remaining >= 40s (escalation is relatively quick HTTP probes)
+    # - NOT already escalated (evidence doesn't have impact_escalation)
+    _ESCALATE_CLASSES = {
+        "missing-authorization", "missing-auth", "broken-access-control",
+        "auth-bypass", "authentication-bypass", "idor",
+        "insecure-direct-object-reference",
+    }
+    _cve_class_esc = (result.cve_class or "").lower().replace(" ", "-")
+    if (result.verified
+            and _cve_class_esc in _ESCALATE_CLASSES
+            and not result.evidence.get("impact_escalation")
+            and _budget_ok(min_s=40.0)):
+        _banner(step, "[5c/8] IMPACT ESCALATION — post-verify data extraction")
+        # Find the base URL and bypass headers from evidence
+        _esc_base_url = ""
+        _esc_endpoint = ""
+        _esc_bypass_headers: dict = {}
+        # Try to get from verifier result
+        if result.inv:
+            _esc_vr = getattr(result.inv, "verify_result", None)
+            if _esc_vr:
+                _esc_ev = getattr(_esc_vr, "evidence", {}) or {}
+                _esc_base_url = _esc_ev.get("base_url", "")
+                _esc_endpoint = _esc_ev.get("endpoint", "") or llm_notes.get("endpoint", "")
+                _bh = _esc_ev.get("bypass_header", "")
+                _bv = _esc_ev.get("bypass_value", "")
+                if _bh:
+                    _esc_bypass_headers = {_bh: _bv}
+        # Fallback to llm_notes
+        if not _esc_base_url:
+            _esc_base_url = llm_notes.get("base_url", "") or result.evidence.get("base_url", "")
+        if not _esc_endpoint:
+            _esc_endpoint = llm_notes.get("endpoint", "")
+        if not _esc_bypass_headers and llm_notes.get("bypass_header"):
+            _esc_bypass_headers = {
+                llm_notes["bypass_header"]: llm_notes.get("bypass_value", "")
+            }
+        if _esc_base_url and _esc_endpoint:
+            step(f"  escalada: base_url={_esc_base_url} endpoint={_esc_endpoint}")
+            try:
+                from .genericverify import _escalate_missing_auth_impact
+                _remaining_esc = max(0.0, budget_s - (time.time() - t0))
+                _esc_budget = min(_remaining_esc * 0.50, 90.0)
+                _esc_result = _escalate_missing_auth_impact(
+                    base_url=_esc_base_url,
+                    verified_endpoint=_esc_endpoint,
+                    bypass_headers=_esc_bypass_headers,
+                    on_step=step,
+                    budget_s=_esc_budget,
+                )
+                if _esc_result:
+                    result.evidence["impact_escalation"] = _esc_result
+                    _esc_cls = _esc_result.get("impact_class", "unknown")
+                    _esc_max = _esc_result.get("max_impact_found", "unknown")
+                    step(f"  escalada: clase={_esc_cls} max_impact={_esc_max}")
+                    result.add_step("impact_escalation", "ok",
+                                    f"class={_esc_cls} max={_esc_max}")
+                    # Bump confidence if we got credential exposure or admin access
+                    if _esc_cls in ("credential_exposure", "admin_access"):
+                        result.engine_confidence = min(
+                            1.0, result.engine_confidence + 0.05)
+            except Exception as _esc_e:
+                step(f"  escalada: error — {_esc_e}")
+                result.add_step("impact_escalation", "error", str(_esc_e)[:80])
+        else:
+            step("  escalada: sin base_url/endpoint disponible — omitido")
+            result.add_step("impact_escalation", "skip", "no base_url or endpoint")
+
     # ── Stage 6: Enrich ───────────────────────────────────────────────────────
     if _budget_ok(min_s=20.0):
         _run_enrich_stage(result, step, llm=llm, lang=lang)
