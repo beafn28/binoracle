@@ -2767,6 +2767,9 @@ def run_full_chain(
                         "command_injection":  "rce",
                         "jwt_bypass":         "jwt-bypass",
                         "xml_injection":      "xxe",
+                        "nosqli":             "nosql-injection",
+                        "file_upload_bypass": "file-upload",
+                        "insecure_deserialization": "deserialization",
                     }
                     _mapped_vc = _DIFF_TO_VULN_CLASS.get(_pdiff.fix_class, "")
                     if _mapped_vc and result.cve_class not in ("native", "binary"):
