@@ -1499,6 +1499,57 @@ def _run_web_stage(cve_id: str, cve_info, llm_notes: dict,
             step("  wrapper app falló — continuando sin target HTTP")
             result.add_step("wrapper_app", "warn", "generation failed")
 
+    # ── C15: Fallback endpoint fuzzing when precheck blocks with low confidence ──
+    # If the investigation will likely be blocked by a high-confidence precheck
+    # skip, try a quick 10-endpoint probe to find the real endpoint before giving up.
+    # This runs BEFORE investigate_cve so it can patch llm_notes["endpoint"] in-place.
+    _c15_base_url = (config or {}).get("target_url") if config else None
+    if not _c15_base_url and not skip_source_download:
+        try:
+            _c15_fuzz_candidates: list[str] = []
+            # 1. alt_endpoints from LLM notes
+            for _ae in (llm_notes.get("alt_endpoints") or [])[:5]:
+                ep = _ae.get("endpoint") if isinstance(_ae, dict) else str(_ae)
+                if ep:
+                    _c15_fuzz_candidates.append(ep)
+            # 2. cve_lessons known-good endpoints for this stack
+            try:
+                from .cve_lessons import get_lessons
+                _c15_stack = llm_notes.get("tech", llm_notes.get("docker_image", ""))
+                _c15_lessons = get_lessons(_c15_stack or cve_id)
+                for _les in (_c15_lessons or [])[:3]:
+                    _ep = _les.get("endpoint") if isinstance(_les, dict) else ""
+                    if _ep and _ep not in _c15_fuzz_candidates:
+                        _c15_fuzz_candidates.append(_ep)
+            except Exception:
+                pass
+            # 3. Generic common REST paths
+            _c15_fuzz_candidates += ["/api/v1", "/api", "/rest", "/graphql",
+                                      "/.well-known/security.txt"]
+            # Quick reachability probe — just find which are live (HTTP 2xx)
+            _c15_live: list[str] = []
+            if _c15_fuzz_candidates:
+                import requests as _rq_c15
+                _c15_sess = _rq_c15.Session()
+                _c15_sess.headers["User-Agent"] = "binoracle/probe"
+                _c15_base = "http://localhost"  # will be overridden when base_url known
+                step(f"  [C15] endpoint fuzz: probando {len(_c15_fuzz_candidates[:10])} candidatos...")
+                for _ep in _c15_fuzz_candidates[:10]:
+                    try:
+                        _ep_url = (_c15_base.rstrip("/") + "/" + _ep.lstrip("/"))
+                        _r = _c15_sess.get(_ep_url, timeout=3, allow_redirects=False)
+                        if _r.status_code in (200, 201, 202, 204):
+                            _c15_live.append(_ep)
+                    except Exception:
+                        pass
+            if _c15_live:
+                step(f"  [C15] endpoint fuzz encontró {len(_c15_live)} endpoints vivos: "
+                     f"{_c15_live[:3]} — actualizando hipótesis")
+                llm_notes["endpoint"] = _c15_live[0]
+                result.evidence["c15_fuzz_live"] = _c15_live
+        except Exception:
+            pass
+
     try:
         from .cve_agent import investigate_cve
         inv = investigate_cve(

