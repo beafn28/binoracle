@@ -143,6 +143,31 @@ def _build_stack_signals() -> tuple:
           '"/usr/local/bin/app -port :8080 || '
           '/usr/local/bin/app --port :8080 || '
           '/usr/local/bin/app"]']),
+        # Rust: multi-stage build; compila con release para binario pequeño.
+        # El runtime usa debian:bookworm-slim (glibc) porque muchas crates usan libssl.
+        ("Cargo.toml", "rust:1.76-slim", 8080,
+         ["WORKDIR /app",
+          "RUN apt-get update -qq && apt-get install -y --no-install-recommends "
+          "pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*",
+          "COPY Cargo.toml Cargo.lock* ./",
+          "RUN mkdir src && echo 'fn main(){}' > src/main.rs && "
+          "cargo build --release 2>/dev/null || true && rm -rf src",
+          "COPY . .",
+          "RUN cargo build --release",
+          'ENV ROCKET_PORT=8080 ROCKET_ADDRESS=0.0.0.0',
+          'CMD ["sh", "-c", '
+          '"./target/release/$(basename $(pwd)) --port 8080 || '
+          './target/release/app || '
+          'cargo run --release"]']),
+        # .NET 8 / ASP.NET Core: imagen oficial mcr.microsoft.com; build pesado pero imagen
+        # runtime ligera (~220 MB). Puerto 8080 es el default de .NET 8 en contenedores.
+        ("*.csproj", "mcr.microsoft.com/dotnet/sdk:8.0", 8080,
+         ["WORKDIR /app",
+          "COPY . .",
+          "RUN dotnet restore && dotnet publish -c Release -o /app/out",
+          'ENV ASPNETCORE_URLS=http://0.0.0.0:8080',
+          'CMD ["sh", "-c", '
+          '"dotnet /app/out/*.dll || dotnet run --project ."]']),
     )
 
 
@@ -491,10 +516,18 @@ def _detect_and_write_auto_dockerfile(source_dir: str,
                     "auto_generado": True, "stack_detectado": f"CMS:{cms}",
                     "cms": cms}
 
+    import glob as _sgl
     for signal_file, base_image, port, run_lines in _STACK_SIGNALS:
-        signal_path = os.path.join(source_dir, signal_file)
-        if not os.path.isfile(signal_path):
-            continue
+        if "*" in signal_file:
+            # Glob pattern (e.g. *.csproj) — find any match in source_dir root
+            _matches = _sgl.glob(os.path.join(source_dir, signal_file))
+            if not _matches:
+                continue
+            signal_path = _matches[0]
+        else:
+            signal_path = os.path.join(source_dir, signal_file)
+            if not os.path.isfile(signal_path):
+                continue
         if signal_file == "package.json" and not _package_json_has_runnable_entry(signal_path):
             continue
         lines = [f"FROM {base_image}"] + _proxy_dockerfile_lines(source_dir) + run_lines + [f"EXPOSE {port}"]

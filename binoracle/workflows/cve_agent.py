@@ -8207,7 +8207,11 @@ _NPM_PKG_RE = re.compile(
     r"(?i)\b(next\.?js|next|express|koa|hapi|fastify|nuxt|gatsby|"
     r"serve-static|connect|restify|feathers|glob|"
     r"vite|svelte|astro|remix|parcel|rollup|webpack|esbuild|"
-    r"turbopack|bun|deno|nest|nestjs|angular|vue)\b"
+    r"turbopack|bun|deno|nest|nestjs|angular|vue|"
+    r"strapi|payload|directus|keystone|sanity|"
+    r"h3|nitro|nuxi|unjs|ofetch|"
+    r"socket\.?io|ws|ws-server|"
+    r"@strapi|@nestjs|@angular)\b"
 )
 # Gemas Ruby conocidas que aparecen en CVEs web -- se chequean ANTES que pip porque
 # nombres como "rack" coinciden también con el regex genérico de paquetes pip.
@@ -8242,10 +8246,530 @@ _GO_PKG_RE = re.compile(
     r"(?i)\b(gin[_-]?gonic|gin|echo[_-]?labstack|"
     r"gorilla[_-]?(mux|websocket|sessions)|gorilla|"
     r"go[_-]?chi|go[_-]?swagger|chi|"
-    r"grpc[_-]?go|beego|revel|buffalo|fiber)\b"
+    r"grpc[_-]?go|beego|revel|buffalo|fiber|"
+    r"net/http|gorilla/mux|go-playground|validator|"
+    r"go-jose|golang-jwt|go-git|gorm)\b"
+)
+_RUST_PKG_RE = re.compile(
+    r"(?i)\b(actix[_-]?web|axum|rocket|warp|hyper|reqwest|"
+    r"tower[_-]?http|poem|tide|salvo|ntex|gotham|"
+    r"tokio[_-]?http|actix|actix-net|async-std)\b"
+)
+_DOTNET_PKG_RE = re.compile(
+    r"(?i)\b(asp\.?net(?:[_-]?core)?|asp[_-]?net|"
+    r"microsoft\.[_-]?(aspnetcore|extensions|entityframework)|"
+    r"identityserver|blazor|efcore|system\.net|"
+    r"dotnet|\.net[_-]?(core|framework|sdk)?)\b"
 )
 
 _STATIC_DIR_FOR_TRAVERSAL = "static"
+
+
+def _scaffold_dotnet_lab(target: str, version: str, vuln_class: str,
+                         notes: dict, on_step) -> Optional[str]:
+    """Genera un laboratorio Docker para paquetes .NET / ASP.NET Core (NuGet).
+
+    Crea un proyecto ASP.NET Core minimal con el paquete NuGet referenciado como dependencia.
+    Puerto 8080 (default de dotnet run en .NET 8+). Build lento (~2-3 min la primera vez
+    por la descarga de SDK, pero el runtime image es ligero).
+    """
+    pkg = (target or "").strip()
+    if not pkg:
+        return None
+    dep_ver = version.strip() if version else ""
+
+    import tempfile as _tf
+    lab_dir = _tf.mkdtemp(prefix="bo_dotnet_")
+    on_step(f"scaffolding .NET lab for {pkg}@{dep_ver or 'latest'} ({vuln_class}) at {lab_dir}")
+
+    _port = 8080
+
+    if vuln_class == "path-traversal":
+        _program_cs = f"""\
+using Microsoft.AspNetCore.StaticFiles;
+
+var builder = WebApplication.CreateBuilder(args);
+var app = builder.Build();
+app.UseStaticFiles();
+app.MapGet("/", () => "binoracle-dotnet-lab");
+app.MapGet("{{**path}}", (string path) => {{
+    var fullPath = Path.Combine(Directory.GetCurrentDirectory(), "wwwroot", path);
+    if (!System.IO.File.Exists(fullPath)) return Results.NotFound();
+    return Results.File(System.IO.File.OpenRead(fullPath), "application/octet-stream");
+}});
+app.Run("http://0.0.0.0:{_port}");
+"""
+        _wwwroot = os.path.join(lab_dir, "wwwroot")
+        os.makedirs(_wwwroot, exist_ok=True)
+        with open(os.path.join(_wwwroot, "index.html"), "w") as _f:
+            _f.write("binoracle-dotnet-static\n")
+        notes.setdefault("endpoint", "/")
+        notes.setdefault("parameters", ["URL_PATH"])
+    elif vuln_class in ("command-injection", "os-command-injection", "rce"):
+        _program_cs = f"""\
+var builder = WebApplication.CreateBuilder(args);
+var app = builder.Build();
+app.MapGet("/", (string? cmd) => {{
+    var command = cmd ?? "echo hello";
+    var proc = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo {{
+        FileName = "/bin/sh", Arguments = $"-c '{{command}}'",
+        RedirectStandardOutput = true, UseShellExecute = false
+    }});
+    return proc?.StandardOutput.ReadToEnd() ?? "error";
+}});
+app.Run("http://0.0.0.0:{_port}");
+"""
+        notes.setdefault("endpoint", "/")
+        notes.setdefault("parameters", ["cmd"])
+    else:
+        _program_cs = f"""\
+var builder = WebApplication.CreateBuilder(args);
+var app = builder.Build();
+app.MapGet("/", () => "binoracle-dotnet-lab ok");
+app.MapGet("/health", () => "BINORACLE_DOTNET_LAB_READY");
+app.Run("http://0.0.0.0:{_port}");
+"""
+        notes.setdefault("endpoint", "/")
+        notes.setdefault("http_method", "GET")
+
+    # .csproj
+    _pkg_ref = f'<PackageReference Include="{pkg}" Version="{dep_ver or "*"}" />' if pkg else ""
+    _csproj = f"""\
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+  <ItemGroup>
+    {_pkg_ref}
+  </ItemGroup>
+</Project>
+"""
+
+    with open(os.path.join(lab_dir, "Program.cs"), "w") as _f:
+        _f.write(_program_cs)
+    with open(os.path.join(lab_dir, "LabApp.csproj"), "w") as _f:
+        _f.write(_csproj)
+
+    _df = "\n".join([
+        "FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build",
+        "WORKDIR /app",
+        "COPY LabApp.csproj .",
+        "RUN dotnet restore",
+        "COPY . .",
+        "RUN dotnet publish -c Release -o /app/out",
+        "",
+        "FROM mcr.microsoft.com/dotnet/aspnet:8.0",
+        "WORKDIR /app",
+        "COPY --from=build /app/out .",
+        f"EXPOSE {_port}",
+        'ENTRYPOINT ["dotnet", "LabApp.dll"]',
+        "",
+    ])
+    with open(os.path.join(lab_dir, "Dockerfile"), "w") as _f:
+        _f.write(_df)
+
+    on_step(f"scaffolded .NET {pkg} lab at {lab_dir} (port={_port})")
+    return lab_dir
+
+
+def _scaffold_go_lab(target: str, version: str, vuln_class: str,
+                     notes: dict, on_step) -> Optional[str]:
+    """Genera un laboratorio Docker para paquetes Go web (Gin, Fiber, Echo, Chi, Gorilla, etc.)
+
+    Para path-traversal: servidor que sirve archivos estáticos desde /app/static con la
+    función vulnerable del paquete. Para command-injection: handler que ejecuta el parámetro
+    'cmd' con exec.Command. Para otros: servidor minimal que responde /health.
+
+    El build de Go es rápido (< 60s en alpine), pero requiere que el go.mod referencie el
+    módulo correcto. Se genera un módulo temporal binoracle-lab/main.go.
+    """
+    pkg = (target or "").strip().lower()
+    if not pkg:
+        return None
+    dep_ver = version.strip() if version else ""
+
+    import tempfile as _tf
+    lab_dir = _tf.mkdtemp(prefix="bo_go_")
+    on_step(f"scaffolding Go lab for {pkg}@{dep_ver or 'latest'} ({vuln_class}) at {lab_dir}")
+
+    # Canonical import path for well-known Go packages
+    _GO_IMPORT_MAP = {
+        "gin": "github.com/gin-gonic/gin",
+        "gin-gonic": "github.com/gin-gonic/gin",
+        "fiber": "github.com/gofiber/fiber/v2",
+        "echo": "github.com/labstack/echo/v4",
+        "echo-labstack": "github.com/labstack/echo/v4",
+        "chi": "github.com/go-chi/chi/v5",
+        "go-chi": "github.com/go-chi/chi/v5",
+        "gorilla": "github.com/gorilla/mux",
+        "gorilla-mux": "github.com/gorilla/mux",
+        "mux": "github.com/gorilla/mux",
+        "beego": "github.com/beego/beego/v2",
+        "revel": "github.com/revel/revel",
+        "buffalo": "github.com/gobuffalo/buffalo",
+    }
+    _import = _GO_IMPORT_MAP.get(pkg.replace("-", "_")) or _GO_IMPORT_MAP.get(pkg, "")
+    _mod_name = "binoracle-lab"
+
+    # Port: Gin/Echo/Chi → 8080, Fiber → 3000
+    _port = 3000 if pkg in ("fiber",) else 8080
+
+    # go.mod
+    _go_mod = f'module {_mod_name}\ngo 1.21\n'
+    if _import:
+        _ver_suffix = ('@v' + dep_ver) if dep_ver else ''
+        _go_mod += f'\nrequire {_import} {_ver_suffix or "latest"}\n'
+
+    # main.go — different templates per vuln_class and package
+    if vuln_class == "path-traversal":
+        _port = _port  # keep
+        _serve_root = "/app/static"
+        if pkg in ("gin", "gin-gonic"):
+            _main_go = f"""\
+package main
+
+import (
+    "github.com/gin-gonic/gin"
+    "net/http"
+)
+
+func main() {{
+    r := gin.Default()
+    r.StaticFS("/static", http.Dir("{_serve_root}"))
+    r.Run("0.0.0.0:{_port}")
+}}
+"""
+        elif pkg in ("fiber",):
+            _main_go = f"""\
+package main
+
+import "github.com/gofiber/fiber/v2"
+
+func main() {{
+    app := fiber.New()
+    app.Static("/static", "{_serve_root}")
+    app.Listen("0.0.0.0:{_port}")
+}}
+"""
+        elif pkg in ("echo", "echo-labstack"):
+            _main_go = f"""\
+package main
+
+import (
+    "github.com/labstack/echo/v4"
+    "net/http"
+)
+
+func main() {{
+    e := echo.New()
+    e.Static("/static", "{_serve_root}")
+    e.Logger.Fatal(e.Start("0.0.0.0:{_port}"))
+}}
+"""
+        else:
+            # Generic net/http file server — works for gorilla/mux, chi, etc.
+            _main_go = f"""\
+package main
+
+import (
+    "net/http"
+    "log"
+)
+
+func main() {{
+    fs := http.FileServer(http.Dir("{_serve_root}"))
+    http.Handle("/static/", http.StripPrefix("/static/", fs))
+    http.Handle("/", fs)
+    log.Fatal(http.ListenAndServe("0.0.0.0:{_port}", nil))
+}}
+"""
+        notes.setdefault("endpoint", "/static")
+        notes.setdefault("parameters", ["URL_PATH"])
+        # Static root dir with canary placeholder
+        static_dir = os.path.join(lab_dir, "static")
+        os.makedirs(static_dir, exist_ok=True)
+        with open(os.path.join(static_dir, "index.html"), "w") as _f:
+            _f.write("binoracle-go-static\n")
+    elif vuln_class in ("command-injection", "os-command-injection", "rce"):
+        _main_go = f"""\
+package main
+
+import (
+    "net/http"
+    "os/exec"
+    "net/url"
+    "log"
+)
+
+func main() {{
+    http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {{
+        q, _ := url.ParseQuery(r.URL.RawQuery)
+        cmd := q.Get("cmd")
+        if cmd == "" {{
+            cmd = "echo hello"
+        }}
+        out, err := exec.Command("sh", "-c", cmd).CombinedOutput()
+        if err != nil {{
+            w.Write([]byte(err.Error()))
+            return
+        }}
+        w.Write(out)
+    }})
+    log.Fatal(http.ListenAndServe("0.0.0.0:{_port}", nil))
+}}
+"""
+        notes.setdefault("endpoint", "/")
+        notes.setdefault("parameters", ["cmd"])
+    else:
+        _main_go = f"""\
+package main
+
+import (
+    "net/http"
+    "fmt"
+    "log"
+)
+
+func main() {{
+    http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {{
+        fmt.Fprintf(w, "binoracle-go-lab ok")
+    }})
+    log.Fatal(http.ListenAndServe("0.0.0.0:{_port}", nil))
+}}
+"""
+        notes.setdefault("endpoint", "/")
+        notes.setdefault("http_method", "GET")
+
+    # Write files
+    with open(os.path.join(lab_dir, "go.mod"), "w") as _f:
+        _f.write(_go_mod)
+    with open(os.path.join(lab_dir, "main.go"), "w") as _f:
+        _f.write(_main_go)
+
+    # Dockerfile — golang:1.21-alpine for fast builds
+    _df_lines = [
+        "FROM golang:1.21-alpine AS builder",
+        "RUN apk add --no-cache git ca-certificates",
+        "WORKDIR /build",
+        "COPY go.mod .",
+        "RUN go mod download 2>/dev/null || true",
+        "COPY . .",
+        "RUN CGO_ENABLED=0 go build -o /server . 2>&1 || true",
+        "",
+        "FROM alpine:3.19",
+        "RUN apk add --no-cache ca-certificates",
+        "WORKDIR /app",
+        "COPY --from=builder /server /app/server",
+    ]
+    if vuln_class == "path-traversal":
+        _df_lines += [
+            "RUN mkdir -p /app/static && echo 'binoracle-go-static' > /app/static/index.html",
+        ]
+    _df_lines += [
+        f"EXPOSE {_port}",
+        'CMD ["/app/server"]',
+        "",
+    ]
+    with open(os.path.join(lab_dir, "Dockerfile"), "w") as _f:
+        _f.write("\n".join(_df_lines))
+
+    on_step(f"scaffolded Go {pkg} lab at {lab_dir} (port={_port}, vuln_class={vuln_class})")
+    return lab_dir
+
+
+def _scaffold_rust_lab(target: str, version: str, vuln_class: str,
+                       notes: dict, on_step) -> Optional[str]:
+    """Genera un laboratorio Docker para crates Rust web (actix-web, axum, rocket, warp, etc.)
+
+    El build de Rust es LENTO (5-15 min la primera vez). Se usa un Dockerfile multi-stage
+    con caché de dependencias (Cargo.lock + stub lib) para acelerar recompilaciones.
+    Puerto por defecto: 8080. axum/actix-web/rocket/warp todos soportan ese puerto.
+    """
+    pkg = (target or "").strip().lower()
+    if not pkg:
+        return None
+    dep_ver = version.strip() if version else ""
+
+    import tempfile as _tf
+    lab_dir = _tf.mkdtemp(prefix="bo_rust_")
+    on_step(f"scaffolding Rust lab for {pkg}@{dep_ver or 'latest'} ({vuln_class}) at {lab_dir}")
+
+    _port = 8080
+    _crate = pkg.replace("-", "_")  # actix-web → actix_web in use statements
+
+    # Cargo.toml
+    _cargo_ver = f'version = "{dep_ver}"' if dep_ver else 'version = "*"'
+    _cargo_toml = f"""\
+[package]
+name = "binoracle-lab"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = {{ version = "1", features = ["full"] }}
+{pkg} = {{ {_cargo_ver} }}
+"""
+
+    if vuln_class == "path-traversal":
+        if pkg in ("actix-web", "actix_web"):
+            _main_rs = f"""\
+use actix_web::{{web, App, HttpServer}};
+use actix_files::Files;
+
+#[actix_web::main]
+async fn main() -> std::io::Result<()> {{
+    std::fs::create_dir_all("/app/static").ok();
+    std::fs::write("/app/static/index.html", "binoracle-rust-static").ok();
+    HttpServer::new(|| {{
+        App::new().service(Files::new("/static", "/app/static").show_files_listing())
+    }})
+    .bind("0.0.0.0:{_port}")?
+    .run()
+    .await
+}}
+"""
+            _cargo_toml += 'actix-files = "0.6"\n'
+        elif pkg in ("axum",):
+            _main_rs = f"""\
+use axum::{{Router, routing::get_service}};
+use tower_http::services::ServeDir;
+
+#[tokio::main]
+async fn main() {{
+    std::fs::create_dir_all("/app/static").ok();
+    std::fs::write("/app/static/index.html", "binoracle-rust-static").ok();
+    let app = Router::new()
+        .nest_service("/static", get_service(ServeDir::new("/app/static")));
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:{_port}").await.unwrap();
+    axum::serve(listener, app).await.unwrap();
+}}
+"""
+            _cargo_toml += 'tower-http = { version = "0.5", features = ["fs"] }\n'
+        else:
+            # Generic: tower-http ServeDir via hyper
+            _main_rs = f"""\
+use std::net::SocketAddr;
+use hyper::{{service::{{make_service_fn, service_fn}}, Server, Body, Response, Request}};
+use std::convert::Infallible;
+
+async fn handle(_: Request<Body>) -> Result<Response<Body>, Infallible> {{
+    Ok(Response::new(Body::from("binoracle-rust-lab")))
+}}
+
+#[tokio::main]
+async fn main() {{
+    let addr: SocketAddr = "0.0.0.0:{_port}".parse().unwrap();
+    let make_svc = make_service_fn(|_| async {{ Ok::<_, Infallible>(service_fn(handle)) }});
+    Server::bind(&addr).serve(make_svc).await.unwrap();
+}}
+"""
+            _cargo_toml = f"""\
+[package]
+name = "binoracle-lab"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = {{ version = "1", features = ["full"] }}
+hyper = {{ version = "0.14", features = ["full"] }}
+{pkg} = {{ {_cargo_ver} }}
+"""
+        notes.setdefault("endpoint", "/static")
+        notes.setdefault("parameters", ["URL_PATH"])
+    elif vuln_class in ("command-injection", "os-command-injection", "rce"):
+        _main_rs = f"""\
+use axum::{{Router, routing::get, extract::Query}};
+use std::collections::HashMap;
+use std::process::Command;
+
+async fn exec_handler(Query(params): Query<HashMap<String, String>>) -> String {{
+    let cmd = params.get("cmd").cloned().unwrap_or_else(|| "echo hello".to_string());
+    let out = Command::new("sh").arg("-c").arg(&cmd).output().unwrap_or_default();
+    String::from_utf8_lossy(&out.stdout).to_string()
+}}
+
+#[tokio::main]
+async fn main() {{
+    let app = Router::new().route("/", get(exec_handler));
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:{_port}").await.unwrap();
+    axum::serve(listener, app).await.unwrap();
+}}
+"""
+        _cargo_toml = f"""\
+[package]
+name = "binoracle-lab"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = {{ version = "1", features = ["full"] }}
+axum = "0.7"
+{pkg} = {{ {_cargo_ver} }}
+"""
+        notes.setdefault("endpoint", "/")
+        notes.setdefault("parameters", ["cmd"])
+    else:
+        _main_rs = f"""\
+use axum::{{Router, routing::get}};
+
+async fn root() -> &'static str {{ "binoracle-rust-lab ok" }}
+
+#[tokio::main]
+async fn main() {{
+    let app = Router::new().route("/", get(root));
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:{_port}").await.unwrap();
+    axum::serve(listener, app).await.unwrap();
+}}
+"""
+        _cargo_toml = f"""\
+[package]
+name = "binoracle-lab"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = {{ version = "1", features = ["full"] }}
+axum = "0.7"
+{pkg} = {{ {_cargo_ver} }}
+"""
+        notes.setdefault("endpoint", "/")
+        notes.setdefault("http_method", "GET")
+
+    with open(os.path.join(lab_dir, "Cargo.toml"), "w") as _f:
+        _f.write(_cargo_toml)
+    with open(os.path.join(lab_dir, "main.rs"), "w") as _f:
+        _f.write(_main_rs)
+    _src_dir = os.path.join(lab_dir, "src")
+    os.makedirs(_src_dir, exist_ok=True)
+    with open(os.path.join(_src_dir, "main.rs"), "w") as _f:
+        _f.write(_main_rs)
+
+    # Dockerfile multi-stage — cache layer for cargo fetch
+    _df = "\n".join([
+        "FROM rust:1.76-slim AS builder",
+        "RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*",
+        "WORKDIR /build",
+        # Dependency cache layer: copy Cargo.toml first, build a stub
+        "COPY Cargo.toml .",
+        'RUN mkdir src && echo "fn main(){}" > src/main.rs && cargo build --release 2>/dev/null; true',
+        "COPY src/ src/",
+        # Touch main.rs to force recompile
+        "RUN touch src/main.rs && cargo build --release",
+        "",
+        "FROM debian:bookworm-slim",
+        "RUN apt-get update && apt-get install -y libssl3 ca-certificates && rm -rf /var/lib/apt/lists/*",
+        "COPY --from=builder /build/target/release/binoracle-lab /app/server",
+        f"EXPOSE {_port}",
+        'CMD ["/app/server"]',
+        "",
+    ])
+    with open(os.path.join(lab_dir, "Dockerfile"), "w") as _f:
+        _f.write(_df)
+
+    on_step(f"scaffolded Rust {pkg} lab at {lab_dir} (port={_port}, slow build expected)")
+    return lab_dir
 
 
 def _gen_pip_app(pkg: str, vuln_class: str, endpoint: str, param: str, pkg_version: str) -> str:
@@ -9404,11 +9928,39 @@ def _guess_package_lab(description: str, target_binary: str, vuln_class: str,
             lab = _scaffold_gem_lab(candidate, version, vuln_class, notes, on_step)
             if lab:
                 return lab
+        # Go -- se chequea ANTES que Node/Python para que gin/fiber/chi no se confundan
+        # con paquetes npm de nombre similar.
+        _desc_lower_lab = (description or "").lower()
+        _is_go_signal = (
+            _GO_PKG_RE.search(candidate)
+            or re.search(r'\b(golang|go\.mod|go\s+module|gofiber|go-chi|gin-gonic)\b', _desc_lower_lab)
+        )
+        if _is_go_signal:
+            lab = _scaffold_go_lab(candidate, version, vuln_class, notes, on_step)
+            if lab:
+                return lab
+        # Rust -- actix-web, axum, rocket, warp antes que pip (estos nombres pasan el regex generico)
+        _is_rust_signal = (
+            _RUST_PKG_RE.search(candidate)
+            or re.search(r'\b(rust|cargo\.toml|crates\.io|actix|axum|rocket|warp)\b', _desc_lower_lab)
+        )
+        if _is_rust_signal:
+            lab = _scaffold_rust_lab(candidate, version, vuln_class, notes, on_step)
+            if lab:
+                return lab
+        # .NET / NuGet -- ASP.NET Core, Microsoft.*, etc.
+        _is_dotnet_signal = (
+            _DOTNET_PKG_RE.search(candidate)
+            or re.search(r'\b(asp\.?net|\.net\s*core|csharp|c#|nuget|dotnet)\b', _desc_lower_lab)
+        )
+        if _is_dotnet_signal:
+            lab = _scaffold_dotnet_lab(candidate, version, vuln_class, notes, on_step)
+            if lab:
+                return lab
         # Node -- se chequea ANTES del pip generico porque muchos paquetes npm (glob, express,
         # etc.) pasan el regex pip ^[a-z][a-z0-9._-]+$ y se instalan como pip por error.
         # Señales de Node.js en candidate o description: "npm", "node", "javascript", ".js",
         # "package.json", "ep_" prefix (etherpad plugins), "@org/pkg" scopes.
-        _desc_lower_lab = (description or "").lower()
         _is_node_signal = (
             _NPM_PKG_RE.search(candidate)
             or candidate.startswith("ep_")  # etherpad plugin naming convention
@@ -9431,6 +9983,22 @@ def _guess_package_lab(description: str, target_binary: str, vuln_class: str,
             lab = _scaffold_gem_lab(m.group(1).lower(), version, vuln_class, notes, on_step)
             if lab:
                 return lab
+        # Go: si la descripcion menciona Go/Golang explicitamente
+        _desc_has_go = re.search(r'\b(golang|go\.mod|go\s+module|go\s+package|gofiber|gin-gonic)\b', description, re.I)
+        if _desc_has_go:
+            m = _GO_PKG_RE.search(description)
+            if m:
+                lab = _scaffold_go_lab(m.group(1).lower(), version, vuln_class, notes, on_step)
+                if lab:
+                    return lab
+        # Rust: si la descripcion menciona Rust/Cargo
+        _desc_has_rust = re.search(r'\b(rust|cargo\.toml|crates\.io|actix-web|axum|warp|rocket)\b', description, re.I)
+        if _desc_has_rust:
+            m = _RUST_PKG_RE.search(description)
+            if m:
+                lab = _scaffold_rust_lab(m.group(1).lower(), version, vuln_class, notes, on_step)
+                if lab:
+                    return lab
         # Si la descripcion menciona Node.js/npm/javascript explicitamente, prioriza npm
         # antes que pip para evitar que paquetes npm sin regex especifico se instalen como pip.
         _desc_has_node = re.search(r'\b(npm|node\.?js|javascript)\b', description, re.I)
