@@ -412,12 +412,16 @@ _FIX_RULES: List[tuple] = [
         "path_traversal",
         "path traversal via missing normalization",
         "added path normalization / sandbox check",
-        [re.compile(r"(?:open\(.*\+\s*user|readFile\(.*\+|"
+        [re.compile(r"(?:open\(.*\+\s*user|readFile\s*\(.*req\.|"
                     r"file_get_contents\(\$|include\s*\(\s*\$|"
-                    r"send_file\(user|StreamingResponse\(open\(user)", re.I)],
+                    r"send_file\(user|StreamingResponse\(open\(user|"
+                    r"fs\.readFile\s*\(\s*req\.|fs\.readFile.*dir\s*\+|"
+                    r"\.read\(\s*(?:params|req\.|request\.))", re.I)],
         [re.compile(r"(?:os\.path\.normpath|os\.path\.realpath|os\.path\.basename|"
                     r"Path\(.*resolve|abspath|realpath|"
-                    r"startswith\(base_dir|safe_join)", re.I)],
+                    r"startswith\(base_dir|safe_join|"
+                    r"path\.resolve\s*\(|path\.normalize\s*\(|"
+                    r"\.startsWith\s*\(rootDir|within_base)", re.I)],
         0.85,
     ),
     (
