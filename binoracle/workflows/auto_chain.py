@@ -1888,6 +1888,96 @@ def run_full_chain(
             step(f"  difftest: error — {_e}")
             result.add_step("differential_test", "error", str(_e)[:80])
 
+    # ── Stage 5.6: Parameter fuzzing ─────────────────────────────────────────
+    # Fires when:
+    # - NOT yet verified (looking for the specific injection param)
+    # - Vuln class is fuzzable (sqli, xss, ssti, lfi, rce, command-injection)
+    # - An endpoint was identified (need somewhere to fuzz)
+    # - Budget remaining ≥ 45s
+    # - BINORACLE_FUZZ=1 (opt-in, disabled by default to avoid noise)
+    _FUZZABLE_CLASSES = {
+        "sqli", "sql-injection", "xss", "reflected-xss", "stored-xss",
+        "ssti", "template-injection", "lfi", "path-traversal",
+        "rce", "command-injection", "open-redirect",
+    }
+    _cve_class_low = (result.cve_class or "").lower().replace(" ", "-")
+    if (not result.verified and
+            os.environ.get("BINORACLE_FUZZ") == "1" and
+            _cve_class_low in _FUZZABLE_CLASSES and
+            llm_notes.get("endpoint") and
+            _budget_ok(min_s=45.0)):
+        _banner(step, "[5.6/8] PARAMETER FUZZING")
+        step(f"  autofuzz: clase={_cve_class_low} endpoint={llm_notes['endpoint']}")
+        try:
+            from .autofuzz import fuzz_parameters
+            # Build auth headers from whatever the web stage established
+            _fuzz_auth = {}
+            if result.inv:
+                _inv = result.inv
+                if hasattr(_inv, "auth_headers") and _inv.auth_headers:
+                    _fuzz_auth = dict(_inv.auth_headers)
+                elif hasattr(_inv, "verify_result"):
+                    _vr = _inv.verify_result
+                    if hasattr(_vr, "evidence") and isinstance(_vr.evidence, dict):
+                        _fuzz_auth = _vr.evidence.get("auth_headers", {}) or {}
+            # Include any extra params the LLM suggested
+            _extra_params = []
+            if llm_notes.get("parameters"):
+                _params_raw = llm_notes["parameters"]
+                if isinstance(_params_raw, dict):
+                    _extra_params = list(_params_raw.keys())
+                elif isinstance(_params_raw, list):
+                    _extra_params = [str(p) for p in _params_raw]
+            # Need a live base_url — extract from evidence or build from source path
+            _fuzz_base = ""
+            if result.inv and hasattr(result.inv, "verify_result"):
+                _fuzz_base = (result.inv.verify_result.evidence or {}).get("base_url", "")
+            if not _fuzz_base and result.evidence.get("base_url"):
+                _fuzz_base = result.evidence["base_url"]
+            if _fuzz_base:
+                _fuzz_res = fuzz_parameters(
+                    base_url=_fuzz_base,
+                    endpoint=llm_notes["endpoint"],
+                    http_method=llm_notes.get("http_method", "GET"),
+                    vuln_class=_cve_class_low,
+                    auth_headers=_fuzz_auth or None,
+                    extra_params=_extra_params or None,
+                    on_step=step,
+                    budget_s=min(60.0, budget_s * 0.3),
+                    min_confidence=0.75,
+                    requests_per_second=2.0,
+                )
+                if _fuzz_res.best_hit:
+                    _bh = _fuzz_res.best_hit
+                    result.evidence["autofuzz"] = {
+                        "best_param": _bh.param,
+                        "best_payload": _bh.payload,
+                        "signal": _bh.signal,
+                        "confidence": _bh.confidence,
+                        "hits": len(_fuzz_res.hits),
+                        "requests_sent": _fuzz_res.payloads_sent,
+                    }
+                    result.add_step("autofuzz", "ok",
+                                    f"best={_bh.param!r} signal={_bh.signal} "
+                                    f"conf={_bh.confidence:.0%}")
+                    step(f"  autofuzz: HIT param={_bh.param!r} signal={_bh.signal} "
+                         f"conf={_bh.confidence:.0%} (total {_fuzz_res.payloads_sent} reqs)")
+                    # If high-confidence hit, mark as partially verified
+                    if _bh.confidence >= 0.90:
+                        result.verified = True
+                        result.evidence["autofuzz"]["verified_by_fuzz"] = True
+                        step("  autofuzz: conf ≥ 90% → marcado como verificado")
+                else:
+                    result.add_step("autofuzz", "fail",
+                                    f"{_fuzz_res.payloads_sent} reqs, sin hits")
+                    step(f"  autofuzz: sin hits en {_fuzz_res.payloads_sent} requests")
+            else:
+                step("  autofuzz: sin base_url disponible — omitido")
+                result.add_step("autofuzz", "skip", "no base_url")
+        except Exception as _fe:
+            step(f"  autofuzz: error — {_fe}")
+            result.add_step("autofuzz", "error", str(_fe)[:80])
+
     # ── Stage 6: Enrich ───────────────────────────────────────────────────────
     if _budget_ok(min_s=20.0):
         _run_enrich_stage(result, step, llm=llm, lang=lang)
