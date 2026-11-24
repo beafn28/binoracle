@@ -2431,6 +2431,72 @@ def _static_vuln_precheck(local_path: str, plugin_dir: str, vuln_class: str,
                 "confidence": 0.0,
             }
 
+    # --- Check 24: CORS misconfiguration — Origin header reflected without allowlist ---
+    if vuln_class in ("cors-misconfiguration", "cors_misconfiguration", "cors") and local_path:
+        import os as _os_cors
+        _CORS_UNSAFE_RE = re.compile(
+            r'(?:'
+            # Node.js: Access-Control-Allow-Origin set to request Origin
+            r'res\.(?:set|header|setHeader)\s*\(\s*["\']Access-Control-Allow-Origin["\'],\s*req\.headers\.origin'
+            r'|Access-Control-Allow-Origin.*req\.header\s*\(\s*["\']origin["\']'
+            # Python
+            r'|Access-Control-Allow-Origin.*request\.headers\.get\s*\(\s*["\']Origin["\']'
+            r'|Access-Control-Allow-Origin.*request\.headers\[["\']Origin["\']\]'
+            # PHP
+            r"|header\s*\(\s*['\"]Access-Control-Allow-Origin:\s*\"\s*\.\s*\$_SERVER\[.HTTP_ORIGIN.\]"
+            # Django/DRF wildcard combined with Allow-Credentials
+            r'|CORS_ORIGIN_ALLOW_ALL\s*=\s*True'
+            r')',
+            re.IGNORECASE,
+        )
+        _CORS_SAFE_RE = re.compile(
+            r'(?:'
+            r'CORS_ALLOWED_ORIGINS\s*=\s*\['
+            r'|CORS_ORIGIN_WHITELIST\s*=\s*\['
+            r'|allowedOrigins\s*=\s*\['
+            r'|allowed_origins\s*=\s*\['
+            r'|origin_regex\s*=\s*\['
+            r'|cors\s*\(\s*\{[^}]*origin\s*:\s*\['
+            r')',
+            re.IGNORECASE,
+        )
+        _cors_unsafe_files: list[str] = []
+        _cors_safe_files: list[str] = []
+        try:
+            for _r_cors, _d_cors, _f_cors in _os_cors.walk(local_path):
+                _d_cors[:] = [d for d in _d_cors if d not in
+                              (".git", "node_modules", "dist", "__pycache__", "vendor")]
+                for _fn_cors in _f_cors:
+                    if not any(_fn_cors.endswith(e) for e in
+                               (".py", ".js", ".ts", ".php", ".conf", ".json")):
+                        continue
+                    _fp_cors = _os_cors.path.join(_r_cors, _fn_cors)
+                    try:
+                        _txt_cors = open(_fp_cors, encoding="utf-8", errors="ignore").read(60_000)
+                        if _CORS_UNSAFE_RE.search(_txt_cors):
+                            _cors_unsafe_files.append(_os_cors.path.relpath(_fp_cors, local_path))
+                        if _CORS_SAFE_RE.search(_txt_cors):
+                            _cors_safe_files.append(_os_cors.path.relpath(_fp_cors, local_path))
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        if _cors_safe_files and not _cors_unsafe_files:
+            return {
+                "ok": True,
+                "reason": (f"pre-check CORS: allowlist de origenes encontrada en "
+                           f"{', '.join(_cors_safe_files[:2])} — probable versión parchada"),
+                "confidence": 0.62,
+            }
+        if _cors_unsafe_files:
+            return {
+                "ok": True,
+                "reason": (f"pre-check CORS: Origin reflejado sin allowlist en "
+                           f"{', '.join(_cors_unsafe_files[:2])} — "
+                           f"CORS misconfiguration probable"),
+                "confidence": 0.0,
+            }
+
     return {"ok": True, "reason": "pre-check OK", "confidence": 1.0}
 
 
