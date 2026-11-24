@@ -1874,6 +1874,30 @@ def _render_chain_log(result: ChainResult, lang: str = "es",
             f"`{_diff_ev.get('patched_url', '')}`")
         parts.append("\n".join(_diff_lines))
 
+    # GHSA advisory cross-reference block (when GHSA IDs were found in NVD references)
+    _patch_ev = result.evidence.get("patch_analysis") or {}
+    _ghsa_refs: list[str] = _patch_ev.get("ghsa_ids", []) or []
+    if not _ghsa_refs and cve_info:
+        # Also try extracting from CVE references directly
+        import re as _re_ghsa
+        _refs_raw = getattr(cve_info, "references", []) or []
+        for _ref in _refs_raw:
+            _ref_url = _ref.get("url", "") if isinstance(_ref, dict) else str(_ref)
+            _m = _re_ghsa.search(r"(GHSA-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4})",
+                                 _ref_url, _re_ghsa.I)
+            if _m:
+                _gid = _m.group(1).upper()
+                if _gid not in _ghsa_refs:
+                    _ghsa_refs.append(_gid)
+    if _ghsa_refs:
+        _ghsa_hdr = "## " + ("Referencias GHSA (advisory GitHub Security)" if es
+                              else "GHSA References (GitHub Security Advisory)")
+        _ghsa_lines = [_ghsa_hdr, ""]
+        for _gid in _ghsa_refs[:5]:
+            _ghsa_url = f"https://github.com/advisories/{_gid}"
+            _ghsa_lines.append(f"- [{_gid}]({_ghsa_url})")
+        parts.append("\n".join(_ghsa_lines))
+
     # Timeline
     timeline = _render_timeline(result, lang)
     if timeline:
