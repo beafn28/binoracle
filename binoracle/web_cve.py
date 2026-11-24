@@ -22,6 +22,21 @@ from urllib.parse import parse_qs, urlparse
 # ── History persistence ───────────────────────────────────────────────────────
 
 _HISTORY_DIR = os.path.expanduser("~/.binoracle/history")
+
+
+def _extract_patch_intel(refs: list) -> dict:
+    """Extract patch intelligence data embedded in NVD references by cvelookup.py."""
+    for ref in (refs or []):
+        if isinstance(ref, dict) and ref.get("url") == "patch_intel":
+            pi = ref.get("patch_intel") or {}
+            return {
+                "fix_commits":      pi.get("fix_commits", [])[:10],
+                "patched_versions": pi.get("patched_versions", [])[:8],
+                "affected_ranges":  pi.get("affected_ranges", [])[:8],
+                "timeline":         pi.get("timeline", [])[:8],
+                "sources":          pi.get("sources", []),
+            }
+    return {}
 os.makedirs(_HISTORY_DIR, exist_ok=True)
 
 
@@ -268,6 +283,10 @@ def _start_job(cve_id: str, config) -> _Job:
                         .get("advisory_notes", "")[:500]),
                     "synthesized_exploit": inv.llm_notes.get("synthesized_exploit", {}),
                 },
+                # Patch intelligence (populated by patch_intel.py via cvelookup enrich)
+                "patch_intel": _extract_patch_intel(getattr(inv, "_cve_info_refs", [])),
+                # CVE correlation
+                "correlation": getattr(inv, "_correlation", {}),
             }
             _save_history(job)
             job._q.put(("done", job.result))
@@ -1822,6 +1841,35 @@ main {
 }
 .rerun-btn:hover { color: var(--text); border-color: var(--cyan); }
 
+/* ── patch intel + correlation panels ── */
+.pi-panel {
+  margin: 10px 0 0;
+  background: rgba(14,165,233,.06);
+  border: 1px solid rgba(14,165,233,.2);
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 12px;
+}
+.pi-title {
+  font-size: 11px; font-weight: 700; color: var(--cyan);
+  text-transform: uppercase; letter-spacing: .07em; margin-bottom: 8px;
+}
+.pi-section { margin-bottom: 6px; }
+.pi-label { font-weight: 600; color: var(--text); margin-right: 6px; }
+.pi-items { display: flex; flex-direction: column; gap: 3px; margin-top: 4px; }
+.pi-item { color: var(--dim); line-height: 1.5; }
+.pi-link { color: var(--cyan); text-decoration: none; font-family: var(--mono); font-size: 11px; }
+.pi-link:hover { text-decoration: underline; }
+.pi-msg { color: var(--dim); font-size: 11px; }
+.pi-files { color: var(--border2); font-size: 10px; font-family: var(--mono); }
+.pi-ver { background: rgba(34,197,94,.12); color: #4ade80; border: 1px solid rgba(34,197,94,.25);
+           border-radius: 4px; padding: 1px 7px; font-size: 11px; font-family: var(--mono); }
+.pi-range { font-family: var(--mono); font-size: 11px; color: #f59e0b; }
+.pi-sources { font-size: 10px; color: var(--dim); margin-top: 6px; }
+.pi-cve-id { font-family: var(--mono); font-size: 11px; color: var(--cyan); font-weight: 600; }
+.pi-rel-tag { background: rgba(168,85,247,.12); color: #c084fc; border: 1px solid rgba(168,85,247,.25);
+               border-radius: 4px; padding: 1px 6px; font-size: 10px; }
+
 /* ── phase progress tracker ── */
 #phase-tracker {
   margin: 0 24px 8px;
@@ -2468,6 +2516,72 @@ main {
         a.click(); URL.revokeObjectURL(url);
       });
     }
+
+    // Patch intelligence panel
+    renderPatchIntel(d, panel);
+    // CVE correlation panel
+    renderCorrelation(d, panel);
+  }
+
+  function renderPatchIntel(d, panel) {
+    const pi = d.patch_intel || {};
+    const commits = pi.fix_commits || [];
+    const patched = pi.patched_versions || [];
+    const ranges  = pi.affected_ranges || [];
+    const timeline = pi.timeline || [];
+    if (!commits.length && !patched.length && !ranges.length) return;
+
+    let html = '<div class="pi-panel"><div class="pi-title">Patch Intelligence</div>';
+
+    if (commits.length) {
+      html += '<div class="pi-section"><span class="pi-label">Fix commits</span><div class="pi-items">';
+      for (const c of commits.slice(0, 5)) {
+        const files = (c.files || []).slice(0, 4).join(', ') || '';
+        html += `<div class="pi-item"><a href="${escHtml(c.url)}" target="_blank" rel="noopener" class="pi-link">${escHtml(c.repo)}@${escHtml((c.sha||'').slice(0,7))}</a>`;
+        if (c.message) html += ` <span class="pi-msg">${escHtml(c.message.split('\\n')[0].slice(0,80))}</span>`;
+        if (files) html += ` <span class="pi-files">${escHtml(files)}</span>`;
+        html += '</div>';
+      }
+      html += '</div></div>';
+    }
+
+    if (patched.length) {
+      html += `<div class="pi-section"><span class="pi-label">Patched versions</span> `;
+      html += patched.slice(0, 6).map(v => `<span class="pi-ver">${escHtml(v)}</span>`).join(' ');
+      html += '</div>';
+    }
+
+    if (ranges.length) {
+      html += '<div class="pi-section"><span class="pi-label">Affected ranges</span><div class="pi-items">';
+      for (const r of ranges.slice(0, 4)) {
+        const intro = r.introduced ? '≥ ' + r.introduced : '';
+        const fixed = r.fixed ? ' &lt; ' + r.fixed : '';
+        html += `<div class="pi-item pi-range">[${escHtml(r.type||'')}] ${escHtml(intro)}${escHtml(fixed)}</div>`;
+      }
+      html += '</div></div>';
+    }
+
+    if ((pi.sources||[]).length) {
+      html += `<div class="pi-sources">sources: ${escHtml((pi.sources||[]).join(' · '))}</div>`;
+    }
+    html += '</div>';
+    panel.insertAdjacentHTML('beforeend', html);
+  }
+
+  function renderCorrelation(d, panel) {
+    const corr = d.correlation || {};
+    const related = corr.related || [];
+    if (!related.length) return;
+
+    let html = '<div class="pi-panel"><div class="pi-title">Related CVEs (' + related.length + ') — ' + escHtml(corr.component || '') + '</div>';
+    html += '<div class="pi-items">';
+    for (const c of related.slice(0, 6)) {
+      const scoreStr = c.cvss ? c.cvss.toFixed(1) : '—';
+      let scoreCol = c.cvss >= 9 ? 'var(--red)' : c.cvss >= 7 ? '#f97316' : c.cvss >= 4 ? 'var(--yellow)' : 'var(--dim)';
+      html += `<div class="pi-item"><span class="pi-cve-id">${escHtml(c.cve_id)}</span> <span style="color:${scoreCol};font-size:11px">${scoreStr}</span> <span class="pi-rel-tag">${escHtml(c.relation)}</span> <span class="pi-msg">${escHtml((c.desc||'').slice(0,80))}</span></div>`;
+    }
+    html += '</div></div>';
+    panel.insertAdjacentHTML('beforeend', html);
   }
 
   // ── professional report builder ──────────────────────────────────────────

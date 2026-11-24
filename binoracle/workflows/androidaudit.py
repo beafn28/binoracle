@@ -455,6 +455,40 @@ def run_android_audit(apk: str, llm=None, config=None, store=None, on_step=None)
     else:
         limits.append(f"escaneo de codigo omitido (jadx no disponible: {reason}); instala jadx.")
 
+    # ---- JEB native analysis (if native libs detected and JEB MCP endpoint available) ----
+    native_libs = (facts.get("native_libs", []) if isinstance(facts, dict) else []) or []
+    jeb_result = {}
+    if native_libs:
+        emit(step := step + 1, "JEB: analisis nativo .so (CFG, pseudoC, xrefs)")
+        try:
+            from .jebconnect import jeb_full_native_audit
+            jeb_result = jeb_full_native_audit(apk)
+            if jeb_result.get("ok"):
+                native_method_count = sum(
+                    lib.get("method_count", 0) for lib in jeb_result.get("native_libs", [])
+                )
+                if native_method_count:
+                    native_summary = Finding(
+                        title=f"JEB: {native_method_count} metodos nativos encontrados en {len(jeb_result.get('native_libs', []))} librerias",
+                        severity="info",
+                        location=", ".join(lib["lib"] for lib in jeb_result.get("native_libs", [])[:4]),
+                        evidence="\n".join(
+                            f"{lib['lib']}: {lib.get('method_count', 0)} funciones"
+                            for lib in jeb_result.get("native_libs", [])[:8]
+                        ),
+                        recommendation=(
+                            "Revisar funciones nativas con pseudoC JEB para vulnerabilidades de memoria: "
+                            "buffer overflow, use-after-free, format string. "
+                            "Usar jeb_decompile_native() sobre funciones criticas con argumentos controlables."
+                        ),
+                    )
+                    findings.insert(0, native_summary)
+        except Exception:
+            pass
+    elif isinstance(facts, dict) and facts.get("ok"):
+        # No native libs → note it
+        limits.append("no se detectaron librerias nativas (.so); analisis JEB omitido.")
+
     # ---- resumen (answer markdown) ----
     sev_rank = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
     findings.sort(key=lambda f: sev_rank.get(f.severity, 5))
@@ -487,6 +521,14 @@ def run_android_audit(apk: str, llm=None, config=None, store=None, on_step=None)
                                  key=lambda kv: sev_rank.get(kv[0], 9))) or "ninguno") + "\n"]
     if ai_summary:
         head.append("## Resumen ejecutivo (IA, sobre hallazgos grounded)\n" + ai_summary + "\n")
+
+    if jeb_result.get("ok") and jeb_result.get("native_libs"):
+        head.append("## JEB — Analisis nativo")
+        for lib_info in jeb_result["native_libs"][:6]:
+            methods = lib_info.get("methods") or []
+            head.append(f"### {lib_info['lib']} ({lib_info.get('method_count', 0)} funciones)")
+            if methods:
+                head.append("```\n" + "\n".join(str(m) for m in methods[:20]) + "\n```")
     for f in findings[:40]:
         head.append(f"### [{f.severity.upper()}] {f.title}")
         if f.location:

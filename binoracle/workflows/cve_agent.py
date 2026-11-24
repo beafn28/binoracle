@@ -2220,6 +2220,16 @@ def _docker_self_repair(container: str, step, max_attempts: int = 3) -> bool:
             cls = _classify_pipeline_error(logs)
             step(f"[self-repair] container exited (code={exit_code}) category={cls['category']}: "
                  f"{cls['remediation_hint'][:120]}")
+            # Structured error analysis (best-effort)
+            try:
+                from .error_analyzer import analyze_error, render_error_summary
+                _err = analyze_error(
+                    stage="docker_lab", stderr=logs, exit_code=int(exit_code or 1),
+                    command=f"docker container={container}", attempts=attempt,
+                )
+                step(f"[error_analyzer] {render_error_summary(_err)}")
+            except Exception:
+                pass
             if cls["category"] in ("missing_dependency", "npm_install_failure",
                                    "pkg_install_failure", "syntax_error", "build_failure"):
                 step(f"[self-repair] fatal category={cls['category']} — cannot fix without rebuild")
@@ -13258,6 +13268,15 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
     except Exception:
         _state_db = None
 
+    # Controller-side error tracking — non-blocking, enriches error analysis
+    try:
+        from .error_analyzer import analyze_error, classify_error
+        from .workspace_guard import WorkspaceGuard
+        _guard = WorkspaceGuard(workspace=os.path.expanduser("~/.binoracle"))
+        _guard.snapshot()
+    except Exception:
+        _guard = None
+
     # Limpieza proactiva de Docker antes de cada investigacion: evita ENOSPC en MySQL cuando
     # el build cache / volumenes huerfanos se acumulan entre labs.
     try:
@@ -13289,6 +13308,25 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
     inv.cvss_severity = info.cvss_severity
     inv.cvss_vector = info.cvss_vector
     inv.published = info.published
+    # Expose NVD references (includes embedded patch_intel block from cvelookup enrich)
+    inv._cve_info_refs = list(info.references) if hasattr(info, "references") else []
+
+    # CVE correlation: find related CVEs for context (non-blocking, best-effort)
+    try:
+        from .cve_correlate import correlate_cve
+        _corr = correlate_cve(inv.cve_id, max_related=10)
+        if _corr.ok and _corr.related:
+            inv._correlation = {
+                "component": _corr.component,
+                "related": [{"cve_id": c.cve_id, "cvss": c.cvss_score,
+                              "relation": c.relation, "desc": c.description[:120]}
+                            for c in _corr.related[:8]],
+                "priority_order": _corr.priority_order[:8],
+            }
+            step(f"[correlate] {len(_corr.related)} CVEs relacionados con {_corr.component}" if es else
+                 f"[correlate] {len(_corr.related)} related CVEs for {_corr.component}")
+    except Exception:
+        pass
     if info.ok:
         step((f"{inv.cve_id}: {'HUECO (sin exploit publico)' if info.is_gap else 'ya tiene exploit publico'}"
               if es else
