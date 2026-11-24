@@ -2167,6 +2167,66 @@ def _static_vuln_precheck(local_path: str, plugin_dir: str, vuln_class: str,
                 "confidence": 0.0,
             }
 
+    # --- Check 20: NoSQL Injection — MongoDB $where/$regex operator injection ---
+    # Triggered for: nosql-injection, nosqli, mongodb-injection.
+    # Unsafe: db.find({[req.body.key]: req.body.val}), $where: req.body, $regex with user input
+    # Safe: sanitize-query, mongo-sanitize, mongoose schema strict:true, validator with allowedKeys
+    import os as _os_nosql
+    import re as _re_nosql
+    _vc_nosql = vuln_class.lower().replace(" ", "-").replace("_", "-")
+    if _vc_nosql in ("nosql-injection", "nosqli", "mongodb-injection",
+                     "nosql", "nosql-injection") and local_path:
+        _NOSQL_UNSAFE_RE = _re_nosql.compile(
+            r"(?:find\s*\(\s*\{[^}]*(?:req\.|request\.|body\[|params\[)|"
+            r"\$where\s*:\s*(?:req\.|user_input|params)|"
+            r"\$regex\s*:\s*(?:req\.|user_input|params)|"
+            r"collection\.find\(\s*\{[^}]*user|"
+            r"db\.[a-zA-Z]+\.find\(\s*(?:req\.|body\.))", _re_nosql.I)
+        _NOSQL_SAFE_RE = _re_nosql.compile(
+            r"(?:mongo.?sanitize|sanitize.?query|allowedKeys|"
+            r"mongoose\..*strict\s*:\s*true|"
+            r"validator\s*\.sanitize|"
+            r"express-mongo-sanitize|"
+            r"\.replace\s*\(\s*[\'\"]\$[\'\"]\s*,)", _re_nosql.I)
+        _nosql_unsafe_files: list = []
+        _nosql_safe_files: list = []
+        try:
+            for _r_nosql, _d_nosql, _f_nosql in _os_nosql.walk(local_path):
+                _d_nosql[:] = [d for d in _d_nosql
+                               if d not in ("node_modules", ".git", "vendor", "__pycache__")]
+                for _fn_nosql in _f_nosql:
+                    if not _fn_nosql.endswith((".js", ".ts", ".py", ".php")):
+                        continue
+                    _fp_nosql = _os_nosql.path.join(_r_nosql, _fn_nosql)
+                    try:
+                        _txt = open(_fp_nosql, encoding="utf-8",
+                                    errors="ignore").read(100_000)
+                        if _NOSQL_UNSAFE_RE.search(_txt):
+                            _nosql_unsafe_files.append(
+                                _os_nosql.path.relpath(_fp_nosql, local_path))
+                        if _NOSQL_SAFE_RE.search(_txt):
+                            _nosql_safe_files.append(
+                                _os_nosql.path.relpath(_fp_nosql, local_path))
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        if _nosql_safe_files and not _nosql_unsafe_files:
+            return {
+                "ok": False,
+                "reason": (f"pre-check NoSQLi: mongo-sanitize/strict mode detectado en "
+                           f"{', '.join(_nosql_safe_files[:2])} — no se encontraron consultas "
+                           f"inseguras — probable versión parchada"),
+                "confidence": 0.60,
+            }
+        if _nosql_unsafe_files:
+            return {
+                "ok": True,
+                "reason": (f"pre-check NoSQLi: consulta MongoDB con input directo detectada en "
+                           f"{', '.join(_nosql_unsafe_files[:2])} — NoSQL injection probable"),
+                "confidence": 0.0,
+            }
+
     return {"ok": True, "reason": "pre-check OK", "confidence": 1.0}
 
 
