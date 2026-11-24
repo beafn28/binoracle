@@ -1518,7 +1518,64 @@ def run_full_chain(
     except Exception:
         pass
 
+    # ── Notifications: webhook / Telegram alert on verified CVE ──────────────
+    if result.verified:
+        _notify_verified(cve_id, result)
+
     return result
+
+
+def _notify_verified(cve_id: str, result: "ChainResult") -> None:
+    """Fire optional notifications when a CVE is dynamically verified.
+
+    Checks two env vars (never hardcoded):
+      BINORACLE_WEBHOOK_URL  — POST JSON to this URL
+      BINORACLE_TELEGRAM_TOKEN + BINORACLE_TELEGRAM_CHAT_ID — send Telegram message
+
+    Both are optional and independent. Failures are silently ignored so they
+    never block the main chain.
+    """
+    import json as _json
+    import urllib.request as _req
+
+    payload = {
+        "cve_id": cve_id,
+        "verified": True,
+        "vuln_class": getattr(result.inv, "vuln_class", "") if result.inv else "",
+        "report_path": result.report_path or "",
+        "elapsed_s": round(result.elapsed_s, 1),
+    }
+
+    # Webhook
+    webhook_url = os.environ.get("BINORACLE_WEBHOOK_URL", "")
+    if webhook_url:
+        try:
+            body = _json.dumps(payload).encode()
+            rq = _req.Request(webhook_url, data=body,
+                              headers={"Content-Type": "application/json"}, method="POST")
+            with _req.urlopen(rq, timeout=8):
+                pass
+        except Exception:
+            pass
+
+    # Telegram
+    tg_token = os.environ.get("BINORACLE_TELEGRAM_TOKEN", "")
+    tg_chat  = os.environ.get("BINORACLE_TELEGRAM_CHAT_ID", "")
+    if tg_token and tg_chat:
+        try:
+            vc = payload["vuln_class"] or "?"
+            msg = (f"🔴 binoracle VERIFICADO\n"
+                   f"CVE: {cve_id}\n"
+                   f"Clase: {vc}\n"
+                   f"Tiempo: {payload['elapsed_s']}s")
+            tg_url = f"https://api.telegram.org/bot{tg_token}/sendMessage"
+            tg_body = _json.dumps({"chat_id": tg_chat, "text": msg}).encode()
+            tg_req = _req.Request(tg_url, data=tg_body,
+                                  headers={"Content-Type": "application/json"}, method="POST")
+            with _req.urlopen(tg_req, timeout=8):
+                pass
+        except Exception:
+            pass
 
 
 # ── Auto-queue: NVD + Telegram feed → run_full_chain autonomously ─────────────

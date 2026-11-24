@@ -205,9 +205,18 @@ def verify_python_web_cve(source_path: str, endpoint: str,
         _run(["docker", "build", "-t", container, source_path], timeout=120)
         _run(["docker", "run", "-d", "--rm", "--name", container,
               "-p", f"{port}:{port}", container], timeout=30)
-        time.sleep(4)
-
+        # Poll until port is open (up to 30s) instead of blind sleep
+        import socket as _sock
         host = _lab_host()
+        for _i in range(30):
+            try:
+                with _sock.create_connection((host, port), timeout=1):
+                    break
+            except OSError:
+                time.sleep(1)
+        else:
+            step(f"  pythonverify: timeout esperando puerto {port}")
+
         base_url = f"http://{host}:{port}"
 
         # Setup auth if needed
