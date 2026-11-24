@@ -9169,7 +9169,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
         if not _tech_as_hint and source and "/" not in source and "." not in source:
             _known_cms = {"ghost", "strapi", "payload", "craft", "craftcms", "wagtail",
                           "directus", "typo3", "contao", "statamic", "kirby", "modx",
-                          "daptin", "gqlgen", "fiber", "echo", "gin"}
+                          "daptin", "gqlgen", "fiber", "echo", "gin", "cockpit"}
             if source.lower() in _known_cms:
                 _tech_as_hint = source.lower()
         _cms_pass = _explicit_cms or (_tech_as_hint if _tech_as_hint not in ("php", "unknown", "") else "")
@@ -11498,6 +11498,81 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         payload=notes.get("payload") or "",
                         confirm_string=notes.get("confirm_string") or "",
                         auth_required=bool(notes.get("auth_required") or notes.get("authenticated")),
+                        pkg_version=inv.llm_notes.get("vulnerable_version") or "",
+                        on_step=step,
+                        budget_s=budget_s,
+                    )
+                    _apply_wpverify_result(inv, wr, es, llm)
+            # Statamic CMS: Laravel-based PHP CMS (statamic/cms)
+            elif (not plugin_dir and fr.local_path and
+                  ("statamic" in (notes.get("cms") or "").lower() or
+                   "statamic" in (getattr(inv, "cms", "") or "").lower() or
+                   "statamic" in str(fr.local_path).lower())):
+                from .statamicverify import detect_statamic, verify_statamic_cve
+                if detect_statamic(str(fr.local_path)):
+                    step(("  statamicverify: Statamic CMS detectado — iniciando lab" if es else
+                          "  statamicverify: Statamic CMS detected — starting lab"))
+                    wr = verify_statamic_cve(
+                        str(fr.local_path),
+                        cve_id=inv.cve_id,
+                        endpoint=notes.get("endpoint") or "/cp",
+                        vuln_class=inv.vuln_class,
+                        http_method=notes.get("http_method") or "GET",
+                        payload=notes.get("payload") or "",
+                        confirm_string=notes.get("confirm_string") or "",
+                        auth_required=bool(notes.get("auth_required") or notes.get("authenticated")),
+                        bypass_header=notes.get("bypass_header") or "",
+                        bypass_value=notes.get("bypass_value") or "",
+                        pkg_version=inv.llm_notes.get("vulnerable_version") or "",
+                        on_step=step,
+                        budget_s=budget_s,
+                    )
+                    _apply_wpverify_result(inv, wr, es, llm)
+            # Kirby CMS: flat-file PHP CMS (getkirby/cms)
+            elif (not plugin_dir and fr.local_path and
+                  ("kirby" in (notes.get("cms") or "").lower() or
+                   "kirby" in (getattr(inv, "cms", "") or "").lower() or
+                   "kirby" in str(fr.local_path).lower())):
+                from .kirbyverify import detect_kirby, verify_kirby_cve
+                if detect_kirby(str(fr.local_path)):
+                    step(("  kirbyverify: Kirby CMS detectado — iniciando lab" if es else
+                          "  kirbyverify: Kirby CMS detected — starting lab"))
+                    wr = verify_kirby_cve(
+                        str(fr.local_path),
+                        cve_id=inv.cve_id,
+                        endpoint=notes.get("endpoint") or "/panel",
+                        vuln_class=inv.vuln_class,
+                        http_method=notes.get("http_method") or "GET",
+                        payload=notes.get("payload") or "",
+                        confirm_string=notes.get("confirm_string") or "",
+                        auth_required=bool(notes.get("auth_required") or notes.get("authenticated")),
+                        bypass_header=notes.get("bypass_header") or "",
+                        bypass_value=notes.get("bypass_value") or "",
+                        pkg_version=inv.llm_notes.get("vulnerable_version") or "",
+                        on_step=step,
+                        budget_s=budget_s,
+                    )
+                    _apply_wpverify_result(inv, wr, es, llm)
+            # Cockpit CMS: headless PHP CMS (cockpit-hq/cockpit)
+            elif (not plugin_dir and fr.local_path and
+                  ("cockpit" in (notes.get("cms") or "").lower() or
+                   "cockpit" in (getattr(inv, "cms", "") or "").lower() or
+                   "cockpit" in str(fr.local_path).lower())):
+                from .cockpitverify import detect_cockpit, verify_cockpit_cve
+                if detect_cockpit(str(fr.local_path)):
+                    step(("  cockpitverify: Cockpit CMS detectado — iniciando lab" if es else
+                          "  cockpitverify: Cockpit CMS detected — starting lab"))
+                    wr = verify_cockpit_cve(
+                        str(fr.local_path),
+                        cve_id=inv.cve_id,
+                        endpoint=notes.get("endpoint") or "/api",
+                        vuln_class=inv.vuln_class,
+                        http_method=notes.get("http_method") or "GET",
+                        payload=notes.get("payload") or "",
+                        confirm_string=notes.get("confirm_string") or "",
+                        auth_required=bool(notes.get("auth_required") or notes.get("authenticated")),
+                        bypass_header=notes.get("bypass_header") or "",
+                        bypass_value=notes.get("bypass_value") or "",
                         pkg_version=inv.llm_notes.get("vulnerable_version") or "",
                         on_step=step,
                         budget_s=budget_s,
