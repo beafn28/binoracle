@@ -2946,14 +2946,21 @@ _LAB_FEEDBACK_SYS = (
 _LAB_SCAFFOLD_PATH_TRAVERSAL_SYS = (
     "Eres un experto en seguridad. Genera un servidor de ficheros MINIMO para un lab de "
     "path-traversal. REGLAS CRITICAS:\n"
-    "1. NUNCA uses Express/fastify/koa/hapi -- usa SOLO http.createServer de Node.js nativo "
-    "(Express normaliza %2e%2e y bloquea el traversal antes del handler)\n"
-    "2. Sirve ficheros concatenando el path de la URL al directorio base /app/files/ con "
+    "1. STACK Node.js: NUNCA uses Express/fastify/koa/hapi -- usa SOLO http.createServer "
+    "de Node.js nativo (Express normaliza %2e%2e y bloquea el traversal antes del handler). "
+    "Sirve ficheros concatenando el path de la URL al directorio base /app/files/ con "
     "path.join; NO uses path.resolve ni path.normalize; NO valides ni filtres el path\n"
-    "3. El endpoint DEBE terminar en '/' (ej: '/static/') para activar URL_PATH mode\n"
-    "4. El verificador plantara el canario en /tmp/ via docker exec -- el servidor solo "
+    "1b. STACK Python/Gradio: si el codigo es una libreria Gradio, usa SOLO "
+    "demo.launch(server_name='0.0.0.0', server_port=7860, share=False) -- el endpoint "
+    "vulnerable es /file= (Gradio lo sirve internamente, NO lo reimplementes)\n"
+    "1c. STACK Python/otro: si es Flask/FastAPI/aiohttp, sirve ficheros con open() sin "
+    "validar el path; usa app.run(host='0.0.0.0') o equivalente\n"
+    "2. El endpoint DEBE terminar en '/' (ej: '/static/') para activar URL_PATH mode; "
+    "para Gradio usa '/file=' como endpoint\n"
+    "3. El verificador plantara el canario en /tmp/ via docker exec -- el servidor solo "
     "necesita servir lo que lea del filesystem (incluido /tmp/ con traversal exitoso)\n"
-    "5. Responde al metodo GET; responde 200 con el contenido del fichero o 404\n"
+    "4. Responde al metodo GET; responde 200 con el contenido del fichero o 404\n"
+    "5. CRITICO bind: el servidor DEBE escuchar en 0.0.0.0, NUNCA en localhost o 127.0.0.1\n"
     "Responde SOLO con JSON sin markdown: "
     "{\"server_code\": \"...\", \"dockerfile\": \"...\", \"endpoint\": \"/static/\", "
     "\"path_param\": \"\", \"server_port\": 3000, \"parameters\": {}}"
@@ -10269,7 +10276,7 @@ def _scaffold_llm_lab(llm, source_dir: str, notes: dict, cve_id: str,
         return None
 
     server_code = _force_bind_all_interfaces(data.get("server_code") or "")
-    dockerfile  = data.get("dockerfile") or ""
+    dockerfile  = _fix_dockerfile_port_for_server(server_code, data.get("dockerfile") or "")
     if not server_code or not dockerfile:
         return None
 
@@ -10330,7 +10337,7 @@ def _lab_debug_feedback(llm, fail_reason: str, lab_config: dict,
         return None
 
     new_code = _force_bind_all_interfaces(data.get("server_code") or server_code)
-    new_df   = data.get("dockerfile") or lab_config.get("dockerfile_body", "")
+    new_df   = _fix_dockerfile_port_for_server(new_code, data.get("dockerfile") or lab_config.get("dockerfile_body", ""))
     if not new_code or not new_df:
         return None
 
@@ -10476,6 +10483,11 @@ _BIND_HOST_FIX_PATTERNS = [
     (re.compile(r"(\.listen\(\s*[^,]+,\s*)(['\"])(?:localhost|127\.0\.0\.1)\2"), r"\g<1>\g<2>0.0.0.0\g<2>"),
     # Flask/FastAPI/aiohttp kwarg: host='localhost' / host="127.0.0.1"
     (re.compile(r"(host\s*=\s*)(['\"])(?:localhost|127\.0\.0\.1)\2"), r"\g<1>\g<2>0.0.0.0\g<2>"),
+    # Gradio kwarg: server_name='localhost' / server_name="127.0.0.1"
+    (re.compile(r"(server_name\s*=\s*)(['\"])(?:localhost|127\.0\.0\.1)\2"), r"\g<1>\g<2>0.0.0.0\g<2>"),
+    # Gradio demo.launch() with no server_name → default is localhost; inject explicit 0.0.0.0
+    # Only matches launch() calls that don't already have server_name= anywhere in them.
+    (re.compile(r"(demo\.launch\()(?![^)]*server_name\s*=)"), r"\g<1>server_name='0.0.0.0', "),
     # Go: ListenAndServe("localhost:PORT") / .Run("localhost:PORT") / .bind("localhost:PORT")
     (re.compile(r"((?:ListenAndServe|\.Run|\.bind|\.Start)\(\s*)(['\"])(?:localhost|127\.0\.0\.1):"), r"\g<1>\g<2>0.0.0.0:"),
     # Rust axum/actix: bind("127.0.0.1:PORT") / bind("localhost:PORT")
@@ -10488,7 +10500,7 @@ _BIND_HOST_FIX_PATTERNS = [
 def _force_bind_all_interfaces(server_code: str) -> str:
     """Correccion DETERMINISTA (no depende de que Qwen obedezca el prompt): fuerza a
     0.0.0.0 cualquier bind explicito a 'localhost'/'127.0.0.1' en las formas de
-    listen/bind/run mas comunes (Node, Flask/FastAPI/aiohttp, Go, Rust).
+    listen/bind/run mas comunes (Node, Flask/FastAPI/aiohttp, Gradio, Go, Rust).
 
     Motivo: confirmado en vivo repetidas veces (CVE-2021-41773, 24 Nov) que Qwen2.5-Coder:7B
     diagnostica CORRECTAMENTE "el servidor no hace listen en 0.0.0.0" en su propio paso de
@@ -10500,10 +10512,72 @@ def _force_bind_all_interfaces(server_code: str) -> str:
 
     Deliberadamente NO toca ninguna otra aparicion de 'localhost'/'127.0.0.1' (p.ej. una URL
     objetivo dentro de la logica de negocio de un scaffold SSRF) -- solo las formas de
-    listen/bind/run/host= reconocidas arriba."""
+    listen/bind/run/host=/server_name= reconocidas arriba."""
     fixed = server_code
     for pattern, repl in _BIND_HOST_FIX_PATTERNS:
         fixed = pattern.sub(repl, fixed)
+    return fixed
+
+
+def _fix_dockerfile_port_for_server(server_code: str, dockerfile: str) -> str:
+    """Si server_code usa demo.launch(server_port=N), asegura que el Dockerfile
+    expone y CMD usa ese mismo puerto. Gradio default es 7860; Qwen suele generar
+    EXPOSE 3000/5000 que rompe docker -P y discover_http()."""
+    if "demo.launch(" in server_code:
+        m = re.search(r"server_port\s*=\s*(\d+)", server_code)
+        svc_port = int(m.group(1)) if m else 7860
+        fixed = re.sub(r"(EXPOSE\s+)\d+", rf"\g<1>{svc_port}", dockerfile)
+        fixed = re.sub(r"(CMD\s+.*?)(\b(?:3000|5000|8000|8080)\b)", rf"\g<1>{svc_port}", fixed)
+        return fixed
+    return _fix_dockerfile_expose_port_generic(server_code, dockerfile)
+
+
+# Formas de listen/bind/run reconocidas para extraer el puerto REAL, acotadas a la
+# llamada que realmente arranca el servidor (nunca un "port=" suelto en cualquier
+# otro sitio del codigo -- un scaffold SSRF, por ejemplo, legitimamente referencia
+# el puerto de un servicio INTERNO objetivo en su logica de negocio, que no tiene
+# nada que ver con el puerto en el que el propio lab escucha).
+_SERVER_PORT_EXTRACT_PATTERNS = [
+    r"\.listen\(\s*(\d+)\s*,\s*['\"]0\.0\.0\.0['\"]",      # Node: .listen(PORT, '0.0.0.0')
+    r"\.listen\(\s*(\d+)\s*\)",                                    # Node: .listen(PORT) sin host explicito
+    r"0\.0\.0\.0:(\d+)",                                             # Go/Rust: ListenAndServe/.Run/.bind("0.0.0.0:PORT")
+    r"(?:app\.run|uvicorn\.run)\([^)]*\bport\s*=\s*(\d+)",        # Flask/FastAPI/uvicorn: port=PORT dentro de la llamada que arranca
+]
+
+
+def _fix_dockerfile_expose_port_generic(server_code: str, dockerfile: str) -> str:
+    """Caso GENERAL (cualquier stack, no solo Gradio): extrae el puerto real en el
+    que server_code escucha de verdad y fuerza el EXPOSE del Dockerfile (y
+    menciones de puerto comunes en CMD) a coincidir.
+
+    Motivo -- confirmado en vivo (CVE-2021-41773, 24 Nov, dos ejecuciones
+    seguidas): Qwen2.5-Coder:7B a veces genera un server_code que escucha en un
+    puerto y un Dockerfile cuyo EXPOSE declara otro -- "docker run -P" SOLO
+    publica los puertos que EXPOSE declara, asi que discover_http() nunca
+    encuentra el servicio real y el pipeline falla con "ningun puerto publicado
+    respondio HTTP a tiempo" / categoria generic_lab_failure, indistinguible en
+    los logs de un fallo real de arranque. Mismo principio que
+    _force_bind_all_interfaces: mecanico, no depende de que el LLM lo acierte."""
+    svc_port = None
+    for pat in _SERVER_PORT_EXTRACT_PATTERNS:
+        m = re.search(pat, server_code)
+        if m:
+            svc_port = int(m.group(1))
+            break
+    if svc_port is None:
+        return dockerfile
+
+    if re.search(r"^EXPOSE\s+\d+", dockerfile, re.M):
+        fixed = re.sub(r"(EXPOSE\s+)\d+", rf"\g<1>{svc_port}", dockerfile, count=1)
+    else:
+        m_cmd = re.search(r"^(CMD|ENTRYPOINT)\b", dockerfile, re.M)
+        if m_cmd:
+            fixed = dockerfile[:m_cmd.start()] + f"EXPOSE {svc_port}\n" + dockerfile[m_cmd.start():]
+        else:
+            fixed = dockerfile.rstrip("\n") + f"\nEXPOSE {svc_port}\n"
+    # Corregir tambien menciones de otro puerto comun en CMD (p.ej. Qwen mezcla
+    # 3000 en el server.js pero mete "CMD npm start -- --port 5000")
+    fixed = re.sub(r"(CMD\s+.*?)(\b(?:3000|5000|8000|8080|7860)\b)", rf"\g<1>{svc_port}", fixed)
     return fixed
 
 
@@ -10608,7 +10682,7 @@ def _scaffold_llm_lab_for_class(llm, source_dir: str, notes: dict, cve_id: str,
         return None
 
     server_code = _force_bind_all_interfaces(data.get("server_code") or "")
-    dockerfile  = data.get("dockerfile") or ""
+    dockerfile  = _fix_dockerfile_port_for_server(server_code, data.get("dockerfile") or "")
     if not server_code or not dockerfile:
         return None
 
@@ -10769,7 +10843,7 @@ def _lab_feedback_for_class(llm, fail_reason: str, lab_config: dict,
         return None
 
     new_code = _force_bind_all_interfaces(data.get("server_code") or server_code)
-    new_df   = data.get("dockerfile") or lab_config.get("dockerfile_body", "")
+    new_df   = _fix_dockerfile_port_for_server(new_code, data.get("dockerfile") or lab_config.get("dockerfile_body", ""))
     if not new_code or not new_df:
         return None
 
