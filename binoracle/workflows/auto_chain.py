@@ -95,6 +95,55 @@ def _banner(step, msg: str):
     step(f"{'─'*60}")
     step(f"  {msg}")
     step(f"{'─'*60}")
+    _update_engine_heartbeat(msg)
+
+
+# ── Engine heartbeat — written on every stage banner, read by watchdog ────────
+
+_HB_PATH = os.path.join(
+    os.environ.get("BINORACLE_CACHE_DIR") or os.path.join(
+        os.path.expanduser("~"), ".cache", "binoracle"),
+    "engine_heartbeat.json")
+
+
+def _update_engine_heartbeat(stage: str = "") -> None:
+    """Write a heartbeat JSON so an external watchdog can detect hangs.
+
+    Fields: pid, ts (unix epoch float), stage.
+    Non-fatal: any write error is silently ignored.
+    """
+    try:
+        import json as _j
+        os.makedirs(os.path.dirname(_HB_PATH), exist_ok=True)
+        _tmp = _HB_PATH + f".tmp-{os.getpid()}"
+        with open(_tmp, "w") as _f:
+            _j.dump({"pid": os.getpid(), "ts": time.time(), "stage": stage}, _f)
+        os.replace(_tmp, _HB_PATH)
+    except Exception:
+        pass
+
+
+def check_engine_heartbeat(max_silence_s: float = 900.0) -> dict:
+    """Return engine health dict.
+
+    Returns:
+        {alive: bool, pid: int, age_s: float, stage: str}
+    alive=False when heartbeat is missing or older than max_silence_s seconds.
+    max_silence_s default is 15 minutes (longest expected stage budget).
+    """
+    try:
+        import json as _j
+        with open(_HB_PATH) as _f:
+            hb = _j.load(_f)
+        age = time.time() - float(hb.get("ts", 0))
+        return {
+            "alive": age < max_silence_s,
+            "pid": hb.get("pid", 0),
+            "age_s": age,
+            "stage": hb.get("stage", ""),
+        }
+    except Exception:
+        return {"alive": False, "pid": 0, "age_s": -1, "stage": "no heartbeat file"}
 
 
 # ── Chain checkpoint system ───────────────────────────────────────────────────
@@ -3701,6 +3750,11 @@ def auto_queue_nvd(days_back: int = 2, min_cvss: float = 7.0,
                     step(f"auto_queue_nvd: error en hilo — {exc}")
     else:
         for entry in entries[:max_cves]:
+            # Watchdog: warn if previous CVE left the engine hung (heartbeat stale)
+            _hb = check_engine_heartbeat(max_silence_s=900.0)
+            if not _hb["alive"] and _hb["age_s"] > 0:
+                step(f"[watchdog] ⚠ heartbeat desactualizado hace {_hb['age_s']:.0f}s "
+                     f"(última stage: {_hb['stage']!r}) — posible cuelgue anterior")
             results.append(_run_one(entry))
 
     # Dedup stats at end of cycle
