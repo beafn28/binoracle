@@ -1289,6 +1289,46 @@ def _render_chain_log(result: ChainResult, lang: str = "es",
         out.append(f"- {icon} `{s.name}` — {s.detail} [{s.elapsed:.1f}s]")
     parts.append("\n".join(out))
 
+    # Impact escalation block (missing-auth CVEs with successful escalation probe)
+    _esc_data = None
+    if result.evidence:
+        _esc_data = result.evidence.get("impact_escalation")
+    if not _esc_data and result.inv:
+        # Try to find impact_escalation nested inside the verifier's evidence dict
+        _vr = getattr(result.inv, "verify_result", None)
+        if _vr and isinstance(getattr(_vr, "evidence", None), dict):
+            _esc_data = _vr.evidence.get("impact_escalation")
+    if _esc_data and isinstance(_esc_data, dict):
+        _esc_hdr = "## " + ("Impacto verificado" if es else "Verified Impact")
+        _esc_lines = [_esc_hdr, ""]
+        _cls = _esc_data.get("impact_class", "unknown")
+        _max_imp = _esc_data.get("max_impact_found", "unknown").upper()
+        _summary = _esc_data.get("escalation_summary", "")
+        _snippets: list = _esc_data.get("evidence_snippets", [])
+        _cls_labels = {
+            "credential_exposure": "Exposición de credenciales/tokens",
+            "user_enumeration": "Enumeración de usuarios/emails",
+            "data_enumeration": "Enumeración de datos sin autenticación",
+            "unauthorized_creation": "Creación no autorizada de recursos",
+            "admin_access": "Acceso no autenticado a recursos de administración",
+            "unknown": "Acceso sin autenticación (impacto no clasificado)",
+        }
+        _esc_lines.append(f"**Clase de impacto**: {_cls_labels.get(_cls, _cls)}")
+        _esc_lines.append(f"**Impacto máximo**: {_max_imp}")
+        if _summary:
+            _esc_lines.append(f"\n> {_summary}")
+        if _snippets:
+            _esc_lines.append("")
+            _esc_lines.append("| Endpoint | HTTP | Vista previa de datos |"
+                               if es else "| Endpoint | HTTP | Data preview |")
+            _esc_lines.append("|----------|------|-----------------------|")
+            for sn in _snippets[:8]:
+                _url = sn.get("url", "")
+                _st = sn.get("status", "?")
+                _prev = (sn.get("data_preview") or "")[:80].replace("|", "\\|").replace("\n", " ")
+                _esc_lines.append(f"| `{_url}` | {_st} | `{_prev}` |")
+        parts.append("\n".join(_esc_lines))
+
     # Timeline
     timeline = _render_timeline(result, lang)
     if timeline:
@@ -1486,6 +1526,127 @@ def _update_index_html(result: "ChainResult", cve_info, llm_notes: dict,
         result.add_step("index_update", "error", str(e)[:80])
 
 
+# ── LLM RE-HYPOTHESIS HELPERS ─────────────────────────────────────────────────
+
+def _extract_failure_context(result: "ChainResult", llm_notes: dict) -> dict:
+    """Distil what went wrong in Stage 5 into a compact failure descriptor.
+
+    Reads from result.evidence (populated by verifiers) and llm_notes
+    (original LLM hypothesis) to decide the dominant failure reason so
+    _llm_rehypothesis can build a targeted retry prompt.
+    """
+    status = result.evidence.get("status", 0)
+    snippet = str(result.evidence.get("body_snippet", ""))[:200]
+
+    # Map HTTP status to a symbolic failure reason
+    if status == 403:
+        reason = "403"
+    elif status == 404:
+        reason = "404"
+    elif status == 0 or "timeout" in str(result.error).lower():
+        reason = "timeout"
+    elif "container" in str(result.error).lower() or "docker" in str(result.error).lower():
+        reason = "container_crash"
+    elif status and str(status).startswith("2"):
+        # 2xx but nothing confirming the vuln in the body
+        reason = "wrong_body"
+    elif status and str(status).startswith("5"):
+        reason = "server_error"
+    else:
+        reason = "unknown"
+
+    # Was a precheck block the proximate cause?
+    precheck_blocked = any(
+        (getattr(s, "stage", "") or "").startswith("precheck")
+        and getattr(s, "status", "") == "skip"
+        for s in result.steps
+    )
+
+    return {
+        "tried_endpoint": llm_notes.get("endpoint", ""),
+        "tried_method":   llm_notes.get("http_method", "GET"),
+        "tried_payload":  llm_notes.get("payload", ""),
+        "response_status":  status,
+        "response_snippet": snippet,
+        "failure_reason":   reason,
+        "precheck_blocked": precheck_blocked,
+        "error_message":    result.error,
+    }
+
+
+def _llm_rehypothesis(
+    cve_id: str,
+    description: str,
+    failure_ctx: dict,
+    original_notes: dict,
+    llm,
+    step: "Callable",
+) -> Optional[dict]:
+    """Ask the LLM for a revised hypothesis given what failed in Stage 5.
+
+    Returns a dict with the same schema as _llm_research, or None on failure.
+    Only called when the LLM is available and there is budget left.
+    """
+    if llm is None or not getattr(llm, "available", lambda: False)():
+        return None
+    try:
+        from ..llm.base import Message
+    except Exception:
+        return None
+
+    tried_ep  = failure_ctx.get("tried_endpoint", "")
+    tried_m   = failure_ctx.get("tried_method", "GET")
+    tried_pl  = failure_ctx.get("tried_payload", "")
+    http_st   = failure_ctx.get("response_status", 0)
+    snippet   = failure_ctx.get("response_snippet", "")
+    reason    = failure_ctx.get("failure_reason", "unknown")
+
+    _vuln_cl  = original_notes.get("vuln_class", "?")
+    _orig_ep  = original_notes.get("endpoint", tried_ep)
+    _auth_req = original_notes.get("auth_required", "?")
+
+    payload_line = f"\n- Payload enviado: {tried_pl}" if tried_pl else ""
+
+    sys_prompt = (
+        "Eres un investigador de explotacion para objetivos AUTORIZADOS (pentest/CTF/research). "
+        "Se te da el contexto de un intento fallido de verificacion dinamica de una CVE. "
+        "Tu tarea: proponer una hipotesis ALTERNATIVA con un endpoint, metodo y payload diferentes. "
+        "Responde SOLO con JSON valido con las mismas claves que la hipotesis original: "
+        "endpoint, http_method, parameters, payload, vuln_class, auth_required, "
+        "bypass_header, bypass_value, confirm_string, custom_headers. "
+        "IMPORTANTE: el endpoint DEBE ser distinto de '" + tried_ep + "'. "
+        "No repitas la estrategia que ya fallo."
+    )
+
+    user_msg = (
+        f"CVE: {cve_id}\n"
+        f"Descripcion: {description}\n\n"
+        f"Clase de vulnerabilidad: {_vuln_cl}\n"
+        f"Auth requerida: {_auth_req}\n\n"
+        f"PRIMER INTENTO FALLIDO:\n"
+        f"- Metodo + endpoint: {tried_m} {_orig_ep}"
+        f"{payload_line}\n"
+        f"- Respuesta: HTTP {http_st} — {snippet!r}\n"
+        f"- Razon del fallo: {reason}\n\n"
+        "Proporciona una hipotesis REVISADA en JSON con la misma estructura. "
+        f"Usa un endpoint DIFERENTE a: {tried_ep}"
+    )
+
+    step("  [5b] LLM re-hipotesis: consultando modelo…")
+    try:
+        raw = llm.chat(
+            [Message("system", sys_prompt), Message("user", user_msg)],
+            json_mode=True,
+        )
+        import json as _json
+        data = _json.loads(raw)
+        if isinstance(data, dict) and data.get("endpoint"):
+            return data
+    except Exception as exc:
+        step(f"  [5b] LLM re-hipotesis: error al parsear — {exc}")
+    return None
+
+
 # ── MAIN ENTRY POINT ──────────────────────────────────────────────────────────
 
 def run_full_chain(
@@ -1611,6 +1772,121 @@ def run_full_chain(
                     budget_s=budget_s, config=config, llm=llm, lang=lang)
         else:
             result.add_step("investigation", "skip", f"class={result.cve_class}")
+
+    # ── Stage 5b: LLM re-hypothesis on actionable failure ────────────────────
+    # Fires once when Stage 5 did not verify the CVE and the failure was
+    # actionable (403/404/wrong_body) — not for binary/native paths where
+    # Stage 5 did not run _run_web_stage at all.
+    _actionable_failures = {"403", "404", "wrong_body", "server_error"}
+    if (not result.verified
+            and not binary
+            and result.cve_class in ("web", "unknown", "cli")
+            and llm is not None
+            and not result.error
+            and _budget_ok(min_s=60.0)):
+        _banner(step, "[5b/8] LLM RE-HYPOTHESIS")
+        _fail_ctx = _extract_failure_context(result, llm_notes)
+        _fail_reason = _fail_ctx.get("failure_reason", "unknown")
+        step(f"  fallo en Stage 5: {_fail_reason} — consultando LLM para hipotesis revisada")
+
+        if _fail_reason in _actionable_failures:
+            _revised = _llm_rehypothesis(
+                cve_id=cve_id,
+                description=result.description,
+                failure_ctx=_fail_ctx,
+                original_notes=llm_notes,
+                llm=llm,
+                step=step,
+            )
+            if (_revised
+                    and isinstance(_revised, dict)
+                    and _revised.get("endpoint")
+                    and _revised.get("endpoint") != _fail_ctx.get("tried_endpoint")):
+                # Merge revised notes — keep originals for fields LLM didn't revise
+                llm_notes.update(_revised)
+                result.add_step(
+                    "rehypothesis", "ok",
+                    f"revised endpoint: {_revised.get('endpoint')} "
+                    f"(was: {_fail_ctx.get('tried_endpoint')})",
+                )
+                step(f"  hipotesis revisada: {_revised.get('http_method','GET')} "
+                     f"{_revised.get('endpoint')} — relanzando Stage 5")
+
+                # Cap re-hypothesis budget at 40% of remaining or 120 s max
+                _remaining = max(0.0, budget_s - (time.time() - t0))
+                _rehyp_budget = min(_remaining * 0.40, 120.0)
+
+                if _rehyp_budget >= 30.0:
+                    _run_web_stage(
+                        cve_id, cve_info, llm_notes, result, step,
+                        budget_s=_rehyp_budget, config=config, llm=llm, lang=lang)
+                    _status = "VERIFICADO" if result.verified else "no confirmado"
+                    step(f"  [5b] resultado: {_status}")
+                    result.add_step("rehypothesis_run", "ok" if result.verified else "fail",
+                                    _status)
+                else:
+                    step("  [5b] presupuesto insuficiente para re-run — omitido")
+                    result.add_step("rehypothesis_run", "skip", "budget < 30 s")
+            elif _revised and _revised.get("endpoint") == _fail_ctx.get("tried_endpoint"):
+                step("  [5b] LLM propuso el mismo endpoint — descartado")
+                result.add_step("rehypothesis", "skip", "same endpoint as original")
+            else:
+                step("  [5b] LLM no devolvió hipotesis revisada válida")
+                result.add_step("rehypothesis", "skip", "no valid hypothesis")
+        else:
+            step(f"  [5b] fallo no accionable ({_fail_reason}) — sin re-hipotesis")
+            result.add_step("rehypothesis", "skip", f"non-actionable failure: {_fail_reason}")
+
+    # ── Stage 5.5: Differential test (vuln vs patched) ───────────────────────
+    # Fires only when:
+    # - result is NOT yet verified (we want stronger proof or last resort)
+    # - OR result IS verified but we want irrefutable differential evidence
+    # - A patch URL exists (we have the patched version to compare against)
+    # - Budget remaining ≥ 90s (needs to spin up 2 containers)
+    # - BINORACLE_DIFFTEST=1 (opt-in, disabled by default — costly)
+    if (os.environ.get("BINORACLE_DIFFTEST") == "1" and
+            result.patch_summary and _budget_ok(min_s=90.0) and
+            cve_info and llm_notes.get("endpoint")):
+        _banner(step, "[5.5/8] DIFFERENTIAL TEST — vuln vs patched")
+        step("  construyendo containers vulnerable y parchado para comparación…")
+        try:
+            from .difftest import differential_test
+            # Extract patched version from cve_info if available
+            _patched_ver = ""
+            if isinstance(cve_info, dict):
+                _patched_ver = (cve_info.get("patched_version") or
+                                cve_info.get("fixed_version") or "")
+            elif hasattr(cve_info, "patched_version"):
+                _patched_ver = getattr(cve_info, "patched_version", "") or ""
+            _fr_path = getattr(result.inv, "source_path", "") if result.inv else ""
+            if not _fr_path:
+                step("  difftest: sin ruta de fuente disponible — omitido")
+            else:
+                _diff_r = differential_test(
+                    source_dir=str(_fr_path),
+                    patched_source_dir=None,
+                    endpoint=llm_notes.get("endpoint", "/"),
+                    http_method=llm_notes.get("http_method", "GET"),
+                    payload=llm_notes.get("payload", ""),
+                    confirm_string=llm_notes.get("confirm_string", ""),
+                    patched_version=_patched_ver,
+                    on_step=step,
+                    budget_s=min(120.0, budget_s * 0.4),
+                )
+                if _diff_r.confirmed:
+                    result.verified = True
+                    result.evidence["differential_test"] = _diff_r.evidence
+                    result.evidence["diff_reason"] = _diff_r.diff_reason
+                    result.add_step("differential_test", "ok",
+                                    f"confirmed: {_diff_r.diff_reason[:60]}")
+                    step(f"  difftest: VERIFICADO DIFERENCIALMENTE — {_diff_r.diff_reason}")
+                else:
+                    result.add_step("differential_test", "fail",
+                                    _diff_r.error or _diff_r.diff_reason)
+                    step(f"  difftest: sin diferencia — {_diff_r.diff_reason}")
+        except Exception as _e:
+            step(f"  difftest: error — {_e}")
+            result.add_step("differential_test", "error", str(_e)[:80])
 
     # ── Stage 6: Enrich ───────────────────────────────────────────────────────
     if _budget_ok(min_s=20.0):

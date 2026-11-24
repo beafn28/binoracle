@@ -4729,6 +4729,16 @@ def verify_generic_header_bypass_candidates(
                     + (f" y el cuerpo contiene '{confirm_string}'" if confirm_string else "")
                 )
                 step(f"  BYPASS CONFIRMADO con {hdr}: {val[:60]!r}")
+                # Escalate impact for missing-auth/bypass vuln classes
+                _ESCALATE_CLASSES = {"missing-authorization", "auth-bypass",
+                                      "broken-access-control", "idor"}
+                if vuln_class and vuln_class.lower().replace(" ", "-") in _ESCALATE_CLASSES:
+                    _esc = _escalate_missing_auth_impact(
+                        base_url, endpoint, {hdr: val}, step, budget_s=60.0)
+                    if _esc:
+                        cand_res.evidence["impact_escalation"] = _esc
+                        cand_res.detail += f"\n\nImpacto escalado: {_esc['escalation_summary']}"
+                        step(f"  escalación: {_esc['impact_class']} / {_esc['max_impact_found']}")
                 return cand_res
             else:
                 cand_res.ok = True
