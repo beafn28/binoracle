@@ -12,7 +12,17 @@ Architecture:
 The controller NEVER lets the LLM decide:
   - Whether a repair succeeded (that is verified by deterministic code)
   - Whether to continue or abort (that is decided by policy + limits)
-  - What files to modify outside of the workspace (blocked by workspace_guard)
+
+NOTA (2026-11-24): la linea de arriba decia tambien "What files to modify outside of the
+workspace (blocked by workspace_guard)" -- no es cierto hoy. workspace_guard.WorkspaceGuard
+es puramente detectar-y-reportar (snapshot() + diff(); diff() nunca lanza ni bloquea nada, solo
+devuelve una lista de violaciones para que alguien las imprima) y, ademas, el unico sitio donde
+se usa (cve_agent.py ~linea 16213) solo llama a snapshot() -- nunca a diff() ni a
+report_violations(), asi que hoy no reporta nada tampoco, esta inerte. No hay ningun mecanismo
+real en el repo que impida a execute_repair() tocar un fichero fuera de `cwd`. Si haceis falta
+esa garantia de verdad, haria falta llamar a guard.diff() despues de cada repair y abortar/avisar
+en las violaciones -- lo dejo anotado en COORDINATION.md en vez de intentarlo yo mismo a ciegas
+en un fichero de 16k lineas que esta activo ahora mismo.
 
 Final status values (only these):
   COMPLETED_AND_VALIDATED
