@@ -1273,7 +1273,7 @@ def _render_chain_log(result: ChainResult, lang: str = "es",
     if result.in_cisa_kev:
         out.append("- **CISA KEV**: SÍ — EXPLOTADA ACTIVAMENTE")
     out.append(f"- **Risk**: {result.risk_label}")
-    out.append(f"- **Verificado**: {'SÍ' if result.verified else 'NO'}")
+    out.append(f"- **Verificado**: {'SÍ ✓' if result.verified else 'NO ✗'}")
     _conf_pct = int(result.engine_confidence * 100)
     _conf_level = ("ALTO" if result.engine_confidence >= 0.80 else
                    "MEDIO" if result.engine_confidence >= 0.50 else "BAJO")
@@ -1282,6 +1282,57 @@ def _render_chain_log(result: ChainResult, lang: str = "es",
     out.append(f"- **{'Confianza del motor' if es else 'Engine confidence'}**: "
                f"{_conf_pct}% ({_conf_level}) · {_conf_basis}")
     out.append(f"- **Tiempo total**: {result.elapsed_s:.1f}s\n")
+
+    # Diagnosis block: when not verified, explain why and suggest next steps
+    if not result.verified:
+        _diag_items = []
+        # Look at failed steps for clues
+        _failed_steps = [s for s in result.steps if s.status in ("fail", "error")]
+        for _fs in _failed_steps[:3]:
+            if "403" in _fs.detail:
+                _diag_items.append("endpoint responde 403 — el payload no eludió la autorización")
+            elif "404" in _fs.detail:
+                _diag_items.append("endpoint responde 404 — ruta no encontrada en esta versión")
+            elif "timeout" in _fs.detail.lower():
+                _diag_items.append("timeout del contenedor — el lab no arrancó correctamente")
+            elif "container" in _fs.detail.lower() or "docker" in _fs.detail.lower():
+                _diag_items.append("fallo de infraestructura Docker — revisar logs del contenedor")
+            elif "confirm_string" in _fs.detail.lower() or "wrong_body" in _fs.detail.lower():
+                _diag_items.append("endpoint accesible pero confirm_string no presente — "
+                                   "revisar respuesta real del servidor")
+        # Check if precheck blocked
+        _prec = next((s for s in result.steps if "precheck" in s.name), None)
+        if _prec and _prec.status == "fail":
+            _diag_items.append(f"precheck bloqueó el lab: {_prec.detail[:80]}")
+        # Check if autofuzz ran but found nothing
+        _fuzz = next((s for s in result.steps if "autofuzz" in s.name), None)
+        if _fuzz and _fuzz.status == "fail":
+            _diag_items.append("fuzzing de parámetros no encontró injection point — "
+                                "prueba BINORACLE_FUZZ=1 con más presupuesto")
+        if result.cve_class == "unknown":
+            _diag_items.append("clase de vulnerabilidad desconocida — el LLM no pudo clasificarla")
+        if result.error:
+            _diag_items.append(f"error: {result.error[:100]}")
+        # Next steps
+        _next = []
+        if any("403" in d or "autorización" in d for d in _diag_items):
+            _next.append("intentar bypass alternativo: `X-Forwarded-For: 127.0.0.1`, "
+                         "`X-Real-IP: 127.0.0.1`, o `Authorization: Bearer <token>`")
+        if any("404" in d or "ruta" in d for d in _diag_items):
+            _next.append("verificar endpoint en el código fuente: `grep -r 'api/v' --include='*.py'`")
+        if any("confirm_string" in d or "wrong_body" in d for d in _diag_items):
+            _next.append("ajustar confirm_string o inspeccionar la respuesta real del lab")
+        if any("docker" in d.lower() or "contenedor" in d.lower() for d in _diag_items):
+            _next.append("revisar `docker ps` y `docker logs bo_lab_*` para diagnóstico")
+        if _diag_items or _next:
+            out.append("\n### " + ("Diagnóstico" if es else "Diagnosis"))
+            for d in _diag_items:
+                out.append(f"- ⚠ {d}")
+            if _next:
+                out.append("\n**Próximos pasos sugeridos:**")
+                for n in _next:
+                    out.append(f"  - {n}")
+
     out.append("\n### " + ("Pasos" if es else "Steps"))
     for s in result.steps:
         icon = "✓" if s.status == "ok" else ("⊘" if s.status == "skip" else
@@ -1756,6 +1807,72 @@ def run_full_chain(
         step("  sin LLM o sin descripción — modo determinístico")
         result.add_step("llm_hypothesis", "skip", "no LLM")
 
+    # ── Stage 2.5: Correlation — seed llm_notes from adjacent CVEs ──────────
+    # Runs after LLM hypothesis so we can boost/validate what the LLM said.
+    # Only seeds fields the LLM left empty (never overwrites a confident LLM answer).
+    _corr_project = ""
+    if cve_info:
+        # Try cpe_matches vendor, then package refs, then description keywords
+        _cpus = getattr(cve_info, "cpe_matches", []) or []
+        if _cpus:
+            _parts = str(_cpus[0]).split(":")
+            if len(_parts) > 4:
+                _corr_project = _parts[4]
+        if not _corr_project:
+            _refs = getattr(cve_info, "references", []) or []
+            for _r in _refs:
+                _s = str(_r)
+                for _dom in ("github.com", "pypi.org", "npmjs.com"):
+                    if _dom in _s:
+                        _seg = _s.split(_dom + "/")[-1].split("/")
+                        if len(_seg) >= 2:
+                            _corr_project = _seg[1]
+                            break
+                if _corr_project:
+                    break
+    # Also try package_name from llm_notes
+    if not _corr_project:
+        _corr_project = (llm_notes.get("package_name") or
+                         llm_notes.get("component") or "")
+    if _corr_project:
+        try:
+            from .cve_correlation import find_correlated_cves
+            _corr = find_correlated_cves(
+                cve_id=cve_id,
+                project_name=_corr_project,
+                pkg_version=llm_notes.get("vulnerable_version", ""),
+                endpoint=llm_notes.get("endpoint", ""),
+                vuln_class=llm_notes.get("vuln_class", ""),
+            )
+            if _corr.best_hint and _corr.best_hint.relevance >= 0.70:
+                _bh = _corr.best_hint
+                step(f"  [2.5] correlación: {_bh.source_cve} "
+                     f"(rel={_bh.relevance:.2f}) → "
+                     f"endpoint={_bh.endpoint_pattern!r} "
+                     f"bypass={_bh.bypass_header!r}")
+                result.evidence["correlation_hint"] = {
+                    "source_cve": _bh.source_cve,
+                    "endpoint_pattern": _bh.endpoint_pattern,
+                    "bypass_header": _bh.bypass_header,
+                    "bypass_value": _bh.bypass_value,
+                    "relevance": _bh.relevance,
+                }
+                result.add_step("correlation", "ok",
+                                 f"{_bh.source_cve} rel={_bh.relevance:.2f}")
+                # Seed only empty fields — never overwrite a confident LLM answer
+                if not llm_notes.get("bypass_header") and _bh.bypass_header:
+                    llm_notes["bypass_header"] = _bh.bypass_header
+                    llm_notes["bypass_value"] = _bh.bypass_value
+                if not llm_notes.get("endpoint") and _bh.endpoint_pattern:
+                    llm_notes["endpoint"] = _bh.endpoint_pattern
+                if not llm_notes.get("confirm_string") and _bh.confirm_string:
+                    llm_notes["confirm_string"] = _bh.confirm_string
+            else:
+                result.add_step("correlation", "skip", _corr.reasoning[:60])
+        except Exception as _ce:
+            step(f"  [2.5] correlación: error: {_ce}")
+            result.add_step("correlation", "error", str(_ce)[:60])
+
     # ── Stage 3: Classify ─────────────────────────────────────────────────────
     _banner(step, "[3/8] CLASSIFY")
     if binary:
@@ -1776,6 +1893,44 @@ def run_full_chain(
         if cve_info:
             result.patch_summary = _run_patch_stage(
                 cve_id, cve_info, result, step, tmpdir)
+
+        # Stage 4b: Deep source-level patch analysis — extract vuln pattern + PoC seeds
+        if result.patch_summary and len(result.patch_summary) > 100:
+            try:
+                from .patchdiff import analyze_patch_diff
+                _pdiff = analyze_patch_diff(result.patch_summary)
+                if _pdiff.confidence >= 0.60:
+                    result.evidence["patch_analysis"] = {
+                        "vuln_function": _pdiff.vuln_function,
+                        "vuln_file":     _pdiff.vuln_file,
+                        "vuln_pattern":  _pdiff.vuln_pattern,
+                        "patch_pattern": _pdiff.patch_pattern,
+                        "suggested_param": _pdiff.suggested_param,
+                        "suggested_value": _pdiff.suggested_value,
+                        "fix_class":     _pdiff.fix_class,
+                        "confidence":    _pdiff.confidence,
+                    }
+                    step(f"  patch-diff: clase={_pdiff.fix_class} "
+                         f"func={_pdiff.vuln_function!r} "
+                         f"conf={_pdiff.confidence:.0%}")
+                    # Seed llm_notes if LLM didn't provide them yet
+                    if not llm_notes.get("parameters") and _pdiff.suggested_param:
+                        llm_notes["parameters"] = {
+                            _pdiff.suggested_param: _pdiff.suggested_value}
+                        step(f"  patch-diff: param extraído del diff: "
+                             f"{_pdiff.suggested_param!r}")
+                    if not llm_notes.get("payload") and _pdiff.suggested_value:
+                        llm_notes["payload"] = _pdiff.suggested_value
+                        step(f"  patch-diff: payload extraído del diff: "
+                             f"{_pdiff.suggested_value!r}")
+                    # Override cve_class if the diff analysis is more certain
+                    if (_pdiff.fix_class in ("sqli", "sql-injection") and
+                            result.cve_class not in ("native", "binary")):
+                        result.cve_class = "web"
+                else:
+                    step(f"  patch-diff: confianza insuficiente ({_pdiff.confidence:.0%})")
+            except Exception as _pde:
+                step(f"  patch-diff: error en análisis: {_pde}")
 
         # ── Stage 5: Core investigation ───────────────────────────────────────
         if binary:
