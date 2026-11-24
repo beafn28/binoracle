@@ -2089,6 +2089,46 @@ def cmd_nvd_watch(args, config):
                                               budget_s=budget_s, on_step=_step)
             _step(f"nvd-watch: {len(retry_results)} CVEs reintentados")
 
+        # Send Telegram cycle summary if BINORACLE_TELEGRAM_TOKEN + CHAT_ID are set
+        import os as _os_tg, json as _json_tg
+        try:
+            import urllib.request as _ureq
+        except Exception:
+            _ureq = None  # type: ignore
+        _tg_token = (_os_tg.environ.get("BINORACLE_TELEGRAM_TOKEN") or
+                     (config or {}).get("telegram_token", ""))
+        _tg_chat  = (_os_tg.environ.get("BINORACLE_TELEGRAM_CHAT_ID") or
+                     (config or {}).get("telegram_chat_id", ""))
+        if _tg_token and _tg_chat and results and _ureq:
+            try:
+                _verif_cves = [r for r in results if r.verified]
+                _cycle_msg = (
+                    f"binoracle nvd-watch — ciclo completado\n"
+                    f"CVEs: {len(results)} | Verificados: {len(_verif_cves)}\n"
+                )
+                if _verif_cves:
+                    _cycle_msg += "\nVERIFICADOS:\n"
+                    for _vr in _verif_cves[:5]:
+                        _cycle_msg += (f"  OK {_vr.cve_id} CVSS={_vr.cvss_score} "
+                                       f"conf={int(_vr.engine_confidence*100)}%\n")
+                _high_conf = [r for r in results
+                              if not r.verified and r.engine_confidence >= 0.60]
+                if _high_conf:
+                    _cycle_msg += "\nAlta confianza (no verif.):\n"
+                    for _hr in _high_conf[:3]:
+                        _cycle_msg += (f"  ? {_hr.cve_id} "
+                                       f"conf={int(_hr.engine_confidence*100)}%\n")
+                _tg_url = f"https://api.telegram.org/bot{_tg_token}/sendMessage"
+                _tg_body = _json_tg.dumps({"chat_id": _tg_chat, "text": _cycle_msg}).encode()
+                _tg_req = _ureq.Request(
+                    _tg_url, data=_tg_body,
+                    headers={"Content-Type": "application/json"}, method="POST")
+                with _ureq.urlopen(_tg_req, timeout=8):
+                    pass
+                _step("nvd-watch: resumen del ciclo enviado por Telegram")
+            except Exception as _tg_e:
+                _step(f"nvd-watch: Telegram: {_tg_e}")
+
         if once:
             break
         _step(f"nvd-watch: próximo ciclo en {interval/60:.0f} min...")
