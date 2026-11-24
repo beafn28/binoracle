@@ -121,6 +121,16 @@ def get_pending(max_age_hours: int = 24, max_attempts: int = 3) -> List[str]:
     - not older than max_age_hours since first added
     - next_retry_at is in the past (backoff elapsed)
     """
+    return [e["cve_id"] for e in get_pending_entries(max_age_hours, max_attempts)]
+
+
+def get_pending_entries(max_age_hours: int = 24, max_attempts: int = 3) -> List[dict]:
+    """Return full retry entries pending retry (with failure context).
+
+    Each entry dict has: cve_id, attempts, last_error, stack, added.
+    Use this when the caller needs the failure context to adjust the retry strategy
+    (e.g., skip Docker lab if failure was 'source not found').
+    """
     queue = _load()
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(hours=max_age_hours)
@@ -143,7 +153,7 @@ def get_pending(max_age_hours: int = 24, max_attempts: int = 3) -> List[str]:
                     continue  # backoff not elapsed yet
             except Exception:
                 pass
-        result.append(entry["cve_id"])
+        result.append(entry)
     return result
 
 
