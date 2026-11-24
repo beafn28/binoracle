@@ -2364,6 +2364,49 @@ def auto_queue_nvd(days_back: int = 2, min_cvss: float = 7.0,
         step("auto_queue_nvd: sin CVEs nuevos")
         return []
 
+    # Smart CVE triage: filter out CVEs that binoracle cannot investigate
+    # These are CVEs in firmware, kernel, C/C++ native code, or hardware —
+    # outside the web app attack surface binoracle is designed for.
+    _SKIP_PATTERNS = [
+        # kernel / OS / firmware
+        "linux kernel", "windows kernel", "bios", "uefi", "firmware", "bootloader",
+        "embedded", "microcontroller", "hypervisor", "vmware esxi",
+        # C/C++ native libs with no web surface
+        "openssl", "libssl", "libc", "glibc", "libpng", "libxml", "libcurl",
+        # Networking gear
+        "cisco ios", "juniper junos", "palo alto", "checkpoint",
+        # DB engines (not web apps using them)
+        "mysql server", "mariadb server", "postgresql server",
+        # Mobile
+        "ios <", "ipados", "android kernel", "samsung kernel",
+    ]
+    _PREFER_PATTERNS = [
+        # Explicit web stack keywords
+        "cms", "wordpress", "drupal", "joomla", "ghost", "strapi", "directus",
+        "wagtail", "craft cms", "payload cms", "django", "flask", "fastapi",
+        "rails", "ruby on rails", "express", "nestjs", "graphql", "rest api",
+        "web application", "web app", "authentication", "authorization",
+        "api endpoint", "http request", "sql injection", "xss", "csrf",
+    ]
+    _before = len(entries)
+    _filtered = []
+    for _e in entries:
+        _desc = _e.description.lower()
+        # Skip if any skip pattern matches
+        if any(_sk in _desc for _sk in _SKIP_PATTERNS):
+            continue
+        _filtered.append(_e)
+    entries = _filtered
+    _after = len(entries)
+    if _after < _before:
+        step(f"auto_queue_nvd: smart triage eliminó {_before - _after} CVEs fuera de scope "
+             f"(firmware/kernel/native) — quedan {_after}")
+    # Boost web-relevant CVEs within the filtered list
+    def _triage_score(e) -> float:
+        _d = e.description.lower()
+        _web_score = sum(1 for _pw in _PREFER_PATTERNS if _pw in _d)
+        return _web_score + e.cvss_score / 10.0  # web relevance + CVSS weight
+
     # Apply priority_mode sort
     _cms_kws = ("wordpress", "drupal", "joomla", "wp-")
     if priority_mode == "new":
@@ -2372,6 +2415,9 @@ def auto_queue_nvd(days_back: int = 2, min_cvss: float = 7.0,
         entries = sorted(entries,
                          key=lambda e: (not any(k in e.description.lower() for k in _cms_kws),
                                         -e.cvss_score))
+    else:
+        # "cvss" or default: sort by combined triage score (web relevance + CVSS)
+        entries = sorted(entries, key=_triage_score, reverse=True)
     # default "cvss" — poll_nvd_new already returns sorted by CVSS desc
 
     # parallel controls concurrent investigation (default 1 = serial for safety
