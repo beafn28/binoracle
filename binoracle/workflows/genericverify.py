@@ -599,6 +599,129 @@ def cleanup_stale_lab_containers(prefix: str = "bo_lab_", max_age_minutes: int =
     return killed
 
 
+def cleanup_docker_disk_pressure(
+        min_free_gb: float = 2.0,
+        image_max_age_hours: int = 24,
+        on_step=None) -> dict:
+    """Free Docker disk space when available disk drops below min_free_gb.
+
+    Steps taken (in order, stopping when free space is restored):
+      1. Remove exited bo_lab_* containers.
+      2. Remove Docker images whose RepoTag starts with 'bo_' and are
+         older than image_max_age_hours.
+      3. If still tight: docker image prune -f (dangling images only).
+      4. If still tight: docker system prune -f (containers + networks +
+         dangling images — does NOT touch named volumes).
+
+    Returns a dict with keys: free_gb_before, free_gb_after, actions.
+    Non-fatal: any subprocess error is caught and logged in actions.
+    """
+    import shutil as _shutil
+    import json as _json
+    import time as _time
+
+    def _step(msg: str) -> None:
+        if on_step:
+            on_step(msg)
+
+    def _free_gb() -> float:
+        try:
+            return _shutil.disk_usage("/").free / (1024 ** 3)
+        except Exception:
+            return 999.0
+
+    actions: list[str] = []
+    free_before = _free_gb()
+
+    if free_before >= min_free_gb:
+        return {"free_gb_before": free_before, "free_gb_after": free_before, "actions": []}
+
+    _step(f"[disk] espacio libre: {free_before:.1f} GB < {min_free_gb} GB — iniciando limpieza")
+
+    # Step 1: stale containers
+    try:
+        out = subprocess.run(
+            ["docker", "ps", "-a", "-q", "--filter", "status=exited",
+             "--filter", "name=bo_lab_"],
+            capture_output=True, text=True, timeout=10)
+        ids = [i.strip() for i in (out.stdout or "").splitlines() if i.strip()]
+        if ids:
+            subprocess.run(["docker", "rm", "-f"] + ids,
+                           capture_output=True, timeout=20)
+            actions.append(f"removed {len(ids)} exited bo_lab_* containers")
+            _step(f"[disk] eliminados {len(ids)} contenedores bo_lab_* salidos")
+    except Exception as _e:
+        actions.append(f"container-rm error: {_e}")
+
+    if _free_gb() >= min_free_gb:
+        return {"free_gb_before": free_before, "free_gb_after": _free_gb(), "actions": actions}
+
+    # Step 2: old bo_ images
+    try:
+        out = subprocess.run(
+            ["docker", "images", "--format", "{{json .}}"],
+            capture_output=True, text=True, timeout=15)
+        now_ts = _time.time()
+        removed_images = 0
+        for line in (out.stdout or "").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                info = _json.loads(line)
+            except Exception:
+                continue
+            tag = info.get("Repository", "") + ":" + info.get("Tag", "")
+            created = info.get("CreatedAt", "")
+            img_id = info.get("ID", "")
+            if not (tag.startswith("bo_") or tag.startswith("bo:")):
+                continue
+            # Parse age from CreatedAt ("2024-01-15 12:34:56 +0000 UTC")
+            try:
+                from datetime import datetime as _dt
+                _ts = _dt.strptime(created[:19], "%Y-%m-%d %H:%M:%S").timestamp()
+                age_hours = (now_ts - _ts) / 3600
+            except Exception:
+                age_hours = image_max_age_hours + 1
+            if age_hours >= image_max_age_hours and img_id:
+                subprocess.run(["docker", "rmi", "-f", img_id],
+                               capture_output=True, timeout=30)
+                removed_images += 1
+        if removed_images:
+            actions.append(f"removed {removed_images} bo_* images older than {image_max_age_hours}h")
+            _step(f"[disk] eliminadas {removed_images} imágenes bo_* antiguas")
+    except Exception as _e:
+        actions.append(f"image-rm error: {_e}")
+
+    if _free_gb() >= min_free_gb:
+        return {"free_gb_before": free_before, "free_gb_after": _free_gb(), "actions": actions}
+
+    # Step 3: dangling images prune
+    try:
+        subprocess.run(["docker", "image", "prune", "-f"],
+                       capture_output=True, timeout=60)
+        actions.append("docker image prune -f (dangling)")
+        _step("[disk] docker image prune -f ejecutado")
+    except Exception as _e:
+        actions.append(f"image-prune error: {_e}")
+
+    if _free_gb() >= min_free_gb:
+        return {"free_gb_before": free_before, "free_gb_after": _free_gb(), "actions": actions}
+
+    # Step 4: full system prune (last resort — no volumes)
+    try:
+        subprocess.run(["docker", "system", "prune", "-f"],
+                       capture_output=True, timeout=120)
+        actions.append("docker system prune -f (containers+networks+dangling)")
+        _step("[disk] docker system prune -f ejecutado")
+    except Exception as _e:
+        actions.append(f"system-prune error: {_e}")
+
+    free_after = _free_gb()
+    _step(f"[disk] limpieza completada: {free_before:.1f} → {free_after:.1f} GB libres")
+    return {"free_gb_before": free_before, "free_gb_after": free_after, "actions": actions}
+
+
 def _dockerfile_is_buildable(df_path: str, context_dir: str) -> bool:
     """Return False for 'deployment Dockerfiles' that COPY pre-built binaries not present
     in the source tree (e.g. COPY app-linux-amd64 /bin/app). These are release packaging
@@ -1213,6 +1336,13 @@ def _bootstrap_generic_lab(source_dir: str, step, res: WpVerifyResult,
     if _stale:
         step(f"  cleanup: {len(_stale)} contenedor(es) huérfano(s) eliminados: "
              f"{', '.join(_stale[:3])}")
+
+    # Disk pressure check: free space before spinning up a new lab
+    _disk = cleanup_docker_disk_pressure(min_free_gb=2.0, image_max_age_hours=24, on_step=step)
+    if _disk.get("actions"):
+        _freed = _disk["free_gb_after"] - _disk["free_gb_before"]
+        step(f"  disk: {_disk['free_gb_before']:.1f}→{_disk['free_gb_after']:.1f} GB libres "
+             f"(+{_freed:.1f} GB liberados, {len(_disk['actions'])} acciones)")
 
     # Lab ya corriendo externamente (--target-url) — saltar Docker por completo
     if prebuilt_url:
