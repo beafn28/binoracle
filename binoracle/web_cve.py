@@ -374,15 +374,16 @@ def _start_job(cve_id: str, config) -> _Job:
                 "correlation": getattr(inv, "_correlation", {}),
             }
             _save_history(job)
-            # Post-lab cleanup: remove stopped binoracle containers immediately
+            # Post-lab cleanup: remove stopped containers and orphan lab images immediately
             try:
                 import sys as _sys, os as _os
                 _scripts = _os.path.join(_os.path.dirname(_os.path.dirname(
                     _os.path.abspath(__file__))), "scripts")
                 if _scripts not in _sys.path:
                     _sys.path.insert(0, _scripts)
-                from docker_cleanup import prune_binoracle_containers
+                from docker_cleanup import prune_binoracle_containers, prune_binoracle_images
                 prune_binoracle_containers()
+                prune_binoracle_images()
             except Exception:
                 pass
             job._q.put(("done", job.result))

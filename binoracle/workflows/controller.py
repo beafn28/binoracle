@@ -209,23 +209,27 @@ def _ask_qwen_for_fix(error: ErrorRecord, context_hint: str = "") -> Optional[st
     """
     prompt = (
         "You are an autonomous repair agent for a local security research tool (binoracle). "
-        "An error occurred during a Docker-based CVE lab. Suggest ONE shell command to fix it. "
-        "Rules: (1) only suggest commands that are safe and reversible; "
-        "(2) never suggest rm -rf, git reset --hard, or any destructive operation; "
-        "(3) prefer pip install, docker restart, or chmod fixes; "
-        "(4) reply with ONLY the shell command, nothing else.\n\n"
+        "An error occurred during a Docker-based CVE lab. Suggest ONE shell command to fix it.\n\n"
+        "RULES:\n"
+        "- Reply with ONLY the shell command, nothing else — no explanation, no markdown\n"
+        "- Only safe, reversible commands: pip install, docker restart <name>, chmod, git stash\n"
+        "- NEVER suggest: rm -rf, git reset --hard, destructive operations\n"
+        "- Include the actual container name in docker commands when you know it\n"
+        "- For MISSING_DEP errors: use 'pip3 install <package>'\n"
+        "- For DOCKER_RUNTIME errors: use 'docker restart <container>'\n"
+        "- For PERMISSION errors: use 'chmod 755 <file>' or 'chmod +x <file>'\n\n"
         f"Error category: {error.category.value}\n"
-        f"Error root cause: {(error.root_cause or '')[:120].replace(chr(10), ' ')}\n"
-        f"Relevant line: {(error.hypothesis or '')[:80].replace(chr(10), ' ')}\n"
-        f"Context: {(context_hint or '')[:80].replace(chr(10), ' ')}\n\n"
-        "Command to fix:"
+        f"Error root cause: {(error.root_cause or '')[:300].replace(chr(10), ' ')}\n"
+        f"Stderr: {(error.stderr or '')[:200].replace(chr(10), ' ')}\n"
+        f"Context: {(context_hint or '')[:200].replace(chr(10), ' ')}\n\n"
+        "Command to fix (one line only):"
     )
     try:
         payload = json.dumps({
             "model":  _OLLAMA_MODEL,
             "prompt": prompt,
             "stream": False,
-            "options": {"temperature": 0.0, "num_predict": 80},
+            "options": {"temperature": 0.0, "num_predict": 150},
         }).encode()
         req = urllib.request.Request(
             f"{_OLLAMA_URL.rstrip('/')}/api/generate",

@@ -51,48 +51,96 @@ def get_reclaimable_gb() -> float:
 
 
 def prune_binoracle_containers() -> int:
-    """Elimina contenedores parados con nombre binoracle-*. Devuelve nº eliminados."""
+    """Elimina contenedores parados con nombre binoracle-* o bo_*. Devuelve nº eliminados."""
     removed = 0
     try:
-        r = subprocess.run(
-            ["docker", "ps", "-a", "-q",
-             "--filter", "name=binoracle",
-             "--filter", "status=exited",
-             "--filter", "status=created",
-             "--filter", "status=dead"],
+        for name_prefix in ("binoracle", "bo_"):
+            r = subprocess.run(
+                ["docker", "ps", "-a", "-q",
+                 "--filter", f"name={name_prefix}",
+                 "--filter", "status=exited",
+                 "--filter", "status=created",
+                 "--filter", "status=dead"],
+                capture_output=True, text=True, timeout=15,
+            )
+            ids = [x for x in r.stdout.strip().splitlines() if x]
+            if ids:
+                subprocess.run(["docker", "rm", "-f"] + ids,
+                               capture_output=True, timeout=30)
+                removed += len(ids)
+    except Exception:
+        pass
+    return removed
+
+
+def prune_binoracle_images() -> int:
+    """Elimina imágenes de labs (binoracle-*, bo_*) no usadas por ningún contenedor activo.
+    Preserva imágenes base (wordpress, mysql, httpd, python, node, etc.).
+    Devuelve nº de imágenes eliminadas."""
+    removed = 0
+    try:
+        # get all container image IDs (running or stopped) so we don't remove them
+        r_active = subprocess.run(
+            ["docker", "ps", "-a", "--format", "{{.Image}}"],
             capture_output=True, text=True, timeout=15,
         )
-        ids = [x for x in r.stdout.strip().splitlines() if x]
-        if ids:
-            subprocess.run(["docker", "rm", "-f"] + ids,
-                           capture_output=True, timeout=30)
-            removed = len(ids)
+        active_imgs = set(r_active.stdout.strip().splitlines())
+
+        r = subprocess.run(
+            ["docker", "images", "--format", "{{.Repository}}:{{.Tag}}\t{{.ID}}"],
+            capture_output=True, text=True, timeout=15,
+        )
+        for line in r.stdout.strip().splitlines():
+            parts = line.split("\t")
+            if len(parts) != 2:
+                continue
+            repo_tag, img_id = parts
+            repo = repo_tag.split(":")[0]
+            # only remove binoracle lab images, not base images
+            if not (repo.startswith("binoracle") or repo.startswith("bo_")):
+                continue
+            if repo_tag in active_imgs or img_id in active_imgs:
+                continue
+            subprocess.run(["docker", "rmi", "-f", img_id],
+                           capture_output=True, timeout=60)
+            removed += 1
     except Exception:
         pass
     return removed
 
 
 def prune(dry_run: bool = False) -> float:
-    """Limpieza completa: contenedores parados → imágenes dangling → volúmenes → build cache."""
+    """Limpieza completa: contenedores parados → imágenes lab → dangling → volúmenes → cache."""
     before = get_reclaimable_gb()
     if dry_run:
-        print(f"[dry-run] espacio reclaimable: {before:.1f} GB (no se hace nada)")
+        # count what would be removed
+        r = subprocess.run(
+            ["docker", "images", "--format", "{{.Repository}}:{{.Tag}}\t{{.Size}}"],
+            capture_output=True, text=True, timeout=15,
+        )
+        lab_imgs = [(ln.split("\t")[0], ln.split("\t")[1])
+                    for ln in r.stdout.strip().splitlines()
+                    if ln.split("\t")[0].split(":")[0].startswith(("binoracle", "bo_"))]
+        print(f"[dry-run] {before:.1f} GB reclaimable; "
+              f"{len(lab_imgs)} lab image(s) elegibles: "
+              + ", ".join(f"{n}({s})" for n, s in lab_imgs[:5]))
         return 0.0
 
-    # 1. contenedores binoracle parados
-    n = prune_binoracle_containers()
-    if n:
-        pass  # silencioso en llamadas programáticas
+    # 1. contenedores binoracle/bo_ parados
+    prune_binoracle_containers()
 
-    # 2. imágenes dangling (sin tag, sin contenedor que las use)
+    # 2. imágenes de labs (binoracle-*, bo_*) — la mayor fuente de uso
+    prune_binoracle_images()
+
+    # 3. imágenes dangling (sin tag)
     subprocess.run(["docker", "image", "prune", "-f"],
                    capture_output=True, timeout=60)
 
-    # 3. volúmenes huérfanos
+    # 4. volúmenes huérfanos
     subprocess.run(["docker", "volume", "prune", "-f"],
                    capture_output=True, timeout=60)
 
-    # 4. build cache (el que más ocupa)
+    # 5. build cache
     subprocess.run(["docker", "builder", "prune", "-f"],
                    capture_output=True, timeout=120)
 
@@ -128,10 +176,11 @@ def main():
     print(f"[docker_cleanup] espacio reclaimable: {reclaimable:.1f} GB (umbral: {args.gb} GB)")
 
     if not args.force and reclaimable < args.gb:
-        # Aun así limpia contenedores binoracle parados
-        n = prune_binoracle_containers()
-        if n:
-            print(f"[docker_cleanup] eliminados {n} contenedor(es) binoracle parados")
+        # Aun así limpia contenedores binoracle parados e imágenes de lab huérfanas
+        nc = prune_binoracle_containers()
+        ni = prune_binoracle_images()
+        if nc or ni:
+            print(f"[docker_cleanup] eliminados {nc} contenedor(es) y {ni} imagen(es) de lab")
         print(f"[docker_cleanup] por debajo del umbral — sin limpieza completa necesaria")
         return 0
 
