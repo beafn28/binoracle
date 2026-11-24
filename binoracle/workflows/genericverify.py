@@ -445,7 +445,15 @@ def _find_build_target(source_dir: str) -> Optional[dict]:
             continue
         for name in _COMPOSE_NAMES:
             if name in files:
-                return {"kind": "compose", "path": os.path.join(root, name), "context": root}
+                _cpath = os.path.join(root, name)
+                # Skip empty or near-empty compose files (< 20 bytes / no service key)
+                try:
+                    _ctxt = open(_cpath, encoding="utf-8", errors="replace").read(512).strip()
+                    if len(_ctxt) < 20 or "service" not in _ctxt.lower():
+                        continue
+                except OSError:
+                    continue
+                return {"kind": "compose", "path": _cpath, "context": root}
     for root, dirs, files in os.walk(source_dir):
         depth = root[len(source_dir):].count(os.sep)
         if depth > 2:
