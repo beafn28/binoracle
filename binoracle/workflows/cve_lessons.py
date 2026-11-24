@@ -255,6 +255,44 @@ def all_stacks_summary() -> List[dict]:
     return rows
 
 
+def stack_success_rate(stack: str) -> float:
+    """Return the verified_rate for a stack (0.0–1.0). 0.0 when no history."""
+    lessons = get_lessons(stack)
+    if not lessons:
+        return 0.0
+    return float(lessons.get("verified_rate", 0.0))
+
+
+def get_weakest_stacks(min_runs: int = 3, max_rate: float = 0.15) -> List[str]:
+    """Return stacks with >= min_runs investigations but verified_rate <= max_rate.
+
+    These are stacks where the engine consistently fails — good candidates for
+    targeted improvements (new verifier, better auth flow, etc.).
+    """
+    summary = all_stacks_summary()
+    return [
+        row["stack"]
+        for row in summary
+        if row.get("total_runs", 0) >= min_runs
+        and row.get("verified_rate", 1.0) <= max_rate
+    ]
+
+
+def get_top_performing_stacks(min_runs: int = 3, min_rate: float = 0.5) -> List[str]:
+    """Return stacks with >= min_runs investigations and verified_rate >= min_rate.
+
+    These are stacks where the engine is reliable — lessons from them are
+    high-confidence inputs for the LLM context injection.
+    """
+    summary = all_stacks_summary()
+    return [
+        row["stack"]
+        for row in summary
+        if row.get("total_runs", 0) >= min_runs
+        and row.get("verified_rate", 0.0) >= min_rate
+    ]
+
+
 def format_lessons_for_llm(stack: str, vuln_class: str = "",
                             max_tokens: int = 400) -> str:
     """Return a compact LLM-readable string of lessons for this stack.
