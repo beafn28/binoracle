@@ -367,21 +367,22 @@ _FIX_RULES: List[tuple] = [
         "added prepared statement / parameterized query",
         [re.compile(r'(?:f"|f\'|%s\s*%|\.format\(|"\s*\+\s*\w+\s*\+\s*"|'
                     r'sprintf.*SELECT|query\s*=\s*["\'].*\$|query\s*\+=)', re.I)],
-        [re.compile(r"(?:prepare\(|execute\(\s*\[|executeQuery\(|"
-                    r'"\s*\?\s*"|parameterized|bindParam|'
-                    r"pg\.query\(sql,\s*\[|db\.execute\(sql,\s*\()", re.I)],
+        [re.compile(r"(?:prepare\(|execute\(\w+,\s*[\(\[]|executeQuery\(|"
+                    r'=\s*["\'][^"\']*\?[^"\']*["\']|parameterized|bindParam|'
+                    r"pg\.query\(|db\.execute\()", re.I)],
         0.85,
     ),
     (
         "xss",
         "unescaped user input reflected in HTML output",
         "added HTML escaping / sanitization",
-        [re.compile(r"(?:echo\s+\$|\.innerHTML\s*=|res\.send\(.*req\.|"
-                    r"Response\.Write\(request|render_template_string\(user|"
-                    r"Markup\(|\.html\(user_)", re.I)],
-        [re.compile(r"(?:htmlspecialchars|htmlentities|escape\(|"
-                    r"sanitize_html|DOMPurify|bleach\.clean|"
-                    r"markupsafe\.escape|html\.escape|encodeURIComponent)", re.I)],
+        [re.compile(r"(?:echo\s+\$|\.innerHTML\s*=|res\.send\(|res\.write\(|"
+                    r"Response\.Write|render_template_string|"
+                    r"Markup\(|\.html\(\w|template\.render\()", re.I)],
+        [re.compile(r"(?:htmlspecialchars|htmlentities|html\.escape|"
+                    r"escape\(|sanitize_html|DOMPurify|bleach\.clean|"
+                    r"markupsafe\.escape|encodeURIComponent|"
+                    r"escapeHTML|xss_filter|strip_tags)", re.I)],
         0.85,
     ),
     (

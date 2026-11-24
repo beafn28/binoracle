@@ -443,6 +443,9 @@ def _run_patch_stage(cve_id: str, cve_info, result: ChainResult,
         removed = sum(1 for l in lines if l.startswith("-") and not l.startswith("---"))
         step(f"  parche: +{added} líneas añadidas, -{removed} eliminadas")
 
+        # Store raw diff for source-level analysis in Stage 4b
+        result.evidence["raw_patch_text"] = patch_text[:65536]  # cap at 64KB
+
         # patchdiff v2
         old_path = os.path.join(tmpdir, "patch.diff")
         with open(old_path, "w") as f:
@@ -1939,10 +1942,12 @@ def run_full_chain(
                 cve_id, cve_info, result, step, tmpdir)
 
         # Stage 4b: Deep source-level patch analysis — extract vuln pattern + PoC seeds
-        if result.patch_summary and len(result.patch_summary) > 100:
+        # Uses raw_patch_text (the actual git diff) not the rendered markdown summary
+        _raw_pt = result.evidence.get("raw_patch_text", "")
+        if _raw_pt and len(_raw_pt) > 100:
             try:
                 from .patchdiff import analyze_patch_diff
-                _pdiff = analyze_patch_diff(result.patch_summary)
+                _pdiff = analyze_patch_diff(_raw_pt)
                 if _pdiff.confidence >= 0.60:
                     result.evidence["patch_analysis"] = {
                         "vuln_function": _pdiff.vuln_function,
