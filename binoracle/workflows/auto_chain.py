@@ -768,6 +768,57 @@ def _download(url: str, timeout: int = 20) -> Optional[str]:
         return None
 
 
+def _find_related_github_issues(repo_url: str, vuln_function: str = "",
+                                cve_id: str = "", timeout: float = 10.0) -> List[dict]:
+    """Search GitHub issues/PRs in a repo for mentions of the vulnerable function.
+
+    Used after patch diff analysis to find unreported variants or proof-of-concept
+    discussions that pre-date a CVE assignment. Only reads public issue titles/URLs.
+
+    Returns list of {title, url, state, number} dicts, max 5 results.
+    Uses the public GitHub search API — no token needed but rate-limited (10/min unauth).
+    Non-fatal: returns [] on any error.
+    """
+    import json as _j
+    import re as _re
+
+    # Extract owner/repo from commit URL like https://github.com/owner/repo/commit/abc
+    _repo_m = _re.search(r"github\.com/([^/]+/[^/]+)", repo_url or "")
+    if not _repo_m:
+        return []
+    repo = _repo_m.group(1).rstrip("/")
+    repo = _re.sub(r"/commit.*|/pull.*|/compare.*|\.diff$|\.patch$", "", repo)
+
+    # Build search query: vuln_function OR CVE-ID in repo
+    _terms: list[str] = []
+    if vuln_function and vuln_function not in ("?", ""):
+        _terms.append(vuln_function)
+    if cve_id:
+        _terms.append(cve_id)
+    if not _terms:
+        return []
+    q = "+OR+".join(f"{t}" for t in _terms[:2]) + f"+repo:{repo}"
+
+    try:
+        import urllib.request as _ur
+        import urllib.parse as _up
+        _url = f"https://api.github.com/search/issues?q={_up.quote(q, safe='+:/')}&per_page=5"
+        req = _ur.Request(_url, headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "binoracle/cvefeed",
+            "X-GitHub-Api-Version": "2022-11-28",
+        })
+        with _ur.urlopen(req, timeout=timeout) as resp:
+            data = _j.loads(resp.read())
+        return [
+            {"title": it.get("title", ""), "url": it.get("html_url", ""),
+             "state": it.get("state", ""), "number": it.get("number", 0)}
+            for it in (data.get("items") or [])[:5]
+        ]
+    except Exception:
+        return []
+
+
 def _run_patch_stage(cve_id: str, cve_info, result: ChainResult,
                      step: Callable, tmpdir: str) -> str:
     t = _t()
@@ -806,6 +857,24 @@ def _run_patch_stage(cve_id: str, cve_info, result: ChainResult,
             result.add_step("patch_diff", "ok",
                             f"type={dr.patch_type.value} +{added}/-{removed}",
                             elapsed=t())
+            # B10: search for related GitHub issues/PRs (non-fatal, opt-in via env)
+            if os.environ.get("BINORACLE_GITHUB_ISSUES", "1").strip() not in ("0", "false", "no"):
+                _vuln_fn = ""
+                if dr and dr.hunks:
+                    # Pick function name from highest-confidence hunk
+                    _best = max(dr.hunks, key=lambda h: getattr(h, "security_score", 0), default=None)
+                    if _best:
+                        _vuln_fn = getattr(_best, "function_name", "") or ""
+                _issues = _find_related_github_issues(
+                    repo_url=patch_url, vuln_function=_vuln_fn, cve_id=cve_id)
+                if _issues:
+                    step(f"  B10: {len(_issues)} issue(s)/PR(s) relacionados en repo GitHub")
+                    result.evidence["github_related_issues"] = _issues
+                    _issue_md = "\n\n### Issues/PRs relacionados (GitHub)\n"
+                    for _iss in _issues:
+                        _state = f"[{_iss['state']}]" if _iss.get("state") else ""
+                        _issue_md += f"- {_state} **#{_iss.get('number','')}** {_iss.get('title','')} — {_iss.get('url','')}\n"
+                    summary += _issue_md
             return summary
         except Exception:
             summary = (f"## Patch diff — {cve_id}\n\n"
