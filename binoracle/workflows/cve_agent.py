@@ -10743,8 +10743,15 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _auth_confirm = notes.get("confirm_string", "")
                 _auth_bypass_url = notes.get("bypass_url") or None
                 _scf_auth = False
+                # Skip LLM scaffold for Go projects: _STACK_SIGNALS auto-detects go.mod and
+                # generates the correct Dockerfile. The LLM tends to produce Node.js-style
+                # Dockerfiles for Go apps (COPY package.json etc.), which always fail.
+                import os as _os_go
+                _is_go_project = (fr.local_path and
+                                  _os_go.path.isfile(_os_go.path.join(str(fr.local_path), "go.mod")))
                 # Solo scaffold si no hay bypass_header/url ya definido (el analista sabe mejor)
-                if not _auth_dockerfile and not _auth_bypass_hdr and not _auth_bypass_url and llm is not None:
+                if (not _auth_dockerfile and not _auth_bypass_hdr and not _auth_bypass_url
+                        and not _is_go_project and llm is not None):
                     _scf = _scaffold_llm_lab_for_class(
                         llm, str(fr.local_path), notes, inv.cve_id,
                         inv.vuln_class or "missing-authorization", step, es,
