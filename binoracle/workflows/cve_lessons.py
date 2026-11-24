@@ -389,6 +389,17 @@ def format_lessons_for_llm(stack: str, vuln_class: str = "",
         if _ic_counter.get("credential_exposure", 0) >= 2:
             lines.append("  NOTA: credential_exposure frecuente — revisar respuesta para tokens/keys")
 
+    # OSV package patterns seen on this stack (helps LLM know which npm/pypi packages to target)
+    _osv_counter: Counter = Counter()
+    for r in runs:
+        for pkg in (r.get("osv_packages") or []):
+            _pkg_name = pkg.split("@")[0].split("::")[-1] if pkg else ""
+            if _pkg_name:
+                _osv_counter[_pkg_name] += 1
+    if _osv_counter:
+        _osv_top = [p for p, _ in _osv_counter.most_common(3)]
+        lines.append(f"- Paquetes OSV afectados en este stack: {', '.join(_osv_top)}")
+
     summary = "\n".join(lines)
     # Truncate to stay within token budget (approx 4 chars/token)
     if len(summary) > max_tokens * 4:
