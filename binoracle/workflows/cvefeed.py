@@ -201,3 +201,125 @@ def poll_new_cve_mentions(channel: str = _DEFAULT_CHANNEL, timeout: float = 20.0
     if mark_seen:
         _save_last_seen_id(channel, max(m.post_id for m in new_messages))
     return mentions
+
+
+# ── NVD API feed ──────────────────────────────────────────────────────────────
+
+_NVD_API = "https://services.nvd.nist.gov/rest/json/cves/2.0"
+_NVD_STATE_FILE = os.path.join(_STATE_DIR, "nvd_last_seen.json")
+
+# Web-stack keywords used to filter NVD results to verifiable web CVEs
+_WEB_FILTER_KEYWORDS = [
+    "wordpress", "drupal", "joomla", "ghost", "strapi", "django", "flask",
+    "fastapi", "laravel", "symfony", "rails", "spring", "express", "nextjs",
+    "nuxt", "node.js", "nodejs", "php", "graphql", "rest api", "web application",
+    "authentication bypass", "unauthorized access", "improper authorization",
+    "missing authorization", "access control", "cross-site scripting", "xss",
+    "sql injection", "sqli", "ssrf", "csrf", "file upload", "path traversal",
+    "mattermost", "nextcloud", "gitea", "harbor", "portainer", "grafana",
+    "keycloak", "authentik", "jellyfin", "audiobookshelf", "home assistant",
+    "gin ", "echo ", "fiber ", "fastify", "nestjs",
+]
+
+
+@dataclass
+class NVDCVEEntry:
+    cve_id: str
+    description: str
+    cvss_score: float
+    published: str
+    web_related: bool
+
+
+def fetch_nvd_recent(days_back: int = 3, min_cvss: float = 6.0,
+                     timeout: float = 20.0) -> List[NVDCVEEntry]:
+    """Fetch CVEs published in the last `days_back` days from NVD API 2.0.
+
+    Filters to web-related CVEs with CVSS >= min_cvss. Returns up to 50 entries.
+    No API key needed for modest usage. Best-effort: returns [] on any error.
+    """
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    start = (now - timedelta(days=days_back)).strftime("%Y-%m-%dT%H:%M:%S.000")
+    end = now.strftime("%Y-%m-%dT%H:%M:%S.000")
+    url = (f"{_NVD_API}?pubStartDate={start}&pubEndDate={end}"
+           f"&cvssV3Severity=HIGH&resultsPerPage=50")
+    try:
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "binoracle-nvd-feed/1.0 (authorized security research)"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            data = json.loads(r.read())
+    except Exception:
+        return []
+    entries: List[NVDCVEEntry] = []
+    for item in (data.get("vulnerabilities") or []):
+        cve = item.get("cve") or {}
+        cve_id = cve.get("id") or ""
+        if not cve_id:
+            continue
+        descs = cve.get("descriptions") or []
+        desc = next((d["value"] for d in descs if d.get("lang") == "en"), "")
+        # CVSS score
+        score = 0.0
+        metrics = cve.get("metrics") or {}
+        for key in ("cvssMetricV31", "cvssMetricV30", "cvssMetricV2"):
+            ms = metrics.get(key)
+            if ms:
+                score = float((ms[0].get("cvssData") or {}).get("baseScore", 0) or 0)
+                break
+        if score < min_cvss:
+            continue
+        desc_lower = desc.lower()
+        web_related = any(kw in desc_lower for kw in _WEB_FILTER_KEYWORDS)
+        entries.append(NVDCVEEntry(
+            cve_id=cve_id,
+            description=desc[:400],
+            cvss_score=score,
+            published=cve.get("published", ""),
+            web_related=web_related,
+        ))
+    return entries
+
+
+def _nvd_last_seen() -> str:
+    try:
+        with open(_NVD_STATE_FILE, "r") as f:
+            return json.load(f).get("last_seen", "")
+    except Exception:
+        return ""
+
+
+def _nvd_save_seen(cve_id: str) -> None:
+    try:
+        os.makedirs(os.path.dirname(_NVD_STATE_FILE), exist_ok=True)
+        with open(_NVD_STATE_FILE, "w") as f:
+            json.dump({"last_seen": cve_id}, f)
+    except Exception:
+        pass
+
+
+def poll_nvd_new(days_back: int = 2, min_cvss: float = 7.0,
+                 web_only: bool = True) -> List[NVDCVEEntry]:
+    """Poll NVD for new CVEs not seen since last call.
+
+    Returns web-related CVEs sorted by CVSS score descending.
+    Persists state so repeated calls don't re-process the same CVEs.
+    """
+    entries = fetch_nvd_recent(days_back=days_back, min_cvss=min_cvss)
+    if not entries:
+        return []
+    last_seen = _nvd_last_seen()
+    seen_ids = set()
+    if last_seen:
+        # Mark everything up to and including last_seen as already processed
+        for e in entries:
+            if e.cve_id == last_seen:
+                break
+            seen_ids.add(e.cve_id)
+    new = [e for e in entries if e.cve_id not in seen_ids]
+    if web_only:
+        new = [e for e in new if e.web_related]
+    new.sort(key=lambda e: e.cvss_score, reverse=True)
+    if new:
+        _nvd_save_seen(new[0].cve_id)
+    return new

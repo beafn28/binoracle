@@ -1344,6 +1344,90 @@ def run_full_chain(
     return result
 
 
+# ── Auto-queue: NVD + Telegram feed → run_full_chain autonomously ─────────────
+
+def auto_queue_nvd(days_back: int = 2, min_cvss: float = 7.0,
+                   max_cves: int = 10, web_only: bool = True,
+                   lang: str = "es", budget_s: float = 300.0,
+                   on_step=None) -> List["ChainResult"]:
+    """Fetch recent high-severity web CVEs from NVD and investigate each autonomously.
+
+    Pulls CVEs published in the last `days_back` days with CVSS >= min_cvss,
+    filters to web-related ones (unless web_only=False), and runs run_full_chain
+    on each. Returns the list of ChainResult objects.
+
+    Usage:
+        from binoracle.workflows.auto_chain import auto_queue_nvd
+        results = auto_queue_nvd(days_back=1, min_cvss=8.0)
+        for r in results:
+            print(r.cve_id, '✓' if r.verified else '?')
+    """
+    step = on_step or print
+    try:
+        from .cvefeed import poll_nvd_new
+    except ImportError as e:
+        step(f"auto_queue_nvd: no se puede importar cvefeed — {e}")
+        return []
+
+    step(f"auto_queue_nvd: consultando NVD (últimos {days_back}d, CVSS≥{min_cvss})…")
+    entries = poll_nvd_new(days_back=days_back, min_cvss=min_cvss, web_only=web_only)
+    if not entries:
+        step("auto_queue_nvd: sin CVEs nuevos")
+        return []
+
+    step(f"auto_queue_nvd: {len(entries)} CVEs nuevos — procesando hasta {max_cves}")
+    results = []
+    for entry in entries[:max_cves]:
+        step(f"\n{'='*60}")
+        step(f"auto_queue_nvd: investigando {entry.cve_id} (CVSS {entry.cvss_score})")
+        step(f"  {entry.description[:120]}…")
+        try:
+            r = run_full_chain(entry.cve_id, lang=lang, budget_s=budget_s,
+                               on_step=step, save_report=True)
+            results.append(r)
+            status = "✓ VERIFICADO" if r.verified else "? LLM-razonado"
+            step(f"  {entry.cve_id}: {status}")
+        except Exception as exc:
+            step(f"  {entry.cve_id}: error — {exc}")
+    return results
+
+
+def auto_queue_telegram(channel: str = "CVENotify", web_only: bool = False,
+                        max_cves: int = 10, lang: str = "es",
+                        budget_s: float = 300.0, on_step=None) -> List["ChainResult"]:
+    """Poll Telegram @CVENotify for new CVE mentions and investigate each.
+
+    Complements auto_queue_nvd — Telegram often publishes CVEs before NVD.
+    """
+    step = on_step or print
+    try:
+        from .cvefeed import poll_new_cve_mentions
+    except ImportError as e:
+        step(f"auto_queue_telegram: no se puede importar cvefeed — {e}")
+        return []
+
+    step(f"auto_queue_telegram: consultando @{channel}…")
+    mentions = poll_new_cve_mentions(channel=channel)
+    if web_only:
+        mentions = [m for m in mentions if m.cms_related]
+    if not mentions:
+        step("auto_queue_telegram: sin CVEs nuevos")
+        return []
+
+    step(f"auto_queue_telegram: {len(mentions)} CVEs nuevos")
+    results = []
+    for m in mentions[:max_cves]:
+        step(f"\nauto_queue_telegram: investigando {m.cve_id}")
+        try:
+            r = run_full_chain(m.cve_id, lang=lang, budget_s=budget_s,
+                               on_step=step, save_report=True)
+            results.append(r)
+            step(f"  {m.cve_id}: {'✓' if r.verified else '?'}")
+        except Exception as exc:
+            step(f"  {m.cve_id}: error — {exc}")
+    return results
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 def chain_cli(argv=None):
