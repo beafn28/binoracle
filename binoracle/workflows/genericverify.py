@@ -118,18 +118,21 @@ def _build_stack_signals() -> tuple:
          ["WORKDIR /app", "COPY . .",
           "RUN (command -v composer >/dev/null && composer install --no-interaction || true)",
           'CMD ["php", "-S", "0.0.0.0:8000", "-t", "."]']),
-        # Go: multi-stage build — final image keeps netcat (nc) for health checks.
-        # Tries common port env vars (PORT, SERVER_PORT) then falls back to 8080.
-        # daptin and similar REST APIs bind to whatever $PORT specifies (default 6336);
-        # we override to 3000 (most common Go PoC port) via PORT env var.
-        ("go.mod", "golang:1.22-alpine", 3000,
-         ["WORKDIR /app", "COPY . .",
-          "RUN apk add --no-cache gcc musl-dev git netcat-openbsd",
-          "RUN go build -o /app/server . 2>/dev/null || "
-          "go build -o /app/server ./cmd/... 2>/dev/null || "
-          "go build -o /app/server ./cmd/main.go 2>/dev/null || true",
-          'ENV PORT=3000 SERVER_PORT=3000 GIN_MODE=release',
-          'CMD ["sh", "-c", "/app/server || go run . || go run ./cmd/..."]']),
+        # Go: single-stage build with latest stable Go.
+        # Uses golang:alpine (latest stable) so go.mod toolchain constraints are met.
+        # CGO_ENABLED=1 for sqlite3 and other CGO dependencies.
+        # Port 8080 is used; apps that read --port or $PORT get it via env/arg.
+        ("go.mod", "golang:alpine", 8080,
+         ["WORKDIR /app",
+          "RUN apk add --no-cache gcc musl-dev git netcat-openbsd sqlite-dev",
+          "COPY . .",
+          "RUN CGO_ENABLED=1 go build -o /app/server . || "
+          "CGO_ENABLED=1 go build -o /app/server ./cmd/... || true",
+          'ENV PORT=8080 SERVER_PORT=8080 GIN_MODE=release CGO_ENABLED=1',
+          'CMD ["sh", "-c", '
+          '"/app/server --port :8080 || '
+          '/app/server -port :8080 || '
+          '/app/server"]']),
     )
 
 
@@ -4110,50 +4113,120 @@ def verify_generic_header_bypass_candidates(
     budget_s: float = 900.0,
     dockerfile_body: str = "", extra_files: Optional[dict] = None,
 ) -> WpVerifyResult:
-    """Iterate through a list of (header, value) bypass candidates automatically.
+    """Iterate through bypass header candidates using ONE shared lab instance.
 
-    Calls verify_generic_header_bypass for each candidate until one succeeds.
-    `candidates`: list of (header_name, header_value) tuples or dicts with
-    keys "header"/"value".
+    Builds and starts the Docker lab once, then tries each (header, value) candidate
+    against the same running container. This avoids rebuilding for each candidate
+    (critical for large apps like Go/Java that take minutes to compile).
+
+    `candidates`: list of (header_name, header_value) tuples, dicts with
+    keys "header"/"value", or "Header-Name: value" strings.
 
     Returns the first verified result, or the last failed result if none works.
     """
     step = on_step or (lambda _m: None)
-    if not candidates:
-        res = WpVerifyResult()
-        res.detail = "sin candidatos de bypass para probar"
-        return res
+    res = WpVerifyResult()
 
-    last_res = WpVerifyResult()
+    # Parse candidates
+    parsed: list = []
     for cand in candidates:
         if isinstance(cand, dict):
             hdr = cand.get("header") or cand.get("name") or ""
             val = cand.get("value") or ""
         elif isinstance(cand, (list, tuple)) and len(cand) >= 2:
-            hdr, val = cand[0], cand[1]
+            hdr, val = str(cand[0]), str(cand[1])
+        elif isinstance(cand, str) and ": " in cand:
+            hdr, val = cand.split(": ", 1)
         else:
             continue
-        if not hdr or not val:
-            continue
-        step(f"  candidato bypass: {hdr}: {val[:60]!r}")
-        res = verify_generic_header_bypass(
-            source_dir=source_dir,
-            endpoint=endpoint,
-            http_method=http_method,
-            bypass_header=hdr,
-            bypass_value=val,
-            confirm_string=confirm_string,
-            on_step=step,
-            budget_s=budget_s,
-            dockerfile_body=dockerfile_body,
-            extra_files=extra_files,
-        )
+        if hdr and val:
+            parsed.append((hdr.strip(), val.strip()))
+
+    if not parsed:
+        res.detail = "sin candidatos de bypass para probar"
+        return res
+
+    if not _docker_daemon_ok():
+        res.available = False
+        res.detail = "sin daemon Docker alcanzable"
+        return res
+
+    # Build the lab once
+    boot = _bootstrap_generic_lab(source_dir, step, res, budget_s,
+                                   dockerfile_body=dockerfile_body,
+                                   extra_files=extra_files)
+    if boot is None:
+        return res
+    lab, base_url, container = boot
+
+    try:
+        m = (http_method or "GET").upper().split("/")[0].strip() or "GET"
+        url = base_url + endpoint
+
+        # Baseline: request without bypass (expect 3xx/4xx)
+        step(f"probando SIN bypass: {m} {url}")
+        status_normal = -1
+        try:
+            r_normal = _http_request(m, url, timeout=10, allow_redirects=False)
+            status_normal = r_normal.status_code
+        except Exception as e:
+            step(f"  error en peticion normal: {e}")
+
+        # Try each candidate in the same running lab
         last_res = res
-        if res.verified:
-            step(f"  BYPASS CONFIRMADO con {hdr}: {val[:60]!r}")
-            return res
-        step(f"  candidato fallido ({hdr}): {res.detail[:100] if res.detail else '?'}")
-    return last_res
+        for hdr, val in parsed:
+            step(f"  candidato bypass: {hdr}: {val[:60]!r}")
+            try:
+                r_bypass = _http_request(m, url, timeout=10, allow_redirects=False,
+                                         headers={hdr: val})
+                status_bypass = r_bypass.status_code
+                body_bypass = getattr(r_bypass, "text", "") or ""
+            except Exception as e:
+                step(f"  candidato fallido ({hdr}): error — {e}")
+                continue
+
+            blocked = status_normal not in range(200, 300)
+            bypassed = status_bypass in range(200, 300)
+            string_ok = (not confirm_string) or (confirm_string in body_bypass)
+
+            cand_res = WpVerifyResult()
+            cand_res.evidence = {
+                "base_url": base_url, "endpoint": endpoint, "metodo": m,
+                "bypass_header": hdr, "bypass_value": val,
+                "status_sin_bypass": status_normal, "status_con_bypass": status_bypass,
+                "confirm_string": confirm_string,
+                "respuesta_cuerpo_recorte": body_bypass[:500],
+            }
+            if blocked and bypassed and string_ok:
+                cand_res.verified = True
+                cand_res.ok = True
+                cand_res.detail = (
+                    f"BYPASS confirmado: sin '{hdr}' el servidor responde {status_normal}; "
+                    f"con '{hdr}: {val[:40]}' responde {status_bypass}"
+                    + (f" y el cuerpo contiene '{confirm_string}'" if confirm_string else "")
+                )
+                step(f"  BYPASS CONFIRMADO con {hdr}: {val[:60]!r}")
+                return cand_res
+            else:
+                cand_res.ok = True
+                cand_res.detail = (
+                    f"candidato '{hdr}': sin_bypass={status_normal} con_bypass={status_bypass}"
+                    + (" — sin bypas: endpoint ya 2xx (no bloqueado)" if not blocked else "")
+                )
+                step(f"  candidato fallido ({hdr}): {cand_res.detail[:100]}")
+                last_res = cand_res
+
+        last_res.ok = True
+        last_res.detail = (last_res.detail or
+                           f"ninguno de los {len(parsed)} candidatos consiguio bypass")
+        return last_res
+
+    except Exception as e:
+        res.detail = f"error en iteracion de candidatos: {e}"
+        return res
+    finally:
+        step("desmontando el laboratorio generico (bypass candidatos)...")
+        lab.teardown()
 
 
 # ── GraphQL auth-bypass verifier ──────────────────────────────────────────────
