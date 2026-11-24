@@ -4758,6 +4758,33 @@ def _refine_web_hints_from_source(llm, local_path: str, found: dict, context_lin
             hi = min(len(lines), line_no + context_lines)
             snippets.append(f"# {file_part} (funcion '{name}' citada en la linea {line_no})\n"
                             + "".join(lines[lo:hi]))
+    # Fallback para Go REST APIs: si las funciones grounded son helpers de permiso
+    # (no route handlers), buscar archivos de registro de rutas directamente.
+    if not snippets and local_path:
+        import re as _re
+        _go_route_re = _re.compile(
+            r'''(?:router|r|mux|e|v\d+)\s*\.\s*(GET|POST|PUT|PATCH|DELETE|Handle|HandleFunc)\s*\(\s*"([^"/][^"]*)"''')
+        try:
+            for _root, _dirs, _fnames in _os.walk(local_path):
+                _dirs[:] = [d for d in _dirs if d not in (".git", "vendor", "node_modules")]
+                for _fn in _fnames:
+                    if not _fn.endswith(".go"):
+                        continue
+                    _fpath = _os.path.join(_root, _fn)
+                    try:
+                        with open(_fpath, encoding="utf-8", errors="replace") as fh:
+                            _content = fh.read(32_000)
+                    except OSError:
+                        continue
+                    if _go_route_re.search(_content):
+                        _rel = _os.path.relpath(_fpath, local_path)
+                        snippets.append(f"# {_rel} (archivo de registro de rutas Go)\n{_content[:3000]}")
+                    if len(snippets) >= 3:
+                        break
+                if len(snippets) >= 3:
+                    break
+        except Exception:
+            pass
     if not snippets:
         return None
     code = "\n\n".join(snippets)[:6000]     # tope generoso pero acotado para el contexto del LLM
@@ -4878,17 +4905,20 @@ def _prescan_source_for_llm_context(source_dir: str, vuln_class: str,
             if fn and fn not in seen_fns:
                 seen_fns.add(fn)
 
-    # Scan rapido de rutas HTTP en Node.js (router.get/post/put/delete/patch)
+    # Scan rapido de rutas HTTP en Node.js, Go y Python
     _ROUTE_RE = re.compile(
         r'''(?:router|app|Router)\s*\.\s*(get|post|put|patch|delete)\s*\(\s*['"`]([^'"`]+)['"`]''',
         re.IGNORECASE)
+    # Go: router.GET("/path", ...) / r.GET("/path", ...) / mux.Handle("/path", ...)
+    _GO_ROUTE_RE = re.compile(
+        r'''(?:router|r|mux|e|v\d+)\s*\.\s*(GET|POST|PUT|PATCH|DELETE|Handle|HandleFunc)\s*\(\s*"([^"]+)"''')
     _desc_lower = (description or "").lower()
     try:
         for _root, _dirs, _fnames in _os.walk(source_dir):
             _dirs[:] = [d for d in _dirs if d not in
                         ("node_modules", ".git", "dist", "build", "__pycache__", "vendor")]
             for _fn in _fnames:
-                if not _fn.endswith((".js", ".ts", ".mjs", ".py", ".php", ".rb")):
+                if not _fn.endswith((".js", ".ts", ".mjs", ".py", ".php", ".rb", ".go")):
                     continue
                 _fpath = _os.path.join(_root, _fn)
                 try:
@@ -4900,6 +4930,13 @@ def _prescan_source_for_llm_context(source_dir: str, vuln_class: str,
                     _route = _m.group(2).strip()
                     if _route and len(result["routes"]) < 12:
                         result["routes"].append(f"{_m.group(1).upper()} {_route}")
+                # Go routes
+                if _fn.endswith(".go"):
+                    for _m in _GO_ROUTE_RE.finditer(_content):
+                        _route = _m.group(2).strip()
+                        _method = _m.group(1).upper()
+                        if _route.startswith("/") and len(result["routes"]) < 20:
+                            result["routes"].append(f"{_method} {_route}")
     except Exception:
         pass
 
