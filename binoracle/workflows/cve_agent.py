@@ -10726,7 +10726,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                       "X-Custom-IP-Authorization: 127.0.0.1",
                                       "X-Forwarded-Host: localhost",
                                       "X-Host: localhost"])
-                from .genericverify import verify_generic_header_bypass
+                from .genericverify import (verify_generic_header_bypass,
+                                             verify_generic_header_bypass_candidates)
                 _inject_custom_docker_lab(str(fr.local_path), notes, step)
                 _bypass_kind = ("URL manipulada" if notes.get("bypass_url") else "cabecera HTTP")
                 step((f"intentando verificacion DINAMICA GENERICA -- bypass de autorizacion "
@@ -10754,15 +10755,37 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         _auth_ep          = _scf.get("endpoint") or _auth_ep
                         _auth_confirm     = _scf.get("confirm_string") or _auth_confirm
                         _scf_auth         = True
-                wr = verify_generic_header_bypass(
-                    fr.local_path, _auth_ep, notes.get("http_method") or "GET",
-                    bypass_header=_auth_bypass_hdr,
-                    bypass_value=_auth_bypass_val,
-                    confirm_string=_auth_confirm,
-                    on_step=step, budget_s=budget_s,
-                    bypass_url=_auth_bypass_url,
-                    dockerfile_body=_auth_dockerfile,
-                    extra_files=_auth_extra_files)
+                # Si hay candidatos pero no bypass_header explicito, iterar sobre ellos
+                _auth_candidates = notes.get("_bypass_header_candidates") or []
+                _parsed_candidates = []
+                for _c in _auth_candidates:
+                    if isinstance(_c, str) and ": " in _c:
+                        _ch, _cv = _c.split(": ", 1)
+                        _parsed_candidates.append((_ch.strip(), _cv.strip()))
+                    elif isinstance(_c, (list, tuple)) and len(_c) >= 2:
+                        _parsed_candidates.append((_c[0], _c[1]))
+                    elif isinstance(_c, dict):
+                        _parsed_candidates.append(_c)
+                if _parsed_candidates and not _auth_bypass_hdr and not _auth_bypass_url:
+                    step((f"probando {len(_parsed_candidates)} candidatos de bypass automaticamente..." if es
+                          else f"trying {len(_parsed_candidates)} bypass header candidates automatically..."))
+                    wr = verify_generic_header_bypass_candidates(
+                        fr.local_path, _auth_ep, notes.get("http_method") or "GET",
+                        candidates=_parsed_candidates,
+                        confirm_string=_auth_confirm,
+                        on_step=step, budget_s=budget_s,
+                        dockerfile_body=_auth_dockerfile,
+                        extra_files=_auth_extra_files)
+                else:
+                    wr = verify_generic_header_bypass(
+                        fr.local_path, _auth_ep, notes.get("http_method") or "GET",
+                        bypass_header=_auth_bypass_hdr,
+                        bypass_value=_auth_bypass_val,
+                        confirm_string=_auth_confirm,
+                        on_step=step, budget_s=budget_s,
+                        bypass_url=_auth_bypass_url,
+                        dockerfile_body=_auth_dockerfile,
+                        extra_files=_auth_extra_files)
                 if _scf_auth and not wr.verified:
                     _lab_cfg_auth = {
                         "dockerfile_body": _auth_dockerfile, "extra_files": _auth_extra_files,

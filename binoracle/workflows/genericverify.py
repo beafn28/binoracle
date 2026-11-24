@@ -4042,6 +4042,60 @@ def verify_generic_header_bypass(
         lab.teardown()
 
 
+def verify_generic_header_bypass_candidates(
+    source_dir: str, endpoint: str, http_method: str,
+    candidates: list,
+    confirm_string: str = "",
+    on_step: Optional[Callable[[str], None]] = None,
+    budget_s: float = 900.0,
+    dockerfile_body: str = "", extra_files: Optional[dict] = None,
+) -> WpVerifyResult:
+    """Iterate through a list of (header, value) bypass candidates automatically.
+
+    Calls verify_generic_header_bypass for each candidate until one succeeds.
+    `candidates`: list of (header_name, header_value) tuples or dicts with
+    keys "header"/"value".
+
+    Returns the first verified result, or the last failed result if none works.
+    """
+    step = on_step or (lambda _m: None)
+    if not candidates:
+        res = WpVerifyResult()
+        res.detail = "sin candidatos de bypass para probar"
+        return res
+
+    last_res = WpVerifyResult()
+    for cand in candidates:
+        if isinstance(cand, dict):
+            hdr = cand.get("header") or cand.get("name") or ""
+            val = cand.get("value") or ""
+        elif isinstance(cand, (list, tuple)) and len(cand) >= 2:
+            hdr, val = cand[0], cand[1]
+        else:
+            continue
+        if not hdr or not val:
+            continue
+        step(f"  candidato bypass: {hdr}: {val[:60]!r}")
+        res = verify_generic_header_bypass(
+            source_dir=source_dir,
+            endpoint=endpoint,
+            http_method=http_method,
+            bypass_header=hdr,
+            bypass_value=val,
+            confirm_string=confirm_string,
+            on_step=step,
+            budget_s=budget_s,
+            dockerfile_body=dockerfile_body,
+            extra_files=extra_files,
+        )
+        last_res = res
+        if res.verified:
+            step(f"  BYPASS CONFIRMADO con {hdr}: {val[:60]!r}")
+            return res
+        step(f"  candidato fallido ({hdr}): {res.detail[:100] if res.detail else '?'}")
+    return last_res
+
+
 # ── GraphQL auth-bypass verifier ──────────────────────────────────────────────
 
 def verify_generic_graphql_bypass(
