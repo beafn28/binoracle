@@ -636,6 +636,40 @@ def _auto_binary_stage(cve_id: str, cve_info, llm_notes: dict,
                          f"**PoC**: `{poc_cmd}`  \n"
                          f"**Resultado**: VERIFICADO — crash confirmado en Docker\n\n"
                          f"```\n{wr.detail}\n```")
+            # Try to extract the binary from the container and run full analysis
+            # (triage + mitigations + ROP chain via _run_binary_stage)
+            _container_id = getattr(wr, "container_id", "") or getattr(wr, "evidence", {}).get("container", "")
+            if _container_id:
+                import subprocess as _sp
+                import tempfile as _tf
+                _bin_common_paths = [
+                    f"/usr/bin/{pkg_name}", f"/usr/sbin/{pkg_name}",
+                    f"/bin/{pkg_name}", f"/usr/local/bin/{pkg_name}",
+                ]
+                _extracted = None
+                _tmp_bin = _tf.mktemp(prefix=f"bo_bin_{pkg_name}_")
+                for _bp in _bin_common_paths:
+                    try:
+                        _sp.run(["docker", "cp", f"{_container_id}:{_bp}", _tmp_bin],
+                                capture_output=True, timeout=10, check=True)
+                        _extracted = _tmp_bin
+                        step(f"  binario extraído del container: {_bp} → {_tmp_bin}")
+                        break
+                    except Exception:
+                        continue
+                if _extracted and os.path.isfile(_extracted):
+                    step("  ejecutando análisis estático completo (triage + mitigaciones + ROP)...")
+                    try:
+                        _bin_analysis = _run_binary_stage(cve_id, _extracted, result, step, llm=llm)
+                        if _bin_analysis:
+                            parts.append(_bin_analysis)
+                    except Exception as _be:
+                        step(f"  análisis estático error: {_be}")
+                    finally:
+                        try:
+                            os.unlink(_extracted)
+                        except Exception:
+                            pass
         else:
             step(f"  lab no confirmó crash: {wr.detail[:100] if wr.detail else '?'}")
             result.add_step("binary_auto_lab", "unconfirmed", wr.detail[:100] if wr.detail else "")
@@ -1515,6 +1549,7 @@ def auto_queue_nvd(days_back: int = 2, min_cvss: float = 7.0,
     try:
         from .cvefeed import poll_nvd_new
         from .cve_lessons import detect_stack, get_lessons, record_cve_result
+        from .cve_retry_queue import add_to_retry, mark_done, is_transient_error
     except ImportError as e:
         step(f"auto_queue_nvd: import error — {e}")
         return []
@@ -1566,8 +1601,56 @@ def auto_queue_nvd(days_back: int = 2, min_cvss: float = 7.0,
                 vuln_cls = getattr(inv, "vuln_class", "") or notes.get("vuln_class", "")
             record_cve_result(stack, entry.cve_id, endpoint, r.verified,
                               bypass_hdr, bypass_val, vuln_cls)
+            if r.verified:
+                mark_done(entry.cve_id)
+            elif r.error and is_transient_error(r.error):
+                step(f"  {entry.cve_id}: error transitorio — añadiendo a retry queue")
+                add_to_retry(entry.cve_id, r.error, stack)
         except Exception as exc:
             step(f"  {entry.cve_id}: error — {exc}")
+            add_to_retry(entry.cve_id, str(exc), "")
+    return results
+
+
+def retry_failed_cves(max_cves: int = 5, lang: str = "es",
+                      budget_s: float = 300.0, on_step=None) -> List["ChainResult"]:
+    """Retry CVEs that previously failed with transient errors.
+
+    Fetches pending CVEs from the retry queue (not older than 24h, max 3 attempts),
+    runs run_full_chain on each, and updates the queue accordingly.
+    """
+    step = on_step or print
+    try:
+        from .cve_retry_queue import get_pending, mark_done, mark_attempt, is_transient_error
+    except ImportError as e:
+        step(f"retry_failed_cves: import error — {e}")
+        return []
+
+    pending = get_pending()[:max_cves]
+    if not pending:
+        step("retry_failed_cves: sin CVEs pendientes de reintento")
+        return []
+
+    step(f"retry_failed_cves: reintentando {len(pending)} CVEs fallidos…")
+    results = []
+    for cve_id in pending:
+        step(f"\nretry_failed_cves: reintentando {cve_id}")
+        try:
+            r = run_full_chain(cve_id, lang=lang, budget_s=budget_s,
+                               on_step=step, save_report=True)
+            results.append(r)
+            if r.verified or not r.error:
+                mark_done(cve_id)
+                step(f"  {cve_id}: {'✓ VERIFICADO' if r.verified else '? completado'} — eliminado de retry queue")
+            elif is_transient_error(r.error):
+                mark_attempt(cve_id, r.error)
+                step(f"  {cve_id}: sigue fallando — intento registrado")
+            else:
+                mark_done(cve_id)
+                step(f"  {cve_id}: error no-transitorio — eliminado de retry queue")
+        except Exception as exc:
+            step(f"  {cve_id}: excepción — {exc}")
+            mark_attempt(cve_id, str(exc))
     return results
 
 
