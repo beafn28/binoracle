@@ -2713,6 +2713,12 @@ def run_full_chain(
     """
     t0     = time.time()
     cve_id = cve_id.upper().strip()
+    # Reject anything that isn't a well-formed CVE-ID or GHSA-* to prevent
+    # path traversal when the id is used as a filename later.
+    import re as _re_cve
+    if not _re_cve.match(r'^(CVE-\d{4}-\d{1,7}|GHSA-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4})$',
+                         cve_id, _re_cve.IGNORECASE):
+        raise ValueError(f"CVE-ID no válido: {cve_id!r}")
     step   = on_step or (lambda _m: None)
     result = ChainResult(cve_id=cve_id)
 
@@ -2774,8 +2780,8 @@ def run_full_chain(
         _old_handler = _sig.signal(_sig.SIGALRM, _f27_handler)
         _sig.alarm(_f27_max_s)
         _f27_installed = True
-    except (AttributeError, OSError):
-        pass  # Windows / environments without SIGALRM
+    except (AttributeError, OSError, ValueError):
+        pass  # Windows / worker threads (ValueError: signal only works in main thread)
 
     # ── Checkpoint resume ─────────────────────────────────────────────────────
     # If a previous run was interrupted (timeout, crash) and a checkpoint was
@@ -3882,10 +3888,13 @@ def run_full_chain(
                 # E25: Auto-submit when confidence high and in scope
                 try:
                     from .ywh_writeup import submit_to_ywh as _sub
-                    _scope_ok = result.evidence.get("ywh_scope", {}).get("in_scope", True)
+                    # Default False: if scope-check stage was skipped/failed, don't assume in-scope
+                    _scope_ok = result.evidence.get("ywh_scope", {}).get("in_scope", False)
                     _no_dup   = not result.evidence.get("ywh_duplicate", {}).get("duplicate", False)
                     _qual_ok  = result.evidence.get("ywh_quality", {}).get("ready_to_submit", False)
-                    if (result.engine_confidence >= 0.90 and _scope_ok and _no_dup and _qual_ok):
+                    # verified=True is mandatory: heuristic confidence alone must never trigger auto-submit
+                    if (result.verified and result.engine_confidence >= 0.90
+                            and _scope_ok and _no_dup and _qual_ok):
                         _sub_res = _sub(_wu)
                         result.evidence["ywh_submission"] = _sub_res
                         if _sub_res.get("submitted"):

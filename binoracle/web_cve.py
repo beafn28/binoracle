@@ -130,25 +130,44 @@ def _count_all_verified() -> int:
 
 
 def _load_history(limit: int = 20, offset: int = 0, verified_only: bool = False) -> tuple:
-    """Returns (records_page, total_count)."""
-    records = []
+    """Returns (records_page, total_count).
+
+    Two-pass load: first pass collects (mtime, path, quick-verified) without reading
+    the full JSON body; second pass loads only the page slice. This avoids loading
+    hundreds of full records into RAM just to paginate 20.
+    """
+    entries = []  # (mtime, path, verified_flag)
     try:
         for fname in os.listdir(_HISTORY_DIR):
             if not fname.endswith(".json"):
                 continue
+            fpath = os.path.join(_HISTORY_DIR, fname)
             try:
-                with open(os.path.join(_HISTORY_DIR, fname), encoding="utf-8") as fh:
-                    rec = json.load(fh)
-                records.append(rec)
+                mtime = os.path.getmtime(fpath)
+                # Cheap verified check: scan only the first 512 bytes
+                with open(fpath, encoding="utf-8", errors="replace") as fh:
+                    head = fh.read(512)
+                _verified = '"verified": true' in head.lower()
+                entries.append((mtime, fpath, _verified))
             except Exception:
                 pass
     except Exception:
         pass
-    records.sort(key=lambda r: r.get("created", 0), reverse=True)
+
+    entries.sort(key=lambda e: e[0], reverse=True)
     if verified_only:
-        records = [r for r in records if r.get("verified", False)]
-    total = len(records)
-    return records[offset:offset + limit], total
+        entries = [e for e in entries if e[2]]
+    total = len(entries)
+
+    page_entries = entries[offset:offset + limit]
+    records = []
+    for _, fpath, _ in page_entries:
+        try:
+            with open(fpath, encoding="utf-8") as fh:
+                records.append(json.load(fh))
+        except Exception:
+            pass
+    return records, total
 
 # ── Binary lab job store ──────────────────────────────────────────────────────
 
@@ -499,11 +518,21 @@ class _Handler(BaseHTTPRequestHandler):
         try:
             path = base64.urlsafe_b64decode(b64_path + "==").decode()
             if not os.path.isabs(path) or not os.path.isfile(path):
-                raise ValueError
+                raise ValueError("not absolute or not a file")
+            # Whitelist: only serve files under known binoracle directories
+            _real = os.path.realpath(path)
+            _allowed = (
+                os.path.realpath(os.path.expanduser("~/.binoracle")),
+                os.path.realpath("/tmp"),
+            )
+            if not any(_real.startswith(d + os.sep) or _real == d for d in _allowed):
+                raise ValueError(f"screenshot path outside allowed dirs: {_real}")
             with open(path, "rb") as fh:
                 data = fh.read()
+            import mimetypes as _mt
+            ct, _ = _mt.guess_type(path)
             self.send_response(200)
-            self.send_header("Content-Type", "image/png")
+            self.send_header("Content-Type", ct or "image/png")
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
@@ -945,7 +974,8 @@ class _Handler(BaseHTTPRequestHandler):
                 )
                 browser.close()
 
-            safe_id = cve_id.replace("/", "_").replace(" ", "_")
+            import re as _re_safe
+            safe_id = _re_safe.sub(r'[^\w.\-]', '_', cve_id)
             filename = f"{safe_id}_report.pdf"
             self.send_response(200)
             self.send_header("Content-Type", "application/pdf")
@@ -1041,7 +1071,8 @@ class _Handler(BaseHTTPRequestHandler):
         except Exception as exc:
             self._send_json(500, {"error": f"report generation failed: {exc}"}); return
 
-        safe_id = cve_id.replace("/", "_").replace(" ", "_")
+        import re as _re_safe_html
+        safe_id = _re_safe_html.sub(r'[^\w.\-]', '_', cve_id)
         filename = f"{safe_id}_report.html"
         body = html.encode("utf-8")
         self.send_response(200)
@@ -1159,7 +1190,8 @@ class _Handler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
-        safe_id  = cve_id.replace("/", "_").replace(" ", "_")
+        import re as _re_safe_pdf
+        safe_id  = _re_safe_pdf.sub(r'[^\w.\-]', '_', cve_id)
         filename = f"{safe_id}_report.pdf"
         self.send_response(200)
         self.send_header("Content-Type", "application/pdf")

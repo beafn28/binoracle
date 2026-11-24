@@ -6775,6 +6775,8 @@ def _hueco_code_analysis(inv: "Investigation", fr: Any, llm: Any, step: Any, es:
                     )),
                 ], json_mode=True)
                 hint = json.loads(raw)
+                if not isinstance(hint, dict):
+                    continue
             except Exception:
                 continue
 
@@ -7528,6 +7530,8 @@ def _hueco_code_analysis(inv: "Investigation", fr: Any, llm: Any, step: Any, es:
                     )),
                 ], json_mode=True)
                 hint = json.loads(raw)
+                if not isinstance(hint, dict):
+                    raise ValueError("LLM returned non-dict JSON")
                 if hint.get("dockerfile_body") and hint.get("poc_cmd"):
                     inv.llm_notes["dockerfile_body"] = hint["dockerfile_body"]
                     inv.llm_notes["poc_cmd"] = hint["poc_cmd"]

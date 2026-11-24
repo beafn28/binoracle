@@ -205,9 +205,9 @@ def _ask_qwen_for_fix(error: ErrorRecord, context_hint: str = "") -> Optional[st
         "(3) prefer pip install, docker restart, or chmod fixes; "
         "(4) reply with ONLY the shell command, nothing else.\n\n"
         f"Error category: {error.category.value}\n"
-        f"Error root cause: {error.root_cause}\n"
-        f"Relevant line: {error.hypothesis}\n"
-        f"Context: {context_hint}\n\n"
+        f"Error root cause: {(error.root_cause or '')[:120].replace(chr(10), ' ')}\n"
+        f"Relevant line: {(error.hypothesis or '')[:80].replace(chr(10), ' ')}\n"
+        f"Context: {(context_hint or '')[:80].replace(chr(10), ' ')}\n\n"
         "Command to fix:"
     )
     try:
