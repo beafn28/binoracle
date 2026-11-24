@@ -1439,8 +1439,19 @@ _VULN_CLASS_TO_CWE: dict[str, str] = {
     "jwt-bypass":             "CWE-347",
     "graphql-injection":      "CWE-89",
     "xxe":                    "CWE-611",
+    "xml-injection":          "CWE-611",
     "ldap-injection":         "CWE-90",
     "xpath-injection":        "CWE-643",
+    "nosql-injection":        "CWE-943",
+    "nosqli":                 "CWE-943",
+    "template-injection":     "CWE-1336",
+    "server-side-template-injection": "CWE-1336",
+    "weak-password-hash":     "CWE-916",
+    "insecure-randomness":    "CWE-338",
+    "clickjacking":           "CWE-1021",
+    "subdomain-takeover":     "CWE-1021",
+    "info-disclosure":        "CWE-200",
+    "information-disclosure": "CWE-200",
 }
 
 
