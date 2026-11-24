@@ -67,11 +67,27 @@ def _is_truly_verified(rec: dict) -> bool:
     A CVE is TRULY VERIFIED only when dynamic_verify.verified=True.
     outer verified=True alone is NOT enough — it may be set by static/LLM analysis.
     This prevents false positives from LLM-reasoned hypotheses.
+
+    FIX (2026-11-24): la rama "legacy records" de abajo era codigo muerto. El
+    `dv = rec.get("dynamic_verify") or {}` original normaliza TANTO "la clave no existe"
+    como "existe pero es falsy/vacia" al mismo {}, y isinstance({}, dict) es True, asi
+    que la funcion siempre devolvia via dv.get("verified", False) (False para un dict
+    vacio) y NUNCA llegaba a la linea `return bool(rec.get("verified", False))` --
+    sin importar si dynamic_verify faltaba de verdad (record antiguo, o un productor
+    como las rutas binary-crash/differential_test de auto_chain.py que verifican con
+    un oraculo real pero no rellenan un dynamic_verify con forma de Investigation) o si
+    estaba presente-pero-vacio (un intento que de verdad no se confirmo). Hay que
+    distinguir esos dos casos: solo el primero debe caer al fallback de confiar en el
+    verified externo.
     """
-    dv = rec.get("dynamic_verify") or {}
-    if isinstance(dv, dict):
-        return bool(dv.get("verified", False))
-    # Legacy records: trust outer verified only if dynamic_verify not present at all
+    if "dynamic_verify" in rec:
+        dv = rec.get("dynamic_verify")
+        if isinstance(dv, dict):
+            return bool(dv.get("verified", False))
+        return False  # presente pero mal formado -- no confiar
+    # Productores legacy/no-Investigation: la clave dynamic_verify falta de verdad ->
+    # confiar en el verified externo (cada productor es responsable de solo ponerlo a
+    # True desde un oraculo real, por la regla de grounding de todo el proyecto).
     return bool(rec.get("verified", False))
 
 
