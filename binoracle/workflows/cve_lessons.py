@@ -532,3 +532,52 @@ def learn_from_chain_result(result: object) -> None:
                             _run["osv_packages"] = _osv_pkgs[:3]
                         break
                 _save(data)
+
+
+def export_lessons_csv(out_path: str = "") -> str:
+    """Export all CVE run records to a CSV file for external analysis.
+
+    Columns: stack, cve_id, verified, vuln_class, endpoint, http_method,
+             auth_method, bypass_header, impact_class, patch_fix_class,
+             osv_packages, timestamp
+
+    Returns the path where the CSV was saved (default: ~/.cache/binoracle/lessons.csv).
+    """
+    import csv as _csv
+    _out = out_path or os.path.join(
+        os.environ.get("BINORACLE_CACHE_DIR") or os.path.join(
+            os.path.expanduser("~"), ".cache", "binoracle"),
+        "lessons.csv",
+    )
+    data = _load()
+    _COLS = [
+        "stack", "cve_id", "verified", "vuln_class", "endpoint",
+        "http_method", "auth_method", "bypass_header", "impact_class",
+        "patch_fix_class", "osv_packages", "timestamp",
+    ]
+    rows: list[dict] = []
+    for stack, entry in data.items():
+        for run in (entry.get("runs") or []):
+            rows.append({
+                "stack": stack,
+                "cve_id": run.get("cve_id", ""),
+                "verified": "1" if run.get("verified") else "0",
+                "vuln_class": run.get("vuln_class", ""),
+                "endpoint": run.get("endpoint", ""),
+                "http_method": run.get("http_method", ""),
+                "auth_method": run.get("auth_method", ""),
+                "bypass_header": run.get("bypass_header", ""),
+                "impact_class": run.get("impact_class", ""),
+                "patch_fix_class": run.get("patch_fix_class", ""),
+                "osv_packages": "|".join(run.get("osv_packages") or []),
+                "timestamp": run.get("timestamp", ""),
+            })
+    try:
+        os.makedirs(os.path.dirname(_out), exist_ok=True)
+        with open(_out, "w", newline="", encoding="utf-8") as f:
+            w = _csv.DictWriter(f, fieldnames=_COLS)
+            w.writeheader()
+            w.writerows(rows)
+    except Exception as e:
+        return f"error: {e}"
+    return _out
