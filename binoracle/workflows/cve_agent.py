@@ -3401,6 +3401,15 @@ def _classify_pipeline_error(error_text: str) -> dict:
         result["category"] = "syntax_error"
         result["remediation_hint"] = (
             "error de sintaxis en el servidor generado — revisar server.js/app.py generado por LLM")
+    elif "ningun puerto publicado respondio" in err or "no published port responded" in err:
+        result["category"] = "no_port_responded"
+        result["stage"] = "startup"
+        result["remediation_hint"] = (
+            "el contenedor arranco pero NINGUN puerto publicado respondio HTTP -- lee los "
+            "LOGS REALES del contenedor que van en este mismo prompt (si el proceso crasheo "
+            "al iniciar, el motivo real esta ahi: traceback, modulo faltante, puerto ya en "
+            "uso DENTRO del contenedor, etc.) -- no te limites a adivinar 'no hace listen en "
+            "0.0.0.0' o 'falta el puerto en el CMD' sin comprobarlo contra los logs")
     elif "timeout" in err:
         result["category"] = "timeout"
         result["remediation_hint"] = (
@@ -10772,7 +10781,8 @@ def _feedback_loop(llm, verifier_fn, initial_wr, lab_cfg: dict,
     _progress_level = _infer_progress_level(getattr(wr, 'detail', ''))
 
     for _i in range(max_rounds):
-        _fb = _lab_feedback_for_class(llm, getattr(wr, 'detail', '') or "", cfg, step, es)
+        _fb = _lab_feedback_for_class(llm, getattr(wr, 'detail', '') or "", cfg, step, es,
+                                     logs=getattr(wr, 'logs', None))
         if not _fb:
             break
         cfg = _fb
@@ -10793,7 +10803,7 @@ def _feedback_loop(llm, verifier_fn, initial_wr, lab_cfg: dict,
 
 
 def _lab_feedback_for_class(llm, fail_reason: str, lab_config: dict,
-                             step, es: bool) -> Optional[dict]:
+                             step, es: bool, logs: Optional[list] = None) -> Optional[dict]:
     """Genera una version corregida del lab usando el prompt de feedback generico.
 
     Incluye clasificacion estructurada del error antes de pedir el fix al LLM,
@@ -10818,11 +10828,28 @@ def _lab_feedback_for_class(llm, fail_reason: str, lab_config: dict,
     server_code = next(iter(srv_files.values()), "") if srv_files else ""
     srv_file    = next(iter(srv_files.keys()), "server.js") if srv_files else "server.js"
 
+    # Logs REALES del contenedor (docker logs, capturados en wr.logs cuando build/discover_http
+    # fallan) -- la fuente de verdad real sobre por que el servidor no respondio. Sin esto, el
+    # LLM solo ve `fail_reason`, que para el caso mas comun ("el objetivo arranco pero ningun
+    # puerto publicado respondio HTTP a tiempo") no dice NADA sobre la causa real -- confirmado
+    # en vivo (CVE-2021-41773, 24 Nov): sin logs, Qwen simplemente repite excusas genericas
+    # ("no hace listen en 0.0.0.0", luego "falta el puerto en el CMD") en vez de diagnosticar lo
+    # que de verdad paso, porque no tiene con que diagnosticarlo -- esta parafraseando el propio
+    # remediation_hint generico, no leyendo un error real.
+    _logs_excerpt = ""
+    if logs:
+        _logs_excerpt = ("\n".join(str(_l) for _l in logs))[-2500:]
+
     user_prompt = (
         f"Error observado:\n{fail_reason[:800]}\n\n"
         f"Categoria del error (clasificacion automatica): stage={_stage}, "
         f"category={_category}\n"
         f"Pista de remediacion: {_remediation}\n\n"
+        + (f"LOGS REALES del contenedor (docker logs -- esto es lo que de verdad paso, "
+           f"usa esto en vez de adivinar):\n```\n{_logs_excerpt}\n```\n\n"
+           if _logs_excerpt else
+           "(sin logs de contenedor disponibles -- el fallo ocurrio antes de arrancar "
+           "ningun contenedor, p.ej. en el build de Docker)\n\n") +
         f"Servidor actual:\n```\n{server_code[:1500]}\n```\n\n"
         f"Dockerfile:\n```\n{(lab_config.get('dockerfile_body') or '')[:500]}\n```\n\n"
         f"Endpoint: {lab_config.get('endpoint')}\n"
@@ -12713,7 +12740,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     _pt_prev_err_cat = ""
                     for _fb_i in range(4):
                         _fb = _lab_feedback_for_class(
-                            llm, getattr(wr, 'detail', '') or "", _lab_cfg_pt, step, es)
+                            llm, getattr(wr, 'detail', '') or "", _lab_cfg_pt, step, es,
+                            logs=getattr(wr, 'logs', None))
                         if not _fb:
                             break
                         _pt_dockerfile   = _fb["dockerfile_body"]
@@ -12995,7 +13023,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     _auth_prev_err_cat = ""
                     for _fb_i in range(4):
                         _fb = _lab_feedback_for_class(
-                            llm, getattr(wr, 'detail', '') or "", _lab_cfg_auth, step, es)
+                            llm, getattr(wr, 'detail', '') or "", _lab_cfg_auth, step, es,
+                            logs=getattr(wr, 'logs', None))
                         if not _fb:
                             break
                         _auth_dockerfile  = _fb["dockerfile_body"]
@@ -13217,7 +13246,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     _cmdi_prev_err_cat = ""
                     for _fb_i in range(4):
                         _fb = _lab_feedback_for_class(
-                            llm, getattr(wr, 'detail', '') or "", _lab_cfg_cmdi, step, es)
+                            llm, getattr(wr, 'detail', '') or "", _lab_cfg_cmdi, step, es,
+                            logs=getattr(wr, 'logs', None))
                         if not _fb:
                             break
                         _cmdi_dockerfile  = _fb["dockerfile_body"]
@@ -14276,7 +14306,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     _ssrf_prev_err_cat = ""
                     for _fb_i in range(4):
                         _fb = _lab_feedback_for_class(
-                            llm, getattr(wr, 'detail', '') or "", _lab_cfg_ssrf, step, es)
+                            llm, getattr(wr, 'detail', '') or "", _lab_cfg_ssrf, step, es,
+                            logs=getattr(wr, 'logs', None))
                         if not _fb:
                             break
                         _ssrf_dockerfile  = _fb["dockerfile_body"]
@@ -14563,7 +14594,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     _xss_prev_err_cat = ""
                     for _fb_i in range(4):
                         _fb = _lab_feedback_for_class(
-                            llm, getattr(wr, 'detail', '') or "", _lab_cfg_xss, step, es)
+                            llm, getattr(wr, 'detail', '') or "", _lab_cfg_xss, step, es,
+                            logs=getattr(wr, 'logs', None))
                         if not _fb:
                             break
                         _xss_dockerfile  = _fb["dockerfile_body"]
@@ -14706,7 +14738,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     _ssti_prev_err_cat = ""
                     for _fb_i in range(4):
                         _fb = _lab_feedback_for_class(
-                            llm, getattr(wr, 'detail', '') or "", _lab_cfg_ssti, step, es)
+                            llm, getattr(wr, 'detail', '') or "", _lab_cfg_ssti, step, es,
+                            logs=getattr(wr, 'logs', None))
                         if not _fb:
                             break
                         _ssti_dockerfile  = _fb["dockerfile_body"]
@@ -14899,7 +14932,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     _xxe_prev_err_cat = ""
                     for _fb_i in range(4):
                         _fb = _lab_feedback_for_class(
-                            llm, getattr(wr, 'detail', '') or "", _lab_cfg_xxe, step, es)
+                            llm, getattr(wr, 'detail', '') or "", _lab_cfg_xxe, step, es,
+                            logs=getattr(wr, 'logs', None))
                         if not _fb:
                             break
                         _xxe_dockerfile  = _fb["dockerfile_body"]
@@ -15034,7 +15068,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     _or_prev_err_cat = ""
                     for _fb_i in range(4):
                         _fb = _lab_feedback_for_class(
-                            llm, getattr(wr, 'detail', '') or "", _lab_cfg_or, step, es)
+                            llm, getattr(wr, 'detail', '') or "", _lab_cfg_or, step, es,
+                            logs=getattr(wr, 'logs', None))
                         if not _fb:
                             break
                         _or_dockerfile  = _fb["dockerfile_body"]
@@ -15228,7 +15263,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     _fu_prev_err_cat = ""
                     for _fb_i in range(4):
                         _fb = _lab_feedback_for_class(
-                            llm, getattr(wr, 'detail', '') or "", _lab_cfg_fu, step, es)
+                            llm, getattr(wr, 'detail', '') or "", _lab_cfg_fu, step, es,
+                            logs=getattr(wr, 'logs', None))
                         if not _fb:
                             break
                         _fu_dockerfile  = _fb["dockerfile_body"]
@@ -15456,7 +15492,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     _gql_prev_err_cat = ""
                     for _fb_i in range(4):
                         _fb = _lab_feedback_for_class(
-                            llm, getattr(wr, 'detail', '') or "", _lab_cfg_gql, step, es)
+                            llm, getattr(wr, 'detail', '') or "", _lab_cfg_gql, step, es,
+                            logs=getattr(wr, 'logs', None))
                         if not _fb:
                             break
                         _gql_dockerfile  = _fb["dockerfile_body"]
@@ -15521,7 +15558,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     _pp_prev_err_cat = ""
                     for _fb_i in range(4):
                         _fb = _lab_feedback_for_class(
-                            llm, getattr(wr, 'detail', '') or "", _lab_cfg_pp, step, es)
+                            llm, getattr(wr, 'detail', '') or "", _lab_cfg_pp, step, es,
+                            logs=getattr(wr, 'logs', None))
                         if not _fb:
                             break
                         _pp_dockerfile  = _fb["dockerfile_body"]
@@ -15602,7 +15640,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     _bool_prev_err_cat = ""
                     for _fb_i in range(4):
                         _fb = _lab_feedback_for_class(
-                            llm, getattr(wr, 'detail', '') or "", _lab_cfg_bool, step, es)
+                            llm, getattr(wr, 'detail', '') or "", _lab_cfg_bool, step, es,
+                            logs=getattr(wr, 'logs', None))
                         if not _fb:
                             break
                         _bool_dockerfile  = _fb["dockerfile_body"]
@@ -15677,7 +15716,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     _cors_prev_err_cat = ""
                     for _fb_i in range(4):
                         _fb = _lab_feedback_for_class(
-                            llm, getattr(wr, 'detail', '') or "", _lab_cfg_cors, step, es)
+                            llm, getattr(wr, 'detail', '') or "", _lab_cfg_cors, step, es,
+                            logs=getattr(wr, 'logs', None))
                         if not _fb:
                             break
                         _cors_dockerfile  = _fb["dockerfile_body"]
