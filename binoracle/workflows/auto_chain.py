@@ -2916,6 +2916,41 @@ def run_full_chain(
                     else:
                         step("  [5b-fast] presupuesto insuficiente — omitido")
 
+            # ── 5b-fast2: try second alt_endpoint if first didn't verify ────────
+            # Avoids wasting a full LLM round-trip when a 2nd ranked alt exists.
+            if (not result.verified and _alt_tried and _alt_eps
+                    and _budget_ok(min_s=60.0)):
+                _tried_so_far = {_tried_ep, _next_alt.get("endpoint", "") if _next_alt else ""}
+                _second_alt = next(
+                    (a for a in _alt_eps
+                     if a.get("endpoint")
+                     and a.get("endpoint") not in _tried_so_far
+                     and float(a.get("score", 0.5)) >= _MIN_ALT_SCORE),
+                    None,
+                )
+                if _second_alt:
+                    step(f"  [5b-fast2] probando 2o alt_endpoint: "
+                         f"{_second_alt.get('endpoint')} "
+                         f"(motivo: {_second_alt.get('reason', '?')[:60]})")
+                    _fast2_notes = dict(llm_notes)
+                    _fast2_notes["endpoint"] = _second_alt["endpoint"]
+                    if _second_alt.get("param"):
+                        _fast2_notes["param"] = _second_alt["param"]
+                    _remaining_f2 = max(0.0, budget_s - (time.time() - t0))
+                    _fast2_budget = min(_remaining_f2 * 0.25, 80.0)
+                    if _fast2_budget >= 30.0:
+                        _run_web_stage(
+                            cve_id, cve_info, _fast2_notes, result, step,
+                            budget_s=_fast2_budget, config=config, llm=llm, lang=lang,
+                            skip_source_download=skip_source_download)
+                        _status_f2 = "VERIFICADO" if result.verified else "no confirmado"
+                        step(f"  [5b-fast2] resultado: {_status_f2}")
+                        result.add_step("rehypothesis_alt_ep2",
+                                        "ok" if result.verified else "fail",
+                                        f"{_second_alt['endpoint']}: {_status_f2}")
+                        if result.verified:
+                            llm_notes["endpoint"] = _second_alt["endpoint"]
+
             # ── 5b-llm: full LLM re-hypothesis if alt_ep didn't verify ──────────
             if not result.verified and not _alt_tried or (not result.verified and not _alt_eps):
                 _revised = _llm_rehypothesis(
