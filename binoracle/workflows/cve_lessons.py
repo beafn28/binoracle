@@ -341,3 +341,90 @@ def record_verified_lab(
         confirm_string=confirm_string,
         pkg_version=pkg_version,
     )
+
+
+def learn_from_chain_result(result: object) -> None:
+    """Auto-learn from a completed ChainResult — called at end of run_full_chain().
+
+    Extracts all the evidence fields needed to record lessons without the caller
+    needing to know the internal lesson schema. Handles both verified and failed
+    runs (failed runs help signal what NOT to try for a stack).
+
+    For verified runs, extracts:
+    - endpoint, http_method, bypass_header/value from evidence
+    - confirm_string from the first body snippet in evidence
+    - auth_method from evidence or cve_class heuristic
+    - pkg_version from evidence or description
+
+    For failed runs with enough evidence:
+    - records the run as unverified so the success rate stays accurate
+    """
+    if not result or not result.cve_id:
+        return
+
+    ev = result.evidence or {}
+    desc = result.description or ""
+    _stack = detect_stack(desc) or detect_stack(result.cve_id) or "generic"
+
+    # Extract fields from evidence
+    _endpoint = (ev.get("endpoint") or ev.get("base_url") or "").strip()
+    _method = (ev.get("metodo") or ev.get("method") or "GET").upper()
+    _bypass_hdr = (ev.get("bypass_header") or ev.get("header") or "").strip()
+    _bypass_val = (ev.get("bypass_value") or ev.get("header_value") or "").strip()
+    _vuln_class = (ev.get("vuln_class") or result.cve_class or "")
+    _confirm = ""
+    for _bk in ("respuesta_cuerpo_recorte", "exploit_response", "confirm_string"):
+        _candidate = ev.get(_bk, "")
+        if isinstance(_candidate, str) and len(_candidate) > 5:
+            _confirm = _candidate[:100]
+            break
+
+    # Auth method from evidence
+    _auth = ""
+    for _ak in ("auth_method", "auth_type", "auth_strategy"):
+        _auth = (ev.get(_ak) or "").strip()
+        if _auth:
+            break
+    if not _auth:
+        # Heuristic from stack name
+        _stack_auth = {
+            "ghost": "ghost-jwt", "strapi": "strapi-jwt",
+            "directus": "directus-bearer", "django": "django-session",
+            "fastapi": "fastapi-oauth2", "wordpress": "wp-session",
+        }
+        _auth = _stack_auth.get(_stack, "")
+
+    _pkg_ver = (ev.get("pkg_version") or ev.get("version") or "").strip()
+
+    # Only record verified runs OR failed runs for well-known stacks (to track failure rate)
+    if result.verified or _stack != "generic":
+        record_cve_result(
+            stack=_stack,
+            cve_id=result.cve_id,
+            endpoint=_endpoint,
+            verified=result.verified,
+            bypass_header=_bypass_hdr,
+            bypass_value=_bypass_val,
+            vuln_class=_vuln_class,
+            auth_method=_auth,
+            http_method=_method,
+            confirm_string=_confirm,
+            pkg_version=_pkg_ver,
+        )
+
+    # For verified runs: also record the response_body_analysis impact class
+    # so the LLM can know what kind of data was exposed
+    if result.verified and ev.get("response_body_analysis"):
+        _rba = ev["response_body_analysis"]
+        _impact = _rba.get("impact_class", "")
+        if _impact:
+            data = _load()
+            _entry = data.get(_stack, {})
+            if _entry and _entry.get("runs"):
+                # Find the run we just recorded and add impact_class
+                for _run in reversed(_entry["runs"]):
+                    if _run.get("cve_id") == result.cve_id:
+                        _run["impact_class"] = _impact
+                        _run["confidence_bonus"] = _rba.get("confidence_bonus", 0.0)
+                        break
+                _save(data)

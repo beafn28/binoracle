@@ -1444,6 +1444,12 @@ def _run_report_stage(result: ChainResult, step: Callable,
         _lbl = "Confianza" if _pa_es else "Confidence"
         _pa_rows.append((f"| {_lbl} | {_conf_pct} |", ""))
         md_parts.append("\n".join(r[0] for r in _pa_rows))
+        # Include PoC HTTP block if generated
+        if _pa.get("poc_http"):
+            _poc_hdr = ("### PoC HTTP (generado del diff)\n\n"
+                        if _pa_es else
+                        "### PoC HTTP (generated from diff)\n\n")
+            md_parts.append(_poc_hdr + "```http\n" + _pa["poc_http"] + "\n```")
     # Mitigation bypass
     if result.mitigation_report:
         md_parts.append(result.mitigation_report)
@@ -2581,6 +2587,14 @@ def run_full_chain(
 
     # Clear checkpoint now that the chain completed successfully
     _clear_checkpoint(cve_id)
+
+    # Auto-learn from this run — record lessons for future chain runs of same stack
+    try:
+        from .cve_lessons import learn_from_chain_result
+        learn_from_chain_result(result)
+        step("  lecciones: resultado registrado en cve_lessons")
+    except Exception:
+        pass
 
     # ── Stage 8: Done ─────────────────────────────────────────────────────────
     _banner(step, f"[8/8] COMPLETADO en {result.elapsed_s:.1f}s")
