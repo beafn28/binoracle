@@ -43,6 +43,8 @@ code,.tech{font-family:'JetBrains Mono',monospace;font-size:11px}
 .btn-report,.btn-pdf{padding:3px 10px;border-radius:4px;text-decoration:none;font-size:10px;font-weight:700;display:inline-block}
 .btn-report{background:#1e3a5f;color:#38bdf8;border:1px solid #1e40af}
 .btn-pdf{background:#1a2535;color:#a3a3a3;border:1px solid #374151}
+.btn-evidence{background:#065f46;color:#4ade80;border:1px solid rgba(74,222,128,.35)}
+.btn-evidence:hover{background:#166534;border-color:#4ade80}
 .btn-report:hover{background:#1e40af}
 .btn-pdf:hover{background:#374151;color:#e2e8f0}
 .no-results{padding:40px;text-align:center;color:#475569;font-size:14px;display:none}
@@ -136,6 +138,7 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
   <td class="td-links">
     <a href="CVE-2024-50498_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
     <a href="CVE-2024-50498_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
+      <a href="reports/CVE-2024-50498_evidence.html" class="btn-evidence" target="_blank">EVIDENCIA</a>
   </td>
 </tr>
 <tr class="cve-row" data-cls="file-upload" data-sev="critical" data-poc="true" data-auth="false" data-gap="false">
@@ -248,6 +251,7 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
   <td class="td-links">
     <a href="CVE-2024-9932_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
     <a href="CVE-2024-9932_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
+      <a href="reports/CVE-2024-9932_evidence.html" class="btn-evidence" target="_blank">EVIDENCIA</a>
   </td>
 </tr>
 <tr class="cve-row" data-cls="auth-bypass" data-sev="critical" data-poc="true" data-auth="false" data-gap="false">
@@ -264,6 +268,7 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
   <td class="td-links">
     <a href="CVE-2024-9933_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
     <a href="CVE-2024-9933_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
+      <a href="reports/CVE-2024-9933_evidence.html" class="btn-evidence" target="_blank">EVIDENCIA</a>
   </td>
 </tr>
 <tr class="cve-row" data-cls="path-traversal" data-sev="critical" data-poc="true" data-auth="false" data-gap="false">
@@ -312,6 +317,7 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
   <td class="td-links">
     <a href="CVE-2026-27641_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
     <a href="CVE-2026-27641_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
+      <a href="reports/CVE-2026-27641_evidence.html" class="btn-evidence" target="_blank">EVIDENCIA</a>
   </td>
 </tr>
 <tr class="cve-row" data-cls="file-upload" data-sev="critical" data-poc="true" data-auth="true" data-gap="false">
@@ -536,6 +542,7 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
   <td class="td-links">
     <a href="CVE-2024-55980_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
     <a href="CVE-2024-55980_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
+      <a href="reports/CVE-2024-55980_evidence.html" class="btn-evidence" target="_blank">EVIDENCIA</a>
   </td>
 </tr>
 <tr class="cve-row" data-cls="sqli" data-sev="critical" data-poc="true" data-auth="true" data-gap="false">
@@ -584,6 +591,7 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
   <td class="td-links">
     <a href="CVE-2023-32590_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
     <a href="CVE-2023-32590_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
+      <a href="reports/CVE-2023-32590_evidence.html" class="btn-evidence" target="_blank">EVIDENCIA</a>
   </td>
 </tr>
 <tr class="cve-row" data-cls="sqli" data-sev="critical" data-poc="true" data-auth="false" data-gap="false">
@@ -664,6 +672,7 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
   <td class="td-links">
     <a href="CVE-2024-55972_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
     <a href="CVE-2024-55972_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
+      <a href="reports/CVE-2024-55972_evidence.html" class="btn-evidence" target="_blank">EVIDENCIA</a>
   </td>
 </tr>
 <tr class="cve-row" data-cls="sqli" data-sev="critical" data-poc="true" data-auth="false" data-gap="false">
@@ -904,6 +913,7 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
   <td class="td-links">
     <a href="CVE-2024-12404_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
     <a href="CVE-2024-12404_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
+      <a href="reports/CVE-2024-12404_evidence.html" class="btn-evidence" target="_blank">EVIDENCIA</a>
   </td>
 </tr>
 <tr class="cve-row" data-cls="dos" data-sev="high" data-poc="false" data-auth="false" data-gap="true">
@@ -920,6 +930,7 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
   <td class="td-links">
     <a href="CVE-2026-129502_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
     <a href="CVE-2026-129502_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
+      <a href="reports/CVE-2026-129502_evidence.html" class="btn-evidence" target="_blank">EVIDENCIA</a>
   </td>
 </tr>
 <tr class="cve-row" data-cls="sqli" data-sev="high" data-poc="true" data-auth="true" data-gap="false">
@@ -936,6 +947,7 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
   <td class="td-links">
     <a href="CVE-2024-12025_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
     <a href="CVE-2024-12025_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
+      <a href="reports/CVE-2024-12025_evidence.html" class="btn-evidence" target="_blank">EVIDENCIA</a>
   </td>
 </tr>
 <tr class="cve-row" data-cls="sqli" data-sev="high" data-poc="true" data-auth="true" data-gap="false">
@@ -968,6 +980,7 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
   <td class="td-links">
     <a href="CVE-2024-12849_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
     <a href="CVE-2024-12849_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
+      <a href="reports/CVE-2024-12849_evidence.html" class="btn-evidence" target="_blank">EVIDENCIA</a>
   </td>
 </tr>
 <tr class="cve-row" data-cls="path-traversal" data-sev="high" data-poc="true" data-auth="false" data-gap="false">
@@ -984,6 +997,7 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
   <td class="td-links">
     <a href="CVE-2024-54374_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
     <a href="CVE-2024-54374_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
+      <a href="reports/CVE-2024-54374_evidence.html" class="btn-evidence" target="_blank">EVIDENCIA</a>
   </td>
 </tr>
 <tr class="cve-row" data-cls="dos" data-sev="high" data-poc="false" data-auth="false" data-gap="true">
@@ -1000,6 +1014,7 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
   <td class="td-links">
     <a href="CVE-2026-130647_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
     <a href="CVE-2026-130647_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
+      <a href="reports/CVE-2026-130647_evidence.html" class="btn-evidence" target="_blank">EVIDENCIA</a>
   </td>
 </tr>
 <tr class="cve-row" data-cls="sqli" data-sev="high" data-poc="true" data-auth="true" data-gap="false">
@@ -1256,6 +1271,7 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
   <td class="td-links">
     <a href="CVE-2025-27516_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
     <a href="CVE-2025-27516_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
+      <a href="reports/CVE-2025-27516_evidence.html" class="btn-evidence" target="_blank">EVIDENCIA</a>
   </td>
 </tr>
 <tr class="cve-row" data-cls="missing-authorization" data-sev="medium" data-poc="true" data-auth="false" data-gap="false">
