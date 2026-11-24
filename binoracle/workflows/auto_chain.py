@@ -3010,8 +3010,11 @@ def auto_queue_nvd(days_back: int = 2, min_cvss: float = 7.0,
         from .cvefeed import poll_nvd_new
         from .cve_lessons import detect_stack, get_lessons, record_cve_result
         from .cve_retry_queue import add_to_retry, mark_done, is_transient_error
+        from .cve_seen import mark_seen as _mark_seen, is_seen as _is_seen
+        _dedup_available = True
     except ImportError as e:
         step(f"auto_queue_nvd: import error — {e}")
+        _dedup_available = False
         return []
 
     step(f"auto_queue_nvd: consultando NVD (últimos {days_back}d, CVSS≥{min_cvss}, modo={priority_mode})…")
@@ -3019,6 +3022,17 @@ def auto_queue_nvd(days_back: int = 2, min_cvss: float = 7.0,
     if not entries:
         step("auto_queue_nvd: sin CVEs nuevos")
         return []
+
+    # Deduplicate: skip CVEs already processed in a recent cycle
+    if _dedup_available:
+        _before_dedup = len(entries)
+        entries = [e for e in entries if not _is_seen(e.cve_id)]
+        _skipped = _before_dedup - len(entries)
+        if _skipped:
+            step(f"auto_queue_nvd: {_skipped} CVEs ya procesados recientemente — omitidos")
+        if not entries:
+            step("auto_queue_nvd: todos los CVEs de este ciclo ya fueron procesados — fin")
+            return []
 
     # Smart CVE triage: filter out CVEs that binoracle cannot investigate
     # These are CVEs in firmware, kernel, C/C++ native code, or hardware —
@@ -3111,11 +3125,23 @@ def auto_queue_nvd(days_back: int = 2, min_cvss: float = 7.0,
             step(f"  lecciones previas ({stack}): tasa_verificación="
                  f"{prior.get('verified_rate', 0):.0%}, "
                  f"endpoints={prior.get('top_endpoints', [])[:2]}")
+        # Mark as seen before running so parallel runs don't duplicate it
+        if _dedup_available:
+            try:
+                _mark_seen(entry.cve_id, verified=False)
+            except Exception:
+                pass
         try:
             r = run_full_chain(entry.cve_id, lang=lang, budget_s=budget_s,
                                on_step=step, save_report=True)
             status = "✓ VERIFICADO" if r.verified else "? LLM-razonado"
             step(f"  {entry.cve_id}: {status}")
+            # Update seen registry with final verification status
+            if _dedup_available:
+                try:
+                    _mark_seen(entry.cve_id, verified=r.verified)
+                except Exception:
+                    pass
             inv = getattr(r, "inv", None)
             endpoint = bypass_hdr = bypass_val = vuln_cls = ""
             if inv:
