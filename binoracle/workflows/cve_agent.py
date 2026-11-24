@@ -951,7 +951,7 @@ _SQLI_RETRY_MAX_ATTEMPTS = 8   # cheap now: retries reuse the same Docker lab
 _RETRY_MAX_ATTEMPTS = _SQLI_RETRY_MAX_ATTEMPTS
 
 
-def _diagnose_failure(wr: Any, technique_label: str = "") -> dict:
+def _diagnose_failure(wr: Any, technique_label: str = "", vuln_class: str = "") -> dict:
     """Convierte la evidencia cruda de un intento fallido en un diagnóstico
     estructurado legible por el LLM y por el bucle de reintento.
 
@@ -1057,6 +1057,11 @@ def _diagnose_failure(wr: Any, technique_label: str = "") -> dict:
     # Calcular next_action determinista para el bucle de reintento
     if causa == "endpoint_404":
         next_action = "pop_alt_endpoint"
+    elif causa == "auth_gate" and vuln_class in ("missing-authorization", "auth-bypass",
+                                                  "broken-access-control", "idor"):
+        # For missing-authorization CVEs a 403/401 means the bypass hasn't been attempted yet.
+        # Try common header-based bypasses before giving up or going to LLM.
+        next_action = "try_bypass_headers"
     elif cambio_tecnica and not tecnica_agotada:
         next_action = "escalate_technique"
     else:
@@ -2793,7 +2798,8 @@ _WP_GENERIC_MUESTRA_EVIDENCE_KEYS = {
 
 
 def _llm_suggest_retry_from_evidence(llm, system_prompt: str, wr: Any,
-                                     evidence_keys: dict, technique_label: str = "") -> Optional[dict]:
+                                     evidence_keys: dict, technique_label: str = "",
+                                     vuln_class: str = "") -> Optional[dict]:
     """Automatiza, con el LLM, el mismo paso que un analista humano hace a mano tras un negativo:
     leer el cuerpo REAL de la respuesta y la evidencia observada, y decidir si hay una pista
     concreta que apunte a un endpoint/parametro distinto que valga la pena reintentar -- en vez de
@@ -2818,7 +2824,7 @@ def _llm_suggest_retry_from_evidence(llm, system_prompt: str, wr: Any,
     # El motor razona sobre los patrones de respuesta y produce una causa
     # determinista; el LLM recibe ese pre-diagnóstico junto con la evidencia
     # cruda y no necesita volver a inferirlo desde cero.
-    _diag = _diagnose_failure(wr, technique_label)
+    _diag = _diagnose_failure(wr, technique_label, vuln_class=vuln_class)
     if _diag["causa"] != "sin_patron":
         evidence["diagnostico_motor"] = _diag
     from ..llm.base import Message
@@ -4798,6 +4804,23 @@ def _refine_web_hints_from_source(llm, local_path: str, found: dict, context_lin
             pass
     if not snippets:
         return None
+
+    # Fast-path for Go test-file snippets: extract /api/ literals deterministically
+    # without calling the LLM. This covers data-driven JSONAPI routers (e.g. daptin)
+    # where there are no static router registrations but test files contain path literals.
+    _go_snippets = [s for s in snippets if "test file — endpoints /api/" in s or "registro de rutas Go" in s]
+    if _go_snippets and not found:
+        import re as _ref_re
+        _api_lit = _ref_re.compile(r'["`](/api/[a-zA-Z_][a-zA-Z0-9_/]*)["`]')
+        _seen: list = []
+        for _snip in _go_snippets:
+            for _m in _api_lit.finditer(_snip):
+                _ep = _m.group(1)
+                if _ep not in _seen:
+                    _seen.append(_ep)
+        if _seen:
+            return {"endpoint": _seen[0], "http_method": "GET"}
+
     code = "\n\n".join(snippets)[:6000]     # tope generoso pero acotado para el contexto del LLM
     from ..llm.base import Message
     try:
@@ -4812,6 +4835,10 @@ def _refine_web_hints_from_source(llm, local_path: str, found: dict, context_lin
     action = (data.get("ajax_action") or "").strip()
     if action:
         out["endpoint"] = f"/wp-admin/admin-ajax.php?action={action}"
+    # REST endpoint (non-WordPress): LLM may return rest_endpoint or endpoint directly
+    rest_ep = (data.get("rest_endpoint") or data.get("endpoint") or "").strip()
+    if rest_ep and rest_ep.startswith("/") and not out.get("endpoint"):
+        out["endpoint"] = rest_ep
     if data.get("http_method"):
         out["http_method"] = str(data["http_method"]).strip().upper()
     params = data.get("parameters")
