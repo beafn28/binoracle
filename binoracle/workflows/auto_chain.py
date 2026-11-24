@@ -3223,6 +3223,21 @@ def auto_queue_nvd(days_back: int = 2, min_cvss: float = 7.0,
     else:
         for entry in entries[:max_cves]:
             results.append(_run_one(entry))
+
+    # Dedup stats at end of cycle
+    if _dedup_available:
+        try:
+            from .cve_seen import seen_summary as _seen_summary
+            _stats = _seen_summary()
+            step(
+                f"auto_queue_nvd: ciclo completado — "
+                f"procesados={len(results)}, "
+                f"dedup_activos={_stats.get('total_active', 0)} "
+                f"(verificados={_stats.get('verified', 0)}, "
+                f"no-verificados={_stats.get('unverified', 0)})"
+            )
+        except Exception:
+            pass
     return results
 
 
