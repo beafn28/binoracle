@@ -1954,6 +1954,37 @@ def _render_chain_log(result: ChainResult, lang: str = "es",
             f"`{_diff_ev.get('patched_url', '')}`")
         parts.append("\n".join(_diff_lines))
 
+    # Patch analysis detail block (when confidence >= 0.65)
+    _pa_detail = result.evidence.get("patch_analysis") or {}
+    _pa_conf = float(_pa_detail.get("confidence", 0))
+    if _pa_detail and _pa_conf >= 0.65:
+        _pa_hdr = "## " + ("Análisis del Parche" if es else "Patch Diff Analysis")
+        _pa_lines = [_pa_hdr, ""]
+        _pa_lines.append("| Campo | Valor |")
+        _pa_lines.append("|-------|-------|")
+        if _pa_detail.get("fix_class"):
+            _pa_lines.append(f"| Fix class | `{_pa_detail['fix_class']}` |")
+        if _pa_detail.get("vuln_function") and _pa_detail["vuln_function"] != "?":
+            _pa_lines.append(f"| Función vulnerable | `{_pa_detail['vuln_function']}` |")
+        if _pa_detail.get("vuln_file") and _pa_detail["vuln_file"] != "?":
+            _pa_lines.append(f"| Archivo | `{_pa_detail['vuln_file']}` |")
+        if _pa_detail.get("suggested_param"):
+            _pa_lines.append(f"| Parámetro sugerido | `{_pa_detail['suggested_param']}` |")
+        if _pa_detail.get("suggested_value"):
+            _pa_lines.append(f"| Valor/payload sugerido | `{_pa_detail['suggested_value'][:80]}` |")
+        _pa_lines.append(f"| Confianza del análisis | {_pa_conf:.0%} |")
+        if _pa_detail.get("patch_url"):
+            _pa_url_clean = _pa_detail["patch_url"].replace(".diff", "")
+            _pa_lines.append(f"| Commit del parche | [{_pa_url_clean[-40:]}]({_pa_url_clean}) |")
+        if _pa_detail.get("source_hit_files"):
+            _hits_str = ", ".join(f"`{h}`" for h in _pa_detail["source_hit_files"][:2])
+            _pa_lines.append(f"| Confirmado en fuente | {_hits_str} |")
+        if _pa_detail.get("poc_http"):
+            _pa_lines.append("")
+            _pa_lines.append("**Petición HTTP extraída del diff:**")
+            _pa_lines.append(f"```http\n{_pa_detail['poc_http'][:600]}\n```")
+        parts.append("\n".join(_pa_lines))
+
     # GHSA advisory cross-reference block (when GHSA IDs were found in NVD references)
     _patch_ev = result.evidence.get("patch_analysis") or {}
     _ghsa_refs: list[str] = _patch_ev.get("ghsa_ids", []) or []
