@@ -480,6 +480,19 @@ _RESEARCH_SYS = (
     "bypass_value (valor concreto que activa el bypass, p.ej. '127.0.0.1'), "
     "confirm_string (cadena en el body de respuesta que confirma que el bypass funciono, p.ej. "
     "un dato privado que solo deberia verse autenticado). "
+    "request_chain (OPCIONAL — SOLO para CVEs que requieren MAS DE UNA peticion HTTP para "
+    "demostrar la vulnerabilidad: XSS almacenado (crear comentario -> ver pagina), CSRF "
+    "(obtener token -> enviar form), privilege escalation (login -> ascender rol -> verificar). "
+    "Lista de dicts, cada uno con: endpoint, method, body (JSON/form-encoded string), "
+    "headers (dict), extract (dict de {nombre_var: regex_captura} para extraer tokens de "
+    "la respuesta y usarlos en pasos siguientes via {{nombre_var}}), confirm_string, "
+    "confirm_status (HTTP status esperado), is_final (true en el paso que decide verified). "
+    "Ejemplo para stored XSS: [{\"endpoint\":\"/api/comments\",\"method\":\"POST\","
+    "\"body\":\"{\\\\\"body\\\\\":\\\\\"<img src=x onerror=alert(1)>\\\\\"}\","
+    "\"headers\":{\"Content-Type\":\"application/json\"},\"is_final\":false},"
+    "{\"endpoint\":\"/comments\",\"method\":\"GET\","
+    "\"confirm_string\":\"<img src=x onerror=alert(1)>\",\"is_final\":true}]. "
+    "Deja vacio si una sola peticion es suficiente). "
     "strategy (una frase), steps (lista de pasos concretos), "
     "stored_xss_view_path (SOLO para XSS ALMACENADO en WordPress: la ruta del panel de admin "
     "donde el admin VERA el payload inyectado por el atacante -- p.ej. "
@@ -11023,6 +11036,28 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 wr = verify_generic_idor(
                     fr.local_path, notes.get("endpoint"), notes.get("http_method") or "GET",
                     params, id_param_hint=id_p or "", on_step=step, budget_s=budget_s)
+                _apply_wpverify_result(inv, wr, es, llm)
+            # Multi-step request chain: when the LLM provides a 'request_chain' list
+            # (or the CVE is stored-XSS / CSRF / privilege-escalation that needs
+            # create→view or login→elevate→verify patterns), use run_request_chain().
+            elif (not plugin_dir and fr.local_path and
+                  notes.get("request_chain") and
+                  isinstance(notes.get("request_chain"), list)):
+                from .genericverify import run_request_chain
+                _inject_custom_docker_lab(str(fr.local_path), notes, step)
+                step((f"intentando verificacion DINAMICA: cadena de {len(notes['request_chain'])} "
+                      f"peticiones HTTP..." if es else
+                      f"attempting DYNAMIC verification: chain of "
+                      f"{len(notes['request_chain'])} HTTP requests..."))
+                wr = run_request_chain(
+                    str(fr.local_path),
+                    steps=notes["request_chain"],
+                    on_step=step,
+                    budget_s=budget_s,
+                    dockerfile_body=notes.get("dockerfile_body") or "",
+                    extra_files=notes.get("extra_files") or None,
+                    pkg_version=inv.llm_notes.get("vulnerable_version") or "",
+                )
                 _apply_wpverify_result(inv, wr, es, llm)
             # "cualquier entorno": bypass de autorizacion via CABECERA HTTP (p.ej.
             # CVE-2025-29927, Next.js x-middleware-subrequest). El analista pasa la cabecera

@@ -120,9 +120,10 @@ def _get_cockpit_token(base_url: str, step: Callable) -> Optional[str]:
     try:
         r = _http_request("GET", v1_get, timeout=10,
                           headers={"Accept": "application/json"})
-        if r.status in range(200, 300):
+        _body = getattr(r, "text", "") or ""
+        if r.status_code in range(200, 300):
             try:
-                data = json.loads(r.body or "")
+                data = json.loads(_body)
                 token = data.get("token") or data.get("api_key") or ""
                 if token:
                     step(f"  cockpit v1 GET authToken OK (len={len(token)})")
@@ -140,9 +141,10 @@ def _get_cockpit_token(base_url: str, step: Callable) -> Optional[str]:
                           headers={"Content-Type": "application/json",
                                    "Accept": "application/json"},
                           timeout=10)
-        if r.status in range(200, 300):
+        _body2 = getattr(r, "text", "") or ""
+        if r.status_code in range(200, 300):
             try:
-                data = json.loads(r.body or "")
+                data = json.loads(_body2)
                 token = data.get("token") or data.get("api_key") or ""
                 if token:
                     step(f"  cockpit v1 POST authToken OK (len={len(token)})")
@@ -161,9 +163,10 @@ def _get_cockpit_token(base_url: str, step: Callable) -> Optional[str]:
                               headers={"Content-Type": "application/json",
                                        "Accept": "application/json"},
                               timeout=10)
-            if r.status in range(200, 300):
+            _body3 = getattr(r, "text", "") or ""
+            if r.status_code in range(200, 300):
                 try:
-                    data = json.loads(r.body or "")
+                    data = json.loads(_body3)
                     token = (data.get("token") or data.get("api_key") or
                              data.get("access_token") or "")
                     if token:
@@ -185,7 +188,7 @@ def _get_cockpit_token(base_url: str, step: Callable) -> Optional[str]:
                           }),
                           headers={"Content-Type": "application/json"},
                           timeout=10)
-        if r.status in range(200, 300):
+        if r.status_code in range(200, 300):
             step("  cockpit admin created via /api/accounts/create, retrying login…")
             # Retry login after creation
             for lp in ("/api/user/login", "/api/cockpit/authToken"):
@@ -195,9 +198,10 @@ def _get_cockpit_token(base_url: str, step: Callable) -> Optional[str]:
                                                         "password": _COCKPIT_ADMIN_PASSWORD}),
                                        headers={"Content-Type": "application/json"},
                                        timeout=10)
-                    if rl.status in range(200, 300):
+                    _body4 = getattr(rl, "text", "") or ""
+                    if rl.status_code in range(200, 300):
                         try:
-                            token = json.loads(rl.body or "").get("token", "")
+                            token = json.loads(_body4).get("token", "")
                             if token:
                                 return str(token)
                         except Exception:
@@ -280,8 +284,8 @@ def verify_cockpit_cve(
         try:
             r = _http_request(m, url, headers=headers, data=body_data,
                               timeout=15, allow_redirects=True)
-            status = r.status
-            body = r.body or ""
+            status = r.status_code
+            body = getattr(r, "text", "") or ""
         except Exception as e:
             res.detail = f"error de red: {e}"
             return res

@@ -4589,6 +4589,186 @@ def verify_stored_xss(
         lab.teardown()
 
 
+def run_request_chain(
+    source_dir: str,
+    steps: list,
+    on_step: Optional[Callable[[str], None]] = None,
+    budget_s: float = 900.0,
+    dockerfile_body: str = "",
+    extra_files: Optional[dict] = None,
+    pkg_version: str = "",
+) -> WpVerifyResult:
+    """Execute a multi-step HTTP request chain in a single Docker lab.
+
+    This enables CVE classes that require more than one request to prove
+    exploitability: stored XSS (create + view), CSRF (GET token + POST),
+    privilege escalation (login + elevate + verify), etc.
+
+    `steps`: list of dicts, each describing one HTTP request:
+        endpoint:        str  — URL path, e.g. "/api/comments"
+        method:          str  — "GET" / "POST" / "PUT" / "DELETE" / "PATCH"
+        body:            str  — request body (JSON string or form-encoded)
+        headers:         dict — extra headers for this step
+        extract:         dict — {var_name: regex} — capture groups from
+                                response body/headers for use in later steps
+        confirm_string:  str  — if present, must appear in response body for
+                                this step to be considered "confirmed"
+        confirm_status:  int  — expected HTTP status (default: any 2xx)
+        is_final:        bool — if True, this step's outcome decides verified
+
+    Variable substitution: any value in `body`, `endpoint`, or `headers`
+    that contains `{{VAR_NAME}}` is replaced with the value extracted from
+    a previous step's `extract` mapping.
+
+    Returns a WpVerifyResult with:
+        verified = True iff the final step (or last step with is_final=True)
+                   succeeds and its confirm_string is present (if set)
+        evidence["chain_steps"] = list of per-step evidence dicts
+    """
+    import re as _re_chain
+    _step = on_step or (lambda _m: None)
+    res = WpVerifyResult()
+
+    if not steps:
+        res.detail = "run_request_chain: no steps provided"
+        return res
+    if not _docker_daemon_ok():
+        res.available = False
+        res.detail = "sin daemon Docker alcanzable"
+        res.limitations.append("verificacion dinamica NO intentada: sin daemon Docker")
+        return res
+
+    boot = _bootstrap_generic_lab(source_dir, _step, res, budget_s,
+                                   dockerfile_body=dockerfile_body,
+                                   extra_files=extra_files,
+                                   pkg_version=pkg_version)
+    if boot is None:
+        return res
+    lab, base_url, container = boot
+
+    try:
+        # Shared variable store populated by extract rules
+        _vars: dict = {}
+
+        def _substitute(text: str) -> str:
+            """Replace {{VAR_NAME}} placeholders in text with extracted values."""
+            if not text or "{{" not in text:
+                return text
+            for var, val in _vars.items():
+                text = text.replace("{{" + var + "}}", str(val))
+            return text
+
+        chain_evidence: list = []
+        final_step_idx = max(
+            (i for i, s in enumerate(steps) if s.get("is_final")),
+            default=len(steps) - 1,
+        )
+
+        for i, step_def in enumerate(steps[:8]):  # cap at 8 steps
+            ep = _substitute(step_def.get("endpoint", "/"))
+            method = (step_def.get("method") or "GET").upper()
+            body_raw = _substitute(step_def.get("body") or "")
+            hdrs = {k: _substitute(str(v))
+                    for k, v in (step_def.get("headers") or {}).items()}
+            confirm = step_def.get("confirm_string") or ""
+            expect_status = step_def.get("confirm_status")  # None = any 2xx
+            extract_rules: dict = step_def.get("extract") or {}
+
+            url = base_url.rstrip("/") + ep
+            _step(f"  request-chain[{i+1}/{len(steps)}]: {method} {ep}")
+
+            step_ev: dict = {
+                "step": i + 1,
+                "method": method,
+                "endpoint": ep,
+                "url": url,
+            }
+
+            try:
+                r = _http_request(method, url, headers=hdrs,
+                                  data=body_raw or None,
+                                  timeout=15, allow_redirects=False)
+                status = r.status_code
+                body = getattr(r, "text", "") or ""
+                step_ev["status"] = status
+                step_ev["body_snippet"] = body[:400]
+
+                # Apply extraction rules
+                for var_name, pattern in extract_rules.items():
+                    m = _re_chain.search(pattern, body)
+                    if m:
+                        _vars[var_name] = m.group(1) if m.lastindex else m.group(0)
+                        step_ev[f"extracted_{var_name}"] = _vars[var_name]
+                        _step(f"    extracted {var_name}={_vars[var_name][:60]!r}")
+                    else:
+                        # Try response headers
+                        for _hdr_name, hdr_val in r.headers.items():
+                            m2 = _re_chain.search(pattern, hdr_val)
+                            if m2:
+                                _vars[var_name] = m2.group(1) if m2.lastindex else m2.group(0)
+                                step_ev[f"extracted_{var_name}"] = _vars[var_name]
+                                _step(f"    extracted {var_name} from header={_vars[var_name][:60]!r}")
+                                break
+
+                # Evaluate step outcome
+                _2xx = status in range(200, 300)
+                _status_ok = (_2xx if expect_status is None
+                              else status == expect_status)
+                _confirm_ok = (not confirm) or (confirm in body)
+                step_ev["status_ok"] = _status_ok
+                step_ev["confirm_ok"] = _confirm_ok
+                _step(f"    → HTTP {status}, confirm_ok={_confirm_ok}")
+
+            except Exception as exc:
+                step_ev["error"] = str(exc)
+                _step(f"    error: {exc}")
+                chain_evidence.append(step_ev)
+                # Non-final steps: continue; final step: abort
+                if i == final_step_idx:
+                    res.detail = f"error en step final: {exc}"
+                    break
+                continue
+
+            chain_evidence.append(step_ev)
+
+            # Final step determines verified
+            if i == final_step_idx:
+                res.verified = _status_ok and _confirm_ok
+                res.ok = True
+                if res.verified:
+                    res.detail = (
+                        f"request-chain VERIFICADO: {len(steps)} paso(s), "
+                        f"step final {method} {ep} → HTTP {status}"
+                        + (f", confirm_string='{confirm}' presente" if confirm else "")
+                    )
+                    _step(f"  request-chain VERIFICADO en {len(steps)} pasos")
+                else:
+                    res.detail = (
+                        f"request-chain no verificado: step final {method} {ep} → "
+                        f"HTTP {status}, status_ok={_status_ok}, confirm_ok={_confirm_ok}"
+                    )
+                    _step(f"  request-chain no verificado: {res.detail}")
+                break
+
+        res.evidence = {
+            "base_url": base_url,
+            "container": container,
+            "chain_steps": chain_evidence,
+            "extracted_vars": {k: v[:200] for k, v in _vars.items()},
+        }
+        if not res.ok:
+            res.ok = True
+            res.detail = res.detail or "chain completado sin verificacion"
+
+        return res
+    except Exception as e:
+        res.detail = f"error en request-chain: {e}"
+        return res
+    finally:
+        _step("desmontando laboratorio (request-chain)...")
+        lab.teardown()
+
+
 def verify_generic_header_bypass_candidates(
     source_dir: str, endpoint: str, http_method: str,
     candidates: list,
