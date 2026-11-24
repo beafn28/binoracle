@@ -3669,6 +3669,16 @@ def auto_queue_nvd(days_back: int = 2, min_cvss: float = 7.0,
     except Exception:
         pass
 
+    # Load YWH scope filter (if configured) — skip CVEs not matching any program scope
+    _scope_filter_active = False
+    try:
+        from .ywh_scope import cve_matches_scope, scope_summary as _scope_summary
+        _scope_msg = _scope_summary()
+        step(f"auto_queue_nvd: {_scope_msg}")
+        _scope_filter_active = "permissive" not in _scope_msg
+    except Exception:
+        pass
+
     _before = len(entries)
     _filtered = []
     for _e in entries:
@@ -3676,6 +3686,15 @@ def auto_queue_nvd(days_back: int = 2, min_cvss: float = 7.0,
         # Skip if any skip pattern matches
         if any(_sk in _desc for _sk in _SKIP_PATTERNS):
             continue
+        # Scope filter: skip CVEs outside configured YWH programs
+        if _scope_filter_active:
+            try:
+                _cpe = getattr(_e, "cpe_products", None) or []
+                _sr = cve_matches_scope(_e.cve_id, _e.description, _cpe)
+                if not _sr["in_scope"]:
+                    continue
+            except Exception:
+                pass
         _filtered.append(_e)
     entries = _filtered
     _after = len(entries)
