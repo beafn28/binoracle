@@ -190,6 +190,9 @@ _WEB_SIGNALS = [
     "django", "flask", "rails", "laravel", "php", "http", "web", "sqli", "xss",
     "ssrf", "path traversal", "file upload", "auth bypass", "csrf",
     "open redirect", "injection", "cms", "rest api", "graphql", "oauth",
+    "api endpoint", "rest endpoint", "json api", "web application",
+    "improper authorization", "access control", "broken access",
+    "daptin", "headless cms", "baas", "backend as a service",
 ]
 _BIN_SIGNALS = [
     "buffer overflow", "heap overflow", "stack overflow", "heap corruption",
@@ -202,6 +205,34 @@ _CLI_SIGNALS = ["cli", "command line", "npm package", "pip package", "gem ",
                 "tool", "utility", "argument", "command injection via flag"]
 _NATIVE_SIGNALS = ["sudo", "openssl", "curl", "bash", "zip", "gzip", "tar",
                    "kernel", "linux", "windows", "macos", "firmware"]
+
+# Library-level CVEs: affect a package/library that needs a wrapper app to exploit via HTTP
+_LIBRARY_PACKAGES = [
+    "jinja2", "jinja", "pyyaml", "yaml", "pickle", "marshal", "shelve",
+    "werkzeug", "markupsafe", "mako", "chameleon", "genshi",
+    "cryptography", "paramiko", "twisted", "aiohttp", "httpx",
+    "pillow", "pil", "imagemagick", "libmagick",
+    "lxml", "defusedxml", "xmltodict", "pyexpat",
+    "numpy", "pandas", "scipy", "scikit",
+    "sqlalchemy", "peewee", "tortoise",
+    "celery", "kombu", "redis-py", "pymongo",
+]
+# Signals that imply NO direct HTTP endpoint on the vulnerable component
+_LIBRARY_SIGNALS = [
+    "sandbox escape", "sandbox bypass", "template injection", "ssti",
+    "arbitrary code via template", "template engine", "render_template_string",
+    "unsafe deserialization", "deserialization of untrusted",
+    "library", "python package", "pip install", "via crafted",
+]
+
+
+def _is_library_cve(cve_info, llm_notes: dict) -> bool:
+    """Return True when the CVE targets a library that needs a wrapper app to exploit."""
+    desc = ((getattr(cve_info, "description", "") or "") + " " + str(llm_notes)).lower()
+    pkg_hit  = any(p in desc for p in _LIBRARY_PACKAGES)
+    sig_hit  = any(s in desc for s in _LIBRARY_SIGNALS)
+    no_endpoint = (llm_notes.get("endpoint", "") or "").strip() in ("", "?", "unknown", "n/a")
+    return (pkg_hit or sig_hit) and no_endpoint
 
 
 def _classify(cve_info, llm_notes: dict) -> str:
@@ -363,6 +394,114 @@ def _run_binary_stage(cve_id: str, binary_path: str,
     return "\n\n".join(parts)
 
 
+# ── Library wrapper app generator ────────────────────────────────────────────
+
+_WRAPPER_SYSTEM_PROMPT = (
+    "You are a security researcher building minimal vulnerable demo apps for CVE lab testing. "
+    "Given a CVE description, generate a self-contained Python Flask app (single file, app.py) "
+    "that exposes the vulnerable library functionality over HTTP so the exploit can be tested. "
+    "The app MUST: (1) import and use the vulnerable library, (2) accept attacker-controlled "
+    "input via HTTP (GET/POST parameter), (3) pass that input to the vulnerable function "
+    "without sanitization, (4) run with Flask dev server on port 5000. "
+    "Return ONLY the Python code, no explanation, no markdown fences."
+)
+
+_WRAPPER_DOCKERFILE = """\
+FROM python:3.11-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install -r requirements.txt
+COPY app.py .
+ENV FLASK_ENV=development
+EXPOSE 5000
+CMD ["python", "app.py"]
+"""
+
+
+def _generate_wrapper_app(cve_id: str, cve_info, llm_notes: dict,
+                           tmpdir: str, step: Callable, llm=None) -> str | None:
+    """Generate a minimal Flask app that exposes the vulnerable library over HTTP.
+
+    Returns the URL the target is reachable at (e.g. 'http://localhost:5001'),
+    or None if generation/startup failed.
+    """
+    if llm is None:
+        step("  wrapper: sin LLM — no se puede generar app demo")
+        return None
+
+    desc = getattr(cve_info, "description", "") or ""
+    exploit_hint = llm_notes.get("exploitation_steps", "") or llm_notes.get("payload", "")
+
+    from ..llm.base import Message
+    prompt = (
+        f"CVE: {cve_id}\n"
+        f"Description: {desc[:800]}\n"
+        f"Exploitation hint: {exploit_hint[:400]}\n\n"
+        "Generate the Flask app.py code."
+    )
+    try:
+        code = llm.chat([
+            Message("system", _WRAPPER_SYSTEM_PROMPT),
+            Message("user", prompt),
+        ]).strip()
+    except Exception as e:
+        step(f"  wrapper LLM error: {e}")
+        return None
+
+    # Strip markdown fences if the LLM added them anyway
+    if code.startswith("```"):
+        code = "\n".join(
+            ln for ln in code.splitlines()
+            if not ln.startswith("```")
+        ).strip()
+
+    app_dir = os.path.join(tmpdir, "wrapper_app")
+    os.makedirs(app_dir, exist_ok=True)
+
+    with open(os.path.join(app_dir, "app.py"), "w") as fh:
+        fh.write(code)
+
+    # Determine dependencies: always flask + the vulnerable package from description
+    pkgs = ["flask"]
+    desc_lower = (desc + " " + code).lower()
+    for pkg in _LIBRARY_PACKAGES:
+        if pkg in desc_lower:
+            pkgs.append(pkg)
+    with open(os.path.join(app_dir, "requirements.txt"), "w") as fh:
+        fh.write("\n".join(dict.fromkeys(pkgs)))  # deduplicate
+
+    with open(os.path.join(app_dir, "Dockerfile"), "w") as fh:
+        fh.write(_WRAPPER_DOCKERFILE)
+
+    # Find a free port
+    import socket
+    with socket.socket() as s:
+        s.bind(("", 0))
+        port = s.getsockname()[1]
+
+    container_name = f"bo_wrapper_{cve_id.replace('-', '_').lower()}"
+    step(f"  wrapper: construyendo imagen Docker en puerto {port}…")
+    try:
+        import subprocess
+        subprocess.run(
+            ["docker", "build", "-t", container_name, "."],
+            cwd=app_dir, capture_output=True, timeout=120, check=True,
+        )
+        subprocess.run(
+            ["docker", "run", "-d", "--rm",
+             "-p", f"{port}:5000",
+             "--name", container_name, container_name],
+            capture_output=True, timeout=30, check=True,
+        )
+        import time
+        time.sleep(3)  # wait for Flask to start
+        step(f"  wrapper: container arrancado → http://localhost:{port}")
+        return f"http://localhost:{port}"
+    except Exception as e:
+        step(f"  wrapper: fallo Docker — {e}")
+        return None
+
+
 # ── Web investigation stage ───────────────────────────────────────────────────
 
 def _run_web_stage(cve_id: str, cve_info, llm_notes: dict,
@@ -374,6 +513,30 @@ def _run_web_stage(cve_id: str, cve_info, llm_notes: dict,
 
     is_gap = getattr(cve_info, "is_gap", True) if cve_info else True
     step(f"  modo: {'HUECO (sin PoC público)' if is_gap else 'PoC público encontrado'}")
+
+    # ── Library CVE detection: generate wrapper app as the target ─────────────
+    wrapper_url = None
+    wrapper_container = None
+    if _is_library_cve(cve_info, llm_notes):
+        step("  LIBRARY CVE detectado — generando app Flask demo como target HTTP…")
+        result.add_step("library_detection", "ok",
+                        "wrapper app needed — no direct HTTP endpoint on library")
+        import tempfile as _tf
+        wrapper_tmpdir = _tf.mkdtemp(prefix="bo_wrapper_")
+        wrapper_url = _generate_wrapper_app(
+            cve_id, cve_info, llm_notes, wrapper_tmpdir, step, llm=llm)
+        if wrapper_url:
+            wrapper_container = f"bo_wrapper_{cve_id.replace('-', '_').lower()}"
+            # Inject the wrapper URL into config so investigate_cve targets it
+            if config is None:
+                config = {}
+            config = dict(config)
+            config["target_url"] = wrapper_url
+            step(f"  target inyectado: {wrapper_url}")
+            result.add_step("wrapper_app", "ok", wrapper_url)
+        else:
+            step("  wrapper app falló — continuando sin target HTTP")
+            result.add_step("wrapper_app", "warn", "generation failed")
 
     try:
         from .cve_agent import investigate_cve
@@ -400,6 +563,18 @@ def _run_web_stage(cve_id: str, cve_info, llm_notes: dict,
         result.add_step("web_investigation", "error", str(e)[:120])
         step(f"  error: {e}")
         return None
+    finally:
+        # Clean up wrapper container if we started one
+        if wrapper_container:
+            try:
+                import subprocess
+                subprocess.run(
+                    ["docker", "stop", wrapper_container],
+                    capture_output=True, timeout=15,
+                )
+                step(f"  wrapper container {wrapper_container} detenido")
+            except Exception:
+                pass
 
 
 # ── Enrich stage ──────────────────────────────────────────────────────────────
