@@ -2558,6 +2558,56 @@ def _static_vuln_precheck(local_path: str, plugin_dir: str, vuln_class: str,
                 "confidence": 0.0,
             }
 
+    # --- Check 26: G33 — PHP Insecure Deserialization (unserialize without allowed_classes=false) ---
+    # Distinct from Check 13 (which covers all languages). This targets PHP specifically:
+    # unserialize($x) with no options array → allows arbitrary class instantiation.
+    # Fixed by: unserialize($x, ["allowed_classes" => false])
+    if vuln_class in ("php-object-injection", "insecure-deserialization",
+                      "deserialization", "rce") and local_path:
+        import os as _os_g33
+        _PHP_UNSAFE_DESER = re.compile(
+            r'\bunserialize\s*\(\s*(?!(?:[^,)]*,[^)]*\[))',  # unserialize(x) with no options
+            re.IGNORECASE,
+        )
+        _PHP_SAFE_DESER = re.compile(
+            r'allowed_classes\s*=>\s*(?:false|\[\s*\])',
+            re.IGNORECASE,
+        )
+        _g33_unsafe: list[str] = []
+        _g33_safe: list[str] = []
+        try:
+            for _r33, _d33, _f33 in _os_g33.walk(local_path):
+                _d33[:] = [d for d in _d33
+                           if d not in (".git", "node_modules", "__pycache__", "vendor")]
+                for _fn33 in _f33:
+                    if not _fn33.endswith(".php"):
+                        continue
+                    _fp33 = _os_g33.path.join(_r33, _fn33)
+                    try:
+                        _txt33 = open(_fp33, encoding="utf-8", errors="ignore").read(200_000)
+                        if _PHP_UNSAFE_DESER.search(_txt33):
+                            _g33_unsafe.append(_os_g33.path.relpath(_fp33, local_path))
+                        if _PHP_SAFE_DESER.search(_txt33):
+                            _g33_safe.append(_os_g33.path.relpath(_fp33, local_path))
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        if _g33_unsafe and not _g33_safe:
+            return {
+                "ok": True,
+                "reason": (f"Check 26 — unserialize() sin allowed_classes=false en "
+                           f"{', '.join(_g33_unsafe[:2])} — PHP Object Injection posible"),
+                "confidence": 0.0,  # positive signal, lab should run
+            }
+        if _g33_safe and not _g33_unsafe:
+            return {
+                "ok": False,
+                "reason": (f"Check 26 — unserialize() usa allowed_classes=false "
+                           f"({', '.join(_g33_safe[:2])}) — deserialización segura"),
+                "confidence": 0.75,
+            }
+
     return {"ok": True, "reason": "pre-check OK", "confidence": 1.0}
 
 

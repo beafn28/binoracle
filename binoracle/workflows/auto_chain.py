@@ -2884,6 +2884,18 @@ def run_full_chain(
                             for a in _alternatives[:3]
                             if isinstance(a, dict) and a.get("endpoint")
                         ]
+                        # G34: re-rank alternatives using patch_analysis.vuln_function
+                        # as tiebreaker — bump score of alts that mention the patched function
+                        _pa_vf = str(result.evidence.get("patch_analysis", {})
+                                     .get("vuln_function") or "").lower()
+                        if _pa_vf:
+                            for _alt in llm_notes["alt_endpoints"]:
+                                ep_lower = _alt.get("endpoint", "").lower()
+                                reason_lower = _alt.get("reason", "").lower()
+                                if _pa_vf in ep_lower or _pa_vf in reason_lower:
+                                    _alt["score"] = min(1.0, float(_alt["score"]) + 0.15)
+                            llm_notes["alt_endpoints"].sort(
+                                key=lambda a: float(a.get("score", 0.5)), reverse=True)
                         step(f"  multi-hypothesis: {len(llm_notes['alt_endpoints'])} "
                              f"alternativas — "
                              f"{[a['endpoint'] for a in llm_notes['alt_endpoints']]}")
@@ -3317,13 +3329,22 @@ def run_full_chain(
         step("  construyendo containers vulnerable y parchado para comparación…")
         try:
             from .difftest import differential_test
-            # Extract patched version from cve_info if available
+            # G32: Extract patched version from cve_info; fall back to GHSA advisory
             _patched_ver = ""
             if isinstance(cve_info, dict):
                 _patched_ver = (cve_info.get("patched_version") or
                                 cve_info.get("fixed_version") or "")
             elif hasattr(cve_info, "patched_version"):
                 _patched_ver = getattr(cve_info, "patched_version", "") or ""
+            # G32: auto-fetch from GHSA when no version available
+            if not _patched_ver:
+                try:
+                    from .cvefeed import _fetch_ghsa_fixed_version
+                    _patched_ver = _fetch_ghsa_fixed_version(cve_id) or ""
+                    if _patched_ver:
+                        step(f"  [G32] GHSA fijo en {_patched_ver} — usando para difftest")
+                except Exception:
+                    pass
             _fr_path = getattr(result.inv, "source_path", "") if result.inv else ""
             if not _fr_path:
                 step("  difftest: sin ruta de fuente disponible — omitido")
@@ -3547,6 +3568,34 @@ def run_full_chain(
         step("  lecciones: resultado registrado en cve_lessons")
     except Exception:
         pass
+
+    # ── G31: Chain detection — look for RCE/privesc in the same software ─────
+    if result.verified:
+        try:
+            from .cvelookup import search_cves_by_product
+            _g31_inv = result.inv
+            _g31_desc = result.description or ""
+            _g31_product = (cve_info.get("product") if cve_info else "") or ""
+            _g31_vc = str(getattr(_g31_inv, "vuln_class", "") or "")
+            # Only look for chains when the current CVE is NOT already RCE/privesc
+            _chain_targets = ["rce", "command injection", "privilege escalation", "privesc"]
+            _is_already_rce = any(c in _g31_vc.lower() for c in _chain_targets)
+            if _g31_product and not _is_already_rce:
+                _chain_cves = search_cves_by_product(_g31_product,
+                                                     keywords=_chain_targets, limit=5)
+                if _chain_cves:
+                    _chain_list = [{"cve_id": c.cve_id,
+                                    "vuln_class": getattr(c, "vuln_class", ""),
+                                    "cvss": c.cvss_score,
+                                    "summary": (c.description or "")[:120]}
+                                   for c in _chain_cves if c.cve_id != cve_id]
+                    if _chain_list:
+                        result.evidence["chain_candidates"] = _chain_list
+                        step(f"  [G31] cadena potencial: {len(_chain_list)} CVE(s) RCE/privesc "
+                             f"en {_g31_product}: "
+                             + ", ".join(c["cve_id"] for c in _chain_list[:3]))
+        except Exception:
+            pass
 
     # ── Stage 8: Done ─────────────────────────────────────────────────────────
     _banner(step, f"[8/8] COMPLETADO en {result.elapsed_s:.1f}s")

@@ -1135,3 +1135,63 @@ def append_hueco_queue(queue_path: str, candidates: List[HuecoCandidateResult]) 
             desc_short = (c.description or "")[:80].replace("|", " ").replace("\n", " ")
             fh.write(f"{c.cve_id}|{c.plugin_name}|{c.cvss_score or '?'}|{desc_short}\n")
     return len(new_items)
+
+
+def search_cves_by_product(product: str, keywords: Optional[List[str]] = None,
+                           limit: int = 5, min_cvss: float = 7.0,
+                           timeout: float = 10.0) -> List[CVEInfo]:
+    """G31: Search NVD for CVEs affecting `product` matching optional keyword list.
+
+    Returns up to `limit` CVEInfo objects with cvss_score >= min_cvss.
+    Uses NVD /rest/json/cves/2.0 keyword search.  Non-fatal.
+    """
+    if not product:
+        return []
+    kws = keywords or []
+    # Build search query: "product keyword1 OR keyword2"
+    _q_parts = [product]
+    if kws:
+        _q_parts.append(" ".join(kws[:3]))  # limit query length
+    keyword_q = " ".join(_q_parts)
+    keyword_q = re.sub(r"[^a-zA-Z0-9 .-]", " ", keyword_q).strip()[:100]
+    try:
+        _base = "https://services.nvd.nist.gov/rest/json/cves/2.0"
+        _url = f"{_base}?keywordSearch={urllib.request.quote(keyword_q)}&resultsPerPage={limit * 2}"
+        req = urllib.request.Request(_url, headers={"User-Agent": "binoracle/cvesearch"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read())
+        results: List[CVEInfo] = []
+        for vuln in (data.get("vulnerabilities") or []):
+            cve_data = vuln.get("cve", {})
+            cve_id = cve_data.get("id", "")
+            if not cve_id:
+                continue
+            descs = cve_data.get("descriptions") or []
+            desc = next((d["value"] for d in descs if d.get("lang") == "en"), "")
+            cvss_score = 0.0
+            for metrics_key in ("cvssMetricV31", "cvssMetricV30", "cvssMetricV2"):
+                for m in (cve_data.get("metrics", {}).get(metrics_key) or []):
+                    cvss_score = float(m.get("cvssData", {}).get("baseScore", 0))
+                    break
+                if cvss_score:
+                    break
+            if cvss_score < min_cvss:
+                continue
+            # Filter to ones matching any keyword
+            if kws:
+                desc_lower = desc.lower()
+                if not any(kw.lower() in desc_lower for kw in kws):
+                    continue
+            info = CVEInfo(
+                cve_id=cve_id,
+                description=desc,
+                cvss_score=cvss_score,
+                cvss_severity="",
+                ok=True,
+            )
+            results.append(info)
+            if len(results) >= limit:
+                break
+        return results
+    except Exception:
+        return []

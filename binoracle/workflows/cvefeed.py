@@ -561,6 +561,50 @@ def poll_osv_new(days_back: int = 2, min_cvss: float = 7.0) -> List[NVDCVEEntry]
         return entries
 
 
+def _fetch_ghsa_fixed_version(cve_id: str, timeout: float = 10.0) -> str:
+    """G32: Query GitHub Advisory Database GraphQL to find the fixed version for a CVE.
+
+    Returns the first fixed version string found, or empty string.
+    Uses GitHub GraphQL public API (no token required).
+    """
+    if not cve_id:
+        return ""
+    query = """
+    {
+      securityAdvisories(identifier: {type: CVE, value: "%s"}, first: 1) {
+        nodes {
+          vulnerabilities(first: 5) {
+            nodes {
+              firstPatchedVersion { identifier }
+              package { name ecosystem }
+            }
+          }
+        }
+      }
+    }
+    """ % cve_id
+    try:
+        payload = json.dumps({"query": query}).encode()
+        req = urllib.request.Request(
+            "https://api.github.com/graphql",
+            data=payload,
+            headers={"Content-Type": "application/json",
+                     "User-Agent": "binoracle/cvefeed"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read())
+        nodes = (data.get("data") or {}).get("securityAdvisories", {}).get("nodes") or []
+        for advisory in nodes:
+            for vuln in (advisory.get("vulnerabilities") or {}).get("nodes") or []:
+                fp = (vuln.get("firstPatchedVersion") or {}).get("identifier") or ""
+                if fp:
+                    return fp
+    except Exception:
+        pass
+    return ""
+
+
 def fetch_osv_related(package: str, ecosystem: str = "npm",
                       exclude_cve: str = "", min_cvss: float = 5.0,
                       max_results: int = 10) -> List[NVDCVEEntry]:
@@ -601,12 +645,8 @@ def fetch_osv_related(package: str, ecosystem: str = "npm",
             cvss_score = 0.0
             for sev in (vuln.get("severity") or []):
                 if sev.get("type") == "CVSS_V3":
-                    try:
-                        # Parse score from vector string last component
-                        parts = sev["score"].split("/")
-                        # Score is not in the vector — use severity heuristic
-                    except Exception:
-                        pass
+                    # Score is not embedded in the vector string; use severity heuristic below
+                    break
             if severity in ("CRITICAL", "HIGH"):
                 cvss_score = 9.0 if severity == "CRITICAL" else 7.5
             elif severity == "MEDIUM":

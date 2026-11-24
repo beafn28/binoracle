@@ -663,7 +663,7 @@ def decay_stale_lessons(dry_run: bool = False) -> dict:
     data = _load()
     stacks_touched = 0
     runs_marked = 0
-    for stack, entry in data.items():
+    for _stack, entry in data.items():
         changed = False
         for run in (entry.get("runs") or []):
             cve_id = run.get("cve_id", "")

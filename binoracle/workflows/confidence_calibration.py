@@ -17,7 +17,6 @@ from __future__ import annotations
 import json
 import math
 import os
-from typing import Optional
 
 _STATE_DIR = os.environ.get("BINORACLE_CACHE_DIR") or os.path.join(
     os.path.expanduser("~"), ".cache", "binoracle"
