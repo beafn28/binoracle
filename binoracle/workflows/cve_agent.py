@@ -10700,6 +10700,40 @@ def _scaffold_llm_lab_for_class(llm, source_dir: str, notes: dict, cve_id: str,
     if sys_prompt is None or llm is None:
         return None
 
+    # Si el source_dir ya tiene un Dockerfile propio (p.ej. _scaffold_httpd_lab,
+    # _scaffold_maven_lab), lo devolvemos directamente — Qwen no necesita regenerarlo.
+    # Esto cubre todos los call-sites (15+ clases vuln) sin parchear cada uno.
+    _existing_df = os.path.join(source_dir, "Dockerfile")
+    if os.path.exists(_existing_df):
+        try:
+            _df_body = open(_existing_df).read()
+            _ef = {}
+            for _fn in os.listdir(source_dir):
+                if _fn in ("Dockerfile", ".git", "__pycache__"):
+                    continue
+                _fp = os.path.join(source_dir, _fn)
+                if os.path.isfile(_fp) and os.path.getsize(_fp) < 512_000:
+                    try:
+                        _ef[_fn] = open(_fp).read()
+                    except Exception:
+                        pass
+            step(("usando Dockerfile existente del lab (sin Qwen)" if es
+                  else "using existing lab Dockerfile (skipping Qwen)"))
+            return {
+                "dockerfile_body": _df_body,
+                "extra_files":     _ef,
+                "endpoint":        notes.get("endpoint") or "",
+                "url_suffix":      "",
+                "query_suffix":    "",
+                "path_param":      "",
+                "parameters":      notes.get("parameters") or {},
+                "confirm_string":  notes.get("confirm_string") or "",
+                "http_method":     notes.get("http_method") or "GET",
+                "server_code":     "",
+            }
+        except Exception:
+            pass
+
     from ..llm.base import Message
 
     tech    = _detect_lab_tech_stack(source_dir)
