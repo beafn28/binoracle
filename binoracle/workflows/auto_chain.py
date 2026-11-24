@@ -202,6 +202,55 @@ def _checkpoint_path(cve_id: str) -> str:
     return os.path.join(_dir, f"{_slug}.json")
 
 
+def _save_chain_to_history(result: "ChainResult") -> None:
+    """Write a completed chain result to ~/.binoracle/history/ so that
+    web_cve.py::_count_all_verified() and _load_history() can see it.
+
+    Uses the same record shape that web_cve.py::_save_history() produces so
+    _is_truly_verified() (which looks for dynamic_verify.verified) works correctly.
+    """
+    import json as _j
+    import time as _t
+    try:
+        _hdir = os.path.join(os.path.expanduser("~"), ".binoracle", "history")
+        os.makedirs(_hdir, exist_ok=True)
+        _slug = result.cve_id.replace("/", "_").replace("\\", "_")
+        _path = os.path.join(_hdir, f"chain_{_slug}.json")
+        # Build dynamic_verify from inv if available; fall back to top-level verified
+        _inv = result.inv
+        _dv = (getattr(_inv, "dynamic_verify", {}) or {}) if _inv else {}
+        if not _dv and result.verified:
+            _dv = {"verified": True, "attempted": True, "available": True}
+        _rec = {
+            "job_id":    f"chain_{_slug}",
+            "cve_id":    result.cve_id,
+            "verified":  result.verified,
+            "dynamic_verify": _dv,
+            "elapsed":   result.elapsed_s,
+            "created":   _t.time(),
+            "engine_confidence": result.engine_confidence,
+            "result": {
+                "cve_id":        result.cve_id,
+                "verified":      result.verified,
+                "dynamic_verify": _dv,
+                "cve_class":     result.cve_class,
+                "cvss_score":    result.cvss_score,
+                "cvss_severity": result.cvss_severity,
+                "risk_label":    result.risk_label,
+                "description":   result.description,
+                "elapsed":       result.elapsed_s,
+                "evidence":      {k: v for k, v in (result.evidence or {}).items()
+                                  if isinstance(v, (str, int, float, bool, list, dict, type(None)))},
+                "report_path":   result.report_path,
+                "error":         result.error,
+            },
+        }
+        with open(_path, "w", encoding="utf-8") as _f:
+            _j.dump(_rec, _f, ensure_ascii=False, default=str)
+    except Exception:
+        pass
+
+
 _STAGE_ORDER = [
     "start", "intelligence", "hypothesis", "classify",
     "patchdiff", "investigation", "report", "done",
@@ -3857,6 +3906,9 @@ def run_full_chain(
             _sig27.signal(_sig27.SIGALRM, _old_handler)  # type: ignore[name-defined]
         except Exception:
             pass
+
+    # Persist to ~/.binoracle/history/ so web_cve.py::_count_all_verified() sees this run
+    _save_chain_to_history(result)
 
     return result
 
