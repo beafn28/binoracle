@@ -8815,16 +8815,27 @@ def _gen_pip_app(pkg: str, vuln_class: str, endpoint: str, param: str, pkg_versi
         # hay que lanzar cualquier interfaz minimal para que el daemon HTTP arranque con la ruta
         # vulnerable integrada.  Puerto 7860 (default de Gradio).
         if "gradio" in pkg_lower:
+            # gradio 4.12.0: launch() can raise ValueError("When localhost is not
+            # accessible...") after the server has already started, due to a
+            # self-accessibility check.  Catch it and keep the process alive so
+            # the HTTP server (started in a background thread) stays reachable.
             return (
-                "import gradio as gr\n\n"
+                "import gradio as gr, threading, time\n\n"
                 "demo = gr.Interface(\n"
                 "    fn=lambda x: x,\n"
                 "    inputs=gr.Textbox(),\n"
                 "    outputs=gr.Textbox(),\n"
                 "    title='binoracle-gradio-lab',\n"
                 ")\n"
-                "demo.launch(server_name='0.0.0.0', server_port=7860,\n"
-                "            share=False, show_error=True)\n"
+                "try:\n"
+                "    demo.launch(server_name='0.0.0.0', server_port=7860,\n"
+                "                share=False, show_error=True)\n"
+                "except ValueError as e:\n"
+                "    if 'localhost' in str(e):\n"
+                "        # server started but accessibility check failed — keep alive\n"
+                "        while True:\n"
+                "            time.sleep(60)\n"
+                "    raise\n"
             )
         return (
             "from flask import Flask, send_from_directory\n"
@@ -16740,6 +16751,20 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
                          f"endpoint/parameters del PoC, se mantiene la hipotesis del LLM" if es else
                          f"PoC has placeholder endpoint ({dropped_ep!r}) -- dropping PoC "
                          f"endpoint/parameters, keeping LLM hypothesis")
+                    # Si el primer PoC tenia placeholder, intentar refs adicionales
+                    _remaining_refs = [r for r in info.exploit_refs
+                                       if r.url != (github_ref.url if github_ref else "")]
+                    if _remaining_refs:
+                        step(f"buscando endpoint en {len(_remaining_refs)} PoC(s) adicional(es)..." if es
+                             else f"searching endpoint in {len(_remaining_refs)} additional PoC(s)...")
+                        _alt_text = fetch_public_poc_source(_remaining_refs, on_step=step)
+                        if _alt_text:
+                            _alt_hints = _extract_hints_from_real_poc(llm, _alt_text) or {}
+                            _alt_hints, _alt_drop = _drop_placeholder_poc_hints(_alt_hints)
+                            if not _alt_drop and _alt_hints.get("endpoint"):
+                                step(f"PoC alternativo: endpoint={_alt_hints.get('endpoint')!r}" if es
+                                     else f"alt PoC: endpoint={_alt_hints.get('endpoint')!r}")
+                                poc_hints = {**poc_hints, **_alt_hints}
                 inv.poc_source_used = github_ref.url if github_ref else ""
                 # El PoC puede reportar 'rce' como vuln_class (la consecuencia) cuando la
                 # causa raiz es 'path-traversal', 'sqli', etc. -- no dejar que eso pise la
