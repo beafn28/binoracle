@@ -2431,6 +2431,67 @@ def _static_vuln_precheck(local_path: str, plugin_dir: str, vuln_class: str,
                 "confidence": 0.0,
             }
 
+    # --- Check 25: XXE — unsafe XML parser (external entities enabled) ---
+    if vuln_class in ("xxe", "xml-external-entity", "xml_injection", "xml-injection") and local_path:
+        import os as _os_xxe
+        _XXE_UNSAFE_RE = re.compile(
+            r'(?:'
+            r'etree\.parse\s*\(|ElementTree\.parse\s*\(|lxml\.etree\b'
+            r'|xml\.etree\.ElementTree\b'
+            r'|DOMParser\s*\(\s*\)|new\s+DOMDocument\s*\('
+            r'|SimpleXMLElement\s*\(|simplexml_load_string\s*\('
+            r'|SAXParserFactory|DocumentBuilderFactory'
+            r'|XMLReader::read\s*\(|xmlParseDoc\s*\('
+            r')',
+            re.IGNORECASE,
+        )
+        _XXE_SAFE_RE = re.compile(
+            r'(?:'
+            r'defusedxml\b'
+            r'|resolve_entities\s*=\s*False'
+            r'|setFeature\s*\(\s*["\']http://xml\.org/sax/features/external-general-entities["\'],\s*false\s*\)'
+            r'|FEATURE_SECURE_PROCESSING'
+            r'|forbid_dtd\s*=\s*True'
+            r'|no_network\s*=\s*True'
+            r')',
+            re.IGNORECASE,
+        )
+        _xxe_safe_files: list[str] = []
+        _xxe_unsafe_files: list[str] = []
+        try:
+            for _r_xxe, _d_xxe, _f_xxe in _os_xxe.walk(local_path):
+                _d_xxe[:] = [d for d in _d_xxe if d not in
+                             (".git", "node_modules", "dist", "__pycache__", "vendor")]
+                for _fn_xxe in _f_xxe:
+                    if not any(_fn_xxe.endswith(e) for e in
+                               (".py", ".js", ".ts", ".php", ".java", ".xml", ".rb")):
+                        continue
+                    _fp_xxe = _os_xxe.path.join(_r_xxe, _fn_xxe)
+                    try:
+                        _txt_xxe = open(_fp_xxe, encoding="utf-8", errors="ignore").read(60_000)
+                        if _XXE_UNSAFE_RE.search(_txt_xxe):
+                            _xxe_unsafe_files.append(_os_xxe.path.relpath(_fp_xxe, local_path))
+                        if _XXE_SAFE_RE.search(_txt_xxe):
+                            _xxe_safe_files.append(_os_xxe.path.relpath(_fp_xxe, local_path))
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        if _xxe_safe_files and not _xxe_unsafe_files:
+            return {
+                "ok": True,
+                "reason": (f"pre-check XXE: mitigación defusedxml/resolve_entities=False en "
+                           f"{', '.join(_xxe_safe_files[:2])} — probable versión parchada"),
+                "confidence": 0.65,
+            }
+        if _xxe_unsafe_files and not _xxe_safe_files:
+            return {
+                "ok": True,
+                "reason": (f"pre-check XXE: parser XML sin mitigación en "
+                           f"{', '.join(_xxe_unsafe_files[:2])} — XXE probable"),
+                "confidence": 0.0,
+            }
+
     # --- Check 24: CORS misconfiguration — Origin header reflected without allowlist ---
     if vuln_class in ("cors-misconfiguration", "cors_misconfiguration", "cors") and local_path:
         import os as _os_cors
