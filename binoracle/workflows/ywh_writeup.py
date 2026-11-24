@@ -265,4 +265,45 @@ def build_writeup_from_chain(result: object, target_url: str = "") -> YwhWriteup
         wu.remediation = (f"Apply input validation/sanitization as shown in the patch: "
                           f"{_pa['patch_pattern']}")
 
+    # CVSS 3.1 vector auto-generation from proven evidence.
+    # Only generated when verified — Base metrics only (Temporal/Environmental left to program).
+    # Attack Vector: Network (AV:N) — all web CVEs require network access
+    # Attack Complexity: Low (AC:L) unless a race condition was identified
+    # Privileges Required: based on auth_required evidence
+    # User Interaction: None (UI:N) for direct exploitation
+    # Scope: Unchanged (S:U) unless SSRF cloud escalation observed
+    # Confidentiality/Integrity/Availability: based on impact_class
+    if verified:
+        _auth_req = (evidence.get("auth_required") or
+                     evidence.get("auth_method") or "").lower()
+        _pr = "N"  # Privileges Required: None by default
+        if "admin" in _auth_req or "high" in _auth_req:
+            _pr = "H"
+        elif "user" in _auth_req or "low" in _auth_req or "medium" in _auth_req:
+            _pr = "L"
+        elif "none" in _auth_req or not _auth_req:
+            _pr = "N"
+
+        _ac = "H" if _vuln_class_low in ("race-condition", "toctou") else "L"
+        _scope = "C" if evidence.get("ssrf_cloud_escalation") else "U"
+
+        # C/I/A from impact
+        _imp_cls = (_impact_class or _vuln_class_low or "").lower()
+        _ci, _ii, _ai = "L", "L", "N"
+        if _imp_cls in ("credential_exposure", "data_disclosure", "sqli_confirmed", "sqli"):
+            _ci, _ii, _ai = "H", "H", "N"
+        elif _imp_cls in ("code_execution", "rce", "command-injection"):
+            _ci, _ii, _ai = "H", "H", "H"
+        elif _imp_cls in ("information_disclosure", "xss", "xss_confirmed"):
+            _ci, _ii, _ai = "L", "N", "N"
+        elif _imp_cls in ("admin_access", "auth-bypass", "missing-authorization"):
+            _ci, _ii, _ai = "H", "H", "N"
+        elif _imp_cls in ("ssrf",):
+            _ci, _ii, _ai = "H", "L", "N"
+
+        wu.cvss_vector = (
+            f"CVSS:3.1/AV:N/AC:{_ac}/PR:{_pr}/UI:N/S:{_scope}"
+            f"/C:{_ci}/I:{_ii}/A:{_ai}"
+        )
+
     return wu
