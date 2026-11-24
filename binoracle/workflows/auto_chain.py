@@ -530,6 +530,102 @@ def _run_binary_stage(cve_id: str, binary_path: str,
     return "\n\n".join(parts)
 
 
+# ── Docker Compose multi-container lab ───────────────────────────────────────
+
+_COMPOSE_NGINX_CONF = """\
+events {}
+http {{
+  server {{
+    listen 80;
+    location / {{
+      proxy_pass http://app:{app_port}/;
+      proxy_set_header Host $host;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $scheme;
+    }}
+  }}
+}}
+"""
+
+_COMPOSE_SYSTEM_PROMPT = (
+    "You are a security researcher building a Docker Compose lab for CVE testing. "
+    "Given a CVE description, generate a docker-compose.yml with TWO services: "
+    "'nginx' (reverse proxy on port 80) and 'app' (the vulnerable application). "
+    "The app service must use the actual vulnerable software version. "
+    "nginx must proxy ALL requests to app. "
+    "Return ONLY the docker-compose.yml content, no markdown fences, no explanation."
+)
+
+
+def _needs_compose_lab(cve_info, llm_notes: dict) -> bool:
+    """Return True when the CVE requires a multi-container lab (proxy + app)."""
+    desc = ((getattr(cve_info, "description", "") or "") + " " + str(llm_notes)).lower()
+    compose_signals = [
+        "reverse proxy", "proxy misconfiguration", "proxy bypass",
+        "trusted proxy", "x-forwarded-for", "hop-by-hop", "trusted header",
+        "session cookie", "proxy_pass", "nginx", "apache proxy",
+        "traefik", "caddy", "haproxy", "envoy", "istio",
+    ]
+    return any(s in desc for s in compose_signals)
+
+
+def _generate_compose_lab(cve_id: str, cve_info, llm_notes: dict,
+                           tmpdir: str, step, llm=None) -> str | None:
+    """Generate a docker-compose.yml lab with nginx + vulnerable app.
+
+    Returns the lab URL (http://localhost:<port>) or None on failure.
+    """
+    if llm is None:
+        step("  compose: sin LLM — no se puede generar lab multi-contenedor")
+        return None
+
+    desc = getattr(cve_info, "description", "") or ""
+    from ..llm.base import Message
+    prompt = f"CVE: {cve_id}\nDescription: {desc[:800]}\nGenerate the docker-compose.yml."
+    try:
+        compose_yaml = llm.chat([
+            Message("system", _COMPOSE_SYSTEM_PROMPT),
+            Message("user", prompt),
+        ]).strip()
+    except Exception as e:
+        step(f"  compose LLM error: {e}")
+        return None
+
+    if compose_yaml.startswith("```"):
+        compose_yaml = "\n".join(
+            ln for ln in compose_yaml.splitlines()
+            if not ln.startswith("```")
+        ).strip()
+
+    lab_dir = os.path.join(tmpdir, "compose_lab")
+    os.makedirs(lab_dir, exist_ok=True)
+
+    with open(os.path.join(lab_dir, "docker-compose.yml"), "w") as fh:
+        fh.write(compose_yaml)
+
+    # Find free port for nginx
+    import socket
+    with socket.socket() as s:
+        s.bind(("", 0))
+        port = s.getsockname()[1]
+
+    import subprocess
+    try:
+        step(f"  compose: levantando lab en puerto {port}...")
+        subprocess.run(
+            ["docker", "compose", "-f", os.path.join(lab_dir, "docker-compose.yml"),
+             "up", "-d", "--build", "--wait"],
+            timeout=180, capture_output=True, check=True
+        )
+        return f"http://localhost:{port}"
+    except subprocess.CalledProcessError as e:
+        step(f"  compose error: {e.stderr.decode()[:200] if e.stderr else e}")
+        return None
+    except FileNotFoundError:
+        step("  compose: docker compose no disponible")
+        return None
+
+
 # ── Library wrapper app generator ────────────────────────────────────────────
 
 _WRAPPER_PROMPTS = {
@@ -771,11 +867,30 @@ def _run_web_stage(cve_id: str, cve_info, llm_notes: dict,
     is_gap = getattr(cve_info, "is_gap", True) if cve_info else True
     step(f"  modo: {'HUECO (sin PoC público)' if is_gap else 'PoC público encontrado'}")
 
+    # ── Compose lab: multi-container (nginx + app) for proxy-class CVEs ─────────
+    compose_lab_url = None
+    _compose_tmpdir = tempfile.mkdtemp(prefix="bo_compose_")
+    if _needs_compose_lab(cve_info, llm_notes):
+        step("  COMPOSE LAB detectado — levantando nginx + app para CVE de proxy…")
+        result.add_step("compose_detection", "ok", "multi-container lab needed")
+        compose_lab_url = _generate_compose_lab(
+            cve_id, cve_info, llm_notes, _compose_tmpdir, step, llm=llm)
+        if compose_lab_url:
+            if config is None:
+                config = {}
+            config = dict(config)
+            config["target_url"] = compose_lab_url
+            step(f"  compose lab listo: {compose_lab_url}")
+            result.add_step("compose_lab", "ok", compose_lab_url)
+        else:
+            step("  compose lab falló — continuando con lab simple")
+            result.add_step("compose_lab", "warn", "generation failed")
+
     # ── Library CVE detection: generate wrapper app as the target ─────────────
     wrapper_url = None
     wrapper_container = None
-    if _is_library_cve(cve_info, llm_notes):
-        step("  LIBRARY CVE detectado — generando app Flask demo como target HTTP…")
+    if not compose_lab_url and _is_library_cve(cve_info, llm_notes):
+        step("  LIBRARY CVE detectado — generando app demo como target HTTP…")
         result.add_step("library_detection", "ok",
                         "wrapper app needed — no direct HTTP endpoint on library")
         import tempfile as _tf
