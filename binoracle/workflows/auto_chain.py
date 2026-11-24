@@ -2311,15 +2311,16 @@ def _llm_rehypothesis(
 # ── MAIN ENTRY POINT ──────────────────────────────────────────────────────────
 
 def run_full_chain(
-    cve_id:      str,
-    binary:      str   = "",
-    lang:        str   = "es",
-    budget_s:    float = 300.0,
-    on_step:     Optional[Callable[[str], None]] = None,
+    cve_id:               str,
+    binary:               str   = "",
+    lang:                 str   = "es",
+    budget_s:             float = 300.0,
+    on_step:              Optional[Callable[[str], None]] = None,
     config=None,
     llm=None,
-    save_report: bool  = True,
-    no_cache:    bool  = False,
+    save_report:          bool  = True,
+    no_cache:             bool  = False,
+    skip_source_download: bool  = False,
 ) -> ChainResult:
     """
     Cadena autónoma completa. Un investigador senior desde solo el CVE ID.
@@ -2348,7 +2349,8 @@ def run_full_chain(
         return (time.time() - t0) < (budget_s - min_s)
 
     _banner(step, f"binoracle AUTO-CHAIN — {cve_id}")
-    step(f"  lang={lang} budget={budget_s}s binary={'yes' if binary else 'no'}")
+    step(f"  lang={lang} budget={budget_s}s binary={'yes' if binary else 'no'}"
+         + (" skip_source_download=True" if skip_source_download else ""))
 
     # ── Load config + LLM ─────────────────────────────────────────────────────
     if config is None:
@@ -3557,27 +3559,48 @@ def retry_failed_cves(max_cves: int = 5, lang: str = "es",
     """
     step = on_step or print
     try:
-        from .cve_retry_queue import get_pending, mark_done, mark_attempt, is_transient_error
+        from .cve_retry_queue import (get_pending_entries, mark_done, mark_attempt,
+                                      is_transient_error)
     except ImportError as e:
         step(f"retry_failed_cves: import error — {e}")
         return []
 
-    pending = get_pending()[:max_cves]
-    if not pending:
+    # _SOURCE_UNAVAIL: errors where source download will likely fail again.
+    # For these, pass skip_source_download=True to avoid wasting budget on a
+    # dead GitHub/GitLab URL — static precheck + LLM hypothesis still run.
+    _SOURCE_UNAVAIL_PATTERNS = (
+        "source not found", "clone fail", "repository not found",
+        "checkout error", "download fail", "not found", "404",
+        "github 403", "github 429", "rate limit",
+    )
+
+    pending_entries = get_pending_entries()[:max_cves]
+    if not pending_entries:
         step("retry_failed_cves: sin CVEs pendientes de reintento")
         return []
 
-    step(f"retry_failed_cves: reintentando {len(pending)} CVEs fallidos…")
+    step(f"retry_failed_cves: reintentando {len(pending_entries)} CVEs fallidos…")
     results = []
-    for cve_id in pending:
-        step(f"\nretry_failed_cves: reintentando {cve_id}")
+    for entry in pending_entries:
+        cve_id = entry["cve_id"]
+        last_error = (entry.get("last_error") or "").lower()
+        _skip_src = any(pat in last_error for pat in _SOURCE_UNAVAIL_PATTERNS)
+        if _skip_src:
+            step(f"\nretry_failed_cves: {cve_id} — omitiendo descarga de código fuente "
+                 f"(error previo: {entry.get('last_error','?')[:80]})")
+        else:
+            step(f"\nretry_failed_cves: reintentando {cve_id}")
         try:
+            _extra_kw: dict = {}
+            if _skip_src:
+                _extra_kw["skip_source_download"] = True
             r = run_full_chain(cve_id, lang=lang, budget_s=budget_s,
-                               on_step=step, save_report=True)
+                               on_step=step, save_report=True, **_extra_kw)
             results.append(r)
             if r.verified or not r.error:
                 mark_done(cve_id)
-                step(f"  {cve_id}: {'✓ VERIFICADO' if r.verified else '? completado'} — eliminado de retry queue")
+                step(f"  {cve_id}: {'✓ VERIFICADO' if r.verified else '? completado'} "
+                     f"— eliminado de retry queue")
             elif is_transient_error(r.error):
                 mark_attempt(cve_id, r.error)
                 step(f"  {cve_id}: sigue fallando — intento registrado")
