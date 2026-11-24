@@ -193,6 +193,8 @@ _WEB_SIGNALS = [
     "api endpoint", "rest endpoint", "json api", "web application",
     "improper authorization", "access control", "broken access",
     "daptin", "headless cms", "baas", "backend as a service",
+    "self-hosted", "node.js", "nodejs", "media server", "audiobookshelf",
+    "express", "fastify", "nextjs", "nuxt", "svelte", "astro",
 ]
 _BIN_SIGNALS = [
     "buffer overflow", "heap overflow", "stack overflow", "heap corruption",
