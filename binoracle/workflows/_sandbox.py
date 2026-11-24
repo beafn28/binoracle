@@ -195,6 +195,45 @@ def run_bash(binary: str, bash_cmd: str, timeout: int = 120, mem_mb: int = 512) 
         return "native", "[timed out]"
 
 
+def run_bash_generic(workdir: str, bash_cmd: str, timeout: int = 120,
+                     mem_mb: int = 512) -> tuple:
+    """Como `run_bash`, pero SIN los chequeos de host/target x86-64 -- para un comando
+    generico que no ejecuta un binario pwn concreto (p.ej. un script de PoC en Python/bash
+    que solo hace peticiones HTTP a un lab). `run_bash`/`_host_target_ok` exigen host x86-64
+    porque `setarch -R` (desactivar ASLR) solo tiene sentido para ATACAR un binario target
+    real; un comando generico no necesita ASLR-off ni coincidencia de arquitectura, y exigirlo
+    de todas formas rompe el aislamiento nativo en host ARM (Apple Silicon incluido) sin
+    ninguna razon real -- bug real encontrado probando poc_pipeline.py en una VM aarch64:
+    `run_bash` degradaba con "host no es x86-64" para un `echo` que no tocaba ningun binario.
+
+    Aisla igual que `run_bash` (red via `unshare`, rlimits via preexec), solo que sin
+    `setarch` ni el chequeo de arquitectura del ELF. Prefiere Docker (imagen `binoracle-pwn`,
+    SIN forzar `--platform linux/amd64` -- en host ARM corre nativo, mas rapido, sin qemu) y
+    cae a namespace+rlimits nativo si no hay Docker. Devuelve (engine | None, output); engine
+    es None solo cuando ni Docker ni el aislamiento nativo valen aqui."""
+    if _docker_image_ok():
+        try:
+            r = subprocess.run(
+                ["docker", "run", "--rm", "--network", "none",
+                 "--memory", f"{mem_mb}m", "--pids-limit", "128",
+                 "-v", f"{workdir}:/w", "-w", "/w", "binoracle-pwn", "bash", "-c", bash_cmd],
+                capture_output=True, text=True, timeout=timeout)
+            return "docker", (r.stdout or "") + (r.stderr or "")
+        except subprocess.TimeoutExpired:
+            return "docker", "[timed out]"
+    if not shutil.which("bash"):
+        return None, "falta 'bash' en el host y no hay imagen binoracle-pwn"
+    if not os.path.isdir(workdir):
+        return None, f"directorio inexistente: {workdir}"
+    cmd = _net_prefix() + ["bash", "-c", bash_cmd]
+    try:
+        r = subprocess.run(cmd, cwd=workdir, capture_output=True, text=True, timeout=timeout,
+                           preexec_fn=_rlimit_preexec(min(timeout, 60), mem_mb))
+        return "native", (r.stdout or "") + (r.stderr or "")
+    except subprocess.TimeoutExpired:
+        return "native", "[timed out]"
+
+
 def _docker_image_ok(timeout: int = 15) -> bool:
     if not shutil.which("docker"):
         return False

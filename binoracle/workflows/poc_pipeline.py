@@ -96,14 +96,48 @@ class ResourceBudget:
         except Exception:
             return None
 
+    def other_labs_running(self) -> List[str]:
+        """Contenedores Docker reales ya corriendo que PARECEN un lab de binoracle, detectados
+        por nombre (prefijos conocidos de las distintas clases _Lab/_GenericLab del proyecto:
+        'bo_', 'binoracle-'). Esto es necesario porque mi propio flock en _LOCK_PATH SOLO sabe
+        de labs levantados a traves de este modulo -- un lab de genericverify.py que quedo
+        huerfano por una excepcion sin try/finally (ver COORDINATION.md) es invisible para el
+        flock, y sin este chequeo ResourceBudget dejaria pasar un segundo lab mientras uno viejo
+        sigue vivo de verdad, comiendo RAM que el flock cree libre. Best-effort: devuelve []
+        (nunca bloquea) si docker no esta disponible o el comando falla -- un chequeo que no se
+        puede hacer no debe impedir arrancar, solo uno que SI detecta algo debe frenar."""
+        if not shutil.which("docker"):
+            return []
+        try:
+            r = subprocess.run(["docker", "ps", "--format", "{{.Names}}"],
+                               capture_output=True, text=True, timeout=10)
+        except Exception:
+            return []
+        if r.returncode != 0:
+            return []
+        names = [n.strip() for n in (r.stdout or "").splitlines() if n.strip()]
+        return [n for n in names if n.startswith("bo_") or n.startswith("binoracle-")]
+
     def can_start_lab(self) -> tuple[bool, str]:
-        """(ok, motivo). No mira solo RAM: tambien respeta max_concurrent_labs via el lock de
-        fichero, para que valga aunque haya varios procesos `binoracle` (p.ej. un CLI run y un
-        web_cve.py sirviendo a la vez) compitiendo por la misma maquina."""
+        """(ok, motivo). Tres chequeos, en orden de barato a caro:
+          1) RAM libre real (free_ram_gb) -- rapido, siempre disponible en Linux.
+          2) contenedores reales ya corriendo con pinta de lab binoracle (other_labs_running)
+             -- detecta un lab huerfano de OTRO modulo que mi propio flock no puede ver.
+          3) el flock (en lab_slot, no aqui) -- serializa labs lanzados a traves de ESTE modulo,
+             incluso entre procesos distintos.
+        Las tres capas son necesarias: ninguna sola cubre todos los casos (un lab zombi de
+        genericverify.py no toca mi flock; dos llamadas a ESTE modulo sin lab zombi de por
+        medio no se detectan por nombre de contenedor si aun no han hecho docker run)."""
         free = self.free_ram_gb()
         if free is not None and free < self.min_free_gb_to_start_lab:
             return False, (f"RAM libre {free:.1f} GB < minimo {self.min_free_gb_to_start_lab} GB "
                            "para levantar un lab Docker con seguridad")
+        running = self.other_labs_running()
+        if len(running) >= self.max_concurrent_labs:
+            return False, (f"ya hay {len(running)} contenedor(es) de lab corriendo "
+                           f"({', '.join(running[:3])}{'...' if len(running) > 3 else ''}) -- "
+                           "puede ser un lab vivo de otro modulo (p.ej. genericverify.py) que mi "
+                           "propio lock no ve; no arranco uno nuevo hasta que se libere")
         return True, "ok"
 
 
@@ -217,14 +251,26 @@ def run_poc_in_sandbox(staged: StagedPoc, lab_target_container: str,
                        budget: Optional[ResourceBudget] = None,
                        timeout_s: int = 180,
                        on_step: Optional[Callable[[str], None]] = None) -> PocRunResult:
-    """Ejecuta el PoC ya clonado DENTRO de un contenedor Docker efimero y acotado, con red
-    limitada SOLO al contenedor del lab objetivo (`--network container:<lab_target_container>`
-    cuando se da, igual que el patron ya usado en genericverify.py para que el PoC solo pueda
-    hablar con el target, no con internet ni con el host). `run_cmd_candidates` es una lista de
-    comandos a probar en orden (p.ej. propuestos por el LLM a partir del README: ve
-    `propose_run_commands` mas abajo) -- el LLM aqui PROPONE, nunca decide 'verified'; eso
-    sigue viniendo de que el oraculo/caller interprete la salida real (igual que
-    `_sandbox.run_driver` exige la convencion VERIFIED/NOT_VERIFIED).
+    """Ejecuta el PoC ya clonado, acotado y aislado. Rustico a proposito: no se descarga NINGUNA
+    imagen Docker nueva. Dos caminos, segun si hay un lab objetivo real al que llegar:
+
+    - SIN lab_target_container (solo queremos ver que el PoC corre / sanity check, sin target
+      vivo): delega en `_sandbox.run_bash`, que YA existe y YA sabe usar la imagen propia
+      `binoracle-pwn` si esta construida, o degradar a aislamiento NATIVO (unshare + setarch +
+      rlimits, sin Docker en absoluto) cuando no lo esta. Esto es lo que hace que el pipeline
+      funcione tambien en una maquina sin Docker -- antes esta funcion simplemente se rendia.
+
+    - CON lab_target_container (hay un lab Docker real levantado por el caller, p.ej.
+      _GenericLab, y el PoC necesita hablar con el): unico caso que SI necesita Docker de
+      verdad, porque `--network container:<id>` (compartir la pila de red de otro contenedor)
+      no tiene equivalente nativo razonable. Reusa la imagen `binoracle-pwn` si existe (no
+      pulea una imagen nueva); si no existe, degrada honestamente a available=False en vez de
+      tirar de una imagen generica de internet.
+
+    `run_cmd_candidates`: comandos a probar en orden (del LLM via `propose_run_commands`, o
+    heuristicos) -- el LLM PROPONE, nunca decide 'verified'; eso sigue viniendo de que el
+    oraculo/caller interprete la salida real (misma convencion VERIFIED/NOT_VERIFIED que
+    `_sandbox.run_driver`).
 
     No ejecuta nada si no hay slot de recursos libre (ver ResourceBudget/lab_slot): en ese
     caso degrada a available=False en vez de forzar un segundo lab concurrente."""
@@ -232,39 +278,74 @@ def run_poc_in_sandbox(staged: StagedPoc, lab_target_container: str,
     budget = budget or ResourceBudget()
     res = PocRunResult()
     if not staged.ok or not staged.local_dir:
-        res.note = "PoC no estaba correctamente clonado"  # type: ignore[attr-defined]
-        return res
-    if not shutil.which("docker"):
+        res.detail = "PoC no estaba correctamente clonado"
         res.available = False
-        res.detail = "docker no disponible: no se puede aislar la ejecucion del PoC con seguridad"
         return res
+
+    from . import _sandbox
 
     try:
         with lab_slot(budget, timeout_s=timeout_s + 30):
-            net_args = (["--network", f"container:{lab_target_container}"]
-                       if lab_target_container else ["--network", "none"])
             for cmd in run_cmd_candidates:
                 step(f"[poc] probando: {cmd[:120]}")
-                try:
-                    r = subprocess.run(
-                        ["docker", "run", "--rm", "--platform", "linux/amd64",
-                         *net_args, "--memory", "512m", "--pids-limit", "256",
-                         "-v", f"{staged.local_dir}:/poc:ro", "-w", "/poc",
-                         "python:3.11-slim", "bash", "-c",
-                         "pip install -q -r requirements.txt 2>/dev/null; " + cmd],
-                        capture_output=True, text=True, timeout=timeout_s)
-                    out = (r.stdout or "") + (r.stderr or "")
-                except subprocess.TimeoutExpired:
-                    out = "[timeout]"
-                # Detect daemon-not-running before logging anything (binary present but
-                # socket unreachable means available=False, not a transient PoC error).
-                if "Cannot connect to the Docker daemon" in out or r.returncode == 125:
-                    res.available = False
-                    res.detail = out[-400:]
-                    return res
+                full_cmd = "pip install -q -r requirements.txt 2>/dev/null; " + cmd
+
+                if lab_target_container:
+                    # Unico camino que de verdad necesita Docker (compartir red con el lab).
+                    if not shutil.which("docker") or not _sandbox._docker_image_ok():
+                        res.available = False
+                        res.detail = ("se requiere imagen binoracle-pwn para hablar con el lab "
+                                     "('--network container:<id>' no tiene via nativa) -- "
+                                     "'make pwn-image' si aun no esta construida")
+                        return res
+                    try:
+                        r = subprocess.run(
+                            ["docker", "run", "--rm", "--platform", "linux/amd64",
+                             "--network", f"container:{lab_target_container}",
+                             "--memory", "512m", "--pids-limit", "256",
+                             "-v", f"{staged.local_dir}:/poc:ro", "-w", "/poc",
+                             "binoracle-pwn", "bash", "-c", full_cmd],
+                            capture_output=True, text=True, timeout=timeout_s)
+                        out = (r.stdout or "") + (r.stderr or "")
+                        returncode = r.returncode
+                    except subprocess.TimeoutExpired:
+                        out = "[timeout]"
+                        returncode = None
+                    engine = "docker"
+                    # El daemon puede estar inalcanzable aunque `docker` y la imagen existan
+                    # (socket caido, VM de Docker Desktop parada a medias) -- eso NO es un
+                    # fallo del PoC, es infraestructura, y se reporta como available=False en
+                    # vez de como un intento fallido mas (bug real ya encontrado una vez aqui:
+                    # ver commit 1d1836f -- ok se ponia a True sin mirar el resultado real).
+                    if "Cannot connect to the Docker daemon" in out or returncode == 125:
+                        res.available = False
+                        res.detail = out[-400:]
+                        return res
+                else:
+                    # Sin lab que alcanzar: deja que _sandbox decida (docker propio si lo hay,
+                    # nativo si no) -- cero imagenes nuevas, funciona sin Docker instalado.
+                    # run_bash_generic (no run_bash): un PoC no es un binario pwn, no necesita
+                    # host x86-64 ni ASLR-off -- run_bash exige ambos y por eso degradaba con
+                    # "host no es x86-64" en un host ARM (Apple Silicon incluido) para un PoC
+                    # que ni siquiera tocaba un binario.
+                    eng, out = _sandbox.run_bash_generic(staged.local_dir, full_cmd,
+                                                         timeout=timeout_s, mem_mb=512)
+                    if eng is None:
+                        res.available = False
+                        res.detail = out  # motivo exacto por el que ni docker ni nativo valen
+                        return res
+                    engine = eng
+                    # _sandbox.run_bash no expone el returncode (solo texto combinado
+                    # stdout+stderr), asi que el mismo chequeo de infraestructura se hace por
+                    # contenido -- best effort, pero evita el mismo bug que arriba.
+                    returncode = 1 if "Cannot connect to the Docker daemon" in out else 0
+
                 res.logs.append(f"$ {cmd}\n{out[-1500:]}")
-                res.ok = r.returncode == 0
-                res.engine = "docker"
+                # ok refleja si el comando CORRIO de verdad, no solo si el bucle llego hasta
+                # aqui -- un returncode distinto de 0 (o el timeout, returncode=None) es un
+                # intento que no corrio limpio, aunque sigue siendo info util en res.logs.
+                res.ok = (returncode == 0)
+                res.engine = engine
                 # Convencion compartida con el resto del proyecto (_sandbox.run_driver): solo
                 # cuenta como verificado lo que el PROPIO target/lab confirma en su salida, no
                 # lo que el PoC de un tercero *diga* que hizo. El caller (quien conoce el
@@ -273,8 +354,8 @@ def run_poc_in_sandbox(staged: StagedPoc, lab_target_container: str,
                 res.detail = out[-400:]
                 if "VERIFIED" in out and "NOT_VERIFIED" not in out:
                     res.verified = True
-                    step("[poc] marcador VERIFIED visto en la salida -- el caller debe "
-                         "confirmarlo contra el lab antes de darlo por bueno")
+                    step(f"[poc] marcador VERIFIED visto en la salida (engine={engine}) -- "
+                         "el caller debe confirmarlo contra el lab antes de darlo por bueno")
                     break
     except TimeoutError as e:
         res.available = False
