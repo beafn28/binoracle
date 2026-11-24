@@ -430,6 +430,40 @@ def _detect_and_write_auto_dockerfile(source_dir: str) -> Optional[dict]:
     return None
 
 
+def _dockerfile_is_buildable(df_path: str, context_dir: str) -> bool:
+    """Return False for 'deployment Dockerfiles' that COPY pre-built binaries not present
+    in the source tree (e.g. COPY app-linux-amd64 /bin/app). These are release packaging
+    Dockerfiles — trying to build them always fails with 'file not found in build context'.
+
+    Heuristic: if any non-stage COPY references a file that (a) has a binary-platform
+    suffix (-linux-amd64, -darwin-, -arm64, .exe, etc.) AND (b) does not exist in the
+    context dir, it is a deployment-only Dockerfile.
+    """
+    import re as _re
+    # Patterns that indicate a pre-compiled binary name
+    _BINARY_PLATFORM_RE = _re.compile(
+        r'(?i)(-linux-|-darwin-|-windows-|-amd64|-arm64|-386|-musl|\.exe$|'
+        r'-linux$|-darwin$|-windows$)')
+    # COPY directives that reference local files (not --from=<stage> multistage)
+    _copy_re = _re.compile(r'^\s*COPY\s+(?!--from=\S)(\S+)', re.M)
+    try:
+        content = open(df_path, encoding="utf-8", errors="replace").read()
+    except OSError:
+        return True  # assume buildable if unreadable
+    local_copies = _copy_re.findall(content)
+    if not local_copies:
+        return True  # no local COPY → safe to try
+    for src in local_copies:
+        if src in (".", "./", ".."):
+            return True  # COPY . . → source copy → buildable
+        # Binary platform suffix AND file missing → deployment Dockerfile
+        if _BINARY_PLATFORM_RE.search(src):
+            candidate = os.path.join(context_dir, src)
+            if not os.path.exists(candidate):
+                return False  # pre-built binary missing → skip this Dockerfile
+    return True
+
+
 def _find_build_target(source_dir: str) -> Optional[dict]:
     """Busca, en el codigo YA descargado, como arrancar el objetivo -- un docker-compose.yml/
     compose.yml (en la raiz o un nivel por debajo, el sitio donde casi todo el mundo lo pone), o
@@ -460,7 +494,13 @@ def _find_build_target(source_dir: str) -> Optional[dict]:
             dirs[:] = []
             continue
         if "Dockerfile" in files:
-            return {"kind": "dockerfile", "path": os.path.join(root, "Dockerfile"), "context": root}
+            df_path = os.path.join(root, "Dockerfile")
+            # Skip "deployment Dockerfiles" that COPY pre-built binaries not present in
+            # the source tree (e.g. daptin's Dockerfile: COPY daptin-linux-amd64 /opt/...).
+            # These are release packaging Dockerfiles, not build-from-source ones.
+            if not _dockerfile_is_buildable(df_path, root):
+                continue
+            return {"kind": "dockerfile", "path": df_path, "context": root}
     return _detect_and_write_auto_dockerfile(source_dir)
 
 
