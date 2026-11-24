@@ -5966,6 +5966,107 @@ def verify_generic_prototype_pollution(
 
 
 # ---------------------------------------------------------------------------
+# CMS-specific auth helpers (Gitea / Nextcloud / Mattermost)
+# ---------------------------------------------------------------------------
+
+def _try_gitea_auth(base_url: str, on_step=None) -> dict:
+    """Authenticate against a Gitea instance and return a token dict.
+
+    Gitea REST API: POST /api/v1/users/{user}/tokens with Basic auth.
+    Dev user created in Dockerfile: gitea_test / Gitea12345!
+    Returns {"bearer": "token <tok>", "headers": {...}} or empty dict.
+    """
+    import json as _j
+    step = on_step or (lambda _m: None)
+    _user, _pwd = "gitea_test", "Gitea12345!"
+    _base = base_url.rstrip("/")
+    # First ensure the dev user exists (Gitea dev env may need registration)
+    for _ep in [f"/api/v1/users/{_user}/tokens"]:
+        try:
+            import base64 as _b64
+            _creds = _b64.b64encode(f"{_user}:{_pwd}".encode()).decode()
+            _r = _http_request(
+                "POST", _base + _ep,
+                data=_j.dumps({"name": f"binoracle_{_user}"}),
+                headers={"Content-Type": "application/json",
+                         "Authorization": f"Basic {_creds}"},
+                timeout=8)
+            if _r.status in (200, 201):
+                _d = _j.loads(_r.body or "{}")
+                _tok = _d.get("sha1") or _d.get("token") or ""
+                if _tok:
+                    step(f"  gitea-auth: token via {_ep} → {_tok[:8]}...")
+                    return {"bearer": f"token {_tok}",
+                            "headers": {"Authorization": f"token {_tok}"}}
+        except Exception:
+            pass
+    return {}
+
+
+def _try_nextcloud_auth(base_url: str, on_step=None) -> dict:
+    """Authenticate against Nextcloud and return a cookie/bearer dict.
+
+    Nextcloud OCS API: GET /ocs/v1.php/cloud/users with Basic auth works
+    for most operations.  Returns HTTP Basic header dict for OCS requests.
+    Dev user: nc_admin / Admin12345!
+    """
+    import base64 as _b64
+    step = on_step or (lambda _m: None)
+    _user, _pwd = "nc_admin", "Admin12345!"
+    _base = base_url.rstrip("/")
+    _creds = _b64.b64encode(f"{_user}:{_pwd}".encode()).decode()
+    # Probe the OCS API endpoint for auth confirmation
+    try:
+        _r = _http_request(
+            "GET", _base + "/ocs/v1.php/cloud/capabilities?format=json",
+            headers={"Authorization": f"Basic {_creds}",
+                     "OCS-APIRequest": "true"},
+            timeout=8)
+        if _r.status == 200 and "ocs" in (_r.body or "").lower():
+            step(f"  nextcloud-auth: Basic auth confirmed for {_user}")
+            return {"headers": {"Authorization": f"Basic {_creds}",
+                                "OCS-APIRequest": "true"}}
+    except Exception:
+        pass
+    return {}
+
+
+def _try_mattermost_auth(base_url: str, on_step=None) -> dict:
+    """Authenticate against Mattermost and return a token dict.
+
+    Mattermost REST API v4: POST /api/v4/users/login with JSON credentials.
+    Dev user: mm_admin / Admin12345! (created in Dockerfile setup)
+    Returns {"bearer": "Bearer <tok>", "headers": {...}} or empty dict.
+    """
+    import json as _j
+    step = on_step or (lambda _m: None)
+    _user, _pwd = "mm_admin", "Admin12345!"
+    _base = base_url.rstrip("/")
+    for _ep in ["/api/v4/users/login"]:
+        try:
+            _r = _http_request(
+                "POST", _base + _ep,
+                data=_j.dumps({"login_id": _user, "password": _pwd}),
+                headers={"Content-Type": "application/json"},
+                timeout=8)
+            if _r.status == 200:
+                # Token is in Token response header, not body
+                _tok = (_r.headers or {}).get("Token", "") or \
+                       (_r.headers or {}).get("token", "")
+                if not _tok:
+                    # Some versions include it in the body
+                    _d = _j.loads(_r.body or "{}")
+                    _tok = _d.get("token") or ""
+                if _tok:
+                    step(f"  mattermost-auth: token via {_ep} → {_tok[:8]}...")
+                    return {"bearer": f"Bearer {_tok}",
+                            "headers": {"Authorization": f"Bearer {_tok}"}}
+        except Exception:
+            pass
+    return {}
+
+
+# ---------------------------------------------------------------------------
 # JWT BYPASS verifier
 # ---------------------------------------------------------------------------
 
@@ -5988,6 +6089,26 @@ def _try_auto_auth(base_url: str, source_dir: str = "", on_step=None) -> dict:
     _user = "binoracle_test"
     _pwd = "Binoracle123!"
     _email = "test@binoracle.dev"
+
+    # Strategy 0: CMS-specific auth — probe for Gitea/Nextcloud/Mattermost APIs
+    # These are probed FIRST because they have known auth flows that the generic
+    # strategies below are unlikely to hit (non-standard endpoints, Token header, etc.)
+    _base_check = base_url.rstrip("/")
+    for _cms_probe, _cms_fn in [
+        ("/api/v1/users", _try_gitea_auth),          # Gitea API endpoint
+        ("/ocs/v1.php/cloud/capabilities", _try_nextcloud_auth),  # Nextcloud OCS
+        ("/api/v4/users/login", _try_mattermost_auth),  # Mattermost v4
+    ]:
+        try:
+            _probe_r = _http_request("GET", _base_check + _cms_probe, timeout=4)
+            if _probe_r.status in (200, 401, 403):  # any response = this CMS is here
+                _cms_result = _cms_fn(base_url, on_step=on_step)
+                if _cms_result.get("headers"):
+                    result.update(_cms_result)
+                    return result
+                break  # CMS detected but auth failed; don't probe other CMSs
+        except Exception:
+            pass
 
     # 1. OAuth2 form-encoded /token
     for _ep in ["/token", "/api/token", "/auth/token", "/api/auth/token",
