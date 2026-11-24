@@ -1219,10 +1219,14 @@ class _GenericLab:
                                     return (c, port)
                             except Exception:
                                 continue
-            # Siempre intentar HTTP directamente (para apps sin señal específica)
+            # Siempre intentar HTTP directamente (para apps sin señal específica).
+            # Algunas apps (Gradio 4.x) devuelven 500 en "/" pero 200 en rutas propias;
+            # probar estas rutas alternativas antes de dormir.
+            _FALLBACK_PROBE_PATHS = ["/info", "/health", "/queue/status", "/api/health"]
             for c in self.running_containers():
                 ports = self.published_ports(c)
                 for port in ports:
+                    _root_gave_5xx = False
                     try:
                         with urllib.request.urlopen(f"http://{host}:{port}/", timeout=4) as r:
                             if r.status < 500:
@@ -1239,8 +1243,22 @@ class _GenericLab:
                                 if not any(sig.lower() in logs_text.lower() for sig in ready_signals):
                                     continue
                             return (c, port)
+                        _root_gave_5xx = True
                     except Exception:
                         continue
+                    # Root devolvió 5xx — probar rutas alternativas conocidas
+                    if _root_gave_5xx:
+                        for _probe in _FALLBACK_PROBE_PATHS:
+                            try:
+                                with urllib.request.urlopen(
+                                        f"http://{host}:{port}{_probe}", timeout=3) as r:
+                                    if r.status < 500:
+                                        return (c, port)
+                            except urllib.error.HTTPError as e:
+                                if e.code < 500:
+                                    return (c, port)
+                            except Exception:
+                                continue
             time.sleep(delay)
         return None
 
