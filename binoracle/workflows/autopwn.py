@@ -116,46 +116,55 @@ def autopwn(binary: str, config=None, store=None,
     if store:
         store.save_verified_facts(findings, arch, bits, cs.data if cs.ok else "")
 
-    # 3) try combinations
+    # 3) try combinations — built as a sorted closure list so ai_order changes EXECUTION
+    # order (not just display order). Each closure checks its own applicability gates and
+    # the shared res.win_exploit flag; once a shell is verified, later closures bail early.
     win = find_win(binary)
-
-    # combo A: ret2win (build + sandbox verify)
     is_pie = str(mit.get("pic", "")).lower() in ("true", "1")
     canary_on = str(mit.get("canary", "")).lower() in ("true", "1")
-    # Un canary detiene el overflow lineal ANTES del `ret`, asi que el ret2win directo no puede
-    # funcionar: seria un intento de sandbox fallido garantizado. Con canary + win() la ruta
-    # correcta es el bypass por fuga (combo G, autocanary), no el ret2win directo.
-    if want("ret2win") and win is not None and not canary_on:
-        log("[combo] ret2win: construyendo y verificando en sandbox..." + (" (PIE)" if is_pie else ""))
-        try:
-            if is_pie:
-                from .autopie import autopie_ret2win
-                rp = autopie_ret2win(binary, run=run)
-                verdict = True if rp.get("verified") else (None if rp.get("ok") else False)
-                res.attempts.append(("ret2win", verdict, rp.get("detail") or rp.get("note", "")))
-                res.win_exploit = res.win_exploit or bool(rp.get("verified"))
-                log(f"[combo] ret2win (PIE) -> {'FUNCIONA (verificado)' if rp.get('verified') else 'no verificado'}")
-                learn(f"ret2win-pie verified={rp.get('verified')} {rp.get('detail','')}")
-            else:
-                r = autopoc(binary, run=run)
-                res.attempts.append(("ret2win", r.verified, f"offset={r.offset} win={hex(win)}"))
-                res.win_exploit = res.win_exploit or r.verified
-                log(f"[combo] ret2win -> {'FUNCIONA (verificado)' if r.verified else ('construido, no verificado' if r.ok else 'no aplicable')}")
-                learn(f"ret2win verified={r.verified} offset={r.offset} win={hex(win)}")
-        except Exception as e:
-            res.attempts.append(("ret2win", False, str(e)))
-            log(f"[combo] ret2win error: {e}")
-    elif want("ret2win") and win is not None and canary_on:
-        log("[combo] ret2win: canary activo -> el overflow lineal se omite, se usa el bypass por fuga (combo canary)")
-    elif want("ret2win"):
-        log("[combo] ret2win: no hay funcion gift -> se omite")
+    relro_full = "full" in str(mit.get("relro", "")).lower()
 
-    # combo A2: SROP FIRST on a no-PIE binary with no gift. autosrop is cheap (it bails fast when
-    # there is no `pop rax`+syscall+in-binary '/bin/sh') and, when it applies, verifies in one shot
-    # -- whereas the generic rop-chain below sweeps execve offsets slowly before falling back to
-    # SROP internally. Trying the dedicated fast path first keeps gadget-poor static binaries (srop,
-    # staticrop) within the trainer's per-binary budget.
-    if run and want("srop") and not is_pie and win is None and not res.win_exploit:
+    _combos: list = []  # [(name, fn)]
+
+    def _reg(name, fn):
+        _combos.append((name, fn))
+
+    # --- combo A: ret2win ---
+    def _do_ret2win():
+        if res.win_exploit:
+            return
+        if want("ret2win") and win is not None and not canary_on:
+            log("[combo] ret2win: construyendo y verificando en sandbox..." + (" (PIE)" if is_pie else ""))
+            try:
+                if is_pie:
+                    from .autopie import autopie_ret2win
+                    rp = autopie_ret2win(binary, run=run)
+                    verdict = True if rp.get("verified") else (None if rp.get("ok") else False)
+                    res.attempts.append(("ret2win", verdict, rp.get("detail") or rp.get("note", "")))
+                    res.win_exploit = res.win_exploit or bool(rp.get("verified"))
+                    log(f"[combo] ret2win (PIE) -> {'FUNCIONA (verificado)' if rp.get('verified') else 'no verificado'}")
+                    learn(f"ret2win-pie verified={rp.get('verified')} {rp.get('detail','')}")
+                else:
+                    r = autopoc(binary, run=run)
+                    res.attempts.append(("ret2win", r.verified, f"offset={r.offset} win={hex(win)}"))
+                    res.win_exploit = res.win_exploit or r.verified
+                    log(f"[combo] ret2win -> {'FUNCIONA (verificado)' if r.verified else ('construido, no verificado' if r.ok else 'no aplicable')}")
+                    learn(f"ret2win verified={r.verified} offset={r.offset} win={hex(win)}")
+            except Exception as e:
+                res.attempts.append(("ret2win", False, str(e)))
+                log(f"[combo] ret2win error: {e}")
+        elif want("ret2win") and win is not None and canary_on:
+            log("[combo] ret2win: canary activo -> el overflow lineal se omite, se usa el bypass por fuga (combo canary)")
+        elif want("ret2win"):
+            log("[combo] ret2win: no hay funcion gift -> se omite")
+    _reg("ret2win", _do_ret2win)
+
+    # --- combo A2: SROP ---
+    def _do_srop():
+        if not run or res.win_exploit:
+            return
+        if not (want("srop") and not is_pie and win is None):
+            return
         log("[combo] SROP: sigreturn -> execve('/bin/sh') (sandbox)...")
         try:
             from .autosrop import autosrop
@@ -167,11 +176,14 @@ def autopwn(binary: str, config=None, store=None,
             learn(f"srop verified={rs.get('verified')} {rs.get('detail','')}")
         except Exception as e:
             res.attempts.append(("srop", False, str(e)))
+    _reg("srop", _do_srop)
 
-    # combo A2b: SROP on aarch64 -- only even worth trying when recon's own arch says ARM;
-    # the driver itself also checks `elf.arch != "aarch64"` and degrades honestly, but gating it
-    # here avoids spawning a sandbox run for an x86-64 target that could never apply.
-    if run and want("srop-aarch64") and "arm" in (arch or "").lower() and not res.win_exploit:
+    # --- combo A2b: SROP aarch64 ---
+    def _do_srop_aarch64():
+        if not run or res.win_exploit:
+            return
+        if not (want("srop-aarch64") and "arm" in (arch or "").lower()):
+            return
         log("[combo] SROP (aarch64): sigreturn -> execve('/bin/sh') (sandbox/qemu-aarch64)...")
         try:
             from .autosrop_aarch64 import autosrop_aarch64
@@ -183,12 +195,12 @@ def autopwn(binary: str, config=None, store=None,
             learn(f"srop-aarch64 verified={ra.get('verified')} {ra.get('detail','')}")
         except Exception as e:
             res.attempts.append(("srop-aarch64", False, str(e)))
+    _reg("srop-aarch64", _do_srop_aarch64)
 
-    # combo A3: ret2csu -- gadget-poor binaries that still have the two universal
-    # __libc_csu_init-style gadgets (sets rdi/rsi/rdx and makes an indirect call WITHOUT any
-    # pop rsi/pop rdx of their own). Tried before the generic ROP sweep below, which would never
-    # find this path (no pop rsi/pop rdx to find).
-    if want("ret2csu") and not res.win_exploit:
+    # --- combo A3: ret2csu ---
+    def _do_ret2csu():
+        if res.win_exploit or not want("ret2csu"):
+            return
         try:
             from .autocsu import autocsu, _csu_applicable
             if _csu_applicable(binary):
@@ -201,12 +213,12 @@ def autopwn(binary: str, config=None, store=None,
                 learn(f"ret2csu verified={rcu.get('verified')} {rcu.get('detail','')}")
         except Exception as e:
             res.attempts.append(("ret2csu", False, str(e)))
+    _reg("ret2csu", _do_ret2csu)
 
-    # combo A4: stack pivot -- the overflow is too SHORT for a full chain (only reaches saved
-    # rbp/rip), so it migrates RSP into a larger, already-staged buffer via `leave; ret`. Only
-    # worth trying when there IS a gift function but the direct/ROP paths above didn't verify
-    # (a short overflow is exactly the shape that makes them fail).
-    if want("pivot") and not res.win_exploit:
+    # --- combo A4: stack pivot ---
+    def _do_pivot():
+        if res.win_exploit or not want("pivot"):
+            return
         try:
             from .autopivot import autopivot, _pivot_applicable
             if _pivot_applicable(binary):
@@ -219,13 +231,12 @@ def autopwn(binary: str, config=None, store=None,
                 learn(f"pivot verified={rpv.get('verified')} {rpv.get('detail','')}")
         except Exception as e:
             res.attempts.append(("pivot", False, str(e)))
+    _reg("pivot", _do_pivot)
 
-    # combo A5: callme -- a distinct shape from ret2csu/ret2win: the binary is GADGET-RICH (has a
-    # plain `pop rdi; pop rsi; pop rdx; ret`), so there's no csu trick needed, but the gift is
-    # split across SEVERAL functions, each validating its OWN fixed arguments, that must be
-    # called in the right order. Tried after the single-target strategies above, which never find
-    # this (there's no single win()-style target to jump to).
-    if want("callme") and not res.win_exploit:
+    # --- combo A5: callme ---
+    def _do_callme():
+        if res.win_exploit or not want("callme"):
+            return
         try:
             from .autocallme import autocallme, _callme_applicable
             if _callme_applicable(binary):
@@ -238,13 +249,12 @@ def autopwn(binary: str, config=None, store=None,
                 learn(f"callme verified={rcm.get('verified')} {rcm.get('detail','')}")
         except Exception as e:
             res.attempts.append(("callme", False, str(e)))
+    _reg("callme", _do_callme)
 
-    # combo A6: write4 -- write-what-where. No win()/gift target reachable by name, no useful
-    # pre-existing string, but a `pop regA; pop regB; ret` + `mov [regA], regB; ret` pair lets the
-    # exploit stage a short string (a guessed flag filename) into memory itself before calling a
-    # function that takes it. Tried after callme, which never finds this (there's no multi-target
-    # name/structure match -- just one write-then-call target).
-    if want("write4") and not res.win_exploit:
+    # --- combo A6: write4 ---
+    def _do_write4():
+        if res.win_exploit or not want("write4"):
+            return
         try:
             from .autowrite4 import autowrite4, _write4_applicable
             if _write4_applicable(binary):
@@ -257,13 +267,12 @@ def autopwn(binary: str, config=None, store=None,
                 learn(f"write4 verified={rw4.get('verified')} {rw4.get('detail','')}")
         except Exception as e:
             res.attempts.append(("write4", False, str(e)))
+    _reg("write4", _do_write4)
 
-    # combo A7: badchars -- write-what-where PAST an input byte filter. Same shape as write4, but
-    # the whole payload (gadget addresses included) is filtered for a small forbidden-byte set,
-    # so the target string has to be XOR-encoded with a key that keeps both the key and the
-    # encoding out of that set, written, then decoded in place. Tried after write4, which would
-    # just get its raw string write silently corrupted by the filter if it ran against this shape.
-    if want("badchars") and not res.win_exploit:
+    # --- combo A7: badchars ---
+    def _do_badchars():
+        if res.win_exploit or not want("badchars"):
+            return
         try:
             from .autobadchars import autobadchars, _badchars_applicable
             if _badchars_applicable(binary):
@@ -276,33 +285,35 @@ def autopwn(binary: str, config=None, store=None,
                 learn(f"badchars verified={rbc.get('verified')} {rbc.get('detail','')}")
         except Exception as e:
             res.attempts.append(("badchars", False, str(e)))
+    _reg("badchars", _do_badchars)
 
-    # combo B: ROP chain (ret2libc / execve). On a PIE binary the base must be resolved first, so
-    # use the PIE-aware ROP verifier; otherwise the static/no-PIE ROP builder (with string staging
-    # + SROP). Both verify by getting a real shell in the sandbox. Skipped once we already have a
-    # verified shell -- no point spending the slow execve-offset sweep after SROP/ret2win won.
-    if want("rop-chain") and not res.win_exploit:
-      log("[combo] cadena ROP: intentando construir..." + (" (PIE)" if is_pie else ""))
-      try:
-        if is_pie:
-            from .autopie import autopie_rop
-            rr = autopie_rop(binary, run=run)
-        else:
-            from .autopoc import autorop
-            rr = autorop(binary, run=run)
-        verdict = True if rr.get("verified") else (None if rr.get("ok") else False)
-        detail = (rr.get("strategy", "") + (" -> SHELL verificada" if rr.get("verified") else
-                  " (construida)" if rr.get("ok") else "")) or rr.get("detail") or rr.get("note", "")
-        res.attempts.append(("rop-chain", verdict, detail or rr.get("note", "")))
-        res.win_exploit = res.win_exploit or bool(rr.get("verified"))
-        log(f"[combo] cadena ROP -> {'SHELL VERIFICADA' if rr.get('verified') else ('construida' if rr.get('ok') else 'no automatica')}")
-        learn(f"rop verified={rr.get('verified')} strategy={rr.get('strategy') or rr.get('detail')}")
-      except Exception as e:
-        res.attempts.append(("rop-chain", False, str(e)))
+    # --- combo B: ROP chain ---
+    def _do_rop_chain():
+        if res.win_exploit or not want("rop-chain"):
+            return
+        log("[combo] cadena ROP: intentando construir..." + (" (PIE)" if is_pie else ""))
+        try:
+            if is_pie:
+                from .autopie import autopie_rop
+                rr = autopie_rop(binary, run=run)
+            else:
+                from .autopoc import autorop
+                rr = autorop(binary, run=run)
+            verdict = True if rr.get("verified") else (None if rr.get("ok") else False)
+            detail = (rr.get("strategy", "") + (" -> SHELL verificada" if rr.get("verified") else
+                      " (construida)" if rr.get("ok") else "")) or rr.get("detail") or rr.get("note", "")
+            res.attempts.append(("rop-chain", verdict, detail or rr.get("note", "")))
+            res.win_exploit = res.win_exploit or bool(rr.get("verified"))
+            log(f"[combo] cadena ROP -> {'SHELL VERIFICADA' if rr.get('verified') else ('construida' if rr.get('ok') else 'no automatica')}")
+            learn(f"rop verified={rr.get('verified')} strategy={rr.get('strategy') or rr.get('detail')}")
+        except Exception as e:
+            res.attempts.append(("rop-chain", False, str(e)))
+    _reg("rop-chain", _do_rop_chain)
 
-    # combo B2: ret2libc with leak (dynamic binaries), verified by getting a shell. Skipped once a
-    # shell is already verified.
-    if want("ret2libc") and not res.win_exploit:
+    # --- combo B2: ret2libc ---
+    def _do_ret2libc():
+        if res.win_exploit or not want("ret2libc"):
+            return
         log("[combo] ret2libc con leak (fuga libc -> system, sandbox)...")
         try:
             from .autolibc import autolibc
@@ -314,17 +325,24 @@ def autopwn(binary: str, config=None, store=None,
             learn(f"ret2libc verified={rl.get('verified')} {rl.get('detail','')}")
         except Exception as e:
             res.attempts.append(("ret2libc", False, str(e)))
+    _reg("ret2libc", _do_ret2libc)
 
-    # combo C: stack shellcode if NX is off
-    if want("shellcode-stack") and str(mit.get("nx", "")).lower() in ("false", "0", "nx_off"):
-        res.attempts.append(("shellcode-stack", True, "NX desactivado -> shellcode en stack viable"))
-        log("[combo] NX off -> shellcode en stack viable")
-        learn("shellcode-stack viable (NX off)")
+    # --- combo C: shellcode-stack ---
+    def _do_shellcode_stack():
+        if not want("shellcode-stack"):
+            return
+        if str(mit.get("nx", "")).lower() in ("false", "0", "nx_off"):
+            res.attempts.append(("shellcode-stack", True, "NX desactivado -> shellcode en stack viable"))
+            log("[combo] NX off -> shellcode en stack viable")
+            learn("shellcode-stack viable (NX off)")
+    _reg("shellcode-stack", _do_shellcode_stack)
 
-    # combo C2: mprotect()+shellcode (NX bypass sin leak) si NX esta ON -- si esta OFF, el combo
-    # C de arriba ya cubre el caso (shellcode en stack directo, sin necesidad de ROP).
-    if (want("mprotect-shellcode") and not res.win_exploit
-            and str(mit.get("nx", "")).lower() not in ("false", "0", "nx_off")):
+    # --- combo C2: mprotect+shellcode ---
+    def _do_mprotect_shellcode():
+        if res.win_exploit or not want("mprotect-shellcode"):
+            return
+        if str(mit.get("nx", "")).lower() in ("false", "0", "nx_off"):
+            return
         log("[combo] mprotect()+shellcode: ROP a mprotect() sobre un buffer fijo -> shellcode real...")
         try:
             from .autoropmprotect import autoropmprotect
@@ -336,10 +354,12 @@ def autopwn(binary: str, config=None, store=None,
             learn(f"mprotect-shellcode verified={rm.get('verified')} {rm.get('detail','')}")
         except Exception as e:
             res.attempts.append(("mprotect-shellcode", False, str(e)))
+    _reg("mprotect-shellcode", _do_mprotect_shellcode)
 
-    # combo C3: infoleak chaining (un OOB read/write bug que filtra libc y lo encadena a un
-    # hijack de function-pointer -> shell, sin esperar a un bug de formato/heap especifico).
-    if want("leak-chain") and not res.win_exploit:
+    # --- combo C3: leak-chain ---
+    def _do_leak_chain():
+        if res.win_exploit or not want("leak-chain"):
+            return
         log("[combo] infoleak chaining: OOB read -> libc_base -> write-what-where -> shell...")
         try:
             from .autoleakchain import autoleakchain
@@ -351,9 +371,12 @@ def autopwn(binary: str, config=None, store=None,
             learn(f"leak-chain verified={rk.get('verified')} {rk.get('detail','')}")
         except Exception as e:
             res.attempts.append(("leak-chain", False, str(e)))
+    _reg("leak-chain", _do_leak_chain)
 
-    # combo D: format-string (verified by GOT overwrite -> shell)
-    if want("format-string") and any(s in sink_names for s in ("printf", "fprintf", "snprintf")):
+    # --- combo D: format-string ---
+    def _do_format_string():
+        if not (want("format-string") and any(s in sink_names for s in ("printf", "fprintf", "snprintf"))):
+            return
         log("[combo] format-string: intentando GOT overwrite -> shell (sandbox)...")
         try:
             from .autofmt import autofmt
@@ -365,26 +388,19 @@ def autopwn(binary: str, config=None, store=None,
             learn(f"format-string verified={rf.get('verified')} {rf.get('detail','')}")
         except Exception as e:
             res.attempts.append(("format-string", False, str(e)))
+    _reg("format-string", _do_format_string)
 
-    if ai_order:
-        rank = {t: i for i, t in enumerate(ai_order)}
-        res.attempts.sort(key=lambda a: rank.get(a[0], 99))
-        log("[ia] orden priorizado por la IA: " + ", ".join(ai_order))
-
-    # 4) AI conclusion on what worked
-    if llm is not None and getattr(llm, "available", lambda: False)():
-        res.ai_conclusion = _ai_conclude(llm, res)
-        if res.ai_conclusion:
-            log("[ia] conclusion generada")
-            learn("conclusion IA: " + res.ai_conclusion[:400])
-
-    # combo E: heap corruption confirmed dynamically
-    heap_tool = reg.get("r2_heap")
-    has_heap = False
-    if heap_tool:
-        _hr = heap_tool.run()
-        has_heap = _hr.ok and _hr.meta.get("heap", False)
-    if want("heap") and has_heap:
+    # --- combo E: heap-corruption ---
+    def _do_heap():
+        if not want("heap"):
+            return
+        heap_tool = reg.get("r2_heap")
+        has_heap = False
+        if heap_tool:
+            _hr = heap_tool.run()
+            has_heap = _hr.ok and _hr.meta.get("heap", False)
+        if not has_heap:
+            return
         log("[combo] heap: confirmando corrupcion (double-free/overflow) en sandbox...")
         try:
             from .autoheap import autoheap
@@ -399,9 +415,11 @@ def autopwn(binary: str, config=None, store=None,
                 log("[combo] heap -> no disparada con entradas de prueba")
         except Exception as e:
             res.attempts.append(("heap-corruption", False, str(e)))
+    _reg("heap", _do_heap)
 
-    # combo F: heap-to-shell families (menu-driven). Cheap ELF-symbol applicability pre-checks
-    # avoid wasted sandbox runs; each driver verifies by getting a REAL shell (not just a crash).
+    # --- combo F: heap-to-shell families ---
+    # Pre-load applicable families at definition time (before sort) so the AI can
+    # reorder them individually. Each family gets its own closure via _make_heap_fn.
     if run:
         try:
             from .autoheap import autoheap_shell, _heap_shell_applicable
@@ -419,58 +437,63 @@ def autopwn(binary: str, config=None, store=None,
             from .autounsafeunlink import autounsafeunlink, _unsafeunlink_applicable
             from .autohoc import autohoc, _hoc_applicable
             from .autostash import autostash, _stash_applicable
-            heap_combos = []
+            _heap_family_specs = []
             if want("heap-shell") and _heap_shell_applicable(binary):
-                heap_combos.append(("heap-shell", autoheap_shell, "tcache poison -> free@GOT=win"))
+                _heap_family_specs.append(("heap-shell", autoheap_shell, "tcache poison -> free@GOT=win"))
             if want("uaf-funcptr") and _uaf_applicable(binary):
-                heap_combos.append(("uaf-funcptr", autouaf_shell, "UAF reuso de chunk -> funcptr=win"))
+                _heap_family_specs.append(("uaf-funcptr", autouaf_shell, "UAF reuso de chunk -> funcptr=win"))
             if want("tcache-dup") and _tcache_dup_applicable(binary):
-                heap_combos.append(("tcache-dup", autotcachedup_shell, "tcache dup -> GOT=system"))
+                _heap_family_specs.append(("tcache-dup", autotcachedup_shell, "tcache dup -> GOT=system"))
             if want("write-what-where") and _wow_applicable(binary):
-                heap_combos.append(("write-what-where", autowow_shell, "indice sin comprobar -> GOT=win"))
-            # glibc-internals families (cada una contra un asignador que reproduce la precondicion
-            # concreta que esa tecnica abusa -- house-of-force esta mitigado en glibc >=2.29, el
-            # resto no; ver el docstring de cada modulo).
+                _heap_family_specs.append(("write-what-where", autowow_shell, "indice sin comprobar -> GOT=win"))
             if want("house-of-force") and _hof_applicable(binary):
-                heap_combos.append(("house-of-force", autohof, "top-chunk pre-2.29 -> top arbitrario -> hijack"))
+                _heap_family_specs.append(("house-of-force", autohof, "top-chunk pre-2.29 -> top arbitrario -> hijack"))
             if want("house-of-spirit") and _hos_applicable(binary):
-                heap_combos.append(("house-of-spirit", autohos, "chunk falso en tcache -> hijack"))
+                _heap_family_specs.append(("house-of-spirit", autohos, "chunk falso en tcache -> hijack"))
             if want("house-of-einherjar") and _hoe_applicable(binary):
-                heap_combos.append(("house-of-einherjar", autohoe, "consolidacion hacia atras -> hijack"))
+                _heap_family_specs.append(("house-of-einherjar", autohoe, "consolidacion hacia atras -> hijack"))
             if want("house-of-botcake") and _botcake_applicable(binary):
-                heap_combos.append(("house-of-botcake", autobotcake, "doble-free via unsorted -> tcache poison"))
+                _heap_family_specs.append(("house-of-botcake", autobotcake, "doble-free via unsorted -> tcache poison"))
             if want("largebin-attack") and _largebin_applicable(binary):
-                heap_combos.append(("largebin-attack", autolargebin, "insercion en largebin -> escritura de puntero"))
+                _heap_family_specs.append(("largebin-attack", autolargebin, "insercion en largebin -> escritura de puntero"))
             if want("house-of-mind") and _homind_applicable(binary):
-                heap_combos.append(("house-of-mind", autohomind, "ar_ptr forjado -> insercion en fastbin arbitraria"))
+                _heap_family_specs.append(("house-of-mind", autohomind, "ar_ptr forjado -> insercion en fastbin arbitraria"))
             if want("iofile-fsop") and _iofile_applicable(binary):
-                heap_combos.append(("iofile-fsop", autoiofile, "vtable de _IO_FILE reapuntada -> __overflow(fp)"))
+                _heap_family_specs.append(("iofile-fsop", autoiofile, "vtable de _IO_FILE reapuntada -> __overflow(fp)"))
             if want("fastbin-dup") and _fastbindup_applicable(binary):
-                heap_combos.append(("fastbin-dup", autofastbindup, "doble-free A,B,A (pre-safe-linking) -> fd envenenado"))
+                _heap_family_specs.append(("fastbin-dup", autofastbindup, "doble-free A,B,A (pre-safe-linking) -> fd envenenado"))
             if want("unsafe-unlink") and _unsafeunlink_applicable(binary):
-                heap_combos.append(("unsafe-unlink", autounsafeunlink, "bypass del chequeo 2.3.4+ -> ptr cerca de si mismo"))
+                _heap_family_specs.append(("unsafe-unlink", autounsafeunlink, "bypass del chequeo 2.3.4+ -> ptr cerca de si mismo"))
             if want("house-of-corrosion") and _hoc_applicable(binary):
-                heap_combos.append(("house-of-corrosion", autohoc, "global_max_fast corrompido -> indice de fastbin sin cota"))
+                _heap_family_specs.append(("house-of-corrosion", autohoc, "global_max_fast corrompido -> indice de fastbin sin cota"))
             if want("tcache-stash") and _stash_applicable(binary):
-                heap_combos.append(("tcache-stash", autostash, "stash de smallbin->tcache -> chunk falso stashed"))
+                _heap_family_specs.append(("tcache-stash", autostash, "stash de smallbin->tcache -> chunk falso stashed"))
         except Exception as e:
-            heap_combos = []
+            _heap_family_specs = []
             log(f"[combo] heap-shell families no disponibles: {e}")
-        for name, fn, desc in heap_combos:
-            log(f"[combo] {name}: {desc} (sandbox)...")
-            try:
-                rx = fn(binary)
-                verdict = True if rx.get("verified") else (None if rx.get("ok") else False)
-                res.attempts.append((name, verdict, rx.get("detail") or rx.get("note", "")))
-                res.win_exploit = res.win_exploit or bool(rx.get("verified"))
-                log(f"[combo] {name} -> {'SHELL VERIFICADA' if rx.get('verified') else 'no verificado'}")
-                learn(f"{name} verified={rx.get('verified')} {rx.get('detail','')}")
-            except Exception as e:
-                res.attempts.append((name, False, str(e)))
 
-    # combo G: stack-canary bypass by leak (canary present + a gift win()). autocanary leaks the
-    # canary via a %s echo, then overflows past it to win().
-    if run and want("canary") and canary_on and win is not None:
+        def _make_heap_fn(hname, hfn, hdesc):
+            def _do():
+                if res.win_exploit:
+                    return
+                log(f"[combo] {hname}: {hdesc} (sandbox)...")
+                try:
+                    rx = hfn(binary)
+                    verdict = True if rx.get("verified") else (None if rx.get("ok") else False)
+                    res.attempts.append((hname, verdict, rx.get("detail") or rx.get("note", "")))
+                    res.win_exploit = res.win_exploit or bool(rx.get("verified"))
+                    log(f"[combo] {hname} -> {'SHELL VERIFICADA' if rx.get('verified') else 'no verificado'}")
+                    learn(f"{hname} verified={rx.get('verified')} {rx.get('detail','')}")
+                except Exception as ex:
+                    res.attempts.append((hname, False, str(ex)))
+            return _do
+        for _hname, _hfn, _hdesc in _heap_family_specs:
+            _reg(_hname, _make_heap_fn(_hname, _hfn, _hdesc))
+
+    # --- combo G: canary-bypass ---
+    def _do_canary():
+        if not (run and want("canary") and canary_on and win is not None):
+            return
         log("[combo] canary: fuga del canary + overflow a win (sandbox)...")
         try:
             from .autocanary import autocanary
@@ -482,14 +505,13 @@ def autopwn(binary: str, config=None, store=None,
             learn(f"canary-bypass verified={rc.get('verified')} {rc.get('detail','')}")
         except Exception as e:
             res.attempts.append(("canary-bypass", False, str(e)))
+    _reg("canary-bypass", _do_canary)
 
-    # combo H: ret2dlresolve -- last resort for a dynamic, no-PIE binary with NO gift and NO leak
-    # (no win, no system in it): forge the linker's resolver structures to call system('/bin/sh')
-    # without leaking libc. Only worth trying when the simpler routes don't apply, so gate on
-    # dynamic + no-PIE + no win(); the driver re-checks RELRO/gadgets and degrades honestly.
-    relro_full = "full" in str(mit.get("relro", "")).lower()
-    if (run and want("dlresolve") and not is_pie and not relro_full and win is None
-            and not res.win_exploit and "system" not in sink_names):
+    # --- combo H: ret2dlresolve ---
+    def _do_dlresolve():
+        if not (run and want("dlresolve") and not is_pie and not relro_full
+                and win is None and not res.win_exploit and "system" not in sink_names):
+            return
         log("[combo] ret2dlresolve: shell sin leak forjando el resolver dinamico (sandbox)...")
         try:
             from .autodlresolve import autodlresolve
@@ -501,6 +523,26 @@ def autopwn(binary: str, config=None, store=None,
             learn(f"ret2dlresolve verified={rd.get('verified')} {rd.get('detail','')}")
         except Exception as e:
             res.attempts.append(("ret2dlresolve", False, str(e)))
+    _reg("ret2dlresolve", _do_dlresolve)
+
+    # Sort by AI plan BEFORE executing — ai_order now controls what RUNS first, not just
+    # what displays first. Techniques not in ai_order fall to rank 99 (tried last).
+    if ai_order:
+        _rank = {t: i for i, t in enumerate(ai_order)}
+        _combos.sort(key=lambda x: _rank.get(x[0], 99))
+        log("[ia] orden de EJECUCION priorizado: " + ", ".join(ai_order))
+
+    # Execute combos in AI-prioritized order; each closure checks its own applicability
+    # and res.win_exploit (once a shell is verified, later combos bail early).
+    for _cname, _cfn in _combos:
+        _cfn()
+
+    # AI conclusion after all combos finish
+    if llm is not None and getattr(llm, "available", lambda: False)():
+        res.ai_conclusion = _ai_conclude(llm, res)
+        if res.ai_conclusion:
+            log("[ia] conclusion generada")
+            learn("conclusion IA: " + res.ai_conclusion[:400])
 
     log("[fin] combinaciones probadas: " + ", ".join(a[0] for a in res.attempts))
     return res
