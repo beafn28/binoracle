@@ -1341,6 +1341,22 @@ def run_full_chain(
     if result.report_path:
         step(f"  informe: {result.report_path}")
 
+    # ── Lessons: record this CVE's outcome for future runs ────────────────────
+    try:
+        from .cve_lessons import detect_stack, record_cve_result
+        inv = result.inv
+        _les_desc = (cve_info.get("description") or "") if cve_info else ""
+        _les_stack = detect_stack(_les_desc)
+        _les_notes = (getattr(inv, "llm_notes", {}) or {}) if inv else {}
+        _les_ep = _les_notes.get("endpoint") or ""
+        _les_bh = _les_notes.get("bypass_header") or ""
+        _les_bv = _les_notes.get("bypass_value") or ""
+        _les_vc = (getattr(inv, "vuln_class", "") or _les_notes.get("vuln_class", "")) if inv else ""
+        record_cve_result(_les_stack, cve_id, _les_ep, result.verified,
+                          _les_bh, _les_bv, _les_vc)
+    except Exception:
+        pass
+
     return result
 
 
@@ -1349,6 +1365,7 @@ def run_full_chain(
 def auto_queue_nvd(days_back: int = 2, min_cvss: float = 7.0,
                    max_cves: int = 10, web_only: bool = True,
                    lang: str = "es", budget_s: float = 300.0,
+                   priority_mode: str = "cvss",
                    on_step=None) -> List["ChainResult"]:
     """Fetch recent high-severity web CVEs from NVD and investigate each autonomously.
 
@@ -1356,24 +1373,40 @@ def auto_queue_nvd(days_back: int = 2, min_cvss: float = 7.0,
     filters to web-related ones (unless web_only=False), and runs run_full_chain
     on each. Returns the list of ChainResult objects.
 
+    priority_mode:
+      "cvss"  — sort by CVSS score descending (default)
+      "new"   — newest published first
+      "cms"   — CMS-related CVEs first (WordPress/Drupal/Joomla), then by CVSS
+
     Usage:
         from binoracle.workflows.auto_chain import auto_queue_nvd
-        results = auto_queue_nvd(days_back=1, min_cvss=8.0)
+        results = auto_queue_nvd(days_back=1, min_cvss=8.0, priority_mode="cms")
         for r in results:
             print(r.cve_id, '✓' if r.verified else '?')
     """
     step = on_step or print
     try:
         from .cvefeed import poll_nvd_new
+        from .cve_lessons import detect_stack, get_lessons, record_cve_result
     except ImportError as e:
-        step(f"auto_queue_nvd: no se puede importar cvefeed — {e}")
+        step(f"auto_queue_nvd: import error — {e}")
         return []
 
-    step(f"auto_queue_nvd: consultando NVD (últimos {days_back}d, CVSS≥{min_cvss})…")
+    step(f"auto_queue_nvd: consultando NVD (últimos {days_back}d, CVSS≥{min_cvss}, modo={priority_mode})…")
     entries = poll_nvd_new(days_back=days_back, min_cvss=min_cvss, web_only=web_only)
     if not entries:
         step("auto_queue_nvd: sin CVEs nuevos")
         return []
+
+    # Apply priority_mode sort
+    _cms_kws = ("wordpress", "drupal", "joomla", "wp-")
+    if priority_mode == "new":
+        entries = sorted(entries, key=lambda e: e.published, reverse=True)
+    elif priority_mode == "cms":
+        entries = sorted(entries,
+                         key=lambda e: (not any(k in e.description.lower() for k in _cms_kws),
+                                        -e.cvss_score))
+    # default "cvss" — poll_nvd_new already returns sorted by CVSS desc
 
     step(f"auto_queue_nvd: {len(entries)} CVEs nuevos — procesando hasta {max_cves}")
     results = []
@@ -1381,12 +1414,31 @@ def auto_queue_nvd(days_back: int = 2, min_cvss: float = 7.0,
         step(f"\n{'='*60}")
         step(f"auto_queue_nvd: investigando {entry.cve_id} (CVSS {entry.cvss_score})")
         step(f"  {entry.description[:120]}…")
+        stack = detect_stack(entry.description)
+        prior = get_lessons(stack)
+        if prior:
+            step(f"  lecciones previas ({stack}): tasa_verificación={prior.get('verified_rate', 0):.0%}, "
+                 f"endpoints={prior.get('top_endpoints', [])[:2]}")
         try:
             r = run_full_chain(entry.cve_id, lang=lang, budget_s=budget_s,
                                on_step=step, save_report=True)
             results.append(r)
             status = "✓ VERIFICADO" if r.verified else "? LLM-razonado"
             step(f"  {entry.cve_id}: {status}")
+            # Record lesson
+            inv = getattr(r, "inv", None)
+            endpoint = ""
+            bypass_hdr = ""
+            bypass_val = ""
+            vuln_cls = ""
+            if inv:
+                notes = getattr(inv, "llm_notes", {}) or {}
+                endpoint = notes.get("endpoint") or ""
+                bypass_hdr = notes.get("bypass_header") or ""
+                bypass_val = notes.get("bypass_value") or ""
+                vuln_cls = getattr(inv, "vuln_class", "") or notes.get("vuln_class", "")
+            record_cve_result(stack, entry.cve_id, endpoint, r.verified,
+                              bypass_hdr, bypass_val, vuln_cls)
         except Exception as exc:
             step(f"  {entry.cve_id}: error — {exc}")
     return results

@@ -9810,17 +9810,40 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     and (notes.get("endpoint") or "?") in ("?", "", "unknown", "n/a")):
                 step(("route discovery incondicional para missing-authorization sin grounding"
                       ) if es else "unconditional route discovery for missing-authorization")
-                llm_refined_ungrounded = _refine_web_hints_from_source(
-                    llm, fr.local_path, found={})
-                if llm_refined_ungrounded:
-                    _ep_ungrounded = (llm_refined_ungrounded.get("endpoint") or "").strip()
-                    if _ep_ungrounded and _ep_ungrounded not in ("?", "", "unknown"):
-                        notes = {**notes, **llm_refined_ungrounded}
-                        inv.llm_notes.update(
-                            {k: notes[k] for k in ("endpoint", "http_method")
-                             if k in notes})
-                        step((f"route discovery: endpoint={notes.get('endpoint')}") if es
-                             else (f"route discovery: endpoint={notes.get('endpoint')}"))
+                # Seed from prior lessons before running source scanner
+                try:
+                    from .cve_lessons import detect_stack, suggest_endpoints, suggest_bypass_headers
+                    _cve_desc = (inv.description or "") if inv else ""
+                    _les_stack = detect_stack(_cve_desc + " " + str(fr.local_path))
+                    _prior_eps = suggest_endpoints(_les_stack,
+                                                   inv.vuln_class or notes.get("vuln_class", ""))
+                    if _prior_eps:
+                        step((f"  lecciones previas ({_les_stack}): endpoints candidatos {_prior_eps[:2]}"
+                              ) if es else
+                             (f"  prior lessons ({_les_stack}): candidate endpoints {_prior_eps[:2]}"))
+                        notes = {**notes, "endpoint": _prior_eps[0]}
+                        inv.llm_notes["endpoint"] = _prior_eps[0]
+                    _prior_bps = suggest_bypass_headers(_les_stack)
+                    if _prior_bps and not notes.get("bypass_header"):
+                        notes = {**notes,
+                                 "bypass_header": _prior_bps[0][0],
+                                 "bypass_value":  _prior_bps[0][1]}
+                except Exception:
+                    _les_stack = "generic"
+                    pass
+                # Only run source scanner if still no endpoint from lessons
+                if (notes.get("endpoint") or "?") in ("?", "", "unknown", "n/a"):
+                    llm_refined_ungrounded = _refine_web_hints_from_source(
+                        llm, fr.local_path, found={})
+                    if llm_refined_ungrounded:
+                        _ep_ungrounded = (llm_refined_ungrounded.get("endpoint") or "").strip()
+                        if _ep_ungrounded and _ep_ungrounded not in ("?", "", "unknown"):
+                            notes = {**notes, **llm_refined_ungrounded}
+                            inv.llm_notes.update(
+                                {k: notes[k] for k in ("endpoint", "http_method")
+                                 if k in notes})
+                            step((f"route discovery: endpoint={notes.get('endpoint')}") if es
+                                 else (f"route discovery: endpoint={notes.get('endpoint')}"))
             # Synthesis mode: dado el código fuente vulnerable + toda la inteligencia CVE,
             # pedir al LLM que sintetice el payload EXACTO para esta vulnerabilidad concreta.
             # El resultado propaga sql_context, bypass_needed y setup_steps a notes para que
