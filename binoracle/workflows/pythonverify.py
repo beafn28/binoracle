@@ -208,6 +208,61 @@ def _get_django_session(base_url: str, username: str, password: str,
     return None
 
 
+def _has_drf(source_dir: str) -> bool:
+    """Return True if the project declares djangorestframework in its deps."""
+    if not source_dir or not os.path.isdir(source_dir):
+        return False
+    _markers = ["djangorestframework", "rest_framework", "django-rest-framework"]
+    _dep_files = ["requirements.txt", "requirements-dev.txt", "pyproject.toml",
+                  "setup.cfg", "setup.py", "Pipfile"]
+    for root, _dirs, fnames in os.walk(source_dir):
+        _dirs[:] = [d for d in _dirs if d not in
+                    (".git", "node_modules", "__pycache__", "vendor")]
+        for fn in fnames:
+            if fn not in _dep_files:
+                continue
+            try:
+                content = open(os.path.join(root, fn),
+                               encoding="utf-8", errors="replace").read(16000)
+                if any(m in content for m in _markers):
+                    return True
+            except OSError:
+                continue
+    return False
+
+
+def _get_drf_token(base_url: str, username: str, password: str,
+                   step: Callable) -> Optional[str]:
+    """Get Django REST Framework Token auth from /api-token-auth/ or similar.
+
+    Returns "Token <value>" or None.
+    Tries (JSON body, {username, password}):
+    1. POST /api-token-auth/
+    2. POST /api/auth/login/
+    3. POST /api/token/
+    4. POST /api/v1/auth/token/
+    """
+    import json as _j
+    _endpoints = ["/api-token-auth/", "/api/auth/login/",
+                  "/api/token/", "/api/v1/auth/token/"]
+    payload_body = _j.dumps({"username": username, "password": password})
+    hdrs = {"Content-Type": "application/json"}
+    for ep in _endpoints:
+        url = base_url.rstrip("/") + ep
+        try:
+            r = _http_request("POST", url, data=payload_body, headers=hdrs, timeout=8)
+            if r.status in (200, 201):
+                body = _j.loads(r.body or "{}")
+                token = (body.get("token") or body.get("key") or
+                         body.get("access_token") or "")
+                if token:
+                    step(f"  django: DRF Token obtenido vía {ep}")
+                    return f"Token {token}"
+        except Exception:
+            continue
+    return None
+
+
 # ── Main verifier ─────────────────────────────────────────────────────────────
 
 def verify_python_web_cve(source_path: str, endpoint: str,
@@ -274,14 +329,24 @@ def verify_python_web_cve(source_path: str, endpoint: str,
         # Setup auth if needed
         cookie = None
         bearer = None
+        token_header = None
         _user = "binoracle_test"
         _pwd = "Binoracle123!"
+        _use_drf = framework == "django" and _has_drf(source_path)
         if auth_required:
             if framework == "django":
-                creds = _django_create_superuser(container, step)
-                if creds:
-                    user, pwd = creds.split(":", 1)
-                    cookie = _get_django_session(base_url, user, pwd, step)
+                if _use_drf:
+                    # DRF is lighter — no superuser creation needed
+                    token_header = _get_drf_token(base_url, _user, _pwd, step)
+                if not token_header:
+                    # Fall back to full session cookie via superuser
+                    creds = _django_create_superuser(container, step)
+                    if creds:
+                        user, pwd = creds.split(":", 1)
+                        cookie = _get_django_session(base_url, user, pwd, step)
+                        if not cookie:
+                            # Session failed — try DRF as final fallback
+                            token_header = _get_drf_token(base_url, user, pwd, step)
             elif framework == "fastapi":
                 bearer = _get_fastapi_token(base_url, _user, _pwd, step)
             elif framework == "flask":
@@ -295,6 +360,8 @@ def verify_python_web_cve(source_path: str, endpoint: str,
             headers["Cookie"] = cookie
         if bearer:
             headers["Authorization"] = bearer
+        if token_header:
+            headers["Authorization"] = token_header
 
         param = (parameters or [None])[0] if parameters else None
         body = None
