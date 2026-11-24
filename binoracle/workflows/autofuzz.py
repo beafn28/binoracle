@@ -163,7 +163,7 @@ def _get_baseline(base_url: str, endpoint: str, http_method: str,
         r = _http_request(http_method.upper(),
                           base_url.rstrip("/") + endpoint,
                           headers=auth_headers, timeout=timeout)
-        return r.status, len(r.body or "")
+        return r.status_code, len(getattr(r, "text", "") or "")
     except Exception:
         return 0, 0
 
@@ -317,8 +317,8 @@ def fuzz_parameters(
                 _elapsed_req = time.time() - _t_req
 
                 signal, confidence = _detect_signal(
-                    payload, canary, r.status, baseline_status,
-                    r.body or "", baseline_len)
+                    payload, canary, r.status_code, baseline_status,
+                    getattr(r, "text", "") or "", baseline_len)
 
                 # Timing signal for blind SQL/cmd
                 if _elapsed_req > 4.5 and not signal:
@@ -327,8 +327,8 @@ def fuzz_parameters(
                 if signal and confidence >= min_confidence:
                     hit = FuzzHit(
                         param=param, payload=raw_payload,
-                        status=r.status, baseline_status=baseline_status,
-                        body_snippet=(r.body or "")[:300],
+                        status=r.status_code, baseline_status=baseline_status,
+                        body_snippet=(getattr(r, "text", "") or "")[:300],
                         signal=signal, confidence=confidence, canary=canary)
                     res.hits.append(hit)
                     step(f"  autofuzz: HIT param={param!r} signal={signal} "
