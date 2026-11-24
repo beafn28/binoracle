@@ -2425,10 +2425,34 @@ def run_full_chain(
                         llm_notes["payload"] = _pdiff.suggested_value
                         step(f"  patch-diff: payload extraído del diff: "
                              f"{_pdiff.suggested_value!r}")
-                    # Override cve_class if the diff analysis is more certain
-                    if (_pdiff.fix_class in ("sqli", "sql-injection") and
-                            result.cve_class not in ("native", "binary")):
+                    # Override cve_class + llm vuln_class if patch diff is more precise
+                    # This seeds the verifier dispatcher with the correct class when
+                    # the LLM was vague ("injection", "unknown", "web") but the diff
+                    # clearly shows the specific fix pattern.
+                    _DIFF_TO_VULN_CLASS = {
+                        "sqli":          "sqli",
+                        "injection":     "sqli",
+                        "xss":           "xss",
+                        "auth_bypass":   "missing-authorization",
+                        "missing_auth_bypass": "missing-authorization",
+                        "ssti":          "ssti",
+                        "lfi":           "lfi",
+                        "rce":           "rce",
+                        "ssrf":          "ssrf",
+                        "open_redirect": "open-redirect",
+                        "csrf":          "csrf",
+                        "deserialization": "deserialization",
+                        "path_traversal": "path-traversal",
+                    }
+                    _mapped_vc = _DIFF_TO_VULN_CLASS.get(_pdiff.fix_class, "")
+                    if _mapped_vc and result.cve_class not in ("native", "binary"):
                         result.cve_class = "web"
+                        # Only update vuln_class if LLM was vague or absent
+                        _llm_vc = (llm_notes.get("vuln_class") or "").lower()
+                        if not _llm_vc or _llm_vc in ("unknown", "injection", "web"):
+                            llm_notes["vuln_class"] = _mapped_vc
+                            step(f"  patch-diff: vuln_class actualizado a {_mapped_vc!r} "
+                                 f"(diff clase={_pdiff.fix_class!r})")
                 else:
                     step(f"  patch-diff: confianza insuficiente ({_pdiff.confidence:.0%})")
             except Exception as _pde:
