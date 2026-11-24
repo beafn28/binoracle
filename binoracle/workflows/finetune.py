@@ -103,11 +103,15 @@ def extract_from_store(store) -> List[TrainingExample]:
         for inv in investigations:
             if not (getattr(inv, "description", "") and getattr(inv, "hypothesis", "")):
                 continue
+            # Prefer dynamic_verify.verified (lab-confirmed) over top-level verified
+            _dv_inv = getattr(inv, "dynamic_verify", None) or {}
+            _inv_verified = (bool(_dv_inv.get("verified")) if _dv_inv
+                             else bool(getattr(inv, "verified", False)))
             ex = TrainingExample(
                 cve_id=inv.cve_id,
                 description=inv.description or "",
                 hypothesis=inv.hypothesis or "",
-                verified=getattr(inv, "verified", False),
+                verified=_inv_verified,
                 vuln_class=getattr(inv, "vuln_class", "") or "",
                 cvss_score=getattr(inv, "cvss_score", None),
             )
@@ -150,11 +154,15 @@ def extract_from_jsonl_dir(reports_dir: str) -> List[TrainingExample]:
                 hypothesis = "\n".join(str(h) for h in hypothesis)
             if not (description and hypothesis):
                 continue
+            # Prefer dynamic_verify.verified (lab-confirmed) over top-level verified
+            _dv = d.get("dynamic_verify") or {}
+            _is_verified = (bool(_dv.get("verified")) if _dv
+                            else bool(d.get("verified", False)))
             ex = TrainingExample(
                 cve_id=cve_id,
                 description=str(description)[:2048],
                 hypothesis=str(hypothesis)[:4096],
-                verified=bool(d.get("verified", False)),
+                verified=_is_verified,
                 vuln_class=str(d.get("vuln_class") or ""),
                 cvss_score=d.get("cvss_score"),
             )
@@ -336,11 +344,15 @@ def build_finetune_dataset(
     if extra_examples:
         examples += extra_examples
 
-    # Deduplicate by CVE ID
+    # Keep ONLY examples confirmed by a real dynamic lab (dynamic_verify.verified=True
+    # or at minimum verified=True).  Training on unverified LLM hypotheses would
+    # reinforce hallucinations instead of reducing them.
     seen: set = set()
     unique: List[TrainingExample] = []
     for ex in examples:
-        if ex.cve_id not in seen and ex.description and ex.hypothesis:
+        if (ex.cve_id not in seen
+                and ex.description and ex.hypothesis
+                and ex.verified):          # <-- guard: skip unverified hypotheses
             seen.add(ex.cve_id)
             unique.append(ex)
 
