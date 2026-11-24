@@ -214,9 +214,19 @@ def verify_kirby_cve(
             step(f"[Kirby lab] VERIFICADO: HTTP {status}")
         else:
             res.ok = True
+            # Semantic body analysis for partial confidence signals
+            if bypassed and not string_ok and body:
+                from .genericverify import _analyze_response_body
+                _analysis = _analyze_response_body(
+                    body, vuln_class, payload=payload,
+                    confirm_string=confirm_string, status_code=status)
+                if _analysis.get("interesting"):
+                    res.evidence["response_analysis"] = _analysis
             res.detail = (
                 f"no confirmado: {m} {endpoint} → HTTP {status}"
                 + (f", confirm_string={string_ok}" if confirm_string else "")
+                + (f" — señales semánticas: {res.evidence.get('response_analysis', {}).get('partial_confidence', 0):.0%}"
+                   if res.evidence.get("response_analysis") else "")
             )
             step(f"[Kirby lab] no confirmado: HTTP {status}")
 

@@ -14385,6 +14385,60 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         _escalate_to_analyst(inv, getattr(wr, 'detail', '') or "",
                                              _lab_cfg_ms, es, progress_level=_prog)
                 _apply_wpverify_result(inv, wr, es, llm)
+            # Mass assignment (privileged field injection in registration / profile update)
+            elif (not plugin_dir and fr.local_path and
+                  inv.vuln_class in ("mass-assignment", "mass_assignment",
+                                     "bulk-assignment", "privilege-escalation-mass-assign")):
+                from .genericverify import verify_generic_mass_assignment
+                _ma_ep       = notes.get("endpoint") or "/api/auth/local/register"
+                _ma_prof_ep  = notes.get("profile_endpoint") or ""
+                _ma_method   = notes.get("http_method") or "POST"
+                _ma_cs       = notes.get("confirm_string") or ""
+                step(("intentando verificacion DINAMICA GENERICA -- MASS ASSIGNMENT "
+                      "(inyeccion de campos privilegiados en registro/perfil)..." if es else
+                      "attempting GENERIC DYNAMIC verification -- MASS ASSIGNMENT "
+                      "(privileged field injection in registration/profile)..."))
+                _ma_dockerfile  = notes.get("dockerfile_body") or ""
+                _ma_extra_files = notes.get("extra_files") or None
+                _scf_ma = False
+                if not _ma_dockerfile and llm is not None:
+                    _scf = _scaffold_llm_lab_for_class(
+                        llm, str(fr.local_path), notes, inv.cve_id, "mass-assignment", step, es,
+                        patch_diff=inv.llm_notes.get("patch_diff_analysis"))
+                    if _scf:
+                        _ma_dockerfile  = _scf["dockerfile_body"]
+                        _ma_extra_files = _scf["extra_files"]
+                        _ma_ep          = _scf.get("endpoint") or _ma_ep
+                        _ma_cs          = _scf.get("confirm_string") or _ma_cs
+                        _scf_ma         = True
+                wr = verify_generic_mass_assignment(
+                    fr.local_path, _ma_ep,
+                    profile_endpoint=_ma_prof_ep,
+                    http_method=_ma_method,
+                    confirm_string=_ma_cs,
+                    on_step=step, budget_s=budget_s,
+                    dockerfile_body=_ma_dockerfile, extra_files=_ma_extra_files)
+                if _scf_ma and not wr.verified:
+                    _lab_cfg_ma = {
+                        "dockerfile_body": _ma_dockerfile, "extra_files": _ma_extra_files,
+                        "endpoint": _ma_ep, "confirm_string": _ma_cs,
+                    }
+                    def _ma_verifier(cfg):
+                        return verify_generic_mass_assignment(
+                            fr.local_path,
+                            cfg.get("endpoint", _ma_ep),
+                            profile_endpoint=_ma_prof_ep,
+                            http_method=_ma_method,
+                            confirm_string=cfg.get("confirm_string", _ma_cs),
+                            on_step=step, budget_s=budget_s,
+                            dockerfile_body=cfg["dockerfile_body"],
+                            extra_files=cfg.get("extra_files"))
+                    wr, _lab_cfg_ma, _prog = _feedback_loop(
+                        llm, _ma_verifier, wr, _lab_cfg_ma, step, es)
+                    if not wr.verified:
+                        _escalate_to_analyst(inv, getattr(wr, 'detail', '') or "",
+                                             _lab_cfg_ma, es, progress_level=_prog)
+                _apply_wpverify_result(inv, wr, es, llm)
         else:
             step(f"no se pudo obtener el codigo: {fr.note}" if es else
                  f"could not fetch the source: {fr.note}")

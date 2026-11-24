@@ -1660,6 +1660,33 @@ def _render_chain_log(result: ChainResult, lang: str = "es",
                            f" | **Hits**: {_fuzz_ev.get('hits', 0)}")
         parts.append("\n".join(_fuzz_lines))
 
+    # Mass assignment evidence block
+    _ma_ev = result.evidence.get("injected_fields") if result.evidence else None
+    if _ma_ev and isinstance(_ma_ev, dict) and result.evidence.get("technique") in (
+            "mass-assignment", "mass-assignment-profile-update"):
+        _ma_hdr = "## " + ("Mass Assignment — Campos Inyectados" if es
+                            else "Mass Assignment — Injected Fields")
+        _ma_lines = [_ma_hdr, ""]
+        _ma_lines.append("**Técnica**: Mass Assignment (inyección de campos privilegiados)")
+        _ma_ep = result.evidence.get("register_endpoint") or result.evidence.get("update_endpoint", "")
+        if _ma_ep:
+            _ma_lines.append(f"**Endpoint vulnerable**: `{_ma_ep}`")
+        _inj = {k: v for k, v in _ma_ev.items() if str(v).lower() not in ("false", "")}
+        if _inj:
+            _ma_lines.append("**Campos inyectados**:")
+            for _k, _v in list(_inj.items())[:6]:
+                _ma_lines.append(f"  - `{_k}`: `{_v}`")
+        _ma_sigs = result.evidence.get("admin_signals_found", [])
+        if _ma_sigs:
+            _ma_lines.append(f"**Señales admin en respuesta**: {', '.join(_ma_sigs[:4])}")
+        _ma_prof = result.evidence.get("profile_verification", {})
+        if _ma_prof:
+            _ma_lines.append(
+                f"**Verificación de perfil (GET {_ma_prof.get('endpoint', '')})**:"
+                f" HTTP {_ma_prof.get('status', '?')} — señales: "
+                f"{', '.join(_ma_prof.get('admin_signals', [])[:3])}")
+        parts.append("\n".join(_ma_lines))
+
     # Differential test evidence block
     _diff_ev = result.evidence.get("differential_test") if result.evidence else None
     if _diff_ev and isinstance(_diff_ev, dict) and result.evidence.get("diff_reason"):

