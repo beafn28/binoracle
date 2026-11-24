@@ -11263,6 +11263,34 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         budget_s=budget_s,
                     )
                     _apply_wpverify_result(inv, wr, es, llm)
+            # Ruby on Rails: verificacion especializada con Devise session auth y CSRF.
+            elif (not plugin_dir and fr.local_path and
+                  (any(w in (inv.language or "").lower() for w in ("ruby",))
+                   or any(w in (notes.get("framework") or "").lower() for w in ("rails", "sinatra"))
+                   or any(w in (notes.get("cms") or "").lower() for w in ("rails",)))
+                  and inv.vuln_class in ("xss", "sqli", "sql-injection", "ssrf", "idor",
+                                         "missing-authorization", "auth-bypass",
+                                         "broken-access-control", "ssti", "rce",
+                                         "command-injection")
+                  and notes.get("endpoint")):
+                from .railsverify import detect_rails, verify_rails_web_cve
+                if detect_rails(str(fr.local_path)):
+                    step(("  railsverify: Rails detectado — iniciando lab" if es else
+                          "  railsverify: Rails detected — starting lab"))
+                    wr = verify_rails_web_cve(
+                        str(fr.local_path),
+                        endpoint=notes.get("endpoint") or "/",
+                        vuln_class=inv.vuln_class,
+                        http_method=notes.get("http_method") or "GET",
+                        parameters=notes.get("parameters") or [],
+                        payload=notes.get("payload") or "",
+                        confirm_string=notes.get("confirm_string") or "",
+                        auth_required=bool(notes.get("auth_required") or notes.get("authenticated")),
+                        pkg_version=inv.llm_notes.get("vulnerable_version") or "",
+                        on_step=step,
+                        budget_s=budget_s,
+                    )
+                    _apply_wpverify_result(inv, wr, es, llm)
             # Python web frameworks (Django/FastAPI/Flask): verificacion especializada con
             # auto-deteccion de framework, generacion de Dockerfile a medida y setup de
             # autenticacion Django cuando el CVE la requiere -- ver pythonverify.py.
@@ -11415,6 +11443,53 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     step(("  directusverify: Directus detectado — iniciando lab" if es else
                           "  directusverify: Directus detected — starting lab"))
                     wr = verify_directus_web_cve(
+                        str(fr.local_path),
+                        endpoint=notes.get("endpoint") or "/",
+                        vuln_class=inv.vuln_class,
+                        http_method=notes.get("http_method") or "GET",
+                        parameters=notes.get("parameters") or [],
+                        payload=notes.get("payload") or "",
+                        confirm_string=notes.get("confirm_string") or "",
+                        auth_required=bool(notes.get("auth_required") or notes.get("authenticated")),
+                        pkg_version=inv.llm_notes.get("vulnerable_version") or "",
+                        on_step=step,
+                        budget_s=budget_s,
+                    )
+                    _apply_wpverify_result(inv, wr, es, llm)
+            # Concrete CMS: PHP CMS (formerly concrete5) — CSRF session auth
+            elif (not plugin_dir and fr.local_path and
+                  (("concrete" in (notes.get("cms") or "").lower() or
+                    "concrete" in (getattr(inv, "cms", "") or "").lower() or
+                    "concrete5" in (notes.get("cms") or "").lower()) or
+                   "concretecms" in str(fr.local_path).lower())):
+                from .concreteverify import detect_concrete, verify_concrete_web_cve
+                if detect_concrete(str(fr.local_path)):
+                    step(("  concreteverify: Concrete CMS detectado — iniciando lab" if es else
+                          "  concreteverify: Concrete CMS detected — starting lab"))
+                    wr = verify_concrete_web_cve(
+                        str(fr.local_path),
+                        endpoint=notes.get("endpoint") or "/",
+                        vuln_class=inv.vuln_class,
+                        http_method=notes.get("http_method") or "GET",
+                        parameters=notes.get("parameters") or [],
+                        payload=notes.get("payload") or "",
+                        confirm_string=notes.get("confirm_string") or "",
+                        auth_required=bool(notes.get("auth_required") or notes.get("authenticated")),
+                        pkg_version=inv.llm_notes.get("vulnerable_version") or "",
+                        on_step=step,
+                        budget_s=budget_s,
+                    )
+                    _apply_wpverify_result(inv, wr, es, llm)
+            # MODX Revolution: PHP CMS with connector-based token auth
+            elif (not plugin_dir and fr.local_path and
+                  ("modx" in (notes.get("cms") or "").lower() or
+                   "modx" in (getattr(inv, "cms", "") or "").lower() or
+                   "modx" in str(fr.local_path).lower())):
+                from .modxverify import detect_modx, verify_modx_web_cve
+                if detect_modx(str(fr.local_path)):
+                    step(("  modxverify: MODX Revolution detectado — iniciando lab" if es else
+                          "  modxverify: MODX Revolution detected — starting lab"))
+                    wr = verify_modx_web_cve(
                         str(fr.local_path),
                         endpoint=notes.get("endpoint") or "/",
                         vuln_class=inv.vuln_class,
