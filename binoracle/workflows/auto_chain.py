@@ -3533,6 +3533,22 @@ def auto_queue_nvd(days_back: int = 2, min_cvss: float = 7.0,
         _dedup_available = False
         return []
 
+    # Startup: kill orphan lab containers from previous crashed runs (>30 min old)
+    # This runs once per queue cycle, before any Docker work, to free ports early.
+    try:
+        from .genericverify import cleanup_stale_lab_containers, cleanup_docker_disk_pressure
+        _orphans = cleanup_stale_lab_containers(prefix="bo_lab_", max_age_minutes=30)
+        if _orphans:
+            step(f"auto_queue_nvd: [startup] {len(_orphans)} contenedor(es) huérfano(s) "
+                 f"eliminados al iniciar: {', '.join(_orphans[:4])}")
+        # Also run disk pressure check at cycle start, not just per-lab
+        _disk_startup = cleanup_docker_disk_pressure(min_free_gb=2.0, image_max_age_hours=24)
+        if _disk_startup.get("actions"):
+            step(f"auto_queue_nvd: [startup] disk cleanup: "
+                 f"{_disk_startup['free_gb_before']:.1f}→{_disk_startup['free_gb_after']:.1f} GB libres")
+    except Exception as _startup_e:
+        step(f"auto_queue_nvd: [startup] cleanup error (non-fatal): {_startup_e}")
+
     step(f"auto_queue_nvd: consultando NVD (últimos {days_back}d, CVSS≥{min_cvss}, modo={priority_mode})…")
     entries = poll_nvd_new(days_back=days_back, min_cvss=min_cvss, web_only=web_only)
     if not entries:
