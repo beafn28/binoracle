@@ -3115,7 +3115,7 @@ def auto_queue_nvd(days_back: int = 2, min_cvss: float = 7.0,
         from .cvefeed import poll_nvd_new
         from .cve_lessons import detect_stack, get_lessons, record_cve_result
         from .cve_retry_queue import add_to_retry, mark_done, is_transient_error
-        from .cve_seen import mark_seen as _mark_seen, is_seen as _is_seen
+        from .cve_seen import mark_seen as _mark_seen
         _dedup_available = True
     except ImportError as e:
         step(f"auto_queue_nvd: import error — {e}")
@@ -3128,13 +3128,20 @@ def auto_queue_nvd(days_back: int = 2, min_cvss: float = 7.0,
         step("auto_queue_nvd: sin CVEs nuevos")
         return []
 
-    # Deduplicate: skip CVEs already processed in a recent cycle
+    # Deduplicate: skip CVEs already processed in a recent cycle.
+    # KEV CVEs that were previously unverified bypass the TTL and are always re-eligible.
     if _dedup_available:
         _before_dedup = len(entries)
-        entries = [e for e in entries if not _is_seen(e.cve_id)]
+        # Collect KEV entries from the current batch for the bypass set
+        _kev_cve_ids = {e.cve_id for e in entries if getattr(e, "in_cisa_kev", False)}
+        from .cve_seen import filter_unseen as _filter_unseen
+        _eligible_ids = set(_filter_unseen(
+            [e.cve_id for e in entries], kev_ids=_kev_cve_ids))
+        entries = [e for e in entries if e.cve_id in _eligible_ids]
         _skipped = _before_dedup - len(entries)
         if _skipped:
-            step(f"auto_queue_nvd: {_skipped} CVEs ya procesados recientemente — omitidos")
+            step(f"auto_queue_nvd: {_skipped} CVEs ya procesados recientemente — omitidos "
+                 f"(KEV bypass={len(_kev_cve_ids)})")
         if not entries:
             step("auto_queue_nvd: todos los CVEs de este ciclo ya fueron procesados — fin")
             return []

@@ -84,16 +84,48 @@ def is_seen(cve_id: str) -> bool:
     return _parse_dt(entry.get("expires_at", "")) > datetime.now(timezone.utc)
 
 
-def filter_unseen(cve_ids: List[str]) -> List[str]:
-    """Return only the CVE IDs that have NOT been seen recently."""
+def filter_unseen(cve_ids: List[str],
+                  kev_ids: "set[str] | None" = None) -> List[str]:
+    """Return only the CVE IDs that have NOT been seen recently.
+
+    kev_ids: optional set of CVE IDs in CISA KEV. These are ALWAYS eligible
+    for re-investigation regardless of TTL — if they were previously processed
+    as unverified, they get a second chance immediately.
+    Verified KEV entries respect their 7-day TTL (no value in re-running them).
+    """
     data = _load()
     now = datetime.now(timezone.utc)
+    _kev = {k.upper() for k in (kev_ids or set())}
     result = []
     for cid in cve_ids:
-        entry = data.get(cid.upper())
-        if not entry or _parse_dt(entry.get("expires_at", "")) <= now:
+        cid_up = cid.upper()
+        entry = data.get(cid_up)
+        if not entry:
             result.append(cid)
+            continue
+        _expired = _parse_dt(entry.get("expires_at", "")) <= now
+        if _expired:
+            result.append(cid)
+            continue
+        # Active TTL: check KEV bypass for unverified entries
+        if cid_up in _kev and not entry.get("verified", False):
+            result.append(cid)   # force re-investigation for KEV unverified
+            continue
+        # Still within TTL and not a KEV bypass: skip
     return result
+
+
+def force_eligible(cve_id: str) -> None:
+    """Remove a CVE from the seen registry so it can be re-investigated immediately.
+
+    Use this for CVEs added to CISA KEV, manually re-queued, or when
+    new source code becomes available for a previously failed run.
+    """
+    data = _load()
+    cve_id = cve_id.upper()
+    if cve_id in data:
+        del data[cve_id]
+        _save(data)
 
 
 def seen_summary() -> dict:
