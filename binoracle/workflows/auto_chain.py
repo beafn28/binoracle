@@ -3071,6 +3071,24 @@ def auto_queue_nvd(days_back: int = 2, min_cvss: float = 7.0,
         entries = sorted(entries,
                          key=lambda e: (not any(k in e.description.lower() for k in _cms_kws),
                                         -e.cvss_score))
+    elif priority_mode in ("epss", "epss+kev", "exploitation"):
+        # Prioritize CVEs with highest real-world exploitation probability:
+        # 1. CISA KEV (actively exploited in the wild) → top tier
+        # 2. High EPSS score (models predicts high exploitation probability)
+        # 3. CVSS score as tiebreaker
+        # EPSS scores come from NvdEntry.epss_score (None if not fetched yet)
+        def _epss_kev_score(e) -> float:
+            _base = e.cvss_score / 10.0  # 0.0–1.0
+            _epss = float(getattr(e, "epss_score", 0) or 0)
+            _kev = 2.0 if getattr(e, "in_cisa_kev", False) else 0.0
+            # EPSS contribution: 0–3.0 (normalized × 3 to weight similar to CVSS)
+            # KEV: +2.0 hard bonus (always wins unless EPSS is very high)
+            return _base + min(_epss * 3.0, 3.0) + _kev
+        entries = sorted(entries, key=_epss_kev_score, reverse=True)
+        _n_kev = sum(1 for e in entries if getattr(e, "in_cisa_kev", False))
+        _n_epss_hi = sum(1 for e in entries if (getattr(e, "epss_score", 0) or 0) >= 0.50)
+        step(f"auto_queue_nvd: modo epss+kev — {_n_kev} en CISA KEV, "
+             f"{_n_epss_hi} con EPSS≥50%")
     else:
         # "cvss" or default: sort by combined triage score (web relevance + CVSS)
         entries = sorted(entries, key=_triage_score, reverse=True)

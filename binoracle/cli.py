@@ -2996,8 +2996,11 @@ def build_parser() -> argparse.ArgumentParser:
                       help="poll once and exit instead of looping")
     nvdw.add_argument("--all-stacks", action="store_true",
                       help="process all CVEs, not just web-related ones")
-    nvdw.add_argument("--priority", default="cvss", choices=["cvss", "new", "cms"],
-                      help="sort order: cvss (default), new (newest first), cms (CMS first)")
+    nvdw.add_argument("--priority", default="cvss",
+                      choices=["cvss", "new", "cms", "epss+kev", "exploitation"],
+                      help=("sort order: cvss (default), new (newest first), cms (CMS first), "
+                            "epss+kev / exploitation (CISA KEV + EPSS score — highest "
+                            "real-world exploitation probability first)"))
     nvdw.add_argument("--budget", type=float, default=300,
                       help="investigation budget per CVE in seconds (default 300)")
     nvdw.add_argument("--lang", default="es", choices=["es", "en"],
