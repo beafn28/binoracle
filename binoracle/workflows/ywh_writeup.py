@@ -107,6 +107,31 @@ _IMPACT_TEMPLATE: dict = {
     "data_disclosure": (
         "Unauthorized access to private data was demonstrated through the vulnerability."
     ),
+    "user_enumeration": (
+        "The endpoint returns private user data (email addresses, usernames, or account IDs) "
+        "without authentication. An attacker can enumerate all application users, enabling "
+        "targeted phishing or credential-stuffing attacks."
+    ),
+    "unauthorized_creation": (
+        "The vulnerability allows an unauthenticated attacker to create resources "
+        "(user accounts, API keys, or data records) on the server. "
+        "This can lead to privilege escalation or account takeover."
+    ),
+    "admin_access": (
+        "The vulnerability grants access to administrative resources without authentication. "
+        "An attacker can read sensitive configuration, modify system settings, or escalate "
+        "privileges to full administrator access."
+    ),
+    "ssrf_cloud_escalation": (
+        "SSRF was confirmed and the attack reached cloud metadata endpoints "
+        "(AWS IMDSv1 or equivalent). The attacker can retrieve instance credentials, "
+        "IAM role tokens, and use them to pivot to other cloud resources."
+    ),
+    "nosql_injection": (
+        "NoSQL injection was confirmed by bypassing query equality checks with MongoDB operators. "
+        "An attacker can bypass authentication, extract arbitrary documents, or enumerate "
+        "all records in the affected collection."
+    ),
 }
 
 _REMEDIATION_TEMPLATE: dict = {
@@ -126,6 +151,13 @@ _REMEDIATION_TEMPLATE: dict = {
     "ssti": "Never render user-controlled input as a template; use autoescape=True or safe alternatives.",
     "deserialization": "Replace unserialize() with json_decode() or use allowed_classes=false; validate data before deserialization.",
     "open-redirect": "Validate redirect targets against an allowlist of internal paths; reject absolute URLs.",
+    "cors-misconfiguration": "Replace wildcard or reflected-Origin CORS policies with an explicit allowlist of trusted origins.",
+    "nosql-injection": "Use parameterized queries or type-strict input validation; never pass unsanitized user data as MongoDB query objects.",
+    "nosqli": "Use parameterized queries or type-strict input validation; never pass unsanitized user data as MongoDB query objects.",
+    "file-upload": "Validate MIME type and extension against an allowlist; store uploads outside the web root; rename files on save.",
+    "jwt-bypass": "Enforce a fixed algorithm (HS256/RS256) on the server; never accept alg:none tokens; validate the signature on every request.",
+    "race-condition": "Use atomic database operations (SELECT FOR UPDATE, get_or_create, transactions) to prevent check-then-act races.",
+    "xxe": "Disable external entity processing (resolve_entities=False, defusedxml); never parse untrusted XML with a full-featured parser.",
 }
 
 
