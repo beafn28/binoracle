@@ -171,6 +171,56 @@ def _try_jwt_auth_node(base_url: str, step: Callable) -> Optional[str]:
     return None
 
 
+# ── Route scanner ────────────────────────────────────────────────────────────
+
+def _scan_js_routes(source_dir: str) -> list:
+    """Scan JS/TS source for Express, Fastify, and NestJS route definitions.
+
+    Returns a deduplicated list of route paths found in the source (up to 30).
+    """
+    if not source_dir or not os.path.isdir(source_dir):
+        return []
+
+    _ROUTE_RES = [
+        # Express: app.get('/path', ...) / router.post('/path', ...) / app.use('/path', ...)
+        re.compile(r'(?:app|router)\s*\.\s*(?:get|post|put|patch|delete|use)\s*\(\s*[\'"`]([^\'"`\s]+)[\'"`]',
+                   re.IGNORECASE),
+        # Fastify: fastify.get('/path', ...) / fastify.route({url: '/path', ...})
+        re.compile(r'fastify\s*\.\s*(?:get|post|put|patch|delete)\s*\(\s*[\'"`]([^\'"`\s]+)[\'"`]',
+                   re.IGNORECASE),
+        re.compile(r'url\s*:\s*[\'"`]([^\'"`\s]+)[\'"`]', re.IGNORECASE),
+        # NestJS: @Controller('prefix') + @Get('path')
+        re.compile(r'@(?:Get|Post|Put|Patch|Delete|All)\s*\(\s*[\'"`]([^\'"`\s]*)[\'"`]\s*\)',
+                   re.IGNORECASE),
+    ]
+
+    seen: set = set()
+    routes: list = []
+    _exts = {".js", ".ts", ".mjs", ".cjs"}
+
+    for root, dirs, files in os.walk(source_dir):
+        dirs[:] = [d for d in dirs if d not in ("node_modules", ".git", "dist", "build", "coverage")]
+        for fname in files:
+            if not any(fname.endswith(e) for e in _exts):
+                continue
+            fpath = os.path.join(root, fname)
+            try:
+                txt = open(fpath, encoding="utf-8", errors="ignore").read(100_000)
+                for pat in _ROUTE_RES:
+                    for m in pat.finditer(txt):
+                        path = m.group(1).strip()
+                        if path and path not in seen and not path.startswith("http"):
+                            if not path.startswith("/"):
+                                path = "/" + path
+                            seen.add(path)
+                            routes.append(path)
+                            if len(routes) >= 30:
+                                return routes
+            except Exception:
+                continue
+    return routes
+
+
 # ── Main verifier ─────────────────────────────────────────────────────────────
 
 def verify_node_web_cve(source_path: str, endpoint: str,
@@ -199,11 +249,33 @@ def verify_node_web_cve(source_path: str, endpoint: str,
     framework = detect_js_framework(source_path)
     step(f"  jsverify: framework={framework}, vuln_class={vuln_class}")
 
+    # Pre-scan routes from source when no endpoint is given
+    _candidate_endpoints: list = []
+    if not endpoint:
+        _candidate_endpoints = _scan_js_routes(source_path)
+        if _candidate_endpoints:
+            endpoint = _candidate_endpoints[0]
+            step(f"  jsverify: endpoint seed desde source scanner: {endpoint} "
+                 f"({len(_candidate_endpoints)} candidatos)")
+
     from .genericverify import _bootstrap_generic_lab
     boot = _bootstrap_generic_lab(source_path, step, res, budget_s)
     if boot is None:
         return res
     lab, base_url, container = boot
+
+    # Also try OpenAPI routes if still no endpoint or augment candidates
+    if not endpoint or not _candidate_endpoints:
+        try:
+            from .genericverify import _discover_routes_from_openapi
+            _openapi = _discover_routes_from_openapi(base_url, step)
+            if _openapi:
+                _candidate_endpoints = (_candidate_endpoints or []) + _openapi
+                if not endpoint:
+                    endpoint = _openapi[0]
+                    step(f"  jsverify: endpoint desde OpenAPI spec: {endpoint}")
+        except Exception:
+            pass
 
     try:
         # Auth

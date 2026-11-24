@@ -295,13 +295,34 @@ def _detect_cms_fingerprint(source_dir: str) -> Optional[str]:
     return None
 
 
-def _cms_dockerfile_lines(cms: str, source_dir: str) -> Optional[tuple]:
+def _pin_cms_image(base_image: str, pkg_version: str) -> str:
+    """Pin a CMS Docker image to an exact version when pkg_version is known.
+
+    Ghost images: ghost:5.68.3 → ghost:5.68.3
+    Node images: node:18-alpine stays node:18-alpine (we don't know the app version from the tag)
+    """
+    if not pkg_version:
+        return base_image
+    # Ghost: replace 'ghost:5-alpine' or 'ghost:5' with 'ghost:<version>'
+    if base_image.startswith("ghost:"):
+        return f"ghost:{pkg_version}"
+    # directus: 'directus/directus:latest' → 'directus/directus:<version>'
+    if base_image.startswith("directus/directus:"):
+        return f"directus/directus:{pkg_version}"
+    return base_image
+
+
+def _cms_dockerfile_lines(cms: str, source_dir: str,
+                           pkg_version: str = "") -> Optional[tuple]:
     """Devuelve (base_image, port, run_lines) para un CMS conocido, o None.
 
     Los Dockerfiles generados aquí usan variables de entorno de desarrollo mínimas
     que permiten arrancar el CMS sin configuración real: SQLite in-memory / fichero
     .tmp, secrets dummy, NODE_ENV=development. Esto basta para explorar las rutas
     vulnerables sin persistencia real.
+
+    `pkg_version`: when provided, pins the CMS image to that exact version
+    (e.g. ghost:5.68.3 instead of ghost:5-alpine).
     """
     proxy = _proxy_dockerfile_lines(source_dir)
     if cms == "ghost":
@@ -314,7 +335,7 @@ def _cms_dockerfile_lines(cms: str, source_dir: str) -> Optional[tuple]:
                   "ENV url=http://localhost:2368",
                   "RUN npm install --prefix /var/lib/ghost || true",
                   'CMD ["node", "current/index.js"]'])
-        return ("ghost:5-alpine", 2368, lines)
+        return (_pin_cms_image("ghost:5-alpine", pkg_version), 2368, lines)
 
     if cms == "strapi":
         lines = (["WORKDIR /app", "COPY . ."] + proxy +
@@ -364,18 +385,22 @@ def _cms_dockerfile_lines(cms: str, source_dir: str) -> Optional[tuple]:
     return None
 
 
-def _detect_and_write_auto_dockerfile(source_dir: str) -> Optional[dict]:
+def _detect_and_write_auto_dockerfile(source_dir: str,
+                                       pkg_version: str = "") -> Optional[dict]:
     """Cuando el repo NO trae su propio Dockerfile/docker-compose.yml, detecta el stack por sus
     ficheros delatores (package.json/requirements.txt/composer.json, o sueltos .php) y ESCRIBE
     un Dockerfile minimo propio para arrancarlo -- deliberadamente acotado a Node/Ruby/Python/PHP sin
     framework (los casos mas comunes en PoCs publicos), no un intento de adivinar cualquier
     stack posible. El Dockerfile generado queda guardado en el propio directorio del codigo
     (_AUTO_DOCKERFILE_NAME) para que quede constancia de que NO es el del autor del PoC -- el
-    `step()` del caller debe dejarlo igual de explicito en el informe."""
+    `step()` del caller debe dejarlo igual de explicito en el informe.
+
+    `pkg_version`: when set, pins the CMS/stack image to this exact version.
+    """
     # Deteccion de CMS conocido primero (Ghost, Strapi, Payload, Wagtail...)
     cms = _detect_cms_fingerprint(source_dir)
     if cms:
-        cms_tup = _cms_dockerfile_lines(cms, source_dir)
+        cms_tup = _cms_dockerfile_lines(cms, source_dir, pkg_version=pkg_version)
         if cms_tup:
             base_image, port, cms_lines = cms_tup
             lines = [f"FROM {base_image}"] + cms_lines + [f"EXPOSE {port}"]

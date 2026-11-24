@@ -193,6 +193,60 @@ def _try_api_key_auth(source_dir: str, base_url: str, step: Callable) -> Optiona
     return None
 
 
+# ── Route scanner ────────────────────────────────────────────────────────────
+
+def _scan_go_routes(source_dir: str) -> list:
+    """Scan Go source for HTTP route definitions (Gin, Echo, Fiber, Chi, net/http).
+
+    Returns a deduplicated list of route paths found (up to 30).
+    """
+    if not source_dir or not os.path.isdir(source_dir):
+        return []
+
+    _ROUTE_RES = [
+        # Gin: r.GET("/path", ...) / r.POST("/path", ...)
+        re.compile(r'\b(?:r|g|router|group|v\d+)\s*\.\s*(?:GET|POST|PUT|PATCH|DELETE|Any|Handle)\s*\(\s*"([^"]+)"',
+                   re.IGNORECASE),
+        # Echo: e.GET("/path", ...) / g.GET("/path", ...)
+        re.compile(r'\b(?:e|echo|srv|g|api|v\d+)\s*\.\s*(?:GET|POST|PUT|PATCH|DELETE|Add)\s*\(\s*"([^"]+)"',
+                   re.IGNORECASE),
+        # Fiber: app.Get("/path", ...) / app.Post("/path", ...)
+        re.compile(r'\bapp\s*\.\s*(?:Get|Post|Put|Patch|Delete|Add|All)\s*\(\s*"([^"]+)"',
+                   re.IGNORECASE),
+        # Chi: r.Get("/path", ...) / r.Route("/path", ...)
+        re.compile(r'\b(?:r|router|mux)\s*\.\s*(?:Get|Post|Put|Patch|Delete|Route|Handle|Mount)\s*\(\s*"([^"]+)"',
+                   re.IGNORECASE),
+        # net/http: http.HandleFunc("/path", ...) / mux.HandleFunc("/path", ...)
+        re.compile(r'(?:http|mux|srv|router|r)\s*\.\s*HandleFunc\s*\(\s*"([^"]+)"',
+                   re.IGNORECASE),
+    ]
+
+    seen: set = set()
+    routes: list = []
+
+    for root, dirs, files in os.walk(source_dir):
+        dirs[:] = [d for d in dirs if d not in (".git", "vendor", "testdata")]
+        for fname in files:
+            if not fname.endswith(".go"):
+                continue
+            fpath = os.path.join(root, fname)
+            try:
+                txt = open(fpath, encoding="utf-8", errors="ignore").read(100_000)
+                for pat in _ROUTE_RES:
+                    for m in pat.finditer(txt):
+                        path = m.group(1).strip()
+                        if path and path not in seen and not path.startswith("http"):
+                            if not path.startswith("/"):
+                                path = "/" + path
+                            seen.add(path)
+                            routes.append(path)
+                            if len(routes) >= 30:
+                                return routes
+            except Exception:
+                continue
+    return routes
+
+
 # ── Main verifier ─────────────────────────────────────────────────────────────
 
 def verify_go_web_cve(source_path: str, endpoint: str,
@@ -221,11 +275,33 @@ def verify_go_web_cve(source_path: str, endpoint: str,
     framework = detect_go_framework(source_path)
     step(f"  goverify: framework={framework}, vuln_class={vuln_class}")
 
+    # Pre-scan routes from source when no endpoint is given
+    _candidate_endpoints: list = []
+    if not endpoint:
+        _candidate_endpoints = _scan_go_routes(source_path)
+        if _candidate_endpoints:
+            endpoint = _candidate_endpoints[0]
+            step(f"  goverify: endpoint seed desde source scanner: {endpoint} "
+                 f"({len(_candidate_endpoints)} candidatos)")
+
     from .genericverify import _bootstrap_generic_lab
     boot = _bootstrap_generic_lab(source_path, step, res, budget_s)
     if boot is None:
         return res
     lab, base_url, container = boot
+
+    # Augment from OpenAPI spec (after container is up)
+    if not endpoint or not _candidate_endpoints:
+        try:
+            from .genericverify import _discover_routes_from_openapi
+            _openapi = _discover_routes_from_openapi(base_url, step)
+            if _openapi:
+                _candidate_endpoints = (_candidate_endpoints or []) + _openapi
+                if not endpoint:
+                    endpoint = _openapi[0]
+                    step(f"  goverify: endpoint desde OpenAPI spec: {endpoint}")
+        except Exception:
+            pass
 
     try:
         # Auth
