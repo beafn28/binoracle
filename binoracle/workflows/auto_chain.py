@@ -353,18 +353,40 @@ def _gather_intelligence(cve_id: str, result: ChainResult, step: Callable) -> Op
     except Exception:
         pass
 
-    # Risk label
+    # Risk label (CVSS + EPSS combined)
+    # EPSS signals active/imminent exploitation → upgrades the label
+    # Logic:
+    #   CISA KEV → always CRITICAL-WEAPONIZED (confirmed exploitation)
+    #   EPSS ≥ 0.90 → CRITICAL-EXPLOITED (very high exploitation probability)
+    #   EPSS ≥ 0.60 → at least HIGH, upgrade MEDIUM → HIGH-EXPLOITATION
+    #   EPSS ≥ 0.30 → at least MEDIUM, label is MEDIUM-EXPLOITATION when CVSS < 7
+    #   Otherwise: standard CVSS-based label
     try:
         from .cvelookup import risk_label  # type: ignore
         result.risk_label = risk_label(cve_info)
     except Exception:
         cvss = result.cvss_score or 0
-        result.risk_label = (
-            "CRITICAL-WEAPONIZED" if result.in_cisa_kev else
-            "CRITICAL" if cvss >= 9.0 else
-            "HIGH"     if cvss >= 7.0 else
-            "MEDIUM"   if cvss >= 4.0 else "LOW"
-        )
+        epss = result.epss_score or 0.0
+        if result.in_cisa_kev:
+            result.risk_label = "CRITICAL-WEAPONIZED"
+        elif epss >= 0.90:
+            result.risk_label = "CRITICAL-EXPLOITED"
+        elif epss >= 0.60:
+            # High exploitation probability — upgrade labels below HIGH
+            _base = ("CRITICAL" if cvss >= 9.0 else
+                     "HIGH"     if cvss >= 7.0 else "HIGH-EXPLOITATION")
+            result.risk_label = _base
+        elif epss >= 0.30:
+            _base = ("CRITICAL" if cvss >= 9.0 else
+                     "HIGH"     if cvss >= 7.0 else
+                     "MEDIUM-EXPLOITATION" if cvss >= 4.0 else "LOW")
+            result.risk_label = _base
+        else:
+            result.risk_label = (
+                "CRITICAL" if cvss >= 9.0 else
+                "HIGH"     if cvss >= 7.0 else
+                "MEDIUM"   if cvss >= 4.0 else "LOW"
+            )
     step(f"  Risk label: {result.risk_label}")
 
     # CVE correlation
