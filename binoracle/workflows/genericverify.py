@@ -756,6 +756,82 @@ def _dockerfile_is_buildable(df_path: str, context_dir: str) -> bool:
     return True
 
 
+def _find_free_port(preferred: int = 0, start: int = 10000, end: int = 60000) -> int:
+    """Return a free TCP port on 127.0.0.1.
+
+    If preferred > 0 and it is free, return it.  Otherwise scan randomly in
+    [start, end] until a free port is found, with a fallback to OS-assigned.
+    """
+    import socket as _socket
+    import random as _random
+
+    def _is_free(p: int) -> bool:
+        try:
+            with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as s:
+                s.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+                s.bind(("127.0.0.1", p))
+                return True
+        except OSError:
+            return False
+
+    if preferred and _is_free(preferred):
+        return preferred
+    # Try random ports first (avoids hot range collisions)
+    for _ in range(40):
+        p = _random.randint(start, end)
+        if _is_free(p):
+            return p
+    # OS-assigned fallback
+    with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def _patch_compose_ports(compose_path: str) -> dict:
+    """Rewrite fixed host-port bindings in a docker-compose file to free ports.
+
+    For every service that has  ports: ["HPORT:CPORT"]  or  ports: [HPORT:CPORT],
+    replace HPORT with a free host port if HPORT is already bound on the host.
+
+    Returns {original_port: new_port} for all ports that were remapped,
+    or empty dict when no remapping was needed.
+    Non-fatal: if parsing or writing fails the original file is left untouched.
+    """
+    import socket as _socket
+
+    def _port_in_use(p: int) -> bool:
+        try:
+            with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as s:
+                s.settimeout(0.3)
+                return s.connect_ex(("127.0.0.1", p)) == 0
+        except Exception:
+            return False
+
+    remapped: dict[int, int] = {}
+    try:
+        raw = open(compose_path, encoding="utf-8").read()
+        lines = raw.splitlines(keepends=True)
+        new_lines: list[str] = []
+        _port_re = re.compile(
+            r'^(\s*-\s*["\']?)(\d{2,5}):(\d{2,5})(["\']?\s*)$')
+        for line in lines:
+            m = _port_re.match(line)
+            if m:
+                prefix, hport_s, cport_s, suffix = m.groups()
+                hport = int(hport_s)
+                if _port_in_use(hport):
+                    new_hport = _find_free_port(start=hport + 1, end=60000)
+                    remapped[hport] = new_hport
+                    line = f"{prefix}{new_hport}:{cport_s}{suffix}\n"
+            new_lines.append(line)
+        if remapped:
+            with open(compose_path, "w", encoding="utf-8") as f:
+                f.writelines(new_lines)
+    except Exception:
+        pass
+    return remapped
+
+
 def _find_build_target(source_dir: str, pkg_version: str = "") -> Optional[dict]:
     """Busca, en el codigo YA descargado, como arrancar el objetivo -- un docker-compose.yml/
     compose.yml (en la raiz o un nivel por debajo, el sitio donde casi todo el mundo lo pone), o
@@ -889,6 +965,11 @@ class _GenericLab:
                 self._created.append(("container", self.container))
             return r
         else:
+            # Rewrite fixed host ports in compose file if any are already in use
+            _port_remaps = _patch_compose_ports(target["path"])
+            if _port_remaps:
+                # Store remaps so callers can find the actual host ports
+                self._port_remaps = _port_remaps
             env = dict(os.environ, COMPOSE_PROJECT_NAME=self.compose_project)
             r = subprocess.run(["docker", "compose", "-f", target["path"], "-p",
                                 self.compose_project, "up", "-d", "--build"],
