@@ -2427,8 +2427,27 @@ def run_full_chain(
             # Seed from patch info if available from Stage 1 (NVD references)
             _early_patch = result.evidence.get("patch_analysis", {})
             if _early_patch.get("fix_class") and _early_patch["fix_class"] != "unknown":
+                _fc = _early_patch["fix_class"]
+                # fix_class → endpoint hunting hints for the LLM
+                _FC_EP_HINTS: dict[str, str] = {
+                    "sqli": "busca endpoints con parámetros de búsqueda/filtrado/paginación",
+                    "xss": "busca endpoints que reflejan input en HTML/JSON sin sanitizar",
+                    "ssti": "busca endpoints con renderizado de templates dinámicos",
+                    "command_injection": "busca endpoints que llaman a comandos del sistema",
+                    "path_traversal": "busca endpoints que leen archivos con path de usuario",
+                    "open_redirect": "busca endpoints con parámetros redirect/return/url/next",
+                    "missing_auth_bypass": "busca endpoints que modifican recursos sin auth",
+                    "auth_bypass": "busca endpoints de autenticación o perfil de usuario",
+                    "ssrf": "busca endpoints que realizan peticiones HTTP a URLs externas",
+                    "jwt_bypass": "busca endpoints de autenticación o endpoints con JWT",
+                    "cors_misconfiguration": "busca endpoints con cabecera Origin en respuesta",
+                    "file_upload_bypass": "busca endpoints que aceptan uploads de archivos",
+                    "insecure_deserialization": "busca endpoints que deserializan datos del usuario",
+                }
+                _ep_hint = _FC_EP_HINTS.get(_fc, "")
+                _hint_str = f" — {_ep_hint}" if _ep_hint else ""
                 _llm_ctx_lines.append(
-                    f"[SEÑAL DE PATCH DIFF] clase={_early_patch['fix_class']} "
+                    f"[SEÑAL DE PATCH DIFF] clase={_fc}{_hint_str} "
                     f"func={_early_patch.get('vuln_function','?')} "
                     f"param={_early_patch.get('suggested_param','?')}"
                 )
