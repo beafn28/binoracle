@@ -237,13 +237,21 @@ def _is_library_cve(cve_info, llm_notes: dict) -> bool:
     return (pkg_hit or sig_hit) and no_endpoint
 
 
+def _signal_match(signal: str, text: str) -> bool:
+    """Match signal against text. Use word-boundary check for short signals (<=4 chars)
+    to avoid false positives like 'rop' in 'improper' or 'pe' in 'permission'."""
+    if len(signal) <= 4:
+        return bool(re.search(r'\b' + re.escape(signal) + r'\b', text))
+    return signal in text
+
+
 def _classify(cve_info, llm_notes: dict) -> str:
     text = ((getattr(cve_info, "description", "") or "") + " " + str(llm_notes)).lower()
     scores = {
-        "web":    sum(1 for s in _WEB_SIGNALS    if s in text),
-        "binary": sum(1 for s in _BIN_SIGNALS    if s in text),
-        "cli":    sum(1 for s in _CLI_SIGNALS    if s in text),
-        "native": sum(1 for s in _NATIVE_SIGNALS if s in text),
+        "web":    sum(1 for s in _WEB_SIGNALS    if _signal_match(s, text)),
+        "binary": sum(1 for s in _BIN_SIGNALS    if _signal_match(s, text)),
+        "cli":    sum(1 for s in _CLI_SIGNALS    if _signal_match(s, text)),
+        "native": sum(1 for s in _NATIVE_SIGNALS if _signal_match(s, text)),
     }
     best = max(scores, key=scores.get)
     return best if scores[best] > 0 else "unknown"
