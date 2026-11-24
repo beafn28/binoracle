@@ -529,6 +529,39 @@ _FIX_RULES: List[tuple] = [
                     r"defusedxml|etree\.XMLParser\s*\(.*resolve_entities.*False)", re.I)],
         0.85,
     ),
+    (
+        "file_upload_bypass",
+        "unrestricted file upload — MIME type or extension not validated",
+        "added extension allowlist or MIME type validation",
+        [re.compile(r"(?:move_uploaded_file\s*\(\s*\$_FILES|"
+                    r"multer\s*\(\s*\{|upload\.single\s*\(|"
+                    r"request\.FILES\[|\.save\s*\(\s*upload_to=|"
+                    r"file\.write\s*\(\s*content|"
+                    r"open\s*\([^)]*,\s*['\"]wb['\"]\s*\)\s*\.write\s*\(user)", re.I)],
+        [re.compile(r"(?:fileFilter\s*:\s*function|mimetype\.includes|"
+                    r"allowed_extensions|ALLOWED_EXTENSIONS|"
+                    r"imghdr\.what\s*\(|magic\.from_buffer\s*\(|"
+                    r"mimetypes\.guess_type\s*\(|"
+                    r"extension\s*in\s*\[.{0,60}(?:jpg|png|gif|pdf)|"
+                    r"\['\"](?:image/jpeg|image/png|application/pdf)['\"])", re.I)],
+        0.82,
+    ),
+    (
+        "insecure_deserialization",
+        "insecure deserialization via pickle/yaml/unserialize with user data",
+        "replaced with safe loader or JSON parsing",
+        [re.compile(r"(?:pickle\.loads\s*\(|pickle\.load\s*\(|"
+                    r"yaml\.load\s*\([^)]*(?!Loader=yaml\.Safe)|"
+                    r"unserialize\s*\(\s*\$_(?:POST|GET|COOKIE|REQUEST)|"
+                    r"Marshal\.load\s*\(|ObjectInputStream\s*\.readObject|"
+                    r"java\.io\.ObjectInputStream)", re.I)],
+        [re.compile(r"(?:pickle is not supported|"
+                    r"yaml\.safe_load\s*\(|yaml\.load\s*\([^)]*Loader=yaml\.SafeLoader|"
+                    r"json\.loads\s*\(|json\.load\s*\(|"
+                    r"allowed_classes\s*=\s*false|"
+                    r"ObjectInputFilter|resolveClass.*throw)", re.I)],
+        0.87,
+    ),
 ]
 
 # Fallback: if nothing matches, look for generic sanitization removal
@@ -583,9 +616,11 @@ _PAYLOADS_FOR_CLASS: Dict[str, str] = {
     "cors_misconfiguration": "",    # no payload; check Origin header reflection
     "mass_assignment":    "",       # no payload; send extra protected fields
     "ssrf":               "http://169.254.169.254/latest/meta-data/",
-    "jwt_bypass":         "",       # payload is a JWT with alg:none
-    "xml_injection":      "<!DOCTYPE foo [<!ENTITY xxe SYSTEM 'file:///etc/passwd'>]>",
-    "unknown":            "",
+    "jwt_bypass":             "",   # payload is a JWT with alg:none
+    "xml_injection":          "<!DOCTYPE foo [<!ENTITY xxe SYSTEM 'file:///etc/passwd'>]>",
+    "file_upload_bypass":     "",   # payload is a webshell disguised as image
+    "insecure_deserialization": "", # payload depends on gadget chain
+    "unknown":                "",
 }
 
 
