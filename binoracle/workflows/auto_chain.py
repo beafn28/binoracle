@@ -2452,19 +2452,22 @@ def run_full_chain(
                     # the LLM was vague ("injection", "unknown", "web") but the diff
                     # clearly shows the specific fix pattern.
                     _DIFF_TO_VULN_CLASS = {
-                        "sqli":          "sqli",
-                        "injection":     "sqli",
-                        "xss":           "xss",
-                        "auth_bypass":   "missing-authorization",
+                        "sqli":               "sqli",
+                        "injection":          "sqli",
+                        "xss":                "xss",
+                        "auth_bypass":        "missing-authorization",
                         "missing_auth_bypass": "missing-authorization",
-                        "ssti":          "ssti",
-                        "lfi":           "lfi",
-                        "rce":           "rce",
-                        "ssrf":          "ssrf",
-                        "open_redirect": "open-redirect",
-                        "csrf":          "csrf",
-                        "deserialization": "deserialization",
-                        "path_traversal": "path-traversal",
+                        "ssti":               "ssti",
+                        "lfi":                "lfi",
+                        "rce":                "rce",
+                        "ssrf":               "ssrf",
+                        "open_redirect":      "open-redirect",
+                        "csrf":               "csrf",
+                        "deserialization":    "deserialization",
+                        "path_traversal":     "path-traversal",
+                        "cors_misconfiguration": "cors-misconfiguration",
+                        "mass_assignment":    "mass-assignment",
+                        "command_injection":  "rce",
                     }
                     _mapped_vc = _DIFF_TO_VULN_CLASS.get(_pdiff.fix_class, "")
                     if _mapped_vc and result.cve_class not in ("native", "binary"):
