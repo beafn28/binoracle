@@ -2106,6 +2106,67 @@ def _static_vuln_precheck(local_path: str, plugin_dir: str, vuln_class: str,
                 "confidence": 0.0,
             }
 
+    # --- Check 19: Server-Side Template Injection (SSTI) — Jinja2/Twig/ERB render of user input ---
+    # Triggered for: ssti, server-side-template-injection, template-injection.
+    # Unsafe: render_template_string(user_input), Jinja2.Environment.from_string(user_input),
+    #         twig.render(user_input), ERB.new(user_input).result
+    # Safe: render_template("fixed.html", var=user_input), autoescape=True, Environment(autoescape=True)
+    import os as _os_ssti
+    import re as _re_ssti
+    _vc_ssti = vuln_class.lower().replace(" ", "-")
+    if _vc_ssti in ("ssti", "server-side-template-injection", "template-injection") and local_path:
+        _SSTI_UNSAFE_RE = _re_ssti.compile(
+            r"(?:render_template_string\s*\([^)]*(?:request\.|params\[|user_input|payload)|"
+            r"Environment\(\s*\)\.from_string\s*\([^)]*(?:request|user|payload)|"
+            r"Template\s*\([^)]*(?:request\.|user_input|payload)|"
+            r"\.render\s*\(\s*(?:request\.|user_input|payload)|"
+            r"twig\.render\s*\([^)]*(?:params|user|input)|"
+            r"ERB\.new\s*\([^)]*(?:params|input|user))", _re_ssti.I)
+        _SSTI_SAFE_RE = _re_ssti.compile(
+            r"(?:render_template\s*\(\s*['\"][^'\"]+['\"]\s*,|"
+            r"autoescape\s*=\s*True|"
+            r"Environment\s*\([^)]*autoescape|"
+            r"markupsafe\.escape|Markup\s*\(|"
+            r"escape\s*\((?!.*render_template_string))", _re_ssti.I)
+        _ssti_unsafe_files: list = []
+        _ssti_safe_files: list = []
+        try:
+            for _r_ssti, _d_ssti, _f_ssti in _os_ssti.walk(local_path):
+                _d_ssti[:] = [d for d in _d_ssti if d not in
+                              ("node_modules", ".git", "vendor", "__pycache__")]
+                for _fn_ssti in _f_ssti:
+                    if not _fn_ssti.endswith((".py", ".rb", ".php", ".twig", ".html")):
+                        continue
+                    _fp_ssti = _os_ssti.path.join(_r_ssti, _fn_ssti)
+                    try:
+                        _txt_ssti = open(_fp_ssti, encoding="utf-8",
+                                         errors="ignore").read(100_000)
+                        if _SSTI_UNSAFE_RE.search(_txt_ssti):
+                            _ssti_unsafe_files.append(
+                                _os_ssti.path.relpath(_fp_ssti, local_path))
+                        if _SSTI_SAFE_RE.search(_txt_ssti):
+                            _ssti_safe_files.append(
+                                _os_ssti.path.relpath(_fp_ssti, local_path))
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        if _ssti_safe_files and not _ssti_unsafe_files:
+            return {
+                "ok": False,
+                "reason": (f"pre-check SSTI: autoescape/render_template seguro detectado en "
+                           f"{', '.join(_ssti_safe_files[:2])} — no se encontró render_template_string "
+                           f"con input de usuario — probable versión parchada"),
+                "confidence": 0.60,
+            }
+        if _ssti_unsafe_files:
+            return {
+                "ok": True,
+                "reason": (f"pre-check SSTI: render_template_string con input de usuario detectado "
+                           f"en {', '.join(_ssti_unsafe_files[:2])} — SSTI probable"),
+                "confidence": 0.0,
+            }
+
     return {"ok": True, "reason": "pre-check OK", "confidence": 1.0}
 
 
