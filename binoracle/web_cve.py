@@ -2081,7 +2081,15 @@ main {
 
 /* ── Correlation panel ──────────────────────────────────────────────────── */
 .corr-panel { margin-top: 12px; }
-.corr-hint  { font-size: 10px; color: var(--dim); font-weight: 400; margin-left: 8px; }
+.corr-toggle-btn {
+  display: flex; align-items: center; gap: 7px; width: 100%;
+  background: none; border: none; cursor: pointer; padding: 4px 0;
+  text-align: left; color: inherit;
+}
+.corr-toggle-btn:hover .pi-title-inline { text-decoration: underline; }
+.corr-toggle-arrow { font-size: 11px; color: var(--cyan); flex-shrink: 0; }
+.pi-title-inline { font-size: 11px; font-weight: 700; letter-spacing: .06em; color: var(--fg); text-transform: uppercase; }
+.corr-hint  { font-size: 10px; color: var(--dim); font-weight: 400; }
 .corr-grid  { display: flex; flex-direction: column; gap: 2px; margin-top: 6px; }
 .corr-row   {
   display: flex; flex-direction: column; gap: 3px;
@@ -2438,7 +2446,7 @@ main {
       $('run-btn').disabled = false;
         $('html-btn').disabled = false;
       if ($('pdf-btn')) $('pdf-btn').disabled = false;
-      setTimeout(loadHistory, 200);
+      setTimeout(() => loadHistory(1), 200);
     });
 
     es.onerror = () => {
@@ -2457,6 +2465,7 @@ main {
       $('run-btn').disabled = false;
         $('html-btn').disabled = false;
       if ($('pdf-btn')) $('pdf-btn').disabled = false;
+      setTimeout(() => loadHistory(1), 200);
     } catch {}
   }
 
@@ -2921,12 +2930,22 @@ main {
       return '&#9670;';
     }
 
-    let html = `<div class="pi-panel corr-panel">
-      <div class="pi-title">
-        Related CVEs (${related.length}) — ${escHtml(corr.component || 'same component')}
-        <span class="corr-hint">click any to investigate</span>
-      </div>
-      <div class="corr-grid">`;
+    const panelId = 'corr-panel-' + Date.now();
+    const gridId  = 'corr-grid-' + Date.now();
+
+    let html = `<div class="pi-panel corr-panel" id="${panelId}">
+      <button class="corr-toggle-btn" onclick="
+        const g=document.getElementById('${gridId}');
+        const btn=this;
+        const open=g.style.display!=='none';
+        g.style.display=open?'none':'';
+        btn.querySelector('.corr-toggle-arrow').textContent=open?'▸':'▾';
+      ">
+        <span class="corr-toggle-arrow">▸</span>
+        <span class="pi-title-inline">Related CVEs (${related.length}) — ${escHtml(corr.component || 'same component')}</span>
+        <span class="corr-hint">click to expand · select any to investigate</span>
+      </button>
+      <div class="corr-grid" id="${gridId}" style="display:none">`;
 
     for (const c of related.slice(0, 8)) {
       const sc = scoreLabel(c.cvss);
