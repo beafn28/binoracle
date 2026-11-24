@@ -3154,6 +3154,10 @@ def run_full_chain(
         "missing-authorization", "missing-auth", "broken-access-control",
         "auth-bypass", "authentication-bypass", "idor",
         "insecure-direct-object-reference",
+        # Also escalate ssrf and nosqli when verified — data exfil is the key impact
+        "ssrf", "nosql-injection", "nosqli",
+        # Credential exposure via info leak
+        "information-disclosure", "sensitive-data-exposure",
     }
     _cve_class_esc = (result.cve_class or "").lower().replace(" ", "-")
     if (result.verified
