@@ -1407,6 +1407,73 @@ def _md_to_plain(text: str) -> str:
     return '\n'.join(out)
 
 
+def _print_chain_verdict(cr, cve_id: str, elapsed: float, use_col: bool,
+                         bold: str, reset: str, dim: str, colorlog) -> None:
+    """Render the terminal verdict box for a ChainResult."""
+    if cr.verified:
+        vc   = "\033[1;32m" if use_col else ""
+        icon = "★  VERIFICADO"
+    else:
+        vc   = "\033[1;33m" if use_col else ""
+        icon = "✖  NO CONFIRMADO"
+
+    bar = "═" * 62
+    print(f"\n{vc}╔{bar}╗{reset}")
+    print(f"{vc}║{reset}  {vc}{bold}{icon:^60}{reset}{vc}║{reset}")
+    print(f"{vc}╚{bar}╝{reset}")
+
+    _wh = "\033[97m" if use_col else ""
+    _mc = "\033[35m" if use_col else ""
+    _tc = "\033[36m" if use_col else ""
+
+    ev = cr.evidence or {}
+    _ep  = ev.get("endpoint") or ev.get("url") or ""
+    _pay = ev.get("payload_ganador") or ev.get("payload") or ""
+    _ctr = ev.get("contenedor") or ev.get("container") or ""
+    if _ep or _pay or _ctr:
+        print()
+        if _ctr:
+            print(f"  {bold}Contenedor{reset}:    {_wh}{_ctr}{reset}")
+        if _ep:
+            print(f"  {bold}Endpoint{reset}:      {_wh}{_ep}{reset}")
+        if _pay:
+            print(f"  {bold}Payload{reset}:       {_mc}{_pay}{reset}")
+
+    if cr.cvss_score:
+        print(f"  {bold}CVSS{reset}:           {cr.cvss_score} {cr.cvss_severity}")
+    if cr.engine_confidence:
+        print(f"  {bold}Confianza motor{reset}: {cr.engine_confidence:.0%}")
+    if cr.report_path:
+        print(f"  {bold}Informe{reset}:        {dim}{cr.report_path}{reset}")
+
+    print(f"\n  {bold}Tiempo total{reset}: {_tc}{elapsed:.1f}s{reset}")
+    print(f"  {dim}clase: {cr.cve_class} · {cve_id}{reset}")
+    print()
+
+
+def _export_chain_html(cr, out_path: str, cve_id: str, lang: str) -> None:
+    """Export ChainResult.report_md as a minimal HTML file."""
+    try:
+        from pathlib import Path as _P
+        _md = cr.report_md or f"# {cve_id}\n\nSin informe Markdown disponible.\n"
+        # Minimal HTML wrapper — no external deps
+        _html = (
+            f"<!DOCTYPE html><html lang='{lang}'><head>"
+            "<meta charset='utf-8'>"
+            f"<title>{cve_id} — binoracle</title>"
+            "<style>body{font-family:monospace;max-width:900px;margin:2rem auto;"
+            "background:#0d1117;color:#c9d1d9;line-height:1.6}"
+            "pre,code{background:#161b22;padding:.2em .4em;border-radius:4px}"
+            "h1,h2,h3{color:#58a6ff}</style></head><body>"
+            "<pre style='white-space:pre-wrap'>"
+            + _md.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            + "</pre></body></html>"
+        )
+        _P(out_path).write_text(_html, encoding="utf-8")
+    except Exception:
+        pass
+
+
 def cmd_cve(args, config):
     """Shortcut: binoracle cve <CVE-ID> — investigacion completa con logs estructurados."""
     import time as _time
@@ -1522,11 +1589,13 @@ def cmd_cve(args, config):
     else:
         on_step = _make_cve_step_printer()
 
-    _lang = getattr(args, "lang", None) or config.lang
-    _budget = float(getattr(args, "budget", 600) or 600)
+    _lang     = getattr(args, "lang", None) or config.lang
+    _budget   = float(getattr(args, "budget", 600) or 600)
     _no_cache = getattr(args, "no_cache", False)
+    # run_full_chain is the default; --no-chain falls back to investigate_cve
+    _use_chain = not getattr(args, "no_chain", False)
 
-    if getattr(args, "chain", False):
+    if _use_chain:
         from .workflows.auto_chain import run_full_chain
         chain_result = run_full_chain(
             cve_id,
@@ -1536,44 +1605,49 @@ def cmd_cve(args, config):
             config=config,
             no_cache=_no_cache,
         )
-        # Adapt ChainResult → Investigation-like object for the shared render path below
-        inv_chain = type("_InvProxy", (), {
-            "verified": chain_result.verified,
-            "verified_detail": chain_result.evidence.get("verify_detail", ""),
-            "verified_evidence": chain_result.evidence,
-            "attempt_evidence": {},
-            "poc_kind": "chain",
-            "developed_script": "",
-            "vuln_class": chain_result.cve_class,
-            "llm_notes": {},
-            "dynamic_verify": (getattr(chain_result.inv, "dynamic_verify", {}) or {})
-                              if chain_result.inv else {},
-        })()
-        # Print chain report directly (already formatted by run_full_chain)
-        if chain_result.report_md:
-            print("\n" + chain_result.report_md[:8000])
-        if chain_result.report_path:
-            colorlog.ok(f"informe guardado → {chain_result.report_path}")
-        inv = inv_chain
-    else:
-        inv = investigate_cve(
-            cve_id,
-            config=config,
-            on_step=on_step,
-            lang=_lang,
-            budget_s=_budget,
-            hints=hints or None,
-            use_cache=not _no_cache,
-        )
+        elapsed_total = _time.time() - t_start
+        _print_chain_verdict(chain_result, cve_id, elapsed_total, _use_col, _b, _r, _d, colorlog)
+        if getattr(args, "html", None):
+            _export_chain_html(chain_result, args.html, cve_id, _lang)
+            colorlog.ok(f"informe HTML escrito en {args.html}")
+        if getattr(args, "json_out", None):
+            import json as _json
+            from pathlib import Path as _Path
+            import dataclasses as _dc
+            _inv_obj = chain_result.inv
+            _jdata = {
+                "cve_id": chain_result.cve_id,
+                "verified": chain_result.verified,
+                "engine_confidence": chain_result.engine_confidence,
+                "cve_class": chain_result.cve_class,
+                "cvss_score": chain_result.cvss_score,
+                "evidence": chain_result.evidence,
+                "steps": [_dc.asdict(s) for s in chain_result.steps],
+                "report_path": chain_result.report_path,
+            }
+            _Path(args.json_out).write_text(_json.dumps(_jdata, indent=2,
+                                                        ensure_ascii=False, default=str))
+            colorlog.ok(f"evidencia JSON escrita en {args.json_out}")
+        return
 
+    # ── Fallback: single-stage investigate_cve (--no-chain) ──────────────────
+    inv = investigate_cve(
+        cve_id,
+        config=config,
+        on_step=on_step,
+        lang=_lang,
+        budget_s=_budget,
+        hints=hints or None,
+        use_cache=not _no_cache,
+    )
     elapsed_total = _time.time() - t_start
 
     # ── Verdict box ───────────────────────────────────────────────────────────
     if inv.verified:
-        vc   = "\033[1;32m" if _use_col else ""  # verde
+        vc   = "\033[1;32m" if _use_col else ""
         icon = "★  VERIFICADO"
     else:
-        vc   = "\033[1;33m" if _use_col else ""  # amarillo
+        vc   = "\033[1;33m" if _use_col else ""
         icon = "✖  NO CONFIRMADO"
 
     bar2 = "═" * 62
@@ -1581,7 +1655,6 @@ def cmd_cve(args, config):
     print(f"{vc}║{_r}  {vc}{_b}{icon:^60}{_r}{vc}║{_r}")
     print(f"{vc}╚{bar2}╝{_r}")
 
-    # Detalles de evidencia
     ve = getattr(inv, "verified_evidence", None) or {}
     if isinstance(ve, dict):
         payload  = ve.get("payload_ganador", "")
@@ -1612,29 +1685,22 @@ def cmd_cve(args, config):
         print(f"\n  {detail}")
 
     _tm_c = "\033[36m" if _use_col else ""
-    # Resumen final de bloqueadores si no verificado
     if not inv.verified:
         blockers = getattr(inv, "blockers", []) or []
         if blockers:
             print(f"\n  {_b}Bloqueadores:{_r}")
             for bl in blockers[:3]:
-                # Sin truncar a 100: los logs de docker contienen el error real de Node/Python
-                # que necesitamos ver entero para diagnosticar. Se limita a 800 chars para no
-                # llenar la terminal, pero es suficiente para ver el 'Error: Cannot find module'.
-                bl_txt = str(bl)[:800]  # str() por si bl es una tupla interna (ej. precheck)
-                # Indentar las líneas internas del bloque de logs para que se lean bien
-                lines = bl_txt.splitlines()
+                bl_txt = str(bl)[:800]
+                lines  = bl_txt.splitlines()
                 print(f"    {vc}▸{_r} {lines[0]}")
                 for ln in lines[1:]:
                     print(f"      {ln}")
 
     print(f"\n  {_b}Tiempo total{_r}: {_tm_c}{elapsed_total:.1f}s{_r}")
-    # Resumen rápido de clase + CVSS
     _notes = getattr(inv, "llm_notes", {}) or {}
     _cls   = getattr(inv, "vuln_class", "") or _notes.get("vuln_class", "")
     _cvss  = getattr(inv, "cvss_score", None)
     _sev   = getattr(inv, "cvss_severity", "") or ""
-    _yc = "\033[33m" if _use_col else ""
     if _cls or _cvss:
         parts = []
         if _cvss:
@@ -1646,7 +1712,6 @@ def cmd_cve(args, config):
             parts.append(f"PoC: {poc_k}")
         print(f"  {_d}{' · '.join(parts)}{_r}")
 
-    # Capturas disponibles: mostrar inline en iTerm2/Kitty; en otros terminales solo el contador
     _vshots = (getattr(inv, "verified_evidence", {}) or {}).get("screenshots") or []
     _ashots = (getattr(inv, "attempt_evidence", {}) or {}).get("screenshots") or []
     _all_terminal_shots = list(_vshots) + [s for s in _ashots if s not in _vshots]
@@ -1657,22 +1722,21 @@ def cmd_cve(args, config):
         _iterm2 = "iterm" in _term.lower() or _os.environ.get("ITERM_SESSION_ID", "")
         _kitty  = _os.environ.get("KITTY_WINDOW_ID", "") or "kitty" in _term.lower()
         _gc = "\033[32m" if _use_col else ""
-        print(f"\n  {_gc}◈ Capturas paso a paso ({len(_all_terminal_shots)} imágen{'es' if len(_all_terminal_shots)!=1 else ''}):{_r}")
+        print(f"\n  {_gc}◈ Capturas paso a paso ({len(_all_terminal_shots)} "
+              f"imágen{'es' if len(_all_terminal_shots)!=1 else ''}):{_r}")
         for i, _sh in enumerate(_all_terminal_shots):
             _png = _sh.get("png_b64")
-            _cap = _sh.get("caption_es" if getattr(config, "lang", "es") == "es" else "caption_en") or ""
+            _cap = _sh.get("caption_es" if _lang == "es" else "caption_en") or ""
             _url = _sh.get("url") or ""
             print(f"    {_d}Paso {i+1}:{_r} {_cap[:90]}")
             if _url:
                 print(f"      {_d}URL:{_r} {_url[:80]}")
             if _png:
                 if _iterm2:
-                    # Protocolo iTerm2: imagen inline en terminal
                     _raw = _b64mod.b64decode(_png)
                     _enc = _b64mod.b64encode(_raw).decode("ascii")
                     print(f"\033]1337;File=inline=1;width=80;height=20;preserveAspectRatio=1:{_enc}\a")
                 elif _kitty:
-                    # Protocolo Kitty: icat
                     try:
                         import subprocess as _sp, tempfile as _tf
                         with _tf.NamedTemporaryFile(suffix=".png", delete=False) as _tmp:
@@ -1688,16 +1752,13 @@ def cmd_cve(args, config):
                     print(f"      {_d}[~{_kb} KB — usa -o report.html para ver la imagen]{_r}")
     print()
 
-    # El informe completo solo va al HTML (-o/--html); en terminal no se imprime nada mas
-    # despues del cuadro VERIFICADO / NO CONFIRMADO (ya se ve todo lo relevante ahi).
-
     if getattr(args, "html", None):
         from .report.html import render_investigation_page
         from pathlib import Path as _Path
-        md_full = render_investigation(inv, config.lang)
+        md_full = render_investigation(inv, _lang)
         _Path(args.html).write_text(
             render_investigation_page(md_full, script=inv.developed_script,
-                                      cve=cve_id, lang=config.lang, poc_kind=inv.poc_kind,
+                                      cve=cve_id, lang=_lang, poc_kind=inv.poc_kind,
                                       inv=inv),
             encoding="utf-8")
         colorlog.ok(f"informe HTML escrito en {args.html}")
@@ -1953,25 +2014,37 @@ def cmd_investigate(args, config):
     _inv_lang   = getattr(args, "lang", None) or config.lang
     _inv_budget = float(getattr(args, "budget", 300) or 300)
     _inv_cve    = args.cve.upper() if hasattr(args, "cve") else args.cve
-    if getattr(args, "chain", False):
+    _inv_binary = getattr(args, "binary", "") or ""
+    _use_col    = _color_ok()
+    _b2 = "\033[1m" if _use_col else ""
+    _r2 = "\033[0m" if _use_col else ""
+    _d2 = "\033[2m" if _use_col else ""
+    if not getattr(args, "no_chain", False):
         from .workflows.auto_chain import run_full_chain
         _cr = run_full_chain(
             _inv_cve,
-            binary=getattr(args, "binary", "") or "",
+            binary=_inv_binary,
             lang=_inv_lang,
             budget_s=_inv_budget,
             on_step=lambda m: colorlog.line(m),
             config=config,
             no_cache=getattr(args, "no_cache", False),
         )
-        colorlog.ok(f"cadena completa terminada — verified={_cr.verified} "
-                    f"confidence={_cr.engine_confidence:.0%}")
-        if _cr.report_path:
-            colorlog.ok(f"informe → {_cr.report_path}")
-        if _cr.report_md:
-            print(_cr.report_md[:8000])
+        import time as _t2
+        _print_chain_verdict(_cr, _inv_cve, _cr.elapsed_s, _use_col, _b2, _r2, _d2, colorlog)
+        if getattr(args, "json", None):
+            import json as _json2
+            from pathlib import Path as _P2
+            import dataclasses as _dc2
+            _P2(args.json).write_text(_json2.dumps({
+                "cve_id": _cr.cve_id, "verified": _cr.verified,
+                "engine_confidence": _cr.engine_confidence,
+                "evidence": _cr.evidence, "report_path": _cr.report_path,
+                "steps": [_dc2.asdict(s) for s in _cr.steps],
+            }, indent=2, ensure_ascii=False, default=str))
+            colorlog.ok(f"JSON → {args.json}")
         return
-    inv = investigate_cve(_inv_cve, binary=getattr(args, "binary", "") or "",
+    inv = investigate_cve(_inv_cve, binary=_inv_binary,
                           config=config, on_step=lambda m: colorlog.line(m), lang=_inv_lang,
                           budget_s=_inv_budget, hints=hints or None,
                           use_cache=not getattr(args, "no_cache", False))
@@ -2054,10 +2127,62 @@ def _connect_shared_burp_mcp(args, context_note: str) -> None:
 
 
 def _run_investigate_batch_and_report(cve_ids, config, parallel: int, budget_s: float,
-                                      out_dir: Path, html_dir, use_cache: bool):
+                                      out_dir: Path, html_dir, use_cache: bool,
+                                      use_chain: bool = False):
     """Nucleo compartido de investigate-batch e investigate-watch: lanza investigate_cves_batch
     sobre `cve_ids`, escribe un informe por CVE en `out_dir` (y en `html_dir` si se da), imprime
-    el progreso en vivo y la tabla resumen al final. Devuelve los BatchItem resultantes."""
+    el progreso en vivo y la tabla resumen al final. Devuelve los BatchItem resultantes.
+
+    Si use_chain=True, usa run_full_chain (8 etapas) en vez de investigate_cves_batch;
+    la concurrencia se hace con ThreadPoolExecutor igual que el batch normal."""
+
+    if use_chain:
+        from .workflows.auto_chain import run_full_chain
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        colorlog.info(f"lanzando {len(cve_ids)} cadenas completas (chain mode) "
+                      f"con paralelismo {min(parallel, 2)}...")
+        _chain_par = min(parallel, 2)  # chain es más pesada, cap más conservador
+
+        def _run_one(cve_id):
+            colorlog.info(f"[{cve_id}] iniciando cadena completa...")
+            cr = run_full_chain(cve_id, lang=config.lang, budget_s=budget_s,
+                                on_step=lambda m: colorlog.line(f"[{cve_id}] {m}"),
+                                config=config, no_cache=not use_cache)
+            colorlog.ok(f"[{cve_id}] cadena terminada — verified={cr.verified} "
+                        f"conf={cr.engine_confidence:.0%}")
+            # Write report
+            if cr.report_md:
+                (out_dir / f"{cve_id}.md").write_text(cr.report_md)
+            import json as _j
+            (out_dir / f"{cve_id}.json").write_text(_j.dumps({
+                "cve_id": cr.cve_id, "verified": cr.verified,
+                "engine_confidence": cr.engine_confidence,
+                "cve_class": cr.cve_class, "cvss_score": cr.cvss_score,
+                "evidence": cr.evidence, "report_path": cr.report_path,
+            }, indent=2, ensure_ascii=False, default=str))
+            if html_dir:
+                _export_chain_html(cr, str(html_dir / f"{cve_id}.html"), cve_id, config.lang)
+            return cr
+
+        chain_results = []
+        with ThreadPoolExecutor(max_workers=_chain_par) as _ex:
+            futures = {_ex.submit(_run_one, cid): cid for cid in cve_ids}
+            for fut in as_completed(futures):
+                try:
+                    chain_results.append(fut.result())
+                except Exception as e:
+                    colorlog.error(f"[{futures[fut]}] error en chain: {e}")
+
+        verified = sum(1 for r in chain_results if r.verified)
+        print(f"\n── Resumen del lote (chain) ──────────────────────────────────")
+        for cr in chain_results:
+            icon = "✓" if cr.verified else "✗"
+            print(f"  {icon} {cr.cve_id:<25} conf={cr.engine_confidence:.0%}  "
+                  f"clase={cr.cve_class or '?'}")
+        print(f"  Verificados: {verified}/{len(chain_results)}")
+        colorlog.info(f"informes en {out_dir}/" + (f" y HTML en {html_dir}/" if html_dir else ""))
+        return chain_results
+
     from .workflows.cve_agent import (investigate_cves_batch, render_batch_summary,
                                       render_investigation)
 
@@ -2120,7 +2245,8 @@ def cmd_investigate_batch(args, config):
     parallel = int(getattr(args, "parallel", 2) or 2)
     _run_investigate_batch_and_report(
         args.cves, config, parallel, float(getattr(args, "budget", 300) or 300), out_dir,
-        html_dir, not getattr(args, "no_cache", False))
+        html_dir, not getattr(args, "no_cache", False),
+        use_chain=bool(getattr(args, "chain", False)))
 
 
 def cmd_nvd_watch(args, config):
@@ -2277,7 +2403,7 @@ def cmd_investigate_watch(args, config):
                        ", ".join(m.cve_id for m in mentions))
             _run_investigate_batch_and_report(
                 [m.cve_id for m in mentions], config, parallel, budget_s, out_dir, html_dir,
-                use_cache)
+                use_cache, use_chain=bool(getattr(args, "chain", False)))
         elif not first_cycle:
             colorlog.info(f"sin novedades relevantes en @{channel}")
         first_cycle = False
@@ -2820,11 +2946,10 @@ def build_parser() -> argparse.ArgumentParser:
                          "'http://localhost:1337'. El motor hace las peticiones directamente "
                          "contra esa URL sin construir ni arrancar ningun contenedor.")
     cv.add_argument("--no-cache", action="store_true", help="force fresh investigation (no cache)")
-    cv.add_argument("--chain", action="store_true",
-                    help="use the full autonomous 8-stage chain (run_full_chain) instead of "
-                         "the single-stage investigate_cve — slower but runs intelligence, "
-                         "hypothesis, classify, verify, enrich, patchdiff and report stages "
-                         "in sequence; also saves the result to ~/.binoracle/history/")
+    cv.add_argument("--no-chain", action="store_true",
+                    help="skip the full 8-stage chain and use the faster single-stage "
+                         "investigate_cve instead (useful for quick checks or when Docker is "
+                         "not available)")
     cv.add_argument("--lang", default=None, choices=["es", "en"],
                     help="report language (default: from config, usually 'es')")
     cv.add_argument("-o", "--html", help="export full HTML report (with screenshots) to this path")
@@ -3003,10 +3128,9 @@ def build_parser() -> argparse.ArgumentParser:
                          "afterwards (docker network/volume/container matching the printed tag)")
     ip.add_argument("--lang", default=None, choices=["es", "en"],
                     help="report language override (default: from config)")
-    ip.add_argument("--chain", action="store_true",
-                    help="use the full autonomous 8-stage chain (run_full_chain) for deeper "
-                         "analysis: intelligence, hypothesis, classify, verify, enrich, "
-                         "patchdiff, report and auto YWH writeup")
+    ip.add_argument("--no-chain", action="store_true",
+                    help="use the faster single-stage investigate_cve instead of the full "
+                         "8-stage chain (default is chain mode)")
     ip.set_defaults(func=cmd_investigate)
 
     ipb = sub.add_parser("investigate-batch", help="run several 'investigate's IN PARALLEL "
@@ -3036,6 +3160,10 @@ def build_parser() -> argparse.ArgumentParser:
                      help="force a fresh investigation for every CVE in the batch even if "
                           "already cached locally from a previous run (same flag as "
                           "'investigate', see its help)")
+    ipb.add_argument("--chain", action="store_true",
+                     help="use run_full_chain (8-stage autonomous pipeline) for each CVE "
+                          "instead of investigate_cve; slower but produces richer reports "
+                          "and feeds ~/.binoracle/history/")
     ipb.set_defaults(func=cmd_investigate_batch)
 
     ipw = sub.add_parser("investigate-watch", help="watch a public Telegram CVE feed (default "
@@ -3077,6 +3205,9 @@ def build_parser() -> argparse.ArgumentParser:
     ipw.add_argument("--no-cache", action="store_true",
                      help="force a fresh investigation even for a CVE already cached locally "
                           "(same flag as 'investigate', see its help)")
+    ipw.add_argument("--chain", action="store_true",
+                     help="use run_full_chain (8-stage) for each CVE the watch discovers "
+                          "instead of investigate_cve; produces full reports + feeds history/")
     ipw.set_defaults(func=cmd_investigate_watch)
 
     nvdw = sub.add_parser("nvd-watch", help="poll NVD API for new high-severity web CVEs and "
