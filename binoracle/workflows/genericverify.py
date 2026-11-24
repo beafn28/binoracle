@@ -495,7 +495,7 @@ def _dockerfile_is_buildable(df_path: str, context_dir: str) -> bool:
     return True
 
 
-def _find_build_target(source_dir: str) -> Optional[dict]:
+def _find_build_target(source_dir: str, pkg_version: str = "") -> Optional[dict]:
     """Busca, en el codigo YA descargado, como arrancar el objetivo -- un docker-compose.yml/
     compose.yml (en la raiz o un nivel por debajo, el sitio donde casi todo el mundo lo pone), o
     si no hay, un Dockerfile suelto. Si NINGUNO de los dos existe, intenta detectar el stack por
@@ -532,7 +532,7 @@ def _find_build_target(source_dir: str) -> Optional[dict]:
             if not _dockerfile_is_buildable(df_path, root):
                 continue
             return {"kind": "dockerfile", "path": df_path, "context": root}
-    return _detect_and_write_auto_dockerfile(source_dir)
+    return _detect_and_write_auto_dockerfile(source_dir, pkg_version=pkg_version)
 
 
 def _exposed_ports_from_dockerfile(path: str) -> List[int]:
@@ -1046,7 +1046,8 @@ def _bootstrap_generic_lab(source_dir: str, step, res: WpVerifyResult,
                            budget_s: float, setup_commands: Optional[List[str]] = None,
                            dockerfile_body: str = "",
                            extra_files: Optional[dict] = None,
-                           prebuilt_url: str = "") -> Optional[tuple]:
+                           prebuilt_url: str = "",
+                           pkg_version: str = "") -> Optional[tuple]:
     """Pasos comunes a TODOS los verificadores genericos: detectar como arrancar el objetivo,
     construirlo/arrancarlo, y encontrar por donde habla HTTP. Devuelve (lab, base_url, container)
     o None con `res` ya relleno (detail/logs/limitations) -- el caller solo tiene que `return res`.
@@ -1090,7 +1091,7 @@ def _bootstrap_generic_lab(source_dir: str, step, res: WpVerifyResult,
                   "_analyst_ctx": ctx_dir}
         step("usando Dockerfile del analista (prioridad sobre repo)")
     else:
-        target = _find_build_target(source_dir)
+        target = _find_build_target(source_dir, pkg_version=pkg_version)
     if target is None:
         res.detail = ("no se encontro Dockerfile ni docker-compose.yml en el codigo descargado, "
                       "y el stack tampoco se reconocio por sus ficheros propios (package.json/"
@@ -4005,6 +4006,7 @@ def verify_generic_header_bypass(
     budget_s: float = 900.0,
     bypass_url: Optional[str] = None,
     dockerfile_body: str = "", extra_files: Optional[dict] = None,
+    pkg_version: str = "",
 ) -> WpVerifyResult:
     """Verifica un bypass de autorizacion via CABECERA HTTP o URL manipulada.
 
@@ -4038,7 +4040,8 @@ def verify_generic_header_bypass(
         return res
 
     boot = _bootstrap_generic_lab(source_dir, step, res, budget_s,
-                                   dockerfile_body=dockerfile_body, extra_files=extra_files)
+                                   dockerfile_body=dockerfile_body, extra_files=extra_files,
+                                   pkg_version=pkg_version)
     if boot is None:
         return res
     lab, base_url, container = boot
@@ -4322,6 +4325,7 @@ def verify_generic_header_bypass_candidates(
     budget_s: float = 900.0,
     dockerfile_body: str = "", extra_files: Optional[dict] = None,
     vuln_class: str = "",
+    pkg_version: str = "",
 ) -> WpVerifyResult:
     """Iterate through bypass header candidates using ONE shared lab instance.
 
@@ -4364,7 +4368,8 @@ def verify_generic_header_bypass_candidates(
     # Build the lab once
     boot = _bootstrap_generic_lab(source_dir, step, res, budget_s,
                                    dockerfile_body=dockerfile_body,
-                                   extra_files=extra_files)
+                                   extra_files=extra_files,
+                                   pkg_version=pkg_version)
     if boot is None:
         return res
     lab, base_url, container = boot
