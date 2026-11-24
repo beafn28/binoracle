@@ -15,7 +15,6 @@ SOLO USO AUTORIZADO — solo en software propio o con permiso escrito del propie
 """
 from __future__ import annotations
 
-import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -384,7 +383,7 @@ def render_corpus(corpus: CorpusResult, wrote_to: Optional[str] = None) -> str:
     lines.append("```")
     lines.append("")
     lines.append("```")
-    lines.append(f"# Build & run:")
+    lines.append("# Build & run:")
     lines.append(f"clang -g -O1 -fsanitize=fuzzer,address -o fuzzer_harness {wrote_to or '.'}/harness.c <target.c>")
     lines.append(f"./fuzzer_harness {wrote_to or '.'}/seeds/ -max_len=4096")
     lines.append("```")

@@ -1804,7 +1804,7 @@ def verify_generic_lfi_rce(
                           f"crudo) -- ejecucion remota de codigo real, no una lectura de fichero")
             _body = res.evidence.get("respuesta_cuerpo_recorte", "")
             _add_exploit_evidence(
-                res=res, method=m, url=base_url + endpoint_path,
+                res=res, method=m, url=base_url + endpoint,
                 resp_or_body=_body, highlight=marker,
                 caption_es=(f"LFI-a-RCE CONFIRMADO: log envenenado incluido y PHP ejecuto "
                             f"el payload — marcador '{marker}' presente en la respuesta."),
@@ -1981,6 +1981,7 @@ def verify_generic_file_upload(
     if boot is None:
         return res
     lab, base_url, container = boot
+    m = "POST"
     try:
         secret = _token() * 4
         file_param = file_param_hint or _pick_param(other_parameters, _FILE_UPLOAD_HINTS) or "file"
@@ -2391,6 +2392,7 @@ def _add_exploit_evidence(res: "WpVerifyResult", method: str, url: str,
 def _take_generic_screenshots_sqli(
     base_url: str, endpoint_path: str, m: str, base_params: dict,
     sqli_param: str, evidence: dict,
+    custom_headers: Optional[dict] = None,
 ) -> List[dict]:
     """Captura screenshots Playwright del lab generico para SQLi: control, payload, false (boolean)."""
     import urllib.parse

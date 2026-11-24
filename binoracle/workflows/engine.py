@@ -1973,7 +1973,7 @@ class CveIntelligence:
                                ("sort", "order", "orderby", "dir", "asc", "desc"))
             if _orderby_ctx:
                 step(
-                    f"ORDER BY context — inject scalar subquery without quotes or AND/OR",
+                    "ORDER BY context — inject scalar subquery without quotes or AND/OR",
                     curl=(f"curl -si -X POST '{full_ep}' "
                           f"-d 'nonce=<real_nonce>&directory_id=<real_id>"
                           f"&{_sqli_param}=,(SELECT+extractvalue(1,concat(0x7e,version())))' "
@@ -2586,7 +2586,7 @@ class DependencyAnalysis:
 
         if osv_queries:
             batch_results = self._query_osv_batch(osv_queries)
-            for rec, vulns in zip(osv_recs, batch_results):
+            for rec, vulns in zip(osv_recs, batch_results, strict=False):
                 for vuln in vulns:
                     cve_id = next(
                         (a for a in vuln.get("aliases", []) if a.upper().startswith("CVE-")),

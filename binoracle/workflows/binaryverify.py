@@ -30,12 +30,11 @@ Dos modos de operacion:
 from __future__ import annotations
 
 import os
-import secrets
 import subprocess
 import tempfile
 import textwrap
 import time
-from typing import Callable, List, Optional, Sequence
+from typing import Callable, List, Optional
 
 from .wpverify import WpVerifyResult, _run, _docker_daemon_ok, _token
 

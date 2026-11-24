@@ -18,7 +18,7 @@ import re
 import time
 import urllib.request
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional
 
 _NVD_API  = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 _OSV_API  = "https://api.osv.dev/v1"
@@ -338,7 +338,7 @@ def render_correlation(r: CorrelationResult, lang: str = "es") -> str:
                 out.append(f"{i}. `{cc.cve_id}` — {score_str} · {cc.relation} · {cc.description[:80]}")
         out.append("")
 
-    for section, items, label_es, label_en in [
+    for _section, items, label_es, label_en in [
         (r.same_component, r.same_component, "Mismo componente", "Same component"),
         (r.same_cwe,       r.same_cwe,       "Mismo CWE",        "Same CWE"),
         (r.shared_repo,    r.shared_repo,     "Mismo repositorio","Shared repo"),

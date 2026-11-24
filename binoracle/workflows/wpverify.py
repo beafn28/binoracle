@@ -429,7 +429,7 @@ def _build_exploit_poc(
             py_lines.append(f'r = requests.{m.lower()}(TARGET, data=data, headers=headers, verify=False)')
     else:
         py_lines.append(f"params = {_json.dumps(params, indent=4)}")
-        py_lines.append(f'r = requests.get(TARGET, params=params, headers=headers, verify=False)')
+        py_lines.append('r = requests.get(TARGET, params=params, headers=headers, verify=False)')
     py_lines += ["print(r.status_code)", "print(r.text[:500])"]
     python_script = "\n".join(py_lines)
 
@@ -1279,7 +1279,7 @@ class _Lab:
                 pass
 
 
-def _capture_exploit_shot(boot: "WpBootResult", method: str, endpoint: str,
+def _capture_exploit_shot(boot: "_LabSession", method: str, endpoint: str,
                           resp_or_body, highlight: str, caption_es: str,
                           caption_en: str) -> None:
     """Añade un screenshot HTTP del exploit confirmado a boot.shots y captura HTTP estructurada.
@@ -1337,7 +1337,7 @@ def _capture_exploit_shot(boot: "WpBootResult", method: str, endpoint: str,
         pass
 
 
-def _capture_terminal_shot(boot: "WpBootResult", title: str, content: str,
+def _capture_terminal_shot(boot: "_LabSession", title: str, content: str,
                            highlight: str = "", caption_es: str = "",
                            caption_en: str = "", url: str = "") -> None:
     """Añade un screenshot estilo terminal a boot.shots.
@@ -1827,11 +1827,11 @@ def _http_request_raw_path(method: str, url: str, timeout: float = 15):
         req = urllib.request.Request(url, method=method.upper())
         with urllib.request.urlopen(req, timeout=timeout) as r:
             body = r.read().decode("utf-8", errors="replace")
-            _hdrs = {k: v for k, v in dict(r.info()).items()}
+            _hdrs = dict(r.info())
             return _Resp(r.status, body, reason=getattr(r, "reason", ""), headers=_hdrs)
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", errors="replace")
-        _hdrs = {k: v for k, v in dict(e.info()).items()} if hasattr(e, "info") else {}
+        _hdrs = dict(e.info()) if hasattr(e, "info") else {}
         return _Resp(e.code, body, reason=getattr(e, "reason", ""), headers=_hdrs)
     except Exception:
         return _Resp(0, "")
@@ -2252,11 +2252,11 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
         _main_file = f"{slug}/{slug}.php"
 
         _PHP_FORCE = (
-            f"$current = (array)get_option('active_plugins'); "
-            f"$s = '{{FILE}}'; "
-            f"if (!in_array($s, $current)) {{ $current[] = $s; sort($current); "
-            f"update_option('active_plugins', $current); }} "
-            f"echo in_array($s, (array)get_option('active_plugins')) ? 'OK' : 'FAIL';"
+            "$current = (array)get_option('active_plugins'); "
+            "$s = '{FILE}'; "
+            "if (!in_array($s, $current)) { $current[] = $s; sort($current); "
+            "update_option('active_plugins', $current); } "
+            "echo in_array($s, (array)get_option('active_plugins')) ? 'OK' : 'FAIL';"
         )
 
         def _force_active_via_db(plugin_file: str) -> bool:
@@ -2296,8 +2296,8 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
             "echo implode('|', (array)get_option('active_plugins'));", timeout=20)
         _ap_out = (_r_ap_check.stdout or _r_ap_check.stderr or "").strip()
         if slug not in _ap_out:
-            step(f"WP-CLI murio en el hook de activacion antes de escribir active_plugins -- "
-                 f"forzando activacion via eval (el plugin SI esta en el volumen)...")
+            step("WP-CLI murio en el hook de activacion antes de escribir active_plugins -- "
+                 "forzando activacion via eval (el plugin SI esta en el volumen)...")
             _r_force = lab.wp_cli("eval",
                 f"$current = (array)get_option('active_plugins'); "
                 f"$s = '{slug}/{slug}.php'; "
@@ -2334,9 +2334,9 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
             res.evidence["screenshots"] = shots
             return None
         else:
-            step(f"plugin activo (rc!=0 pero patron WP-CLI registration-error -- el plugin SI esta registrado)")
+            step("plugin activo (rc!=0 pero patron WP-CLI registration-error -- el plugin SI esta registrado)")
     else:
-        step(f"plugin activo. capturando pantalla: panel de plugins como admin (el plugin vulnerable, activo)...")
+        step("plugin activo. capturando pantalla: panel de plugins como admin (el plugin vulnerable, activo)...")
     if setup_wp_options:
         for opt in setup_wp_options:
             name = (opt or {}).get("name") if isinstance(opt, dict) else None
@@ -4004,8 +4004,8 @@ def verify_wordpress_path_traversal(
                                + ("&" if "?" in endpoint else "?")
                                + f"{path_param}={payload_value}")
                     boot.capture(_pt_sess, shot_url[len(boot.base_url):],
-                           f"Paso 5b: PATH TRAVERSAL (navegador) — secreto visible.",
-                           f"Step 5b: PATH TRAVERSAL (browser) — secret visible.")
+                           "Paso 5b: PATH TRAVERSAL (navegador) — secreto visible.",
+                           "Step 5b: PATH TRAVERSAL (browser) — secret visible.")
                 break
         # ultimo recurso si el canario (en /tmp, fuera del volumen web) no se confirmo: repetir
         # las mismas 40 variantes pero pidiendo literalmente /etc/passwd -- el objetivo EXACTO
@@ -4074,8 +4074,8 @@ def verify_wordpress_path_traversal(
                                        + ("&" if "?" in endpoint else "?")
                                        + f"{path_param}={payload_value}")
                         boot.capture(_pt_sess, _shot_url_b[len(boot.base_url):],
-                               f"Paso 5b: PATH TRAVERSAL (navegador) — /etc/passwd visible.",
-                               f"Step 5b: PATH TRAVERSAL (browser) — /etc/passwd visible.")
+                               "Paso 5b: PATH TRAVERSAL (navegador) — /etc/passwd visible.",
+                               "Step 5b: PATH TRAVERSAL (browser) — /etc/passwd visible.")
                     break
             res.evidence["intentos_etc_passwd"] = tried_passwd
         res.evidence["intentos"] = tried
@@ -4503,7 +4503,7 @@ def verify_wordpress_lfi(
                 params=_lfi_poc_params, technique="PHP-include LFI",
                 description=f"PHP-include LFI on '{path_param}': path traversal reaches /tmp/ — plugin appends .php suffix. Replace TARGET with the real host.")
             _capture_exploit_shot(
-                boot, m, endpoint, res.evidence.get("lfi_php_canary_resp_recorte", ""), highlight=secret,
+                boot, m, endpoint, res.evidence.get("lfi_php_canary_resp_recorte", ""), highlight=_php_lfi_secret,
                 caption_es=(f"Paso 5 (CLAVE): LFI PHP-INCLUDE CONFIRMADO — respuesta con secreto "
                             f"del canario PHP ejecutado. Payload: {path_param}={res.evidence['lfi_php_canary_payload']!r}"),
                 caption_en=(f"Step 5 (KEY): LFI PHP-INCLUDE CONFIRMED — response with PHP canary secret. "
@@ -5420,6 +5420,9 @@ def verify_wordpress_sqli(
         lab.wp_cli("config", "set", "WP_DEBUG", "true", "--raw", "--type=constant",
                   timeout=30)
 
+        # Preliminary orig_value used by REQUEST_URI fast-path; full derivation happens below.
+        orig_value = str((parameters.get(sqli_param) if isinstance(parameters, dict) else "") or "")
+
         # REQUEST_URI injection fast-path: cuando el taint source es $_SERVER['REQUEST_URI'],
         # la inyeccion va en el PATH HTTP (no en query param). Tecnica: raw socket con
         # comilla literal + /**/ como espacio SQL. Solo time-based blind (error/boolean no
@@ -5653,7 +5656,7 @@ def verify_wordpress_sqli(
                             except Exception:
                                 continue
                     else:
-                        step(f"no se hallaron rutas REST ni hooks AJAX en el source del plugin")
+                        step("no se hallaron rutas REST ni hooks AJAX en el source del plugin")
             elif _probe_status in (301, 302) and "wp-login" in _probe_loc.lower():
                 step(f"pre-check endpoint: redireccion a login ({_probe_loc}) — "
                      f"el endpoint requiere autenticación que el lab no ha resuelto")
@@ -6750,8 +6753,8 @@ def verify_wordpress_sqli(
                     _only_in_false = set()
                     _only_in_true = set()
                     # Dividir en tokens de >=6 chars para evitar ruido
-                    _tok_true = set(w for w in _rt2_norm.split() if len(w) >= 6)
-                    _tok_false = set(w for w in _rf2_norm.split() if len(w) >= 6)
+                    _tok_true = {w for w in _rt2_norm.split() if len(w) >= 6}
+                    _tok_false = {w for w in _rf2_norm.split() if len(w) >= 6}
                     _only_in_false = _tok_false - _tok_true
                     _only_in_true = _tok_true - _tok_false
                     # Señal válida: hay tokens exclusivos de una respuesta y no de la otra
@@ -7584,23 +7587,23 @@ def verify_wordpress_fetch_and_write_rce(
             else:
                 step(f"fichero PHP no ejecutado (HTTP {r2.status_code}): {r2.text[:100]!r}")
                 # Check if file was at least written (even if not executed)
-                r3 = requests.get(f"{base}/wp-content/uploads/{marker}.php",
+                r3 = _req.get(f"{base}/wp-content/uploads/{marker}.php",
                                    timeout=10, verify=False, stream=True)
                 raw = r3.raw.read(500)
                 if b"<?php" in raw or marker.encode() in raw:
-                    res.detail = (f"fichero PHP escrito (contenido PHP visible) pero no ejecutado "
-                                   f"(PHP puede estar desactivado en uploads/). Escritura confirmada.")
+                    res.detail = ("fichero PHP escrito (contenido PHP visible) pero no ejecutado "
+                                   "(PHP puede estar desactivado en uploads/). Escritura confirmada.")
                     res.limitations.append(
                         "PHP execution blocked in wp-content/uploads — file write confirmed but "
                         "RCE not proven; consider writing to a directory that allows PHP execution")
                 else:
-                    res.detail = (f"fichero PHP no encontrado o no ejecutado tras la peticion al endpoint. "
-                                   f"El endpoint puede requerir auth, nonce, o el parametro de ruta no es 'missed'.")
+                    res.detail = ("fichero PHP no encontrado o no ejecutado tras la peticion al endpoint. "
+                                   "El endpoint puede requerir auth, nonce, o el parametro de ruta no es 'missed'.")
                     # Check SSRF listener log at least
                     ssrf_log = lab.listener_log()
                     if marker in ssrf_log:
                         res.detail += f" (SSRF confirmado: el listener recibio la peticion con el token {marker})"
-        except requests.RequestException as exc:
+        except _req.RequestException as exc:
             res.detail = f"error verificando fichero escrito: {exc}"
         if boot is not None:
             res.evidence["screenshots"] = boot.shots
@@ -7813,8 +7816,6 @@ def verify_wordpress_xss_elementor(
         step(f"página de test creada: id={post_id} url={page_url}")
 
         # --- Paso 4: cargar la página en Chromium como visitante anónimo ---
-        from urllib.parse import urlsplit
-        host = urlsplit(base_url).hostname or "127.0.0.1"
         path = page_url[len(base_url):] or f"/?p={post_id}"
 
         step(f"cargando {page_url} en Chromium (visitante anónimo) — buscando title='{marker}'...")

@@ -420,7 +420,7 @@ def render_finetune(ds: FinetuneDataset) -> str:
     out.append("# Install dependencies")
     out.append("pip install transformers peft datasets accelerate bitsandbytes trl")
     out.append("")
-    out.append(f"# Run LoRA fine-tuning (requires GPU; use --load_in_4bit for 8GB VRAM)")
+    out.append("# Run LoRA fine-tuning (requires GPU; use --load_in_4bit for 8GB VRAM)")
     out.append(f"python {ds.script_path} --epochs 3 --load_in_4bit")
     out.append("```\n")
 

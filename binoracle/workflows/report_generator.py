@@ -15,7 +15,7 @@ import datetime
 import json
 import os
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 try:
     from .cve_agent import Investigation  # type: ignore
@@ -268,7 +268,7 @@ def _s_description(inv: Any, lang: str) -> str:
                     f"and belongs to the **{vc.upper() or 'unknown'}** class. ")
         body = preamble + desc
     if impact_ctx:
-        body += f"\n\n**" + ("Impacto técnico:" if es else "Technical impact:") + f"** {impact_ctx}"
+        body += "\n\n**" + ("Impacto técnico:" if es else "Technical impact:") + f"** {impact_ctx}"
     return f"{hdr}\n\n{body}"
 
 
@@ -577,7 +577,7 @@ def _s_references(inv: Any, lang: str) -> str:
     notes = (getattr(inv, "llm_notes", {}) or {})
     source_url = notes.get("source_url", "")
     if source_url and source_url not in "\n".join(lines):
-        lines.append(f"- " + ("Código fuente afectado:" if es else "Affected source:") + f" {source_url}")
+        lines.append("- " + ("Código fuente afectado:" if es else "Affected source:") + f" {source_url}")
 
     return "\n".join(lines)
 

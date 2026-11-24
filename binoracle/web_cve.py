@@ -8,7 +8,6 @@ No external deps — uses only Python stdlib + what binoracle already requires.
 from __future__ import annotations
 
 import base64
-import html as _html
 import json
 import os
 import queue
@@ -138,7 +137,6 @@ def _load_history(limit: int = 20, offset: int = 0, verified_only: bool = False)
 # ── Binary lab job store ──────────────────────────────────────────────────────
 
 import subprocess as _subprocess
-import tempfile as _tempfile
 
 _BIN_UPLOAD_DIR = os.path.expanduser("~/.binoracle/uploads")
 os.makedirs(_BIN_UPLOAD_DIR, exist_ok=True)
@@ -603,7 +601,7 @@ class _Handler(BaseHTTPRequestHandler):
             pass
 
     def _json_history(self):
-        from urllib.parse import parse_qs, urlparse as _up
+        from urllib.parse import urlparse as _up
         qs = parse_qs(_up(self.path).query)
         try:
             page = max(1, int(qs.get("page", ["1"])[0]))
@@ -648,7 +646,7 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(404, {"error": "not found"})
 
     def _scout_hueco(self):
-        from urllib.parse import parse_qs, urlparse as _up
+        from urllib.parse import urlparse as _up
         qs = parse_qs(_up(self.path).query)
         days_back  = int(qs.get("days", ["45"])[0])
         min_cvss   = float(qs.get("min_cvss", ["5.0"])[0])

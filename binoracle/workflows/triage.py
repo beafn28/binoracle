@@ -27,7 +27,7 @@ class TriageReport:
 
     def get(self, tool_name: str) -> Optional[str]:
         """Return text of the first section matching tool_name."""
-        for title, source, text in self.sections:
+        for _title, source, text in self.sections:
             if source == tool_name:
                 return text
         return None
@@ -168,7 +168,6 @@ def _score_cve_match(
     affected_symbols:  List[str],
 ) -> TriageScore:
     """Score how well this binary matches the CVE."""
-    import re
 
     score = TriageScore(confidence=0.0, version_ok=None)
 
@@ -249,7 +248,7 @@ def render_triage(report: TriageReport, lang: str = "es") -> str:
             out.append(f"- símbolos afectados encontrados: `{'`, `'.join(s.symbols_hit)}`\n")
 
     out.append("\n## Datos del binario\n")
-    for title, source, text in report.sections:
+    for title, _source, text in report.sections:
         out.append(f"\n### {title}\n```\n{text[:800]}\n```\n")
 
     return "".join(out)

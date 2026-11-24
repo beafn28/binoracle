@@ -53,6 +53,12 @@ def _eprint(*a):
     print(*a, file=sys.stderr)
 
 
+def _color_ok() -> bool:
+    """Return True if stdout supports ANSI colour codes."""
+    from .colorlog import _use_color
+    return _use_color(sys.stdout)
+
+
 def _step_printer(step: int, action: dict):
     act = action.get("action")
     if act == "tool":

@@ -261,7 +261,7 @@ def afl_command(binary: str, via_stdin: bool = True,
     argline = f"{binary} {inp}".strip()
     persistent_note = (
         "# PERSISTENT MODE: add __AFL_FUZZ_INIT() + __AFL_LOOP(10000) in harness.c\n"
-        f"# Then: afl-fuzz -i in -o out -- ./harness.afl\n"
+        "# Then: afl-fuzz -i in -o out -- ./harness.afl\n"
     ) if persistent else ""
     qemu_flag = "-Q " if qemu else ""
     return f'''# AFL++ fuzzing — AUTHORIZED USE ONLY

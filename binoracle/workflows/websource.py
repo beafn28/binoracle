@@ -35,7 +35,7 @@ import urllib.error
 import urllib.request
 import zipfile
 from dataclasses import dataclass
-from typing import Callable, List, Optional
+from typing import Callable, Iterator, List, Optional
 
 _WP_API = "https://api.wordpress.org/plugins/info/1.0/{slug}.json"
 _WP_DOWNLOAD = "https://downloads.wordpress.org/plugin/{slug}.{version}.zip"
@@ -2375,7 +2375,7 @@ def find_stored_xss_endpoint(local_path: str) -> Optional[dict]:
                 if not ns_prop_m:
                     # Buscar en cualquier fichero del plugin (el namespace suele estar en la clase base)
                     ns = ""
-                    for ofp2, otext2 in all_texts.items():
+                    for _ofp2, otext2 in all_texts.items():
                         nm2 = _NS_STATIC_RE.search(otext2)
                         if nm2 and "/" in nm2.group(1):
                             ns = nm2.group(1).strip("/")
@@ -2504,7 +2504,7 @@ def find_stored_xss_endpoint(local_path: str) -> Optional[dict]:
             r"pages|page|search|referrers|referrer|visits|visit|hit|hits|url|urls)['\"]"
         )
         # Recoger slug_template de cualquier archivo
-        for vfp, vtext in all_texts.items():
+        for _vfp, vtext in all_texts.items():
             tpl_m = re.search(
                 r"static\s+\$\w+\s*=\s*['\"]([A-Za-z0-9_]*\[slug\][A-Za-z0-9_]*)['\"]",
                 vtext
@@ -2542,7 +2542,7 @@ def find_stored_xss_endpoint(local_path: str) -> Optional[dict]:
                 rf"SELECT\b.{{0,500}}{re.escape(table_hint)}\b",
                 re.IGNORECASE | re.DOTALL,
             )
-            for vfp, vtext in all_texts.items():
+            for _vfp, vtext in all_texts.items():
                 if _sel_tbl_re.search(vtext):
                     for km in _PAGE_KEY_RE.finditer(vtext):
                         key = km.group(0).strip("'\"")
@@ -2558,7 +2558,7 @@ def find_stored_xss_endpoint(local_path: str) -> Optional[dict]:
             _ip_parts = [p for p in re.split(r"[_\s]+", best_inject.get("inject_param", ""))
                          if len(p) >= 3 and p.lower() not in ("get", "set", "has", "the", "new")]
             if _ip_parts:
-                for vfp, vtext in all_texts.items():
+                for _vfp, vtext in all_texts.items():
                     # El archivo debe tener un SELECT que contenga TODOS los parts
                     _select_blocks = re.findall(r"SELECT\b.{0,800}", vtext, re.IGNORECASE | re.DOTALL)
                     for _blk in _select_blocks:
@@ -2584,7 +2584,7 @@ def find_stored_xss_endpoint(local_path: str) -> Optional[dict]:
         # Estrategia 1 (fallback): recoger todas las page-keys de todos los archivos
         if not view_path and slug_template:
             _all_page_keys: list = []
-            for vfp, vtext in all_texts.items():
+            for _vfp, vtext in all_texts.items():
                 for km in _PAGE_KEY_RE.finditer(vtext):
                     key = km.group(0).strip("'\"")
                     if key not in _all_page_keys:
@@ -2623,7 +2623,7 @@ def find_stored_xss_endpoint(local_path: str) -> Optional[dict]:
                 rf"SELECT\b.{{0,300}}{re.escape(table_hint)}\b",
                 re.IGNORECASE | re.DOTALL,
             )
-            for vfp, vtext in all_texts.items():
+            for _vfp, vtext in all_texts.items():
                 if not _sel_tbl_re2.search(vtext):
                     continue
                 # Buscar fragmentos de ~200 chars alrededor de cada echo del valor
@@ -2744,7 +2744,7 @@ def find_stored_xss_endpoint(local_path: str) -> Optional[dict]:
             func_def = func_re.search(text)
             if func_def is None:
                 # buscar en otros ficheros del plugin
-                for ofp, otext in all_texts.items():
+                for _ofp, otext in all_texts.items():
                     func_def2 = func_re.search(otext)
                     if func_def2:
                         func_body_text = otext
@@ -2814,7 +2814,7 @@ def find_stored_xss_endpoint(local_path: str) -> Optional[dict]:
             rel = os.path.relpath(fp, local_path)
             if "admin" in rel.lower():
                 # e.g. give/includes/admin/entries.php -> /wp-admin/admin.php?page=give-entries
-                view_path = f"/wp-admin/admin.php?page=plugin-entries"
+                view_path = "/wp-admin/admin.php?page=plugin-entries"
         if view_path:
             break
 
@@ -3304,7 +3304,7 @@ def detect_tech_stack(local_path: str) -> str:
     _skip = {"node_modules", "vendor", ".git", "__pycache__", ".tox", "dist", "build"}
     ext_count: dict = {}
     scanned = 0
-    for root, dirs, files in os.walk(local_path):
+    for _root, dirs, files in os.walk(local_path):
         dirs[:] = [d for d in dirs if d not in _skip]
         for fn in files:
             _, ext = os.path.splitext(fn)
@@ -3320,7 +3320,7 @@ def detect_tech_stack(local_path: str) -> str:
     return _map.get(best, "php")
 
 
-def _walk_source_files(local_path: str, extensions: List[str]) -> "Iterator[tuple[str, str, List[str]]]":
+def _walk_source_files(local_path: str, extensions: List[str]) -> Iterator[tuple[str, str, List[str]]]:
     """Yield (abs_path, rel_path, lines) for source files matching extensions."""
     _skip = {"node_modules", "vendor", ".git", "__pycache__", ".tox", "dist", "build",
              "test", "tests", "spec", "fixtures", "migrations"}
@@ -3421,7 +3421,7 @@ def find_sqli_sinks_generic(local_path: str, tech: str = "auto") -> List[VulnSin
         pattern_sets = _SQLI_PATTERNS
     results: List[VulnSink] = []
     for _tech, _user_re, _sink_re, _exts in pattern_sets:
-        for abs_fp, rel_fp, lines in _walk_source_files(local_path, _exts):
+        for _abs_fp, rel_fp, lines in _walk_source_files(local_path, _exts):
             for i, line in enumerate(lines, 1):
                 _user_m = _user_re.search(line)
                 _sink_m = _sink_re.search(line)
@@ -3687,8 +3687,7 @@ def find_auth_bypass_generic(local_path: str, tech: str = "auto") -> List[dict]:
         _sensitive  = re.compile(r"\buser\b.*\.(delete|update|save)\s*\("
                                  r"|\bsettings\b|\bconfig\b.*=\s*request\.",
                                  re.IGNORECASE)
-        for abs_fp, rel_fp, lines in _walk_source_files(local_path, [".py"]):
-            joined = "\n".join(lines)
+        for _abs_fp, rel_fp, lines in _walk_source_files(local_path, [".py"]):
             for i, line in enumerate(lines, 1):
                 m = _route_re.search(line) or _view_re.search(line)
                 if not m:
@@ -3719,7 +3718,7 @@ def find_auth_bypass_generic(local_path: str, tech: str = "auto") -> List[dict]:
                                  r"|\bpassport\.authenticate\b", re.IGNORECASE)
         _sensitive  = re.compile(r"\.(?:delete|drop|remove|update|create|insert)\s*\("
                                  r"|\bconfig\b|\bsettings\b|\bpassword\b", re.IGNORECASE)
-        for abs_fp, rel_fp, lines in _walk_source_files(local_path, [".js", ".ts", ".mjs"]):
+        for _abs_fp, rel_fp, lines in _walk_source_files(local_path, [".js", ".ts", ".mjs"]):
             for i, line in enumerate(lines, 1):
                 m = _route_re.search(line)
                 if not m:
@@ -3745,7 +3744,7 @@ def find_auth_bypass_generic(local_path: str, tech: str = "auto") -> List[dict]:
                                  r"|before_filter\s*:authenticate"
                                  r"|current_user\b|\bauthorize\b")
         _sensitive  = re.compile(r"\.(delete|destroy|update|create|save)\s*[!\(]", re.IGNORECASE)
-        for abs_fp, rel_fp, lines in _walk_source_files(local_path, [".rb"]):
+        for _abs_fp, rel_fp, lines in _walk_source_files(local_path, [".rb"]):
             for i, line in enumerate(lines, 1):
                 m = _action_re.search(line)
                 if not m:
@@ -3771,7 +3770,7 @@ def find_auth_bypass_generic(local_path: str, tech: str = "auto") -> List[dict]:
                                  r"\(?[\"']?([A-Za-z0-9_/{}]+)[\"']?")
         _auth_ann   = re.compile(r"@PreAuthorize|@Secured|@RolesAllowed"
                                  r"|@WithMockUser", re.IGNORECASE)
-        for abs_fp, rel_fp, lines in _walk_source_files(local_path, [".java"]):
+        for _abs_fp, rel_fp, lines in _walk_source_files(local_path, [".java"]):
             for i, line in enumerate(lines, 1):
                 m = _map_re.search(line)
                 if not m:
@@ -3799,7 +3798,7 @@ def _scan_sinks(local_path: str, pattern_sets: list, tech: str) -> List[VulnSink
     )
     results: List[VulnSink] = []
     for _tech, _user_re, _sink_re, _exts in pattern_sets:
-        for abs_fp, rel_fp, lines in _walk_source_files(local_path, _exts):
+        for _abs_fp, rel_fp, lines in _walk_source_files(local_path, _exts):
             # Build a PHP variable→param map for the whole file (taint tracking)
             _var_map: dict = {}
             if _tech == "php":

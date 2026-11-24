@@ -31,7 +31,7 @@ import tempfile
 import time
 import traceback
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, List, Optional
 
 # ── Data model ────────────────────────────────────────────────────────────────
 
@@ -105,7 +105,7 @@ def _gather_intelligence(cve_id: str, result: ChainResult, step: Callable) -> Op
     cve_info = None
     try:
         from .cvelookup import fetch_cve
-        step(f"  NVD + GitHub PoC + ExploitDB + OSV.dev...")
+        step("  NVD + GitHub PoC + ExploitDB + OSV.dev...")
         cve_info = fetch_cve(cve_id)
         if not cve_info.ok:
             step(f"  NVD: {cve_info.note}")
@@ -148,9 +148,9 @@ def _gather_intelligence(cve_id: str, result: ChainResult, step: Callable) -> Op
             kev = cve_id in kev_set
         if kev:
             result.in_cisa_kev = True
-            step(f"  CISA KEV: SÍ — vulnerabilidad ACTIVAMENTE EXPLOTADA en la naturaleza")
+            step("  CISA KEV: SÍ — vulnerabilidad ACTIVAMENTE EXPLOTADA en la naturaleza")
         else:
-            step(f"  CISA KEV: no")
+            step("  CISA KEV: no")
     except Exception:
         pass
 
@@ -396,7 +396,7 @@ def _run_web_stage(cve_id: str, cve_info, llm_notes: dict,
                         elapsed=t())
         return inv
     except Exception as e:
-        tb = traceback.format_exc()
+        _tb = traceback.format_exc()
         result.add_step("web_investigation", "error", str(e)[:120])
         step(f"  error: {e}")
         return None
@@ -437,7 +437,7 @@ def _run_report_stage(result: ChainResult, step: Callable,
     # Try the full professional generator first
     if result.inv is not None:
         try:
-            from .report_generator import generate_report, save_report
+            from .report_generator import generate_report
             rpt = generate_report(result.inv, lang=lang)
             md  = rpt.to_markdown()
             if md.strip():
@@ -596,12 +596,11 @@ def run_full_chain(
                 cve_id, cve_info, result, step, tmpdir)
 
         # ── Stage 5: Core investigation ───────────────────────────────────────
-        inv = None
         if binary:
             investigation_md = _run_binary_stage(cve_id, binary, result, step, llm=llm)
             result.report_md = investigation_md
         elif result.cve_class in ("web", "unknown", "cli"):
-            inv = _run_web_stage(
+            _run_web_stage(
                 cve_id, cve_info, llm_notes, result, step,
                 budget_s=budget_s, config=config, llm=llm, lang=lang)
         elif result.cve_class in ("native", "binary"):
@@ -611,7 +610,7 @@ def run_full_chain(
             result.add_step("investigation", "skip",
                             "native/binary CVE — provide --binary")
             # Still run the web stage as fallback (might have Docker PoC)
-            inv = _run_web_stage(
+            _run_web_stage(
                 cve_id, cve_info, llm_notes, result, step,
                 budget_s=budget_s, config=config, llm=llm, lang=lang)
         else:

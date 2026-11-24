@@ -13,9 +13,8 @@ v2 adds:
 """
 from __future__ import annotations
 
-import os
 import random
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 try:
     import os as _os
@@ -368,7 +367,7 @@ def gen_sigret_shellcode(arch: str = "amd64") -> str:
                 f"# bytes.fromhex({frame_bytes.hex()!r})",
             ]
             return "\n".join(lines)
-        except Exception as e:
+        except Exception:
             pass  # fall through to manual
 
     # Manual layout

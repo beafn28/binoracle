@@ -127,7 +127,7 @@ class ChangedFunc:
             score += 0.2
         if self.kind in ("NEW",):
             score += 0.1
-        for ptype, pat, _mn, _mx in _PATCH_SIGNALS:
+        for _ptype, pat, _mn, _mx in _PATCH_SIGNALS:
             if pat.search(self.name or ""):
                 score += 0.3
                 break

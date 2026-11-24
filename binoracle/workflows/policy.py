@@ -168,11 +168,11 @@ def validate_llm_proposal(proposal: dict) -> PolicyResult:
     }
     """
     # Required fields
-    for field in ("diagnosis", "proposed_action"):
-        if not proposal.get(field):
+    for field_name in ("diagnosis", "proposed_action"):
+        if not proposal.get(field_name):
             return PolicyResult(
                 allowed=False, action=proposal.get("proposed_action", "unknown"),
-                reason=f"Missing required field: {field}",
+                reason=f"Missing required field: {field_name}",
             )
 
     confidence = proposal.get("confidence", 0)

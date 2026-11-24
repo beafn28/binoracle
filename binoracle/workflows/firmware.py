@@ -25,15 +25,13 @@ tienes autorización escrita.
 """
 from __future__ import annotations
 
-import os
 import re
-import shutil
 import struct
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
 
 # ---------------------------------------------------------------------------
@@ -147,7 +145,7 @@ def detect_format(path: str) -> Tuple[str, str, str]:
 
     # ELF
     if hdr[:4] == b"\x7fELF":
-        ei_class = hdr[4] if len(hdr) > 4 else 0
+        _ei_class = hdr[4] if len(hdr) > 4 else 0
         ei_data = hdr[5] if len(hdr) > 5 else 0
         e_machine = struct.unpack_from("<H" if ei_data == 1 else ">H", hdr, 0x12)[0] if len(hdr) > 0x14 else 0
         arch_map = {0x28: "arm", 0xb7: "arm64", 0x03: "x86", 0x3e: "x86_64",

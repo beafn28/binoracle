@@ -32,12 +32,10 @@ import traceback
 import urllib.request
 from dataclasses import dataclass, field
 from enum import Enum
-from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 
 from .error_analyzer import (
-    ErrorCategory, ErrorRecord, ErrorSeverity,
-    analyze_error, render_error_summary,
+    ErrorCategory, ErrorRecord, analyze_error, render_error_summary,
 )
 from .repair_memory import RepairMemory
 
@@ -476,7 +474,7 @@ class AgentController:
             t0 = time.time()
             try:
                 success, output, stderr, phase = pipeline_fn(self.state, self._step_logger)
-            except Exception as exc:
+            except Exception:
                 output  = ""
                 stderr  = traceback.format_exc()
                 success = False
@@ -521,7 +519,7 @@ class AgentController:
                 self._repair_case_ids.append(case_id)
                 self._strategy_history.append(repair_msg)
 
-            it = self._record_iteration(
+            self._record_iteration(
                 phase=phase or self.state.phase, success=success,
                 error=error_rec, output=output,
             )

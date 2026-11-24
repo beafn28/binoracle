@@ -7,14 +7,11 @@ ErrorRecord that the RepairMemory stores and the Controller uses to pick a repai
 from __future__ import annotations
 
 import hashlib
-import json
-import os
 import re
 import time
-import traceback
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import List, Optional
+from typing import Optional
 
 
 class ErrorCategory(str, Enum):

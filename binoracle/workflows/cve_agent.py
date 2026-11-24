@@ -969,7 +969,7 @@ def _diagnose_failure(wr: Any, technique_label: str = "") -> dict:
     ev = getattr(wr, "evidence", {}) or {}
     ctrl_body = (ev.get("respuesta_control_recorte") or "")[:600]
     ctrl_status = ev.get("status_control") or ev.get("control_status") or 0
-    det = (getattr(wr, "detail", "") or "")[:400]
+    _det = (getattr(wr, "detail", "") or "")[:400]
     td = technique_label.lower()
 
     causa = ""
@@ -1132,7 +1132,7 @@ def _static_vuln_precheck(local_path: str, plugin_dir: str, vuln_class: str,
 
     # --- Check 3: LFI/path-traversal — verificar que hay lectura de archivo con input externo ---
     if vuln_class in ("lfi", "path-traversal"):
-        import re as _re_pc, os as _os_pc
+        import os as _os_pc
         _UNSAFE_FILE_PATTERNS = re.compile(
             r'(file_get_contents|readfile|fopen|include|require|file)\s*\(\s*'
             r'(?:\$_(?:GET|POST|REQUEST|COOKIE)|\\$[a-zA-Z_]\w*)',
@@ -1964,7 +1964,6 @@ CWE_TO_VULN_CLASS: dict = {
     # Denial of Service
     "CWE-400": "dos",
     "CWE-770": "dos",
-    "CWE-776": "dos",
 }
 
 
@@ -2203,14 +2202,14 @@ def _docker_self_repair(container: str, step, max_attempts: int = 3) -> bool:
             # Already running — verify it's actually serving (port bound)
             port_r = _sp.run(["docker", "port", container], capture_output=True, text=True, timeout=10)
             if port_r.stdout.strip():
-                step(f"[self-repair] container is running and has bound ports — healthy")
+                step("[self-repair] container is running and has bound ports — healthy")
                 return True
             # Running but no ports? Wait a bit and retry
             import time as _t; _t.sleep(5)
             continue
 
         if oom == "true" or exit_code == "137":
-            step(f"[self-repair] OOMKilled (exit 137) — restarting (memory pressure)")
+            step("[self-repair] OOMKilled (exit 137) — restarting (memory pressure)")
             _sp.run(["docker", "start", container], capture_output=True, text=True, timeout=30)
             import time as _t; _t.sleep(5)
             continue
@@ -4828,7 +4827,7 @@ def _prescan_source_for_llm_context(source_dir: str, vuln_class: str,
         from .websource import (detect_tech_stack, find_sqli_sinks_generic,
                                 find_rce_sinks, find_path_traversal_sinks,
                                 find_xss_sinks_generic, find_auth_bypass_generic,
-                                find_ssrf_sinks, VulnSink)
+                                find_ssrf_sinks, VulnSink)  # noqa: F401
     except ImportError:
         return result
 
@@ -5029,7 +5028,7 @@ def _hueco_code_analysis(inv: "Investigation", fr: Any, llm: Any, step: Any, es:
         return
 
     from .websource import (find_unsanitized_sqli_params, find_stored_xss_endpoint,
-                             find_all_ajax_actions, find_ajax_handler_function,
+                             find_ajax_handler_function,
                              find_missing_auth_handlers,
                              # generic multi-language scanners
                              detect_tech_stack, find_sqli_sinks_generic,
@@ -6734,7 +6733,6 @@ def _guess_wp_slug_from_description(description: str) -> Optional[str]:
     con honestidad si el slug no existe de verdad)."""
     if not description:
         return None
-    candidates: list = []
     for pattern in _PLUGIN_NAME_PATTERNS:
         m = pattern.search(description)
         if m:
@@ -8312,15 +8310,9 @@ _SCAFFOLD_SYS_FOR_CLASS = {
     "business-logic":              "_LAB_SCAFFOLD_BUSINESS_LOGIC_SYS",
     "logic-flaw":                  "_LAB_SCAFFOLD_BUSINESS_LOGIC_SYS",
     "insufficient-validation":     "_LAB_SCAFFOLD_BUSINESS_LOGIC_SYS",
-    # CSRF
-    "csrf":                        "_LAB_SCAFFOLD_CSRF_SYS",
-    "cross-site-request-forgery":  "_LAB_SCAFFOLD_CSRF_SYS",
     "xsrf":                        "_LAB_SCAFFOLD_CSRF_SYS",
-    # CRLF injection
-    "crlf-injection":              "_LAB_SCAFFOLD_CRLF_SYS",
     "crlf":                        "_LAB_SCAFFOLD_CRLF_SYS",
     "http-response-splitting":     "_LAB_SCAFFOLD_CRLF_SYS",
-    "response-splitting":          "_LAB_SCAFFOLD_CRLF_SYS",
     # Multi-step chain (2FA bypass, token-based flows)
     "2fa-bypass":                  "_LAB_SCAFFOLD_MULTISTEP_SYS",
     "two-factor-bypass":           "_LAB_SCAFFOLD_MULTISTEP_SYS",
@@ -8372,7 +8364,6 @@ def _scaffold_llm_lab_for_class(llm, source_dir: str, notes: dict, cve_id: str,
         "_LAB_SCAFFOLD_RACE_CONDITION_SYS":      _LAB_SCAFFOLD_RACE_CONDITION_SYS,
         "_LAB_SCAFFOLD_PATH_CONFUSION_SYS":      _LAB_SCAFFOLD_PATH_CONFUSION_SYS,
         "_LAB_SCAFFOLD_BUSINESS_LOGIC_SYS":      _LAB_SCAFFOLD_BUSINESS_LOGIC_SYS,
-        "_LAB_SCAFFOLD_CSRF_SYS":                _LAB_SCAFFOLD_CSRF_SYS,
         "_LAB_SCAFFOLD_CRLF_SYS":                _LAB_SCAFFOLD_CRLF_SYS,
         "_LAB_SCAFFOLD_MULTISTEP_SYS":           _LAB_SCAFFOLD_MULTISTEP_SYS,
     }
@@ -9151,8 +9142,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             #    la similitud de nombres).
                             # 2) Si no hay sqli_param o no dio resultado, caer al scoring de
                             #    similitud de nombres entre known_action y las acciones reales.
-                            from .websource import (find_all_ajax_actions, find_ajax_action_for_param,
-                                                    fetch_wp_rest_routes)
+                            from .websource import (find_all_ajax_actions, find_ajax_action_for_param)
                             _sqli_p = (notes.get("sqli_param") or
                                        notes.get("vulnerable_parameter") or "").strip()
                             _param_action = None
@@ -9260,7 +9250,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
 
                                 def _lcp_len(a: str, b: str) -> int:
                                     n = 0
-                                    for x, y in zip(a, b):
+                                    for x, y in zip(a, b, strict=False):
                                         if x == y:
                                             n += 1
                                         else:
@@ -9683,7 +9673,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     _synth = _synthesize_exploit_from_intel(
                         llm=llm,
                         cve_intel=_cve_intel_synth,
-                        vuln_class=vuln_class,
+                        vuln_class=inv.vuln_class,
                         vulnerable_code=_vuln_code_synth,
                         endpoint=notes.get("endpoint", ""),
                         param=_param_synth,
@@ -9692,7 +9682,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         lang="es" if es else "en",
                     )
                     if _synth.get("ok") and _synth.get("confidence", 0) >= 0.5:
-                        _synth_vc = _synth.get("vuln_class_used", vuln_class)
+                        _synth_vc = _synth.get("vuln_class_used", inv.vuln_class)
                         # Build a compact summary of the most relevant class-specific field
                         _synth_detail = ""
                         if _synth_vc == "sqli":
@@ -10950,7 +10940,6 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     elif not notes.get("json_body") and fr.local_path:
                         # Verificar en el código fuente si el handler del endpoint usa
                         # get_json_params() — indica que espera JSON body, no form data.
-                        import re as _re_jb
                         _jb_found = False
                         _known_action = _extract_known_ajax_action(notes)
                         if _known_action:
@@ -13391,7 +13380,6 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
 
     # Controller-side error tracking — non-blocking, enriches error analysis
     try:
-        from .error_analyzer import analyze_error, classify_error
         from .workspace_guard import WorkspaceGuard
         _guard = WorkspaceGuard(workspace=os.path.expanduser("~/.binoracle"))
         _guard.snapshot()
@@ -13668,9 +13656,9 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
     _dockerfile_body = (notes.get("dockerfile_body") or "").strip()
     if not has_bin and _dockerfile_body and _poc_cmd and not is_web_class(inv.vuln_class):
         from .binaryverify import verify_binary_crash_via_dockerfile
-        step((f"construyendo imagen Docker con binario vulnerable (Dockerfile personalizado)..."
+        step(("construyendo imagen Docker con binario vulnerable (Dockerfile personalizado)..."
               if es else
-              f"building custom Docker image with vulnerable binary (Dockerfile approach)..."))
+              "building custom Docker image with vulnerable binary (Dockerfile approach)..."))
         _crash_pats = notes.get("crash_patterns") or None
         _patched_pats = notes.get("patched_patterns") or None
         _tmv = bool(notes.get("timeout_means_vulnerable"))

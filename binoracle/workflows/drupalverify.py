@@ -2010,7 +2010,7 @@ def verify_drupal_csrf(
                 res.evidence["modo_entrega_ganador"] = label
                 res.evidence["status_code_respuesta"] = status
                 _add_shot(boot, boot.base_url + endpoint, m, status,
-                          f"CSRF confirmado — efecto real tras peticion sin token",
+                          "CSRF confirmado — efecto real tras peticion sin token",
                           f"VERIFICADO — CSRF ({label})")
                 break
         res.evidence["intentos_entrega"] = delivery_tried

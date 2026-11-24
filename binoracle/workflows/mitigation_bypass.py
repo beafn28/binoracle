@@ -27,13 +27,13 @@ import shutil
 import subprocess
 import urllib.request
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 _OLLAMA_URL   = os.environ.get("BINORACLE_BASE_URL", "http://localhost:11434")
 _OLLAMA_MODEL = os.environ.get("BINORACLE_MODEL",    "qwen2.5-coder:7b")
 
 try:
-    import r2pipe as _r2pipe  # type: ignore
+    import r2pipe as _r2pipe  # type: ignore  # noqa: F401
     _HAVE_R2PIPE = True
 except ImportError:
     _HAVE_R2PIPE = False
@@ -414,7 +414,7 @@ def analyze_mitigations(binary: str, llm=None) -> MitigationReport:
     report = MitigationReport(binary=binary, mitigations=mits)
 
     present = [m for m in mits if m.present]
-    absent  = [m for m in mits if not m.present]
+    _absent = [m for m in mits if not m.present]
 
     # Derive a combined exploit path suggestion
     names_present = {m.name for m in present}

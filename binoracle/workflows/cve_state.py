@@ -27,7 +27,7 @@ import json
 import os
 import sqlite3
 import time
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
 

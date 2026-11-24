@@ -20,13 +20,13 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
-from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from dataclasses import dataclass
+from typing import List, Optional
 
 try:
     import os as _os
     _os.environ.setdefault("PWNLIB_NOTERM", "1")
-    from pwn import context, ELF, ROP, SigreturnFrame, constants  # type: ignore
+    from pwn import asm, context, ELF, ROP, SigreturnFrame, constants  # type: ignore
     from binoracle import _quiet_pwn as _qp; _qp()
     _HAVE_PWN = True
 except Exception:
@@ -76,7 +76,7 @@ def gadget_search(binary: str, pattern: str, limit: int = 20) -> List[Gadget]:
             elf = ELF(binary, checksec=False)
             rop = ROP(elf)
             pat_re = re.compile(re.escape(pattern), re.I)
-            for addr, (insns, size) in (rop.gadgets or {}).items():
+            for addr, (insns, _size) in (rop.gadgets or {}).items():
                 if pat_re.search(" ; ".join(str(i) for i in insns)):
                     results.append(Gadget(addr=addr, insns=" ; ".join(str(i) for i in insns)))
                     if len(results) >= limit:
@@ -106,7 +106,7 @@ def _ret2csu(rop, elf) -> bool:
     for g1_off, g2_off in [(0x5a, 0x40), (0x52, 0x38)]:
         try:
             g1 = csu_init + g1_off
-            g2 = csu_init + g2_off
+            _g2 = csu_init + g2_off
             # We can't easily push arbitrary calls here without knowing the target,
             # so we just document the gadget addresses for the user
             rop.raw(g1)

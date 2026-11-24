@@ -15,7 +15,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import List, Optional
 
-from .error_analyzer import ErrorCategory, ErrorRecord, error_to_dict
+from .error_analyzer import ErrorRecord
 
 _DEFAULT_DB = os.environ.get(
     "BINORACLE_REPAIR_DB",

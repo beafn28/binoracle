@@ -2645,8 +2645,8 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
             f'{_esc(poc_source_used[:55])}{"…" if len(poc_source_used)>55 else ""}</a>'))
     else:
         mc_items.append(_mcard("PoC PÚBLICO", "PUBLIC PoC",
-            f'<span style="color:var(--mut)"><span class="l-es">Ninguno conocido</span>'
-            f'<span class="l-en">None known</span></span>'))
+            '<span style="color:var(--mut)"><span class="l-es">Ninguno conocido</span>'
+            '<span class="l-en">None known</span></span>'))
     if verified:
         mc_items.append(_mcard("VERIFICADO", "VERIFIED",
             '<span style="color:var(--grn);font-weight:700">&#10003; '
@@ -2681,14 +2681,14 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
         req_path  = (endpoint + payload) if payload else endpoint
 
         proof_section = (
-            f'<section id="sec-proof" style="margin-top:32px">'
+            '<section id="sec-proof" style="margin-top:32px">'
             + _sec_heading("02",
                            "★ EXPLOTACIÓN CONFIRMADA",
                            "★ EXPLOITATION CONFIRMED",
                            "proof", "proof-heading")
-            + f'<div class="proof-card">'
-            f'<div class="proof-top">'
-            f'<div class="proof-top-label"><span class="l-es">Laboratorio Docker efímero</span><span class="l-en">Ephemeral Docker lab</span></div>'
+            + '<div class="proof-card">'
+            '<div class="proof-top">'
+            '<div class="proof-top-label"><span class="l-es">Laboratorio Docker efímero</span><span class="l-en">Ephemeral Docker lab</span></div>'
             + (f'<code class="proof-container">{container}</code>' if container else "")
             + f'</div>'
             f'<div class="proof-cols">'
@@ -2712,10 +2712,10 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
             f'<div class="req-label">RESPONSE</div>'
             f'<span class="status-badge {status_cls}">{_esc(status_txt)}</span>'
             + (f'<pre class="proof-body">{body_snip}</pre>' if body_snip else "")
-            + f'</div>'
-            f'</div>'  # proof-cols
+            + '</div>'
+            '</div>'  # proof-cols
             + (f'<div class="proof-detail">{_esc(verified_detail[:300])}</div>' if verified_detail else "")
-            + f'</div>'  # proof-card
+            + '</div>'  # proof-card
         )
 
         # Evidence differential table (SQLi boolean / SSRF token)
@@ -3039,18 +3039,18 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
                 f'</div>'
                 + (f'<div class="burp-caption"><span class="l-es">{cap_es}</span>'
                    f'<span class="l-en">{cap_en}</span></div>' if (cap_es or cap_en) else "")
-                + f'</div>'
+                + '</div>'
             )
 
         panels_html = "".join(_burp_panel(c, i) for i, c in enumerate(_http_caps))
         burp_section = (
-            f'<section id="sec-burp" style="margin-top:32px">'
+            '<section id="sec-burp" style="margin-top:32px">'
             + _sec_heading("02b",
                            "CAPTURAS HTTP (BURP STYLE)",
                            "HTTP CAPTURES (BURP STYLE)",
                            "burp")
             + f'<div class="burp-panels">{panels_html}</div>'
-            + f'</section>'
+            + '</section>'
         )
 
     # ── Timeline de cadena de ataque ─────────────────────────────────────────
@@ -3064,7 +3064,7 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
                       f'<div class="tl-content">{_esc(str(paso))}</div>'
                       f'</div>')
         chain_section = (
-            f'<section id="sec-chain" style="margin-top:32px">'
+            '<section id="sec-chain" style="margin-top:32px">'
             + _sec_heading("03", "CADENA DE ATAQUE", "ATTACK CHAIN", "chain")
             + f'<div class="timeline">{items}</div>'
             f'</section>'
@@ -3092,13 +3092,13 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
     _strat = llm_notes.get("strategy") or llm_notes.get("trigger") or ""
     if _strat:
         _tc_items.append(
-            f'<div class="tc-card tc-wide"><div class="tc-label">'
+            '<div class="tc-card tc-wide"><div class="tc-label">'
             + ("ESTRATEGIA DE ATAQUE" if es else "ATTACK STRATEGY")
             + f'</div><div class="tc-val">{_esc(str(_strat))}</div></div>')
 
     if _tc_items:
         tech_section = (
-            f'<section id="sec-tech" style="margin-top:32px">'
+            '<section id="sec-tech" style="margin-top:32px">'
             + _sec_heading("04", "ANÁLISIS TÉCNICO", "TECHNICAL ANALYSIS", "tech")
             + f'<div class="tc-grid">{"".join(_tc_items)}</div>'
             f'</section>'
@@ -3186,10 +3186,10 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
             _h3_es = "DATO EXTRAÍDO — PRUEBA TÉCNICA" if ("sqli" in _vclass or "sql" in _vclass) else "PRUEBA TÉCNICA DE EXPLOTACIÓN"
             _h3_en = "EXTRACTED DATA — TECHNICAL PROOF" if ("sqli" in _vclass or "sql" in _vclass) else "TECHNICAL EXPLOITATION PROOF"
             extraction_section = (
-                f'<section id="sec-extraction" style="margin-top:32px">'
+                '<section id="sec-extraction" style="margin-top:32px">'
                 + _sec_heading("04b", _h3_es, _h3_en, "extraction")
                 + f'<div class="proof-box">{"".join(_proof_rows)}</div>'
-                + f'</section>'
+                + '</section>'
             )
 
     # ── Galeria de capturas ───────────────────────────────────────────────────
@@ -3239,7 +3239,7 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
                              f"Parameter   : {verified_ev.get('sqli_param','param')}\n"
                              f"Payload     : {_pl_s[:200]}\n\n"
                              + (f"$ id\n{_rce_id_s}\n$ whoami\n{_rce_who_s}\n\n" if _rce_id_s else
-                                f"$ id\nuid=0(root) gid=0(root) groups=0(root)\n$ whoami\nroot\n\n")
+                                "$ id\nuid=0(root) gid=0(root) groups=0(root)\n$ whoami\nroot\n\n")
                              + f"$ cat {_can_path}\n"
                              f"{_can}\n\n"
                              f"Remote code execution confirmed — commands run as server process user.")
@@ -3305,7 +3305,7 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
             png = sh.get("png_b64")
             if not png:
                 continue
-            cap      = _esc(sh.get("caption_es" if es else "caption_en") or "")
+            _cap     = _esc(sh.get("caption_es" if es else "caption_en") or "")
             url_raw  = sh.get("url") or ""
             url_txt  = _esc(url_raw)
             step_num = str(i + 1).zfill(2)
@@ -3323,7 +3323,7 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
             _sh_hdrs   = sh.get("request_headers") or {}
             curl_line = ""
             if url_raw and url_raw.startswith("http"):
-                _curl_parts = [f'curl -s -k -i']
+                _curl_parts = ['curl -s -k -i']
                 if _sh_method not in ("", "GET"):
                     _curl_parts.append(f'-X {_esc(_sh_method)}')
                 for _ch_k, _ch_v in list(_sh_hdrs.items())[:6]:
@@ -3334,8 +3334,8 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
                 _curl_parts.append(f'"{url_txt}"')
                 _curl_cmd = " \\\n  ".join(_curl_parts)
                 curl_line = (
-                    f'<div class="shot-cmd">'
-                    f'<span class="sh-prompt">$ </span>'
+                    '<div class="shot-cmd">'
+                    '<span class="sh-prompt">$ </span>'
                     + _curl_cmd
                     + '</div>'
                 )
@@ -3439,7 +3439,7 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
             )
         if shot_cards:
             shots_section = (
-                f'<section id="sec-shots" style="margin-top:32px">'
+                '<section id="sec-shots" style="margin-top:32px">'
                 + _sec_heading("05", "CAPTURAS DE EVIDENCIA", "EVIDENCE SCREENSHOTS", "shots")
                 + f'<div class="steps-grid">{"".join(shot_cards)}</div>'
                 f'</section>')
@@ -3510,11 +3510,11 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
                 f'<div class="inv-step-body">'
                 f'<div class="inv-step-label">{_lbl_html}</div>'
                 + (f'<div class="inv-step-detail">{_esc(_detail[:200])}</div>' if _detail else "")
-                + f'</div></div>'
+                + '</div></div>'
             )
         if _phase_items:
             inv_steps_section = (
-                f'<section id="sec-inv-steps" style="margin-top:32px">'
+                '<section id="sec-inv-steps" style="margin-top:32px">'
                 + _sec_heading("03", "PASOS DE INVESTIGACIÓN", "INVESTIGATION STEPS", "chain")
                 + f'<div class="inv-steps">{_phase_items}</div>'
                 f'</section>'
@@ -3533,7 +3533,7 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
         items = "".join(f'<div class="blocker-item">&#9888; {_md_rich(b)}</div>'
                         for b in blockers[:6])
         blockers_section = (
-            f'<section id="sec-blockers" style="margin-top:32px">'
+            '<section id="sec-blockers" style="margin-top:32px">'
             + _sec_heading("!", "BLOQUEOS Y LIMITACIONES", "BLOCKERS & LIMITATIONS", "blocker")
             + f'<div class="blockers-box">{items}</div>'
             f'</section>')
@@ -3611,11 +3611,11 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
                  (" ".join(_curl_id_parts) + "\n"
                   + (f"\n# Output obtenido en el laboratorio:\n# $ id\n# {_rce_id}\n# $ whoami\n# {_rce_who}"
                      if _rce_id else
-                     f"\n# Esperado (dentro del contenedor):\n# uid=0(root) gid=0(root)\n# o: uid=33(www-data) gid=33(www-data)"))),
+                     "\n# Esperado (dentro del contenedor):\n# uid=0(root) gid=0(root)\n# o: uid=33(www-data) gid=33(www-data)"))),
                 (("4 · Leer el canario dentro del contenedor" if es else "4 · Read canary inside container"),
                  (f"docker exec -it <CONTAINER_ID> cat {_can_path_r}\n"
                   f"# Contiene: {_can_r}" if _can_r else
-                  f"docker exec -it <CONTAINER_ID> cat /tmp/canary.txt")),
+                  "docker exec -it <CONTAINER_ID> cat /tmp/canary.txt")),
                 (("Impacto" if es else "Impact"),
                  (f"Ejecución de comandos como {_rce_who or 'www-data/root'} confirmada.\n"
                   + (f"id: {_rce_id}\n" if _rce_id else "")
@@ -3760,12 +3760,12 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
                 )
 
             repro_section = (
-                f'<section id="sec-repro" style="margin-top:32px">'
+                '<section id="sec-repro" style="margin-top:32px">'
                 + _sec_heading("05b",
                                "PASOS DE REPRODUCCIÓN",
                                "REPRODUCTION STEPS", "repro")
                 + f'<div class="repro-grid">{"".join(_cards)}</div>'
-                + f'</section>'
+                + '</section>'
             )
 
     # ── PoC download + inline ─────────────────────────────────────────────────
@@ -3794,18 +3794,18 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
         inline_code  = _esc("\n".join(inline_lines))
         more_lbl     = ""
         if len(script.splitlines()) > 60:
-            more_lbl = (f'<div style="font-size:11px;color:var(--mut);padding:6px 14px;'
-                        f'border-top:1px solid var(--brd)">'
+            more_lbl = ('<div style="font-size:11px;color:var(--mut);padding:6px 14px;'
+                        'border-top:1px solid var(--brd)">'
                         + ("… descarga el archivo para ver el script completo"
                            if es else "… download the file for the full script")
                         + '</div>')
         poc_section = (
-            f'<section id="sec-poc" style="margin-top:32px">'
+            '<section id="sec-poc" style="margin-top:32px">'
             + _sec_heading("06", "PoC / EXPLOIT", "PoC / EXPLOIT", "poc")
             + dl
             + f'<pre class="poc-inline">{inline_code}</pre>'
             + more_lbl
-            + f'</section>')
+            + '</section>')
 
     # ── Informe completo (markdown) — solo si hay contenido ──────────────────
     full_section = ""
@@ -3820,7 +3820,7 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
             _md_clean = _re_full.sub(
                 r'#+\s*Evidencia visual[^\n]*\n', '', _md_clean, flags=_re_full.IGNORECASE)
         full_section = (
-            f'<section id="sec-report" style="margin-top:32px">'
+            '<section id="sec-report" style="margin-top:32px">'
             + _sec_heading("07", "INFORME COMPLETO", "FULL REPORT", "report")
             + f'<div class="md-body">{_md_rich(_md_clean)}</div>'
             f'</section>')
@@ -3962,9 +3962,9 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
                 f'<span class="l-en">{_esc(en_txt)}</span>'
                 f'</div></div>')
 
-    rem_rows = "".join(_rem_item(e, n, i + 1) for i, (e, n) in enumerate(zip(rem_es, rem_en)))
+    rem_rows = "".join(_rem_item(e, n, i + 1) for i, (e, n) in enumerate(zip(rem_es, rem_en, strict=False)))
     remediation_section = (
-        f'<section id="sec-remediation" style="margin-top:32px">'
+        '<section id="sec-remediation" style="margin-top:32px">'
         + _sec_heading("08", "RECOMENDACIONES", "REMEDIATION", "fix")
         + f'<div class="rem-list">{rem_rows}</div>'
         f'</section>')
@@ -4119,21 +4119,21 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
         f'<span class="l-en">Wordfence analysis</span></li>'
         if _is_wp_target else "")
     references_section = (
-        f'<section id="sec-refs" style="margin-top:32px">'
+        '<section id="sec-refs" style="margin-top:32px">'
         + _sec_heading("09", "REFERENCIAS", "REFERENCES", "refs")
-        + f'<ul class="refs-list">'
+        + '<ul class="refs-list">'
         + f'<li><a href="https://nvd.nist.gov/vuln/detail/{cve_safe}" target="_blank" rel="noopener">'
         + f'nvd.nist.gov/vuln/detail/{cve_safe}</a>'
-        + f' — <span class="l-es">ficha oficial NVD</span><span class="l-en">official NVD entry</span></li>'
+        + ' — <span class="l-es">ficha oficial NVD</span><span class="l-en">official NVD entry</span></li>'
         + _wordfence_line
         + plugin_line
         + poc_line
         + _owasp_cwe_refs(vuln_class)
         + published_line
         + affected_line
-        + f'</ul>'
+        + '</ul>'
         + cvss_table
-        + f'</section>')
+        + '</section>')
 
     # ── Sidebar de navegacion ────────────────────────────────────────────────
     sidenav_links = []
@@ -4167,8 +4167,8 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
     sidenav_links.append(_slink("#sec-refs", "09 Refs", "09 References"))
 
     sidenav = (
-        f'<nav class="sidenav">'
-        f'<div class="sidenav-title"><span class="l-es">SECCIONES</span><span class="l-en">SECTIONS</span></div>'
+        '<nav class="sidenav">'
+        '<div class="sidenav-title"><span class="l-es">SECCIONES</span><span class="l-en">SECTIONS</span></div>'
         + "".join(sidenav_links)
         + '</nav>')
 
@@ -4635,7 +4635,7 @@ document.addEventListener('DOMContentLoaded',function(){
     # ── Ensamblado ────────────────────────────────────────────────────────────
     conf_txt = ("CONFIDENCIAL — SOLO PARA OBJETIVOS AUTORIZADOS (PENTEST / CTF / LABORATORIO)"
                 if es else "CONFIDENTIAL — AUTHORIZED TARGETS ONLY (PENTEST / CTF / LAB)")
-    heading_eyebrow = ("INFORME DE VULNERABILIDAD — bin0racle · " + generated_long.upper()
+    _heading_eyebrow = ("INFORME DE VULNERABILIDAD — bin0racle · " + generated_long.upper()
                        if es else "VULNERABILITY REPORT — bin0racle · " + generated_long.upper())
 
     # CVSS pill en el hero
@@ -4707,7 +4707,7 @@ document.addEventListener('DOMContentLoaded',function(){
         + '</div></div>')
 
     summary_section = (
-        f'<section id="sec-summary">'
+        '<section id="sec-summary">'
         + _sec_heading("01", "RESUMEN EJECUTIVO", "EXECUTIVE SUMMARY", "summary")
         + grid_html
         + '</section>')
