@@ -2227,6 +2227,66 @@ def _static_vuln_precheck(local_path: str, plugin_dir: str, vuln_class: str,
                 "confidence": 0.0,
             }
 
+    # --- Check 21: Header Injection / HTTP Response Splitting ---
+    # Triggered for: header-injection, http-response-splitting, crlf-injection.
+    # Unsafe: response.set_header(user_input), Location: #{user_input}, header value from params
+    # Safe: strip_newlines(value), URL-encode before setting header, CGI.escape(input)
+    import os as _os_hi
+    import re as _re_hi
+    _vc_hi = vuln_class.lower().replace(" ", "-").replace("_", "-")
+    if _vc_hi in ("header-injection", "http-response-splitting", "crlf-injection",
+                  "crlf", "response-splitting") and local_path:
+        _HI_UNSAFE_RE = _re_hi.compile(
+            r"(?:(?:set_?header|addHeader|header)\s*\([^)]*(?:params\[|request\.|req\.|"
+            r"user_input|@params|params\[:|query\[)|"
+            r"Location\s*:\s*[#\"\']\{(?!URI)|"
+            r"response\.headers\[.+\]\s*=\s*(?:request\.|params\.|req\.)|"
+            r"res\.setHeader\s*\([^,]+,\s*req\.|"
+            r"Flask.*redirect\s*\(\s*request\.args)", _re_hi.I)
+        _HI_SAFE_RE = _re_hi.compile(
+            r"(?:strip.*newlines?|strip.*\\r|strip.*\\n|"
+            r"\.gsub\s*\(|encode_uri|urllib\.parse\.quote|"
+            r"CGI\.escape\s*\(|sanitize_header|reject.*\\r|"
+            r"re\.sub\s*\(r?[\'\"]\[\\r\\n\]|replace\s*\([\'\"]\s*\\r|"
+            r"filter.*crlf|no_newlines)", _re_hi.I)
+        _hi_unsafe_files: list = []
+        _hi_safe_files: list = []
+        try:
+            for _r_hi, _d_hi, _f_hi in _os_hi.walk(local_path):
+                _d_hi[:] = [d for d in _d_hi
+                            if d not in ("node_modules", ".git", "vendor", "__pycache__")]
+                for _fn_hi in _f_hi:
+                    if not _fn_hi.endswith((".py", ".rb", ".php", ".js", ".ts")):
+                        continue
+                    _fp_hi = _os_hi.path.join(_r_hi, _fn_hi)
+                    try:
+                        _txt = open(_fp_hi, encoding="utf-8", errors="ignore").read(100_000)
+                        if _HI_UNSAFE_RE.search(_txt):
+                            _hi_unsafe_files.append(
+                                _os_hi.path.relpath(_fp_hi, local_path))
+                        if _HI_SAFE_RE.search(_txt):
+                            _hi_safe_files.append(
+                                _os_hi.path.relpath(_fp_hi, local_path))
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        if _hi_safe_files and not _hi_unsafe_files:
+            return {
+                "ok": False,
+                "reason": (f"pre-check HeaderInject: sanitización de cabeceras detectada en "
+                           f"{', '.join(_hi_safe_files[:2])} — no se encontró inyección sin "
+                           f"filtrar — probable versión parchada"),
+                "confidence": 0.58,
+            }
+        if _hi_unsafe_files:
+            return {
+                "ok": True,
+                "reason": (f"pre-check HeaderInject: cabecera HTTP con input de usuario sin "
+                           f"filtrar en {', '.join(_hi_unsafe_files[:2])} — header injection probable"),
+                "confidence": 0.0,
+            }
+
     return {"ok": True, "reason": "pre-check OK", "confidence": 1.0}
 
 
