@@ -4631,6 +4631,12 @@ def _escalate_missing_auth_impact(
         "/api/settings", "/api/config", "/api/configuration",
         "/api/secrets", "/api/tokens",
         "/api/accounts", "/api/members",
+        # Gitea REST API
+        "/api/v1/admin/users", "/api/v1/repos/search", "/api/v1/settings/api",
+        # Nextcloud OCS API
+        "/ocs/v1.php/cloud/users?format=json", "/ocs/v2.php/apps/admin_audit/api/v1",
+        # Mattermost REST API
+        "/api/v4/users", "/api/v4/config", "/api/v4/config/client?format=old",
     ]
     # POST creation probes (try these last, only if budget permits)
     _creation_paths = [
