@@ -62,10 +62,40 @@ def add_row(cve, cls, tech, score, sev, poc, auth, aff, desc, pub, endpoint, ver
                      auth=auth,aff=aff,desc=desc,pub=pub,endpoint=endpoint,verified=verified,
                      gap=gap,is_gap=is_gap))
 
-# 1. History — skipped: source of truth is batch_reports with dynamic_verify.verified=True.
-# History contains older lab runs, some of which don't have the dynamic_verify field.
-# Including them would inflate the count beyond the confirmed 19 from batch_reports.
-# _history_truly_verified() is kept for future use if needed.
+# 1. History — truly verified entries only (strict real-lab evidence check).
+# These are older lab runs without the dynamic_verify field but with real verified_evidence.
+# CVE-2024-55978 excluded: UNION extracted plugin version (2.0.0) not MySQL — unreliable.
+_HISTORY_EXCLUDE = {"CVE-2024-55978"}
+for fname in sorted(os.listdir(HISTORY)):
+    if not fname.endswith(".json"): continue
+    with open(os.path.join(HISTORY, fname)) as fh:
+        data = json.load(fh)
+    cve = data.get("cve_id", "?")
+    if cve in _HISTORY_EXCLUDE:
+        continue
+    if not _history_truly_verified(data):
+        continue
+    r  = data.get("result", {})
+    ve = r.get("verified_evidence", {})
+    cls  = r.get("vuln_class", "?")
+    tech = ve.get("tecnica", "")
+    if not tech:
+        if ve.get("respuesta_true_len"): tech = "boolean-blind"
+        elif ve.get("bypass_header"):    tech = "auth-bypass"
+        elif ve.get("marker"):           tech = "stored-xss"
+        elif ve.get("canary_path"):      tech = "path-traversal"
+    score = r.get("cvss_score", "?")
+    sev   = (r.get("cvss_severity") or "CRITICAL").upper()
+    poc      = bool(r.get("poc_source", ""))
+    auth     = bool(ve.get("login_bajo_privilegio", ""))
+    aff      = r.get("affected_version", "?") or "?"
+    desc     = (r.get("description") or "")[:120]
+    pub      = r.get("published", "?") or "?"
+    endpoint = ve.get("endpoint", "?") or "?"
+    is_gap_h = bool(data.get("is_gap", False) or r.get("is_gap", False))
+    gap_h    = is_gap_h or not poc
+    add_row(cve, cls, tech, score, sev, poc, auth, aff, desc, pub, endpoint, verified=True,
+            gap=gap_h, is_gap=is_gap_h)
 
 # 2. Batch reports — only dynamic_verify.verified=True (confirmed by lab)
 batch_dir = os.path.realpath(BATCH_DIR)
