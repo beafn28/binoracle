@@ -1274,6 +1274,13 @@ def _render_chain_log(result: ChainResult, lang: str = "es",
         out.append("- **CISA KEV**: SÍ — EXPLOTADA ACTIVAMENTE")
     out.append(f"- **Risk**: {result.risk_label}")
     out.append(f"- **Verificado**: {'SÍ' if result.verified else 'NO'}")
+    _conf_pct = int(result.engine_confidence * 100)
+    _conf_level = ("ALTO" if result.engine_confidence >= 0.80 else
+                   "MEDIO" if result.engine_confidence >= 0.50 else "BAJO")
+    _conf_basis = ("verificado dinámicamente" if result.verified else "hipótesis LLM") if es else \
+                  ("dynamically verified" if result.verified else "LLM hypothesis only")
+    out.append(f"- **{'Confianza del motor' if es else 'Engine confidence'}**: "
+               f"{_conf_pct}% ({_conf_level}) · {_conf_basis}")
     out.append(f"- **Tiempo total**: {result.elapsed_s:.1f}s\n")
     out.append("\n### " + ("Pasos" if es else "Steps"))
     for s in result.steps:
@@ -1405,6 +1412,16 @@ def _update_index_html(result: "ChainResult", cve_info, llm_notes: dict,
     auth_dat = "true" if auth_raw in ("true", "yes", "1", "authenticated") else "false"
     sev_dat  = severity
 
+    # Confidence badge
+    _conf = result.engine_confidence
+    if _conf >= 0.80:
+        _conf_cls, _conf_lbl = "badge-conf-high", f"ALTO {int(_conf*100)}%"
+    elif _conf >= 0.50:
+        _conf_cls, _conf_lbl = "badge-conf-med", f"MEDIO {int(_conf*100)}%"
+    else:
+        _conf_cls, _conf_lbl = "badge-conf-low", f"BAJO {int(_conf*100)}%"
+    conf_badge = f'<span class="badge {_conf_cls}" title="Confianza del motor">{_conf_lbl}</span>'
+
     # Evidence link for verified CVEs: report path + verified endpoint
     evidence_html = ""
     if result.verified:
@@ -1438,6 +1455,7 @@ def _update_index_html(result: "ChainResult", cve_info, llm_notes: dict,
         f'  <td><code class="tech">{tech}</code></td>\n'
         f'  <td>{verif_badge}</td>\n'
         f'  <td>{auth_badge}</td>\n'
+        f'  <td>{conf_badge}</td>\n'
         f'  <td class="td-aff"><code>{affected}</code></td>\n'
         f'  <td class="td-pub">{pub}</td>\n'
         f'  <td class="td-desc">{desc_html}</td>\n'
@@ -1676,6 +1694,7 @@ def _notify_verified(cve_id: str, result: "ChainResult") -> None:
         "vuln_class": getattr(result.inv, "vuln_class", "") if result.inv else "",
         "report_path": result.report_path or "",
         "elapsed_s": round(result.elapsed_s, 1),
+        "engine_confidence": result.engine_confidence,
     }
 
     # Webhook
@@ -1696,9 +1715,11 @@ def _notify_verified(cve_id: str, result: "ChainResult") -> None:
     if tg_token and tg_chat:
         try:
             vc = payload["vuln_class"] or "?"
+            conf_pct = int(result.engine_confidence * 100)
             msg = (f"🔴 binoracle VERIFICADO\n"
                    f"CVE: {cve_id}\n"
                    f"Clase: {vc}\n"
+                   f"Confianza: {conf_pct}%\n"
                    f"Tiempo: {payload['elapsed_s']}s")
             tg_url = f"https://api.telegram.org/bot{tg_token}/sendMessage"
             tg_body = _json.dumps({"chat_id": tg_chat, "text": msg}).encode()
