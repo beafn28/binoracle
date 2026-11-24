@@ -1356,12 +1356,64 @@ def _run_web_stage(cve_id: str, cve_info, llm_notes: dict,
 
 # ── Enrich stage ──────────────────────────────────────────────────────────────
 
+_VULN_CLASS_TO_CWE: dict[str, str] = {
+    "sqli":                   "CWE-89",
+    "sql-injection":          "CWE-89",
+    "xss":                    "CWE-79",
+    "reflected-xss":          "CWE-79",
+    "stored-xss":             "CWE-79",
+    "lfi":                    "CWE-22",
+    "path-traversal":         "CWE-22",
+    "ssrf":                   "CWE-918",
+    "rce":                    "CWE-78",
+    "command-injection":      "CWE-78",
+    "missing-authorization":  "CWE-862",
+    "auth-bypass":            "CWE-287",
+    "authentication-bypass":  "CWE-287",
+    "broken-access-control":  "CWE-284",
+    "idor":                   "CWE-639",
+    "ssti":                   "CWE-1336",
+    "deserialization":        "CWE-502",
+    "open-redirect":          "CWE-601",
+    "csrf":                   "CWE-352",
+    "prototype-pollution":    "CWE-1321",
+    "mass-assignment":        "CWE-915",
+    "cors-misconfiguration":  "CWE-346",
+    "race-condition":         "CWE-362",
+    "toctou":                 "CWE-367",
+    "weak-crypto":            "CWE-328",
+    "insecure-hashing":       "CWE-328",
+    "jwt-bypass":             "CWE-347",
+    "graphql-injection":      "CWE-89",
+    "xxe":                    "CWE-611",
+    "ldap-injection":         "CWE-90",
+    "xpath-injection":        "CWE-643",
+}
+
+
 def _run_enrich_stage(result: ChainResult, step: Callable, llm=None, lang: str = "es"):
     t = _t()
     _banner(step, "[6/8] ENRICH — CVSS auto + CWE + resumen ejecutivo")
+
+    # Always map vuln_class → CWE even without findings
+    _vuln_class_key = (
+        (result.evidence or {}).get("vuln_class") or
+        result.cve_class or
+        (result.inv and getattr(result.inv, "vuln_class", "")) or ""
+    ).lower().replace("_", "-")
+    _cwe = _VULN_CLASS_TO_CWE.get(_vuln_class_key, "")
+    if not _cwe:
+        # Try stripping trailing qualifiers: "sqli_confirmed" → "sqli"
+        _base_vc = _vuln_class_key.split("_")[0].split("-confirmed")[0]
+        _cwe = _VULN_CLASS_TO_CWE.get(_base_vc, "")
+    if _cwe:
+        result.evidence["cwe_id"] = _cwe
+        step(f"  vuln_class={_vuln_class_key!r} → {_cwe}")
+
     if not result.findings:
         step("  sin hallazgos para enriquecer")
-        result.add_step("enrich", "skip", "no findings")
+        result.add_step("enrich", "skip" if not _cwe else "ok",
+                        f"no findings{', cwe='+_cwe if _cwe else ''}")
         return
 
     try:
@@ -1623,6 +1675,10 @@ def _render_chain_log(result: ChainResult, lang: str = "es",
         out.append(f"- **EPSS**: {result.epss_score:.1%} ({result.epss_pct:.0f}th percentil)")
     if result.in_cisa_kev:
         out.append("- **CISA KEV**: SÍ — EXPLOTADA ACTIVAMENTE")
+    _cwe_id = result.evidence.get("cwe_id", "")
+    if _cwe_id:
+        out.append(f"- **CWE**: [{_cwe_id}](https://cwe.mitre.org/data/definitions/"
+                   f"{_cwe_id.replace('CWE-','')}.html)")
     out.append(f"- **Risk**: {result.risk_label}")
     out.append(f"- **Verificado**: {'SÍ ✓' if result.verified else 'NO ✗'}")
     _conf_pct = int(result.engine_confidence * 100)
