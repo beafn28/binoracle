@@ -2143,8 +2143,47 @@ def run_full_chain(
             endpoint = llm_notes.get("endpoint", "?")
             step(f"  clase={vc}, endpoint={endpoint}, "
                  f"auth={llm_notes.get('auth_required','?')}")
+
+            # Multi-hypothesis: ask LLM for ranked alternative endpoints/params
+            # Only when LLM gave us at least one hypothesis and there are budget seconds left
+            _mh_prompt = (
+                f"CVE: {cve_id}\nDescription: {result.description[:800]}\n"
+                f"Primary hypothesis: class={vc}, endpoint={endpoint}, "
+                f"param={llm_notes.get('param', 'unknown')}\n\n"
+                f"List up to 3 ALTERNATIVE endpoint/parameter combinations that could also "
+                f"be vulnerable, ranked by probability. Format as JSON array:\n"
+                f'[{{"endpoint":"/api/foo","param":"id","reason":"...","score":0.7}}, ...]\n'
+                f"Only include alternatives different from the primary. "
+                f"Return empty array [] if no good alternatives."
+            )
+            try:
+                _mh_response = llm.generate(prompt=_mh_prompt,
+                                             max_tokens=300, temperature=0.3)
+                _mh_text = (_mh_response or {}).get("response", "") or ""
+                # Extract JSON array from response
+                _mh_match = re.search(r'\[.*\]', _mh_text, re.DOTALL)
+                if _mh_match:
+                    import json as _json_mh
+                    _alternatives = _json_mh.loads(_mh_match.group(0))
+                    if isinstance(_alternatives, list) and _alternatives:
+                        # Store as alt_endpoints — the verifier can try these after primary fails
+                        llm_notes["alt_endpoints"] = [
+                            {"endpoint": a.get("endpoint", ""),
+                             "param": a.get("param", ""),
+                             "score": float(a.get("score", 0.5)),
+                             "reason": a.get("reason", "")}
+                            for a in _alternatives[:3]
+                            if isinstance(a, dict) and a.get("endpoint")
+                        ]
+                        step(f"  multi-hypothesis: {len(llm_notes['alt_endpoints'])} "
+                             f"alternativas — "
+                             f"{[a['endpoint'] for a in llm_notes['alt_endpoints']]}")
+            except Exception:
+                pass  # multi-hypothesis is best-effort
+
             result.add_step("llm_hypothesis", "ok",
-                            f"class={vc} auth={llm_notes.get('auth_required')}")
+                            f"class={vc} auth={llm_notes.get('auth_required')} "
+                            f"alts={len(llm_notes.get('alt_endpoints', []))}")
         except Exception as e:
             step(f"  hypothesis error: {e}")
             result.add_step("llm_hypothesis", "skip", str(e)[:80])
