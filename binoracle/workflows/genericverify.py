@@ -299,6 +299,32 @@ def _detect_cms_fingerprint(source_dir: str) -> Optional[str]:
                 return "djangocms"
         except OSError:
             pass
+    # Gitea: main.go or go.mod references code.gitea.io/gitea
+    go_mod_path = os.path.join(source_dir, "go.mod")
+    if os.path.isfile(go_mod_path):
+        try:
+            content = open(go_mod_path).read().lower()
+            if "code.gitea.io/gitea" in content:
+                return "gitea"
+        except OSError:
+            pass
+    # Nextcloud: lib/versioncheck.php or apps/ dir with nextcloud structure
+    if (os.path.isfile(os.path.join(source_dir, "version.php")) and
+            os.path.isdir(os.path.join(source_dir, "apps"))):
+        try:
+            content = open(os.path.join(source_dir, "version.php")).read().lower()
+            if "nextcloud" in content or "oc_version" in content:
+                return "nextcloud"
+        except OSError:
+            pass
+    # Mattermost: go.mod references mattermost-server
+    if os.path.isfile(go_mod_path):
+        try:
+            content = open(go_mod_path).read().lower()
+            if "mattermost/mattermost-server" in content:
+                return "mattermost"
+        except OSError:
+            pass
     return None
 
 
@@ -306,7 +332,7 @@ def _pin_cms_image(base_image: str, pkg_version: str) -> str:
     """Pin a CMS Docker image to an exact version when pkg_version is known.
 
     Ghost images: ghost:5.68.3 → ghost:5.68.3
-    Node images: node:18-alpine stays node:18-alpine (we don't know the app version from the tag)
+    Node images: node:18-alpine stays node:18-alpine unless a strapi/payload/etc image
     """
     if not pkg_version:
         return base_image
@@ -316,6 +342,20 @@ def _pin_cms_image(base_image: str, pkg_version: str) -> str:
     # directus: 'directus/directus:latest' → 'directus/directus:<version>'
     if base_image.startswith("directus/directus:"):
         return f"directus/directus:{pkg_version}"
+    # Strapi official image: 'strapi/strapi' → 'strapi/strapi:<version>'
+    if base_image.startswith("strapi/strapi"):
+        return f"strapi/strapi:{pkg_version}"
+    # Gitea: 'gitea/gitea:latest' → 'gitea/gitea:<version>'
+    if base_image.startswith("gitea/gitea:"):
+        return f"gitea/gitea:{pkg_version}"
+    # Nextcloud: 'nextcloud:latest' → 'nextcloud:<version>-apache'
+    if base_image.startswith("nextcloud:"):
+        _nc_v = pkg_version if "-" in pkg_version else f"{pkg_version}-apache"
+        return f"nextcloud:{_nc_v}"
+    # Mattermost: 'mattermost/mattermost-team-edition:latest' → ':<version>'
+    if base_image.startswith("mattermost/"):
+        _parts = base_image.rsplit(":", 1)
+        return f"{_parts[0]}:{pkg_version}"
     return base_image
 
 
@@ -388,6 +428,39 @@ def _cms_dockerfile_lines(cms: str, source_dir: str,
                   "RUN python manage.py migrate --run-syncdb 2>/dev/null || true",
                   'CMD ["python", "manage.py", "runserver", "0.0.0.0:8000"]'])
         return (_py, 8000, lines)
+
+    if cms == "gitea":
+        # Use official Gitea Docker image; dev config uses SQLite for quick boot
+        _base = _pin_cms_image("gitea/gitea:latest", pkg_version)
+        lines = (["WORKDIR /data"] + proxy +
+                 ["ENV GITEA__database__DB_TYPE=sqlite3",
+                  "ENV GITEA__database__PATH=/data/gitea.db",
+                  "ENV GITEA__server__DOMAIN=localhost",
+                  "ENV GITEA__server__HTTP_PORT=3000",
+                  "ENV GITEA__server__ROOT_URL=http://localhost:3000/",
+                  "ENV GITEA__security__INSTALL_LOCK=true",
+                  "ENV GITEA__security__SECRET_KEY=binoracle_dev_secret_key_gitea",
+                  "ENV GITEA__server__SSH_PORT=22"])
+        return (_base, 3000, lines)
+
+    if cms == "nextcloud":
+        # Use official Nextcloud image with SQLite for dev
+        _base = _pin_cms_image("nextcloud:latest", pkg_version)
+        lines = (["WORKDIR /var/www/html"] + proxy +
+                 ["ENV SQLITE_DATABASE=nextcloud",
+                  "ENV NEXTCLOUD_ADMIN_USER=admin",
+                  "ENV NEXTCLOUD_ADMIN_PASSWORD=binoracle_dev_password",
+                  "ENV NEXTCLOUD_TRUSTED_DOMAINS=localhost"])
+        return (_base, 80, lines)
+
+    if cms == "mattermost":
+        # Use official Mattermost Team Edition image
+        _base = _pin_cms_image("mattermost/mattermost-team-edition:latest", pkg_version)
+        lines = (["WORKDIR /mattermost"] + proxy +
+                 ["ENV MM_SQLSETTINGS_DRIVERNAME=sqlite3",
+                  "ENV MM_SQLSETTINGS_DATASOURCE=/mattermost/data/mattermost.db",
+                  "ENV MM_SERVICESETTINGS_SITEURL=http://localhost:8065"])
+        return (_base, 8065, lines)
 
     return None
 
