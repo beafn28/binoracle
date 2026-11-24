@@ -354,6 +354,15 @@ def format_lessons_for_llm(stack: str, vuln_class: str = "",
             ic_str = f" impacto={ic}" if ic else ""
             lines.append(f"    {cve}: {r.get('http_method','GET')} {ep} [{vc}]{am_str}{ic_str}")
 
+    # Patch fix_class distribution (from patchdiff analysis on verified runs)
+    _fc_counter: Counter = Counter()
+    for r in runs:
+        if r.get("verified") and r.get("patch_fix_class"):
+            _fc_counter[r["patch_fix_class"]] += 1
+    if _fc_counter:
+        _fc_top = [fc for fc, _ in _fc_counter.most_common(2)]
+        lines.append(f"- Clases de fix mas frecuentes en diffs: {', '.join(_fc_top)}")
+
     # Impact class distribution across all verified runs
     _ic_counter: Counter = Counter()
     for r in runs:
