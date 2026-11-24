@@ -397,9 +397,26 @@ def _build_exploit_poc(
     import shlex as _shlex
     import json as _json
 
-    full_url = base_url.rstrip("/") + "/" + endpoint.lstrip("/")
+    # Detect URL_PATH mode: params = {"URL_PATH": "<traversal_payload>"}
+    # In this mode the payload is appended to the endpoint path, not as a query param.
+    _url_path_mode = (
+        isinstance(params, dict)
+        and len(params) == 1
+        and list(params.keys())[0].upper() in ("URL_PATH", "URLPATH")
+    )
+    _url_path_value = list(params.values())[0] if _url_path_mode else ""
+
+    import urllib.parse as _uparse
+    _method = (method or "GET").upper()
+    base_ep = base_url.rstrip("/") + "/" + endpoint.lstrip("/")
+    if _url_path_mode:
+        full_url = base_ep.rstrip("/") + "/" + _url_path_value.lstrip("/")
+    elif _method not in ("POST", "PUT", "PATCH") and params:
+        full_url = base_ep + "?" + _uparse.urlencode(params)
+    else:
+        full_url = base_ep
     hdr = dict(headers or {})
-    m = (method or "GET").upper()
+    m = _method
 
     # ── curl ────────────────────────────────────────────────────────────────
     curl_parts = ["curl", "-s", "-i"]
@@ -411,6 +428,8 @@ def _build_exploit_poc(
         else:
             for k, v in params.items():
                 curl_parts += ["-d", f"{k}={v}"]
+    elif not _url_path_mode:
+        pass  # GET params handled via URL below
     for hk, hv in hdr.items():
         if hk.lower() not in ("content-type", "content-length"):
             curl_parts += ["-H", f"{hk}: {hv}"]
@@ -432,6 +451,9 @@ def _build_exploit_poc(
             py_lines.append(f'r = requests.{m.lower()}(TARGET, json=data, headers=headers, verify=False)')
         else:
             py_lines.append(f'r = requests.{m.lower()}(TARGET, data=data, headers=headers, verify=False)')
+    elif _url_path_mode:
+        # Payload already embedded in TARGET URL — simple GET with no extra params
+        py_lines.append('r = requests.get(TARGET, headers=headers, verify=False)')
     else:
         py_lines.append(f"params = {_json.dumps(params, indent=4)}")
         py_lines.append('r = requests.get(TARGET, params=params, headers=headers, verify=False)')
@@ -455,6 +477,10 @@ def _build_exploit_poc(
             "",
             body_str,
         ]
+    elif _url_path_mode:
+        # Path traversal: payload is part of the URL path
+        path_with_payload = path.rstrip("/") + "/" + _url_path_value.lstrip("/")
+        http_lines = [f"GET {path_with_payload} HTTP/1.1", "Host: TARGET", ""]
     else:
         qs = "&".join(f"{k}={v}" for k, v in params.items())
         path_qs = f"{path}?{qs}" if qs else path
