@@ -1779,6 +1779,58 @@ def _static_vuln_precheck(local_path: str, plugin_dir: str, vuln_class: str,
                 "confidence": 0.0,  # positive signal
             }
 
+    # ── Check 13: PHP Object Injection (unserialize() on user input) ─────────
+    _vc_lower = (vuln_class or "").lower().replace(" ", "-")
+    if _vc_lower in ("php-object-injection", "object-injection", "php-deserialization",
+                     "insecure-deserialization", "phar-deserialization"):
+        import os as _os_poi
+        _UNSER_RE = re.compile(
+            r'\bunserialize\s*\(\s*(?!serialize\()(?!\'[^\']{0,20}\'|"[^"]{0,20}")',
+            re.IGNORECASE,
+        )
+        _POI_FILTER = r'(?i)FILTER_UNSAFE_RAW|no_magic_quotes|input_filter.*raw'
+        _poi_files: list[str] = []
+        _poi_filtered: list[str] = []
+        try:
+            for _r_poi, _d_poi, _f_poi in _os_poi.walk(local_path):
+                _d_poi[:] = [d for d in _d_poi if d not in
+                             (".git", "node_modules", "dist", "__pycache__", "vendor")]
+                for _fn_poi in _f_poi:
+                    if not _fn_poi.endswith(".php"):
+                        continue
+                    _fp_poi = _os_poi.path.join(_r_poi, _fn_poi)
+                    try:
+                        _txt_poi = open(_fp_poi, encoding="utf-8", errors="ignore").read(80_000)
+                        if _UNSER_RE.search(_txt_poi):
+                            _rel = _os_poi.path.relpath(_fp_poi, local_path)
+                            # Check if unserialize input comes from user (not hardcoded)
+                            if any(src in _txt_poi for src in [
+                                    "$_GET", "$_POST", "$_REQUEST", "$_COOKIE",
+                                    "file_get_contents", "base64_decode", "hex2bin",
+                                    "gzinflate", "gzdecode", "rawurldecode"]):
+                                _poi_files.append(_rel)
+                            else:
+                                _poi_filtered.append(_rel)
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        if _poi_files:
+            return {
+                "ok": True,
+                "reason": (f"pre-check PHP Object Injection: unserialize() de input de usuario "
+                           f"detectado en {', '.join(_poi_files[:2])} — gadget chain explotable posible"),
+                "confidence": 0.0,
+            }
+        if _poi_filtered and not _poi_files:
+            return {
+                "ok": False,
+                "reason": (f"pre-check PHP Object Injection: unserialize() encontrado "
+                           f"en {', '.join(_poi_filtered[:2])} pero no parece recibir input de usuario "
+                           f"— vector de explotacion no evidente"),
+                "confidence": 0.55,
+            }
+
     return {"ok": True, "reason": "pre-check OK", "confidence": 1.0}
 
 
@@ -12993,6 +13045,62 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
                     _attempt_ssti_generic, wr, _ssti_ep, ssti_p,
                     technique_label="SSTI generico")
+                _apply_wpverify_result(inv, wr, es, llm)
+            # PHP Object Injection (unserialize() of user-controlled input)
+            elif (not plugin_dir and fr.local_path and
+                  inv.vuln_class in ("php-object-injection", "php-deserialization",
+                                     "phar-deserialization", "object-injection",
+                                     "insecure-deserialization")):
+                from .genericverify import verify_generic_php_object_injection
+                _poi_ep     = notes.get("endpoint") or "/"
+                _poi_param  = notes.get("inject_param") or notes.get("deser_param") or ""
+                _poi_method = notes.get("http_method") or "POST"
+                _poi_cs     = notes.get("confirm_string") or ""
+                step(("intentando verificacion DINAMICA GENERICA -- PHP Object Injection "
+                      "(canary de clase, timing de __wakeup, gadget chains)..." if es else
+                      "attempting GENERIC DYNAMIC verification -- PHP Object Injection "
+                      "(class canary, __wakeup timing, gadget chains)..."))
+                _poi_dockerfile  = notes.get("dockerfile_body") or ""
+                _poi_extra_files = notes.get("extra_files") or None
+                _scf_poi = False
+                if not _poi_dockerfile and llm is not None:
+                    _scf = _scaffold_llm_lab_for_class(
+                        llm, str(fr.local_path), notes, inv.cve_id,
+                        "php-object-injection", step, es,
+                        patch_diff=inv.llm_notes.get("patch_diff_analysis"))
+                    if _scf:
+                        _poi_dockerfile  = _scf["dockerfile_body"]
+                        _poi_extra_files = _scf["extra_files"]
+                        _poi_ep          = _scf.get("endpoint") or _poi_ep
+                        _poi_cs          = _scf.get("confirm_string") or _poi_cs
+                        if _scf.get("inject_param") or _scf.get("deser_param"):
+                            _poi_param = _scf.get("inject_param") or _scf.get("deser_param") or _poi_param
+                        _scf_poi = True
+                wr = verify_generic_php_object_injection(
+                    fr.local_path, _poi_ep, _poi_param, _poi_method,
+                    confirm_string=_poi_cs,
+                    on_step=step, budget_s=budget_s,
+                    dockerfile_body=_poi_dockerfile, extra_files=_poi_extra_files)
+                if _scf_poi and not wr.verified:
+                    _lab_cfg_poi = {
+                        "dockerfile_body": _poi_dockerfile, "extra_files": _poi_extra_files,
+                        "endpoint": _poi_ep, "confirm_string": _poi_cs,
+                    }
+                    def _poi_verifier(cfg):
+                        return verify_generic_php_object_injection(
+                            fr.local_path,
+                            cfg.get("endpoint", _poi_ep),
+                            cfg.get("inject_param", _poi_param),
+                            _poi_method,
+                            confirm_string=cfg.get("confirm_string", _poi_cs),
+                            on_step=step, budget_s=budget_s,
+                            dockerfile_body=cfg["dockerfile_body"],
+                            extra_files=cfg.get("extra_files"))
+                    wr, _lab_cfg_poi, _prog = _feedback_loop(
+                        llm, _poi_verifier, wr, _lab_cfg_poi, step, es)
+                    if not wr.verified:
+                        _escalate_to_analyst(inv, getattr(wr, 'detail', '') or "",
+                                             _lab_cfg_poi, es, progress_level=_prog)
                 _apply_wpverify_result(inv, wr, es, llm)
             elif (is_drupal and fr.kind in ("drupal-module", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class == "xxe" and notes.get("endpoint")):

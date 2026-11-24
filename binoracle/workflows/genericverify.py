@@ -6889,3 +6889,301 @@ def verify_generic_mass_assignment(
     finally:
         step("desmontando el laboratorio generico (mass-assignment)...")
         lab.teardown()
+
+
+# ---------------------------------------------------------------------------
+# PHP Object Injection verifier
+# Tests unserialize() of user input with classic gadget chain payloads.
+# Covering: sleep canary (timing), filesystem read, RCE via __wakeup(),
+# PHAR deserialization, common WordPress/Joomla gadget classes.
+# ---------------------------------------------------------------------------
+
+#: PHP serialized payloads per impact class.
+#: Each entry: (label, serialized_payload, detection_strategy)
+#: "time" = timing (sleep in __wakeup), "content" = file content in response,
+#: "error" = PHP error message in response (class not found = unser ran)
+_POI_PAYLOADS = [
+    # 1. Canary: unexistent class — if PHP unserializes it, error or warning appears
+    #    "Class 'BinOracleCanary' not found" in response → unserialize ran
+    (
+        "canary-class-not-found",
+        'O:16:"BinOracleCanary":0:{}',
+        "error",
+        "BinOracleCanary",
+    ),
+    # 2. Sleep canary: __wakeup() sleep(3) gadget (requires a matching class in target)
+    #    Generic enough to match generic stdClass chains; real timing verifies it
+    (
+        "sleep-wakeup-canary",
+        'O:8:"stdClass":1:{s:3:"cmd";s:11:"sleep(3);/*";}',
+        "time",
+        "",
+    ),
+    # 3. WordPress Widgets gadget — WP_Widget subclass, __wakeup reads option
+    (
+        "wp-widget-class",
+        'O:9:"WP_Widget":1:{s:2:"id";s:16:"binoracle_canary";}',
+        "error",
+        "WP_Widget",
+    ),
+    # 4. Monolog RCE gadget (common in Laravel/Symfony/WP-CLI contexts):
+    #    Monolog\Handler\SyslogUdpHandler __destruct → triggers fwrite
+    (
+        "monolog-syslog-gadget",
+        'O:29:"Monolog\\Handler\\SyslogUdpHandler":1:{s:6:"socket";i:0;}',
+        "error",
+        "SyslogUdpHandler",
+    ),
+    # 5. PHAR metadata deserialization trigger — simulates a file:// PHAR access
+    #    (combined with file_get_contents/fopen gadget, out of scope for HTTP test)
+    (
+        "phar-metadata-trigger",
+        'a:1:{s:4:"phar";s:30:"phar://./binoracle_test.phar/x";}',
+        "error",
+        "phar://",
+    ),
+]
+
+
+def verify_generic_php_object_injection(
+    source_dir: str,
+    endpoint: str = "/",
+    inject_param: str = "",
+    http_method: str = "POST",
+    auth_required: bool = False,
+    confirm_string: str = "",
+    on_step: Optional[Callable[[str], None]] = None,
+    budget_s: float = 900.0,
+    dockerfile_body: str = "", extra_files: Optional[dict] = None,
+    pkg_version: str = "",
+) -> WpVerifyResult:
+    """Verifica PHP Object Injection mediante unserialize() de input de usuario.
+
+    Estrategia de 3 capas:
+      1. Canary de clase inexistente: PHP emite 'Class not found' cuando el
+         payload llega a unserialize() — confirma el vector sin necesitar gadgets.
+      2. Timing canary: mide latencia de respuesta con payload sleep vs. sin payload.
+         Delta ≥ 2.5s con 3 repeticiones → confirmado.
+      3. Gadget chains conocidas: Monolog, WP_Widget, stdClass con cmd → comprueba
+         si el error menciona el nombre de clase del gadget.
+
+    inject_param: nombre del parámetro que llega a unserialize() (GET o POST).
+    Si está vacío, prueba campos comunes: 'data', 'payload', 'token', 'object',
+    'serialized', 'cookie', 'value', 'input'.
+    """
+    import time as _time
+    import json as _json
+
+    step = on_step or (lambda _m: None)
+    res = WpVerifyResult()
+
+    if not _docker_daemon_ok():
+        res.available = False
+        res.detail = "sin daemon Docker alcanzable"
+        res.limitations.append("verificacion dinamica NO intentada: sin daemon Docker")
+        return res
+
+    boot = _bootstrap_generic_lab(
+        source_dir, step, res, budget_s,
+        dockerfile_body=dockerfile_body, extra_files=extra_files,
+        pkg_version=pkg_version,
+    )
+    if boot is None:
+        return res
+    lab, base_url, container = boot
+
+    try:
+        m = (http_method or "POST").upper().strip() or "POST"
+        full_url = base_url.rstrip("/") + endpoint
+
+        # Params to try if inject_param not specified
+        _probe_params = (
+            [inject_param] if inject_param else
+            ["data", "payload", "token", "object", "serialized",
+             "cookie", "value", "input", "q", "params"]
+        )
+
+        # ── Layer 1: canary class-not-found ───────────────────────────────────
+        canary_payload = 'O:16:"BinOracleCanary":0:{}'
+        for param in _probe_params:
+            step(f"[POI] layer 1 canary: {m} {endpoint} param={param}")
+            try:
+                if m == "GET":
+                    r = _http_request(m, full_url,
+                                      params={param: canary_payload},
+                                      headers={"Accept": "*/*"}, timeout=12)
+                else:
+                    r = _http_request(
+                        m, full_url,
+                        data=_json.dumps({param: canary_payload}),
+                        headers={"Content-Type": "application/json"}, timeout=12)
+                body = getattr(r, "text", "") or ""
+                st = r.status_code
+
+                # Canary class name in PHP error/warning = unserialize ran
+                if ("BinOracleCanary" in body or
+                        "Class 'BinOracleCanary'" in body or
+                        "class BinOracleCanary" in body.lower() or
+                        "__PHP_Incomplete_Class" in body):
+                    res.verified = True
+                    res.ok = True
+                    res.evidence = {
+                        "technique": "php-object-injection-canary",
+                        "inject_param": param,
+                        "payload": canary_payload,
+                        "endpoint": endpoint,
+                        "status": st,
+                        "body_snippet": body[:500],
+                        "detection": "canary-class-not-found",
+                    }
+                    res.detail = (
+                        f"PHP OBJECT INJECTION CONFIRMADO (canary): "
+                        f"'BinOracleCanary' o __PHP_Incomplete_Class en respuesta "
+                        f"→ unserialize() alcanzado via param={param} en {endpoint}"
+                    )
+                    step(f"VERIFICADO: POI canary via param={param}")
+                    return res
+
+                if confirm_string and confirm_string in body:
+                    res.verified = True
+                    res.ok = True
+                    res.evidence = {
+                        "technique": "php-object-injection-confirm",
+                        "inject_param": param,
+                        "payload": canary_payload,
+                        "endpoint": endpoint,
+                        "status": st,
+                        "body_snippet": body[:500],
+                    }
+                    res.detail = (
+                        f"PHP OBJECT INJECTION CONFIRMADO (confirm_string): "
+                        f"'{confirm_string}' encontrado en respuesta para param={param}"
+                    )
+                    return res
+
+            except Exception as _net_e:
+                step(f"  error de red: {_net_e}")
+                continue
+
+        # ── Layer 2: timing canary ─────────────────────────────────────────────
+        # Send a benign request and a sleep-gadget request 3 times each, compare
+        step("[POI] layer 2 timing: midiendo latencia baseline vs payload sleep")
+        _param = _probe_params[0]
+        _benign_payload = 's:5:"hello";'
+        _sleep_payload = 'O:8:"stdClass":1:{s:3:"cmd";s:7:"sleep 3";}'
+
+        def _timed_request(payload_str: str) -> float:
+            t0 = _time.monotonic()
+            try:
+                if m == "GET":
+                    _http_request(m, full_url,
+                                  params={_param: payload_str},
+                                  timeout=15)
+                else:
+                    _http_request(m, full_url,
+                                  data=_json.dumps({_param: payload_str}),
+                                  headers={"Content-Type": "application/json"},
+                                  timeout=15)
+            except Exception:
+                pass
+            return _time.monotonic() - t0
+
+        _benign_times = [_timed_request(_benign_payload) for _ in range(2)]
+        _sleep_times  = [_timed_request(_sleep_payload)  for _ in range(2)]
+        _avg_benign = sum(_benign_times) / len(_benign_times)
+        _avg_sleep  = sum(_sleep_times)  / len(_sleep_times)
+        _delta = _avg_sleep - _avg_benign
+        step(f"  timing: benign={_avg_benign:.2f}s sleep={_avg_sleep:.2f}s Δ={_delta:.2f}s")
+
+        if _delta >= 2.5:
+            res.verified = True
+            res.ok = True
+            res.evidence = {
+                "technique": "php-object-injection-timing",
+                "inject_param": _param,
+                "payload": _sleep_payload,
+                "endpoint": endpoint,
+                "avg_benign_s": round(_avg_benign, 2),
+                "avg_sleep_s": round(_avg_sleep, 2),
+                "delta_s": round(_delta, 2),
+            }
+            res.detail = (
+                f"PHP OBJECT INJECTION CONFIRMADO (timing): "
+                f"delta de latencia {_delta:.2f}s (≥2.5s) → __wakeup() / "
+                f"__destruct() ejecutado en servidor via param={_param}"
+            )
+            step(f"VERIFICADO: POI timing delta={_delta:.2f}s")
+            return res
+
+        # ── Layer 3: known gadget chain class names ────────────────────────────
+        step("[POI] layer 3: gadget chains conocidas")
+        for label, gadget_payload, detection, signal in _POI_PAYLOADS[2:]:  # skip canary + sleep (already tried)
+            if detection != "error":
+                continue
+            for param in _probe_params[:3]:
+                try:
+                    if m == "GET":
+                        r = _http_request(m, full_url,
+                                          params={param: gadget_payload},
+                                          headers={"Accept": "*/*"}, timeout=12)
+                    else:
+                        r = _http_request(
+                            m, full_url,
+                            data=_json.dumps({param: gadget_payload}),
+                            headers={"Content-Type": "application/json"}, timeout=12)
+                    body = getattr(r, "text", "") or ""
+                    if signal and signal in body:
+                        res.verified = True
+                        res.ok = True
+                        res.evidence = {
+                            "technique": "php-object-injection-gadget",
+                            "inject_param": param,
+                            "payload": gadget_payload,
+                            "gadget_label": label,
+                            "endpoint": endpoint,
+                            "status": r.status_code,
+                            "signal_found": signal,
+                            "body_snippet": body[:500],
+                        }
+                        res.detail = (
+                            f"PHP OBJECT INJECTION CONFIRMADO (gadget {label}): "
+                            f"señal '{signal}' encontrada en respuesta via param={param}"
+                        )
+                        step(f"VERIFICADO: POI gadget={label} signal='{signal}'")
+                        return res
+                except Exception:
+                    continue
+
+        # Semantic analysis as last resort
+        _last_body = ""
+        try:
+            if m == "GET":
+                _lr = _http_request(m, full_url, params={_probe_params[0]: canary_payload}, timeout=10)
+            else:
+                _lr = _http_request(m, full_url,
+                                    data=_json.dumps({_probe_params[0]: canary_payload}),
+                                    headers={"Content-Type": "application/json"}, timeout=10)
+            _last_body = getattr(_lr, "text", "") or ""
+        except Exception:
+            pass
+        if _last_body:
+            _analysis = _analyze_response_body(
+                _last_body, "php-object-injection",
+                payload=canary_payload, confirm_string=confirm_string)
+            if _analysis.get("interesting"):
+                res.evidence["response_analysis"] = _analysis
+
+        res.ok = True
+        res.detail = (
+            f"PHP Object Injection no confirmado: 3 capas probadas "
+            f"({len(_probe_params)} params, timing Δ={_delta:.2f}s, gadget chains) "
+            f"en {endpoint} sin señales positivas"
+        )
+        return res
+
+    except Exception as e:
+        res.detail = f"error inesperado en verify_generic_php_object_injection: {e}"
+        return res
+    finally:
+        step("desmontando el laboratorio generico (php-object-injection)...")
+        lab.teardown()
