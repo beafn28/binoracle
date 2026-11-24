@@ -10617,8 +10617,16 @@ def _scaffold_llm_lab_for_class(llm, source_dir: str, notes: dict, cve_id: str,
         "false_value":     data.get("false_value") or "",
         "confirm_field":   data.get("confirm_field") or data.get("confirm_string") or confirm,
     }
-    # Almacenar en cache por (tech, vuln_class) para reutilizar en CVEs futuros del mismo stack
-    _scaffold_cache[_cache_key] = _result
+    # NOTA: el cache (tech, vuln_class) se escribe SOLO cuando el lab generado aqui
+    # termina verificandose de verdad (ver los call-sites de _scaffold_llm_lab_for_class,
+    # que escriben _scaffold_cache[...] tras comprobar wr.verified). Escribirlo aqui
+    # seria incorrecto: este punto se ejecuta ANTES de cualquier intento de verificacion,
+    # asi que un scaffold roto (p.ej. que no hace listen en 0.0.0.0) quedaria cacheado
+    # como "EJEMPLO PREVIO VERIFICADO" y se reinyectaria en el prompt de CVEs futuros del
+    # mismo stack, perpetuando el mismo fallo -- bug real confirmado en vivo: CVE-2021-41773
+    # paso de CONF a "no reproducido dinamicamente" al re-ejecutarse en el mismo proceso
+    # servidor tras quedar un scaffold apache/path-traversal malo en cache de un intento
+    # previo fallido.
     return _result
 
 
@@ -12653,6 +12661,16 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         dockerfile_body=_pt_dockerfile, extra_files=_pt_extra_files)
                     if _wr_extra.verified or (not wr.verified and _wr_extra.ok):
                         wr = _wr_extra
+                # Cachear el scaffold SOLO si quedo verificado de verdad (igual que
+                # jwt-bypass/nosql-injection) -- nunca un scaffold roto o sin probar.
+                if _scf_pt and wr.verified:
+                    _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path)),
+                                      "path-traversal")] = {
+                        "dockerfile_body": _pt_dockerfile, "extra_files": _pt_extra_files,
+                        "endpoint": _pt_ep, "confirm_string": notes.get("confirm_string") or "",
+                        "parameters": params if isinstance(params, dict) else {},
+                        "url_suffix": _pt_url_suffix, "query_suffix": _pt_query_suffix,
+                    }
                 _apply_wpverify_result(inv, wr, es, llm)
                 # escalada LFI-a-RCE: solo aplica a PHP (log poisoning requiere include() o
                 # require() de PHP + un servidor Apache/nginx que loguee el User-Agent SIN
