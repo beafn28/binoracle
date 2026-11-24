@@ -1831,6 +1831,66 @@ def _static_vuln_precheck(local_path: str, plugin_dir: str, vuln_class: str,
                 "confidence": 0.55,
             }
 
+    # --- Check 15: GraphQL injection — user input concatenated into query string ---
+    # Triggered for graphql-injection, injection, sqli when GraphQL resolvers are
+    # found in the source. Looks for string concatenation / template literal embedding
+    # of resolver args directly into query strings without variable binding.
+    _vc_gql = (vuln_class or "").lower()
+    if _vc_gql in ("graphql-injection", "graphql-sqli", "injection",
+                   "sqli", "sql-injection") and local_path:
+        import os as _os_gql
+        # Unsafe: resolver args concatenated into query strings
+        _GQL_UNSAFE_RE = re.compile(
+            r'`[^`]*\$\{(?:args|input|params|variables)\.[A-Za-z_]+\}[^`]*`'  # template literal with args
+            r'|query\s*[+]=\s*(?:args|input|params|req)\.'   # string += args.xxx
+            r'|graphql\s*\(\s*["`][^"]*\$\{(?:args|input)'   # graphql(`...${args.`)
+            r'|resolve[^{]{0,100}query\s*=\s*["`][^"]*\+\s*(?:args|input)\.',
+            re.IGNORECASE | re.DOTALL,
+        )
+        # Safe: parameterized variables passed separately
+        _GQL_SAFE_RE = re.compile(
+            r'variables\s*:\s*\{|graphql\s*\([^)]*,\s*\{[^}]*variables'
+            r'|query\s*\([^)]*,\s*variables'
+            r'|\$\w+\s*:\s*(?:String|Int|ID|Boolean|Float)(?:!)?',  # typed variable binding
+            re.IGNORECASE,
+        )
+        _gql_unsafe_files: list[str] = []
+        _gql_safe_files: list[str] = []
+        _exts_gql = {".js", ".ts", ".jsx", ".tsx", ".py", ".rb", ".go", ".php"}
+        try:
+            for _r_gql, _d_gql, _f_gql in _os_gql.walk(local_path):
+                _d_gql[:] = [d for d in _d_gql if d not in
+                             (".git", "node_modules", "dist", "__pycache__", "vendor")]
+                for _fn_gql in _f_gql:
+                    if not any(_fn_gql.endswith(e) for e in _exts_gql):
+                        continue
+                    _fp_gql = _os_gql.path.join(_r_gql, _fn_gql)
+                    try:
+                        _txt_gql = open(_fp_gql, encoding="utf-8", errors="ignore").read(100_000)
+                        if _GQL_UNSAFE_RE.search(_txt_gql):
+                            _gql_unsafe_files.append(_os_gql.path.relpath(_fp_gql, local_path))
+                        if _GQL_SAFE_RE.search(_txt_gql):
+                            _gql_safe_files.append(_os_gql.path.relpath(_fp_gql, local_path))
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        if _gql_safe_files and not _gql_unsafe_files:
+            return {
+                "ok": False,
+                "reason": (f"pre-check GraphQL: solo se detectaron variables parametrizadas "
+                           f"({', '.join(_gql_safe_files[:2])}) — no se encontró concatenación "
+                           f"directa de args — probable versión parchada"),
+                "confidence": 0.65,
+            }
+        if _gql_unsafe_files:
+            return {
+                "ok": True,
+                "reason": (f"pre-check GraphQL: concatenación directa de args en query encontrada "
+                           f"en {', '.join(_gql_unsafe_files[:2])} — inyección GraphQL probable"),
+                "confidence": 0.0,
+            }
+
     return {"ok": True, "reason": "pre-check OK", "confidence": 1.0}
 
 

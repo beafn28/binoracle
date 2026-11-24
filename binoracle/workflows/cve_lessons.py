@@ -289,7 +289,7 @@ def format_lessons_for_llm(stack: str, vuln_class: str = "",
     if top_hm:
         lines.append(f"- Metodos HTTP mas usados: {', '.join(top_hm)}")
 
-    # Recent verified examples (last 3)
+    # Recent verified examples (last 3) with impact_class
     data = _load()
     entry = data.get(stack) or {}
     runs = entry.get("runs") or []
@@ -301,8 +301,22 @@ def format_lessons_for_llm(stack: str, vuln_class: str = "",
             vc = r.get("vuln_class", "?")
             am = r.get("auth_method", "")
             cve = r.get("cve_id", "?")
+            ic = r.get("impact_class", "")
             am_str = f" auth={am}" if am else ""
-            lines.append(f"    {cve}: {r.get('http_method','GET')} {ep} [{vc}]{am_str}")
+            ic_str = f" impacto={ic}" if ic else ""
+            lines.append(f"    {cve}: {r.get('http_method','GET')} {ep} [{vc}]{am_str}{ic_str}")
+
+    # Impact class distribution across all verified runs
+    _ic_counter: Counter = Counter()
+    for r in runs:
+        if r.get("verified") and r.get("impact_class"):
+            _ic_counter[r["impact_class"]] += 1
+    if _ic_counter:
+        _ic_top = [f"{ic}({n})" for ic, n in _ic_counter.most_common(3)]
+        lines.append(f"- Impactos observados en este stack: {', '.join(_ic_top)}")
+        # If credential_exposure was common, signal it prominently
+        if _ic_counter.get("credential_exposure", 0) >= 2:
+            lines.append("  NOTA: credential_exposure frecuente — revisar respuesta para tokens/keys")
 
     summary = "\n".join(lines)
     # Truncate to stay within token budget (approx 4 chars/token)
