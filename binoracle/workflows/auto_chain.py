@@ -1132,7 +1132,8 @@ def _run_enrich_stage(result: ChainResult, step: Callable, llm=None, lang: str =
 # ── Professional report stage ─────────────────────────────────────────────────
 
 def _run_report_stage(result: ChainResult, step: Callable,
-                      lang: str = "es", save: bool = True) -> str:
+                      lang: str = "es", save: bool = True,
+                      cve_info=None) -> str:
     t = _t()
     _banner(step, "[7/8] PROFESSIONAL REPORT")
 
@@ -1166,8 +1167,8 @@ def _run_report_stage(result: ChainResult, step: Callable,
     # Mitigation bypass
     if result.mitigation_report:
         md_parts.append(result.mitigation_report)
-    # Chain execution log
-    md_parts.append(_render_chain_log(result, lang))
+    # Chain execution log (includes CVSS table + timeline)
+    md_parts.append(_render_chain_log(result, lang, cve_info=cve_info))
 
     full_md = "\n\n---\n\n".join(md_parts)
 
@@ -1187,8 +1188,69 @@ def _run_report_stage(result: ChainResult, step: Callable,
     return full_md
 
 
-def _render_chain_log(result: ChainResult, lang: str = "es") -> str:
+def _render_cvss_table(result: ChainResult, cve_info, lang: str = "es") -> str:
+    """Render a CVSS breakdown table when score data is available."""
+    if not result.cvss_score:
+        return ""
     es = lang == "es"
+    score = result.cvss_score
+    severity = (result.cvss_severity or "").upper() or "N/A"
+    # Try to get vector from cve_info
+    vector = ""
+    if cve_info:
+        vector = (getattr(cve_info, "cvss_vector", "") or
+                  getattr(cve_info, "cvss3_vector", "") or
+                  (cve_info.get("cvss_vector") if isinstance(cve_info, dict) else "") or "")
+    # Parse impact metrics from vector if present (AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H)
+    impact = ""
+    if vector:
+        parts = {seg.split(":")[0]: seg.split(":")[1]
+                 for seg in vector.split("/") if ":" in seg}
+        c = parts.get("C", "?")
+        i = parts.get("I", "?")
+        a = parts.get("A", "?")
+        impact = f"C:{c} I:{i} A:{a}"
+
+    hdr = "## " + ("Severidad CVSS" if es else "CVSS Severity")
+    rows = [hdr, "",
+            "| Métrica | Valor |" if es else "| Metric | Value |",
+            "|---------|-------|",
+            f"| Score | **{score}** ({severity}) |"]
+    if vector:
+        rows.append(f"| Vector | `{vector}` |")
+    if impact:
+        rows.append(f"| Impacto CIA | {impact} |")
+    return "\n".join(rows)
+
+
+def _render_timeline(result: ChainResult, lang: str = "es") -> str:
+    """Render an investigation timeline table from result.steps."""
+    if not result.steps:
+        return ""
+    es = lang == "es"
+    hdr = "## " + ("Timeline de investigación" if es else "Investigation Timeline")
+    rows = [hdr, "",
+            "| Etapa | Estado | Duración |" if es else "| Stage | Status | Duration |",
+            "|-------|--------|----------|"]
+    for s in result.steps:
+        icon = "✓" if s.status == "ok" else ("⊘" if s.status == "skip" else
+               "⚠" if s.status == "warn" else "✗")
+        rows.append(f"| `{s.name}` | {icon} {s.status} | {s.elapsed:.1f}s |")
+    rows.append(f"| **Total** | | **{result.elapsed_s:.1f}s** |")
+    return "\n".join(rows)
+
+
+def _render_chain_log(result: ChainResult, lang: str = "es",
+                      cve_info=None) -> str:
+    es = lang == "es"
+    parts = []
+
+    # CVSS table
+    cvss_table = _render_cvss_table(result, cve_info, lang)
+    if cvss_table:
+        parts.append(cvss_table)
+
+    # Main log
     hdr = "## " + ("Ejecución autónoma — log" if es else "Autonomous execution log")
     out = [hdr, f"\n- **CVE**: `{result.cve_id}`"]
     if result.cvss_score:
@@ -1205,7 +1267,14 @@ def _render_chain_log(result: ChainResult, lang: str = "es") -> str:
         icon = "✓" if s.status == "ok" else ("⊘" if s.status == "skip" else
                "⚠" if s.status == "warn" else "✗")
         out.append(f"- {icon} `{s.name}` — {s.detail} [{s.elapsed:.1f}s]")
-    return "\n".join(out)
+    parts.append("\n".join(out))
+
+    # Timeline
+    timeline = _render_timeline(result, lang)
+    if timeline:
+        parts.append(timeline)
+
+    return "\n\n".join(parts)
 
 
 # ── Index HTML auto-update ────────────────────────────────────────────────────
@@ -1323,6 +1392,28 @@ def _update_index_html(result: "ChainResult", cve_info, llm_notes: dict,
     auth_dat = "true" if auth_raw in ("true", "yes", "1", "authenticated") else "false"
     sev_dat  = severity
 
+    # Evidence link for verified CVEs: report path + verified endpoint
+    evidence_html = ""
+    if result.verified:
+        # Endpoint that was verified
+        verified_ep = ""
+        if result.inv is not None:
+            ep_raw = getattr(result.inv, "endpoint", "") or ""
+            if ep_raw:
+                verified_ep = str(ep_raw)[:60].replace("<", "&lt;").replace(">", "&gt;")
+        technique = str(llm_notes.get("technique") or cve_class).replace("<", "&lt;")[:30]
+        ep_span = (f' &middot; <code title="verified endpoint">{verified_ep}</code>'
+                   if verified_ep else "")
+        report_link = ""
+        if result.report_path:
+            rp = result.report_path.replace('"', '').replace("\\", "/")
+            report_link = f' &middot; <a href="file://{rp}" target="_blank" title="Ver informe">informe</a>'
+        evidence_html = (
+            f'<span class="badge badge-sm" style="background:#0369a1" '
+            f'title="{technique}{(" · " + verified_ep) if verified_ep else ""}">'
+            f'{technique}</span>{ep_span}{report_link}'
+        )
+
     row_html = (
         f'\n<tr class="cve-row" data-cls="{cve_class}" data-sev="{sev_dat}" '
         f'data-poc="{("false" if is_gap == "true" else "true")}" '
@@ -1337,7 +1428,7 @@ def _update_index_html(result: "ChainResult", cve_info, llm_notes: dict,
         f'  <td class="td-aff"><code>{affected}</code></td>\n'
         f'  <td class="td-pub">{pub}</td>\n'
         f'  <td class="td-desc">{desc_html}</td>\n'
-        f'  <td class="td-links"></td>\n'
+        f'  <td class="td-links">{evidence_html}</td>\n'
         f'</tr>'
     )
 
@@ -1491,7 +1582,8 @@ def run_full_chain(
 
     # ── Stage 7: Report ───────────────────────────────────────────────────────
     result.elapsed_s = time.time() - t0
-    result.report_md = _run_report_stage(result, step, lang=lang, save=save_report)
+    result.report_md = _run_report_stage(result, step, lang=lang, save=save_report,
+                                         cve_info=cve_info)
 
     # ── Stage 7.5: Index update ───────────────────────────────────────────────
     _update_index_html(result, cve_info, llm_notes, step)
