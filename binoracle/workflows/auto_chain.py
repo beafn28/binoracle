@@ -2727,6 +2727,38 @@ def run_full_chain(
                             llm_notes["vuln_class"] = _mapped_vc
                             step(f"  patch-diff: vuln_class actualizado a {_mapped_vc!r} "
                                  f"(diff clase={_pdiff.fix_class!r})")
+
+                    # Stage 4c: source grep — confirm vuln_function exists locally
+                    # When patch diff identified a vuln_function AND we have source from
+                    # Stage 1, grep the source tree to find the exact file + confirm
+                    # the vulnerable version still has the unfixed pattern.
+                    _vfn = _pdiff.vuln_function
+                    _local_src = (result.evidence.get("source_dir") or
+                                  str(getattr(getattr(result.inv, "source", None),
+                                              "local_path", "") or ""))
+                    if _vfn and _vfn != "?" and _local_src and os.path.isdir(_local_src):
+                        import subprocess as _sp
+                        try:
+                            _gr = _sp.run(
+                                ["grep", "-rl", "--include=*.py",
+                                 "--include=*.js", "--include=*.ts",
+                                 "--include=*.php", "--include=*.rb",
+                                 _vfn, _local_src],
+                                capture_output=True, text=True, timeout=10
+                            )
+                            _hits = [l.strip() for l in _gr.stdout.splitlines()
+                                     if l.strip()][:3]
+                            if _hits:
+                                _rel_hits = [os.path.relpath(h, _local_src)
+                                             for h in _hits]
+                                result.evidence["patch_analysis"]["source_hit_files"] = _rel_hits
+                                step(f"  [4c] vuln_function {_vfn!r} confirmada en "
+                                     f"código fuente: {_rel_hits[0]}")
+                            else:
+                                step(f"  [4c] vuln_function {_vfn!r} NO encontrada "
+                                     f"en código fuente — puede ser versión parchada")
+                        except Exception:
+                            pass
                 else:
                     step(f"  patch-diff: confianza insuficiente ({_pdiff.confidence:.0%})")
             except Exception as _pde:
