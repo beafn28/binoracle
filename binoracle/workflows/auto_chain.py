@@ -695,6 +695,7 @@ def _run_patch_stage(cve_id: str, cve_info, result: ChainResult,
 
         # Store raw diff for source-level analysis in Stage 4b
         result.evidence["raw_patch_text"] = patch_text[:65536]  # cap at 64KB
+        result.evidence["patch_diff_url"] = patch_url  # for YWH references section
 
         # patchdiff v2
         old_path = os.path.join(tmpdir, "patch.diff")
@@ -2610,6 +2611,7 @@ def run_full_chain(
                         "fix_class":     _pdiff.fix_class,
                         "confidence":    _pdiff.confidence,
                         "poc_http":      _poc_http,
+                        "patch_url":     result.evidence.get("patch_diff_url", ""),
                     }
                     step(f"  patch-diff: clase={_pdiff.fix_class} "
                          f"func={_pdiff.vuln_function!r} "
