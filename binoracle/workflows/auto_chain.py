@@ -1496,6 +1496,15 @@ _CWE_TO_OWASP_2021: dict[str, str] = {
     "CWE-601": "A01:2021 – Broken Access Control",   # Open redirect
     "CWE-94":  "A03:2021 – Injection",   # Code injection / SSTI
     "CWE-134": "A03:2021 – Injection",   # Format string
+    "CWE-362": "A04:2021 – Insecure Design",  # Race condition / TOCTOU
+    "CWE-400": "A04:2021 – Insecure Design",  # Uncontrolled resource consumption (DoS)
+    "CWE-770": "A04:2021 – Insecure Design",  # Allocation of resources without limits
+    "CWE-776": "A03:2021 – Injection",   # Billion laughs (XML)
+    "CWE-693": "A05:2021 – Security Misconfiguration",  # Protection mechanism failure
+    "CWE-614": "A05:2021 – Security Misconfiguration",  # Sensitive Cookie without Secure
+    "CWE-1004": "A05:2021 – Security Misconfiguration", # Sensitive Cookie without HttpOnly
+    "CWE-209": "A09:2021 – Security Logging and Monitoring Failures",  # Error detail disclosure
+    "CWE-532": "A09:2021 – Security Logging and Monitoring Failures",  # Sensitive info in logs
 }
 
 
