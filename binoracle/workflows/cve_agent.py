@@ -8846,6 +8846,95 @@ def _scaffold_npm_lab(target: str, version: str, vuln_class: str,
         )
         with open(_os.path.join(lab_dir, "Dockerfile"), "w") as f:
             f.write(dockerfile)
+    elif vuln_class == "path-traversal" and pkg == "h3":
+        # CVE-2026-86253 (h3 < 1.15.6/2.0.1-rc.15): serveStatic() sin normalizar %2e%2e.
+        # El servidor usa ESM (h3 es ESM-first) con toNodeListener para HTTP nativo de Node.
+        # La ruta estatica se sirve desde /app/public; el traversal escapa de ahi con %2e%2e/.
+        h3_srv = (
+            "import { createApp, defineEventHandler, serveStatic, toNodeListener } from 'h3'\n"
+            "import { createServer } from 'http'\n"
+            "import { createReadStream, existsSync, statSync } from 'fs'\n"
+            "import { join } from 'path'\n"
+            "const app = createApp()\n"
+            "app.use('/', defineEventHandler((event) => {\n"
+            "  return serveStatic(event, {\n"
+            "    getContents: (id) => existsSync(join('/app/public', id)) ? createReadStream(join('/app/public', id)) : null,\n"
+            "    getMeta: (id) => {\n"
+            "      const p = join('/app/public', id)\n"
+            "      if (!existsSync(p)) return null\n"
+            "      const s = statSync(p)\n"
+            "      return { size: s.size, mtime: s.mtimeMs }\n"
+            "    }\n"
+            "  })\n"
+            "}))\n"
+            "createServer(toNodeListener(app)).listen(3000, '0.0.0.0', () => console.log('h3 lab ready on :3000'))\n"
+        )
+        h3_idx = "binoracle-h3-static-public-file\n"
+        pkg_json["type"] = "module"
+        with open(_os.path.join(lab_dir, "package.json"), "w") as f:
+            _json.dump(pkg_json, f, indent=2)
+        public_dir = _os.path.join(lab_dir, "public")
+        _os.makedirs(public_dir, exist_ok=True)
+        with open(_os.path.join(public_dir, "index.html"), "w") as f:
+            f.write(h3_idx)
+        with open(_os.path.join(lab_dir, "server.js"), "w") as f:
+            f.write(h3_srv)
+        notes.setdefault("endpoint", "/")
+        notes.setdefault("parameters", ["URL_PATH"])
+    elif vuln_class == "path-traversal" and pkg in ("vite", "svelte-kit", "sveltekit"):
+        # CVE-2025-30208 (Vite < 5.4.15/6.2.3): servidor Vite dev en modo URL_PATH.
+        # El bypass /@fs/<abs_path>?raw& funciona porque Vite < 5.4.15 no valida la query
+        # string antes de permitir acceso al filesystem via /@fs.
+        # - server.js usa ESM (type=module en package.json) y createServer de vite.
+        # - index.html es obligatorio para que Vite acepte el root del proyecto.
+        # - EXPOSE 5173 (port default de vite dev).
+        # El endpoint /@fs y query_suffix=raw& vienen del JSON de hipotesis; no se sobreescriben.
+        srv_js = (
+            "import { createServer } from 'vite'\n"
+            "import { fileURLToPath } from 'url'\n"
+            "import { dirname } from 'path'\n"
+            "const __dirname = dirname(fileURLToPath(import.meta.url))\n"
+            "const server = await createServer({\n"
+            "  root: __dirname,\n"
+            "  server: { host: '0.0.0.0', port: 5173, strictPort: true },\n"
+            "})\n"
+            "await server.listen()\n"
+            "console.log('vite lab ready on :5173')\n"
+        )
+        idx_html = "<!DOCTYPE html><html><body><h1>binoracle vite lab</h1></body></html>\n"
+        # Update package.json for ESM support
+        pkg_json["type"] = "module"
+        with open(_os.path.join(lab_dir, "package.json"), "w") as f:
+            _json.dump(pkg_json, f, indent=2)
+        with open(_os.path.join(lab_dir, "server.js"), "w") as f:
+            f.write(srv_js)
+        with open(_os.path.join(lab_dir, "index.html"), "w") as f:
+            f.write(idx_html)
+        # Dockerfile explicito: EXPOSE 5173 — el auto-Dockerfile pondria EXPOSE 3000
+        # (node:20-alpine generico), descubriendo el puerto equivocado en discover_http().
+        try:
+            from .genericverify import _proxy_dockerfile_lines as _pdl_vite
+            _proxy_lines_vite = _pdl_vite(lab_dir)
+        except Exception:
+            _proxy_lines_vite = []
+        _df_vite_lines = ["FROM node:20-alpine"]
+        _df_vite_lines.extend(_proxy_lines_vite)
+        _df_vite_lines += [
+            "WORKDIR /app",
+            "COPY package.json .",
+            "RUN npm install",
+            "COPY index.html .",
+            "COPY server.js .",
+            "EXPOSE 5173",
+            'CMD ["node", "server.js"]',
+            "",
+        ]
+        df_vite = "\n".join(_df_vite_lines)
+        with open(_os.path.join(lab_dir, "Dockerfile"), "w") as f:
+            f.write(df_vite)
+        notes.setdefault("endpoint", "/@fs")
+        notes.setdefault("parameters", ["URL_PATH"])
+        notes.setdefault("query_suffix", "raw&")
     elif vuln_class in ("command-injection", "os-command-injection"):
         # Lab de command injection para paquetes npm: servidor HTTP Node.js que pasa
         # el parametro 'cmd' a child_process.exec directamente (sin sanitizar).
@@ -14776,14 +14865,19 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                                        progress_level=_infer_progress_level(getattr(wr, 'detail', '')))
                 _apply_wpverify_result(inv, wr, es, llm)
             # CORS misconfiguration: reflexion del Origin en ACAO + ACAC: true
-            elif (not plugin_dir and fr.local_path and
+            # fr.local_path puede ser None si la descarga del repo fallo — OK mientras
+            # tengamos dockerfile_body en el JSON (verify_generic_cors_misconfig crea
+            # su propio tmpdir y no necesita el source dir cuando tiene Dockerfile).
+            elif (not plugin_dir and
                   inv.vuln_class in ("cors", "cors-misconfiguration", "cors-misconfig",
-                                     "cors-reflection")):
+                                     "cors-reflection") and
+                  (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image"))):
                 from .genericverify import verify_generic_cors_misconfig
                 cors_ep = notes.get("endpoint") or "/api/"
                 cors_method = notes.get("http_method") or "GET"
                 cors_hdrs = notes.get("custom_headers") or None
-                _inject_custom_docker_lab(str(fr.local_path), notes, step)
+                if fr.local_path:
+                    _inject_custom_docker_lab(str(fr.local_path), notes, step)
                 step(("intentando verificacion DINAMICA GENERICA -- CORS reflection "
                      "(Origin reflejado en Access-Control-Allow-Origin + Credentials)..." if es else
                      "attempting GENERIC DYNAMIC verification -- CORS reflection "
@@ -14791,9 +14885,10 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _cors_dockerfile = notes.get("dockerfile_body") or ""
                 _cors_extra_files = notes.get("extra_files") or None
                 _scf_cors = False
+                _cors_src = str(fr.local_path) if fr.local_path else ""
                 if not _cors_dockerfile and llm is not None:
                     _scf = _scaffold_llm_lab_for_class(
-                        llm, str(fr.local_path), notes, inv.cve_id, "cors", step, es,
+                        llm, _cors_src, notes, inv.cve_id, "cors", step, es,
                             patch_diff=inv.llm_notes.get("patch_diff_analysis"))
                     if _scf:
                         _cors_dockerfile  = _scf["dockerfile_body"]
@@ -14801,7 +14896,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         cors_ep           = _scf.get("endpoint") or cors_ep
                         _scf_cors         = True
                 wr = verify_generic_cors_misconfig(
-                    fr.local_path, cors_ep, cors_method,
+                    _cors_src, cors_ep, cors_method,
                     on_step=step, budget_s=budget_s, custom_headers=cors_hdrs,
                     dockerfile_body=_cors_dockerfile, extra_files=_cors_extra_files)
                 if _scf_cors and not wr.verified:
@@ -14834,11 +14929,15 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         _cors_prev_err_cat = _cors_curr_cat
                 _apply_wpverify_result(inv, wr, es, llm)
             # JWT bypass: alg:none + weak secret
-            elif (not plugin_dir and fr.local_path and
+            # Mismo patron que CORS: fr.local_path puede ser None si el repo no se descargo,
+            # pero con dockerfile_body en el JSON podemos arrancar el lab sin el source dir.
+            elif (not plugin_dir and
                   inv.vuln_class in ("jwt-bypass", "jwt", "jwt-weakness", "jwt-vulnerability",
                                      "jwt-none-algorithm", "jwt-weak-secret",
-                                     "token-forgery", "authentication-bypass-via-jwt")):
+                                     "token-forgery", "authentication-bypass-via-jwt") and
+                  (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image"))):
                 from .genericverify import verify_generic_jwt_bypass
+                _jwt_src    = str(fr.local_path) if fr.local_path else ""
                 _jwt_ep     = notes.get("endpoint") or "/api/auth/verify"
                 _jwt_method = notes.get("http_method") or "POST"
                 _jwt_cs     = notes.get("confirm_string") or ""
@@ -14852,7 +14951,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _scf_jwt = False
                 if not _jwt_dockerfile and llm is not None:
                     _scf = _scaffold_llm_lab_for_class(
-                        llm, str(fr.local_path), notes, inv.cve_id, "jwt-bypass", step, es,
+                        llm, _jwt_src, notes, inv.cve_id, "jwt-bypass", step, es,
                         patch_diff=inv.llm_notes.get("patch_diff_analysis"))
                     if _scf:
                         _jwt_dockerfile  = _scf["dockerfile_body"]
@@ -14861,7 +14960,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         _jwt_cs          = _scf.get("confirm_string") or _jwt_cs
                         _scf_jwt         = True
                 wr = verify_generic_jwt_bypass(
-                    fr.local_path, _jwt_ep, _jwt_method,
+                    _jwt_src, _jwt_ep, _jwt_method,
                     confirm_string=_jwt_cs, weak_secret=_jwt_secret,
                     on_step=step, budget_s=budget_s,
                     dockerfile_body=_jwt_dockerfile, extra_files=_jwt_extra_files)
@@ -16452,6 +16551,50 @@ _BATCH_MAX_PARALLEL = 6   # tope duro -- cada investigacion puede levantar su pr
 # es mas probable que la reviente de RAM/CPU que acelerar nada.
 
 
+def _safe_parallel_limit() -> int:
+    """Limite paralelo seguro basado en RAM disponible.
+
+    En una maquina de <=16GB con Ollama cargado (~5.5GB), cada lab Docker WordPress+MySQL
+    consume ~3GB mas: parallel=2 ya presiona el limite (11-12GB usados sobre 16). Esta
+    funcion baja el tope antes de que sea problema. Se puede sobreescribir con la variable
+    de entorno BINORACLE_BATCH_MAX_PARALLEL (bypass manual para quien sabe lo que hace).
+
+    Prioridad: BINORACLE_BATCH_MAX_PARALLEL > BINORACLE_TOTAL_RAM_GB > /proc/meminfo > hardcap.
+    """
+    import os as _os2
+    _override = _os2.environ.get("BINORACLE_BATCH_MAX_PARALLEL", "").strip()
+    if _override:
+        try:
+            return max(1, int(_override))
+        except ValueError:
+            pass
+    # Detecta RAM total: primero env var explicita, luego /proc/meminfo (Linux)
+    _total_gb: float = 0.0
+    _env_gb = _os2.environ.get("BINORACLE_TOTAL_RAM_GB", "").strip()
+    if _env_gb:
+        try:
+            _total_gb = float(_env_gb)
+        except ValueError:
+            pass
+    if not _total_gb:
+        try:
+            with open("/proc/meminfo") as _mf:
+                for _line in _mf:
+                    if _line.startswith("MemTotal:"):
+                        _total_gb = int(_line.split()[1]) / (1024 * 1024)
+                        break
+        except Exception:
+            pass
+    if _total_gb:
+        if _total_gb <= 8:
+            return 1
+        if _total_gb <= 16:
+            return 1   # Ollama 7B (~5.5GB) + 1 lab (~3GB) ya es suficiente tension en 16GB
+        if _total_gb <= 32:
+            return 2
+    return _BATCH_MAX_PARALLEL
+
+
 @dataclass
 class BatchItem:
     """Resultado de UNA investigacion dentro de un lote (ver investigate_cves_batch) -- aislado a
@@ -16499,7 +16642,7 @@ def investigate_cves_batch(
     from ..config import load_config
 
     config = config or load_config()
-    parallel = max(1, min(int(parallel or 1), _BATCH_MAX_PARALLEL))
+    parallel = max(1, min(int(parallel or 1), _safe_parallel_limit()))
     hints_by_cve = hints_by_cve or {}
     items = {cid: BatchItem(cve_id=cid) for cid in cve_ids}
 

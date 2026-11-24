@@ -492,7 +492,7 @@ def autopwn(binary: str, config=None, store=None,
 
     # --- combo G: canary-bypass ---
     def _do_canary():
-        if not (run and want("canary") and canary_on and win is not None):
+        if not (run and want("canary-bypass") and canary_on and win is not None):
             return
         log("[combo] canary: fuga del canary + overflow a win (sandbox)...")
         try:
@@ -509,7 +509,7 @@ def autopwn(binary: str, config=None, store=None,
 
     # --- combo H: ret2dlresolve ---
     def _do_dlresolve():
-        if not (run and want("dlresolve") and not is_pie and not relro_full
+        if not (run and want("ret2dlresolve") and not is_pie and not relro_full
                 and win is None and not res.win_exploit and "system" not in sink_names):
             return
         log("[combo] ret2dlresolve: shell sin leak forjando el resolver dinamico (sandbox)...")
