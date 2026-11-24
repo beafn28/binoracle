@@ -2078,6 +2078,38 @@ main {
 }
 .pi-item-clickable:hover { background: rgba(99,179,237,.08); }
 .pi-item-clickable:hover .pi-cve-id { text-decoration: underline; }
+
+/* ── Correlation panel ──────────────────────────────────────────────────── */
+.corr-panel { margin-top: 12px; }
+.corr-hint  { font-size: 10px; color: var(--dim); font-weight: 400; margin-left: 8px; }
+.corr-grid  { display: flex; flex-direction: column; gap: 2px; margin-top: 6px; }
+.corr-row   {
+  display: flex; flex-direction: column; gap: 3px;
+  padding: 7px 10px; border-radius: 5px; cursor: pointer;
+  border: 1px solid transparent;
+  transition: background .12s, border-color .12s;
+}
+.corr-row:hover { background: rgba(99,179,237,.06); border-color: rgba(99,179,237,.2); }
+.corr-row:hover .corr-investigate-btn { opacity: 1; }
+.corr-row-top   { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.corr-cve-id    { font-family: var(--mono); font-size: 12px; color: var(--cyan); font-weight: 700; }
+.corr-row:hover .corr-cve-id { text-decoration: underline; }
+.corr-score-badge { font-size: 10px; font-weight: 700; font-family: var(--mono); }
+.corr-rel-tag   { font-size: 10px; color: var(--dim); background: rgba(255,255,255,.05); padding: 1px 5px; border-radius: 3px; }
+.corr-hist-badge { font-size: 9px; font-weight: 700; padding: 1px 5px; border-radius: 3px; font-family: var(--mono); }
+.corr-hist-conf  { background: rgba(74,222,128,.15); color: #4ade80; }
+.corr-hist-fail  { background: rgba(255,255,255,.07); color: var(--dim); }
+.corr-investigate-btn {
+  margin-left: auto; font-size: 10px; color: var(--cyan); opacity: 0;
+  transition: opacity .15s; white-space: nowrap;
+}
+.corr-desc { font-size: 11px; color: var(--dim); line-height: 1.5; padding-left: 2px; }
+.corr-expand-btn {
+  background: none; border: none; cursor: pointer; color: var(--cyan);
+  font-size: 10px; padding: 0 0 0 4px; opacity: .7;
+  font-family: var(--mono);
+}
+.corr-expand-btn:hover { opacity: 1; }
 .pi-link { color: var(--cyan); text-decoration: none; font-family: var(--mono); font-size: 11px; }
 .pi-link:hover { text-decoration: underline; }
 .pi-msg { color: var(--dim); font-size: 11px; }
@@ -2904,9 +2936,12 @@ main {
         : '<span class="corr-hist-badge corr-hist-fail">tested</span>')
         : '';
       const fullDesc = (c.desc || '').trim();
-      const shortDesc = fullDesc.length > 100 ? fullDesc.slice(0, 100) + '…' : fullDesc;
+      const previewLen = 85;
+      const needsExpand = fullDesc.length > previewLen;
+      const preview = needsExpand ? fullDesc.slice(0, previewLen).replace(/\s\S+$/, '') + '…' : fullDesc;
+      const uid = 'corr-' + c.cve_id.replace(/[^a-z0-9]/gi,'');
       html += `
-        <div class="corr-row" onclick="investigateRelated(${JSON.stringify(c.cve_id)})" title="Investigate ${escHtml(c.cve_id)}">
+        <div class="corr-row" onclick="investigateRelated(${JSON.stringify(c.cve_id)})">
           <div class="corr-row-top">
             <span class="pi-cve-id corr-cve-id">${escHtml(c.cve_id)}</span>
             <span class="corr-score-badge" style="color:${sc.col}">${sc.label}</span>
@@ -2914,7 +2949,19 @@ main {
             ${histBadge}
             <span class="corr-investigate-btn">Investigate →</span>
           </div>
-          <div class="corr-desc">${escHtml(shortDesc)}</div>
+          <div class="corr-desc">
+            <span id="${uid}-preview">${escHtml(preview)}</span>
+            ${needsExpand ? `<span id="${uid}-full" style="display:none">${escHtml(fullDesc)}</span>
+            <button class="corr-expand-btn" id="${uid}-btn"
+              onclick="event.stopPropagation();
+                const p=document.getElementById('${uid}-preview'),
+                      f=document.getElementById('${uid}-full'),
+                      b=document.getElementById('${uid}-btn');
+                const open=f.style.display!=='none';
+                p.style.display=open?'':'none';
+                f.style.display=open?'none':'';
+                b.textContent=open?'▾ more':'▴ less';">▾ more</button>` : ''}
+          </div>
         </div>`;
     }
     html += '</div></div>';
@@ -2936,6 +2983,10 @@ main {
       ['Delayed Response 1',  ve.tiempo_1_ganador_s != null ? ve.tiempo_1_ganador_s + 's' : null],
       ['Delayed Response 2',  ve.tiempo_2_ganador_s != null ? ve.tiempo_2_ganador_s + 's' : null],
       ['Container',           ve.contenedor],
+      // RCE impact — id/whoami/uname from any verifier
+      ['$ id',      ve.rce_id_output    || ev.rce_id_output    || null],
+      ['$ whoami',  ve.rce_whoami_output|| ev.rce_whoami_output|| null],
+      ['$ uname -a',ve.rce_uname_output || ev.rce_uname_output || null],
     ];
     const skip = new Set(['screenshots','http_log','http_requests','nonce_scraping_diagnostico',
                           'laboratorio_vivo','parametros_resueltos_con_valor_real']);
@@ -3095,6 +3146,16 @@ main {
       tiempo_2_ganador_s: 'Response 2',
       contenedor: 'Container',
     };
+    // RCE impact fields — shown first if present (from either ve or ev)
+    const rceFields = [
+      ['rce_id_output',    '$ id'],
+      ['rce_whoami_output','$ whoami'],
+      ['rce_uname_output', '$ uname -a'],
+    ];
+    for (const [k, label] of rceFields) {
+      const val = ve[k] || ev[k];
+      if (val) cards.push([label, val]);
+    }
     for (const [k, label] of Object.entries(veFields)) {
       if (ve[k]) cards.push([label, ve[k]]);
     }

