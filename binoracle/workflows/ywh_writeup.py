@@ -271,6 +271,7 @@ def build_writeup_from_chain(result: object, target_url: str = "") -> YwhWriteup
     # References: only include links with direct relevance — GHSA advisories,
     # OSV packages, vendor patch commit — never generic OWASP/CWE links.
     # Per YwH guidance: References only when the triager genuinely benefits.
+    # Exception: OWASP category is included when available (useful for triager context).
     _ref_lines: list[str] = []
     # GHSA advisory (from patch analysis or evidence)
     _ghsa_ids: list[str] = (evidence.get("ghsa_ids") or
@@ -287,6 +288,15 @@ def build_writeup_from_chain(result: object, target_url: str = "") -> YwhWriteup
     _patch_url = _pa.get("patch_url") or _pa.get("diff_url") or ""
     if _patch_url and "github.com" in _patch_url:
         _ref_lines.append(f"- Patch commit: {_patch_url.replace('.diff', '')}")
+    # OWASP Top 10 2021 category (from evidence.owasp_category, populated by Stage 6)
+    _owasp_cat = evidence.get("owasp_category", "")
+    if _owasp_cat:
+        _ref_lines.append(f"- OWASP Top 10 2021: {_owasp_cat}")
+    # CWE link (only when non-trivial — triager typically already knows this but link helps)
+    _cwe_id = evidence.get("cwe_id", "")
+    if _cwe_id:
+        _cwe_num = _cwe_id.replace("CWE-", "")
+        _ref_lines.append(f"- [{_cwe_id}](https://cwe.mitre.org/data/definitions/{_cwe_num}.html)")
     if _ref_lines:
         wu.references = "\n".join(_ref_lines)
 
