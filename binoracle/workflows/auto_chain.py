@@ -1329,6 +1329,35 @@ def _render_chain_log(result: ChainResult, lang: str = "es",
                 _esc_lines.append(f"| `{_url}` | {_st} | `{_prev}` |")
         parts.append("\n".join(_esc_lines))
 
+    # Autofuzz evidence block
+    _fuzz_ev = result.evidence.get("autofuzz") if result.evidence else None
+    if _fuzz_ev and isinstance(_fuzz_ev, dict) and _fuzz_ev.get("best_param"):
+        _fuzz_hdr = "## " + ("Fuzzing de parámetros" if es else "Parameter Fuzzing")
+        _fuzz_lines = [_fuzz_hdr, ""]
+        _fuzz_lines.append(f"**Parámetro identificado**: `{_fuzz_ev['best_param']}`")
+        _fuzz_lines.append(f"**Payload**: `{_fuzz_ev.get('best_payload', '')}`")
+        _fuzz_lines.append(f"**Señal**: {_fuzz_ev.get('signal', '?')} "
+                           f"(confianza {int((_fuzz_ev.get('confidence') or 0)*100)}%)")
+        _fuzz_lines.append(f"**Requests enviados**: {_fuzz_ev.get('requests_sent', '?')}"
+                           f" | **Hits**: {_fuzz_ev.get('hits', 0)}")
+        parts.append("\n".join(_fuzz_lines))
+
+    # Differential test evidence block
+    _diff_ev = result.evidence.get("differential_test") if result.evidence else None
+    if _diff_ev and isinstance(_diff_ev, dict) and result.evidence.get("diff_reason"):
+        _diff_hdr = "## " + ("Test diferencial (vuln vs parchado)" if es
+                              else "Differential Test (vuln vs patched)")
+        _diff_lines = [_diff_hdr, ""]
+        _diff_lines.append("**Resultado**: CONFIRMADO DIFERENCIALMENTE")
+        _diff_lines.append(f"**Razón**: {result.evidence.get('diff_reason', '')}")
+        _diff_lines.append(
+            f"**Versión vulnerable**: HTTP {_diff_ev.get('vuln_status')} — "
+            f"`{_diff_ev.get('vuln_url', '')}`")
+        _diff_lines.append(
+            f"**Versión parchada**: HTTP {_diff_ev.get('patched_status')} — "
+            f"`{_diff_ev.get('patched_url', '')}`")
+        parts.append("\n".join(_diff_lines))
+
     # Timeline
     timeline = _render_timeline(result, lang)
     if timeline:
@@ -2016,6 +2045,18 @@ def run_full_chain(
         _conf -= 0.20
     if result.cve_class == "unknown":
         _conf -= 0.10
+    # Additional evidence bonuses
+    if result.evidence.get("differential_test", {}).get("diff_reason"):
+        _conf += 0.08   # differential confirms with irrefutable evidence
+    if result.evidence.get("autofuzz", {}).get("verified_by_fuzz"):
+        _conf += 0.05   # fuzzer found injection point with ≥90% confidence
+    if result.evidence.get("impact_escalation", {}).get("impact_class") in (
+            "credential_exposure", "admin_access"):
+        _conf += 0.05   # actual credential/admin exposure proven
+    if result.evidence.get("patch_analysis", {}).get("confidence", 0) >= 0.80:
+        _conf += 0.03   # precise patch diff analysis available
+    if result.evidence.get("correlation_hint", {}).get("relevance", 0) >= 0.70:
+        _conf += 0.02   # similar CVE in same project confirmed the pattern
     result.engine_confidence = round(max(0.0, min(1.0, _conf)), 2)
 
     # ── Lessons: record this CVE's outcome for future runs ────────────────────
