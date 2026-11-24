@@ -2220,7 +2220,8 @@ def _docker_self_repair(container: str, step, max_attempts: int = 3) -> bool:
             cls = _classify_pipeline_error(logs)
             step(f"[self-repair] container exited (code={exit_code}) category={cls['category']}: "
                  f"{cls['remediation_hint'][:120]}")
-            # Structured error analysis (best-effort)
+            # Structured error analysis + autonomous repair
+            _err = None
             try:
                 from .error_analyzer import analyze_error, render_error_summary
                 _err = analyze_error(
@@ -2230,6 +2231,21 @@ def _docker_self_repair(container: str, step, max_attempts: int = 3) -> bool:
                 step(f"[error_analyzer] {render_error_summary(_err)}")
             except Exception:
                 pass
+            # Attempt autonomous repair before giving up
+            if _err is not None:
+                try:
+                    from .controller import execute_repair
+                    _rep_ok, _rep_msg = execute_repair(
+                        error=_err, cwd=os.path.expanduser("~/.binoracle"),
+                        log=step, context={"container": container},
+                    )
+                    if _rep_ok:
+                        step(f"[self-repair:auto] repair succeeded: {_rep_msg} — retrying container")
+                        _sp.run(["docker", "start", container], capture_output=True, text=True, timeout=30)
+                        import time as _t; _t.sleep(8)
+                        continue
+                except Exception:
+                    pass
             if cls["category"] in ("missing_dependency", "npm_install_failure",
                                    "pkg_install_failure", "syntax_error", "build_failure"):
                 step(f"[self-repair] fatal category={cls['category']} — cannot fix without rebuild")

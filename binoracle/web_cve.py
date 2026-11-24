@@ -291,9 +291,23 @@ def _start_job(cve_id: str, config) -> _Job:
             _save_history(job)
             job._q.put(("done", job.result))
         except Exception as exc:
+            # Autonomous repair: classify the exception and attempt a fix before marking done
+            try:
+                from .workflows.controller import auto_repair_on_exc
+                _rep_ok, _rep_msg = auto_repair_on_exc(
+                    exc, cve_id=job.cve_id, stage="web_job",
+                    log=on_step,
+                    context={"cve_id": job.cve_id},
+                )
+                if _rep_ok:
+                    on_step(f"[auto_repair] fixed ({_rep_msg}) — but investigation already aborted; "
+                            f"result will be incomplete")
+            except Exception:
+                pass
             job.status = "done"
             job.result = {"verified": False, "cve_id": job.cve_id,
-                          "error": str(exc), "logs": job.logs}
+                          "error": str(exc), "logs": job.logs,
+                          "auto_repair_attempted": True}
             _save_history(job)
             job._q.put(("done", job.result))
 
