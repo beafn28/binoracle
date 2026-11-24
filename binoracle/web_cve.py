@@ -1493,13 +1493,31 @@ main {
   background: var(--bg3); border: 1px solid var(--border); border-radius: 6px;
   padding: 10px 14px;
 }
-.log-line { display: flex; gap: 10px; }
-.log-t    { color: var(--dim); min-width: 54px; flex-shrink: 0; }
-.log-ok   { color: var(--green); }
-.log-warn { color: var(--yellow); }
-.log-err  { color: var(--red); }
-.log-info { color: var(--text); }
-.log-sep  { color: var(--cyan); opacity: .6; letter-spacing: .2em; }
+.log-line { display: flex; gap: 8px; align-items: baseline; }
+.log-t    { color: var(--dim); min-width: 54px; flex-shrink: 0; font-size: 11px; }
+.log-icon {
+  min-width: 60px; flex-shrink: 0; font-size: 10px;
+  font-weight: 700; letter-spacing: .04em; opacity: .85;
+  font-family: var(--mono); white-space: nowrap;
+}
+.log-ok       { color: var(--green); }
+.log-warn     { color: var(--yellow); }
+.log-err      { color: var(--red); }
+.log-info     { color: var(--text); }
+.log-sep      { color: var(--cyan); opacity: .6; letter-spacing: .2em; }
+.log-docker   { color: #60a5fa; }          /* blue — Docker/container ops */
+.log-llm      { color: #a78bfa; }          /* violet — LLM/Qwen calls */
+.log-network  { color: var(--cyan); }      /* cyan — network/clone/fetch */
+.log-lab      { color: #fb923c; }          /* orange — lab scaffold */
+.log-exploit  { color: #f87171; }          /* red — exploit/attack */
+.log-dim-msg  { color: var(--dim); }       /* dim — cleanup/teardown */
+.log-verified {
+  color: #4ade80; font-weight: 700;
+  background: rgba(74,222,128,.08);
+  border-left: 3px solid #4ade80;
+  padding: 2px 6px; margin-left: -6px; border-radius: 3px;
+  display: block;
+}
 .log-phase-header {
   display: flex; align-items: center; gap: 8px; margin: 12px 0 5px;
   font-size: 10.5px; font-weight: 700; letter-spacing: .12em; color: var(--cyan);
@@ -2467,20 +2485,51 @@ main {
 
     if (_currentPhase) _currentPhase.entries.push({t, msg});
 
-    let cls = 'log-info';
-    if (msg.startsWith('[OK]'))    cls = 'log-ok';
-    else if (msg.startsWith('[WARN]')) cls = 'log-warn';
-    else if (msg.startsWith('[ERR]'))  cls = 'log-err';
-    else if (isSep)                   cls = 'log-sep';
+    let cls = 'log-info', icon = '[info]';
+    if (msg.startsWith('[OK]'))      { cls = 'log-ok';      icon = '[ok]'; }
+    else if (msg.startsWith('[WARN]')){ cls = 'log-warn';   icon = '[warn]'; }
+    else if (msg.startsWith('[ERR]')) { cls = 'log-err';    icon = '[err]'; }
+    else if (isSep)                   { cls = 'log-sep';    icon = ''; }
+    else {
+      const lo = msg.toLowerCase();
+      if (/\bverificado\b|verified:|el secreto plantado|vulnerabilidad reproducida/.test(lo)) {
+        cls = 'log-verified'; icon = '[conf]';
+      } else if (/docker|contenedor|build|construyendo|esperando.*http|objetivo arriba|arranc|teardown|desmontando.*laboratorio|usando dockerfile|objetivo generico/.test(lo)) {
+        cls = 'log-docker'; icon = '[docker]';
+      } else if (/qwen|razonando.*lab|usando.*qwen|diagnosticando/.test(lo)) {
+        cls = 'log-llm'; icon = '[llm]';
+      } else if (/el llm analiz|hipotesis del llm|desarrollando.*poc/.test(lo)) {
+        cls = 'log-llm'; icon = '[llm]';
+      } else if (/consultando|clonando|descargando|recopilando.*inteligencia|poc.*leido|exploit.*existe|scraping|fetch/.test(lo)) {
+        cls = 'log-network'; icon = '[net]';
+      } else if (/scaffolded|lab at \/tmp|lab.*at |usando dockerfile del analista|plantando fichero canario/.test(lo)) {
+        cls = 'log-lab'; icon = '[lab]';
+      } else if (/escalada.*rce|envenenando|ataque|exploit|payload/.test(lo)) {
+        cls = 'log-exploit'; icon = '[expl]';
+      } else if (/limpieza|cleanup|purgando|huerfan|desmontando|teardown/.test(lo)) {
+        cls = 'log-dim-msg'; icon = '[dim]';
+      } else if (/\[correlate\]|\[info\]|\[historial\]|correlat/.test(lo)) {
+        cls = 'log-dim-msg'; icon = '[dim]';
+      }
+    }
 
     // Humanize common verbose patterns
     const display = humanizeLog(msg);
 
     const line = document.createElement('div');
     line.className = 'log-line';
-    line.innerHTML =
-      `<span class="log-t">${t}s</span>` +
-      `<span class="${cls}">${escHtml(display)}</span>`;
+    if (cls === 'log-verified') {
+      // verified gets a full-width highlighted block
+      line.innerHTML =
+        `<span class="log-t">${t}s</span>` +
+        `<span class="log-icon log-ok">${icon}</span>` +
+        `<span class="${cls}">${escHtml(display)}</span>`;
+    } else {
+      line.innerHTML =
+        `<span class="log-t">${t}s</span>` +
+        `<span class="log-icon ${cls}">${icon}</span>` +
+        `<span class="${cls}">${escHtml(display)}</span>`;
+    }
     terminal.appendChild(line);
     if (autoScroll) terminal.scrollTop = terminal.scrollHeight;
   }
@@ -2490,7 +2539,17 @@ main {
       .replace(/^\[OK\]\s*/,    '')
       .replace(/^\[WARN\]\s*/, 'WARNING: ')
       .replace(/^\[ERR\]\s*/,  'ERROR: ')
-      .replace(/^\[INFO\]\s*/, '');
+      .replace(/^\[INFO\]\s*/, '')
+      .replace(/^\[HISTORIAL\]\s*/, '[hist] ')
+      .replace(/^\[correlate\]\s*/i, '')
+      .replace(/^auto-limpieza Docker:\s*/i, 'disk cleanup: ')
+      .replace(/^recopilando inteligencia CVE de /i, 'intel: ')
+      .replace(/^inteligencia CVE:\s*/i, 'intel: ')
+      .replace(/^intentando verificacion DINAMICA GENERICA\b.*/, 'starting dynamic verification...')
+      .replace(/^intentando obtener el codigo real\s*/i, 'fetching source: ')
+      .replace(/^desmontando el laboratorio generico.*/, 'tearing down lab container')
+      .replace(/^construyendo y arrancando el objetivo.*/, 'docker build + run...')
+      .replace(/^esperando a que el objetivo responda HTTP.*/, 'waiting for HTTP...');
   }
 
   // ── result rendering ──────────────────────────────────────────────────────
