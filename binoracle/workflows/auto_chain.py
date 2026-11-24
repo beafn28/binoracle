@@ -1450,6 +1450,84 @@ def _run_report_stage(result: ChainResult, step: Callable,
                         if _pa_es else
                         "### PoC HTTP (generated from diff)\n\n")
             md_parts.append(_poc_hdr + "```http\n" + _pa["poc_http"] + "\n```")
+    # Response body analysis — semantic signals found in HTTP responses
+    _rba = result.evidence.get("response_body_analysis", {})
+    if _rba and _rba.get("findings"):
+        _rba_es = lang == "es"
+        _rba_hdr = "## Análisis semántico del cuerpo de respuesta" if _rba_es else "## Response Body Semantic Analysis"
+        _rba_lines = [_rba_hdr, ""]
+        _rba_ic = _rba.get("impact_class", "")
+        if _rba_ic:
+            _lbl = "Clase de impacto observada" if _rba_es else "Observed impact class"
+            _rba_lines.append(f"**{_lbl}:** `{_rba_ic}`")
+        _rba_bonus = _rba.get("confidence_bonus", 0)
+        if _rba_bonus:
+            _lbl = "Bonus de confianza aplicado" if _rba_es else "Confidence bonus applied"
+            _rba_lines.append(f"**{_lbl}:** +{_rba_bonus:.0%}")
+        _rba_lines.append("")
+        _fnd_hdr = "| Patrón | Descripción |" if _rba_es else "| Pattern | Description |"
+        _rba_lines.append(_fnd_hdr)
+        _rba_lines.append("|--------|-------------|")
+        for _fname, _fdesc in _rba["findings"][:8]:
+            _rba_lines.append(f"| `{_fname}` | {_fdesc} |")
+        md_parts.append("\n".join(_rba_lines))
+
+    # GraphQL schema probe results
+    _gql = result.evidence.get("graphql_schema", {})
+    if _gql and (_gql.get("queries") or _gql.get("mutations")):
+        _gql_es = lang == "es"
+        _gql_hdr = "## Esquema GraphQL descubierto" if _gql_es else "## GraphQL Schema Discovery"
+        _gql_lines = [_gql_hdr, ""]
+        if _gql.get("queries"):
+            _lbl = "Queries" if not _gql_es else "Queries disponibles"
+            _gql_lines.append(f"**{_lbl}:** {', '.join(_gql['queries'][:10])}")
+        if _gql.get("mutations"):
+            _lbl = "Mutations" if not _gql_es else "Mutations disponibles"
+            _gql_lines.append(f"**{_lbl}:** {', '.join(_gql['mutations'][:10])}")
+        if _gql.get("sensitive_fields"):
+            _lbl = "Campos sensibles detectados" if _gql_es else "Sensitive fields detected"
+            _gql_lines.append(f"**{_lbl}:** {', '.join(_gql['sensitive_fields'][:8])}")
+        if _gql.get("lfi_ssrf_candidates"):
+            _lbl = "Candidatos LFI/SSRF (args de ruta/URL)" if _gql_es else "LFI/SSRF candidates (path/url args)"
+            _gql_lines.append(f"**{_lbl}:** {', '.join(_gql['lfi_ssrf_candidates'][:6])}")
+        if _gql.get("auth_required_queries"):
+            _lbl = "Queries con autenticación" if _gql_es else "Auth-gated queries"
+            _gql_lines.append(f"**{_lbl}:** {', '.join(_gql['auth_required_queries'][:5])}")
+        md_parts.append("\n".join(_gql_lines))
+
+    # SSRF cloud metadata escalation results
+    _ssrf_esc = result.evidence.get("ssrf_cloud_escalation", {})
+    if _ssrf_esc and (_ssrf_esc.get("has_credentials") or _ssrf_esc.get("cloud_responses")):
+        _ssrf_es = lang == "es"
+        _ssrf_hdr = "## Escalado SSRF → Metadatos Cloud" if _ssrf_es else "## SSRF Cloud Metadata Escalation"
+        _ssrf_lines = [_ssrf_hdr, ""]
+        if _ssrf_esc.get("has_credentials"):
+            _lbl = "CREDENCIALES EXPUESTAS" if _ssrf_es else "CREDENTIALS EXPOSED"
+            _ssrf_lines.append(f"**{_lbl}** — el SSRF permitió acceder a metadatos de credenciales cloud")
+        for _cloud_resp in (_ssrf_esc.get("cloud_responses") or [])[:5]:
+            _ssrf_lines.append(f"- `{_cloud_resp.get('provider','?')}` {_cloud_resp.get('url','?')}: "
+                               f"HTTP {_cloud_resp.get('status','?')} "
+                               f"({_cloud_resp.get('type','?')})")
+        md_parts.append("\n".join(_ssrf_lines))
+
+    # YWH writeup reference (when auto-generated)
+    _ywh = result.evidence.get("ywh_writeup", {})
+    if _ywh and _ywh.get("title"):
+        _ywh_es = lang == "es"
+        _ywh_hdr = "## Borrador YesWeHack" if _ywh_es else "## YesWeHack Draft"
+        _ywh_file = _ywh.get("file", "")
+        _ywh_note = (f"Reporte estructurado generado en `{_ywh_file}`" if _ywh_file else
+                     "Reporte estructurado disponible en `evidence['ywh_writeup']`")
+        _ywh_note_en = (f"Structured report saved to `{_ywh_file}`" if _ywh_file else
+                        "Structured report available in `evidence['ywh_writeup']`")
+        _ywh_lines = [
+            _ywh_hdr, "",
+            f"**Título:** {_ywh['title']}" if _ywh_es else f"**Title:** {_ywh['title']}",
+            f"**Severidad:** {_ywh.get('severity','?')}" if _ywh_es else f"**Severity:** {_ywh.get('severity','?')}",
+            (_ywh_note if _ywh_es else _ywh_note_en),
+        ]
+        md_parts.append("\n".join(_ywh_lines))
+
     # Mitigation bypass
     if result.mitigation_report:
         md_parts.append(result.mitigation_report)
