@@ -2222,7 +2222,29 @@ def run_full_chain(
     if llm and result.description and not llm_notes.get("vuln_class"):
         try:
             from .cve_agent import _llm_research  # type: ignore
-            llm_notes = _llm_research(llm, cve_id, result.description) or {}
+
+            # Build context prefix: stack lessons + patch signals → better LLM hypothesis
+            _llm_ctx_lines = []
+            try:
+                from .cve_lessons import detect_stack, format_lessons_for_llm
+                _stage2_stack = detect_stack(result.description)
+                _stage2_lessons = format_lessons_for_llm(_stage2_stack, max_tokens=250)
+                if _stage2_lessons:
+                    _llm_ctx_lines.append(_stage2_lessons)
+            except Exception:
+                pass
+            # Seed from patch info if available from Stage 1 (NVD references)
+            _early_patch = result.evidence.get("patch_analysis", {})
+            if _early_patch.get("fix_class") and _early_patch["fix_class"] != "unknown":
+                _llm_ctx_lines.append(
+                    f"[SEÑAL DE PATCH DIFF] clase={_early_patch['fix_class']} "
+                    f"func={_early_patch.get('vuln_function','?')} "
+                    f"param={_early_patch.get('suggested_param','?')}"
+                )
+            _extra_ctx = "\n\n".join(_llm_ctx_lines) if _llm_ctx_lines else ""
+
+            llm_notes = _llm_research(llm, cve_id, result.description,
+                                       extra_context=_extra_ctx) or {}
             vc = llm_notes.get("vuln_class", "?")
             endpoint = llm_notes.get("endpoint", "?")
             step(f"  clase={vc}, endpoint={endpoint}, "

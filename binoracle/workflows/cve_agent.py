@@ -521,12 +521,20 @@ _RESEARCH_SYS = (
 )
 
 
-def _llm_research(llm, cve_id: str, description: str) -> Optional[dict]:
-    """Pide al LLM un analisis estructurado de la CVE. Devuelve el dict o None si no hay modelo."""
+def _llm_research(llm, cve_id: str, description: str,
+                  extra_context: str = "") -> Optional[dict]:
+    """Pide al LLM un analisis estructurado de la CVE. Devuelve el dict o None si no hay modelo.
+
+    extra_context: optional prefix with stack lessons, patch diff signals, etc.
+    Injected before the CVE description to bias the LLM toward historically
+    effective endpoints and auth patterns for this stack.
+    """
     if llm is None or not getattr(llm, "available", lambda: False)():
         return None
     from ..llm.base import Message
-    prompt = (f"CVE: {cve_id}\nDescripcion: {description}\n\n"
+    _ctx_prefix = (f"{extra_context}\n\n" if extra_context else "")
+    prompt = (_ctx_prefix +
+              f"CVE: {cve_id}\nDescripcion: {description}\n\n"
               "Analiza la vulnerabilidad y da el plan en JSON con las claves indicadas.")
     try:
         raw = llm.chat([Message("system", _RESEARCH_SYS), Message("user", prompt)], json_mode=True)
