@@ -8221,7 +8221,9 @@ def _guess_wp_slug_from_description(description: str) -> Optional[str]:
 _PIP_PKG_RE = re.compile(
     r"(?i)\b(aiohttp|flask[_-]reuploaded|jinja2|jinja|django|bottle|tornado|"
     r"fastapi|starlette|werkzeug|pillow|paramiko|twisted|pyramid|uvicorn|"
-    r"gunicorn|httpx|sanic|falcon|ftp[_-]flask[_-]python|ftp.flask)\b"
+    r"gunicorn|httpx|sanic|falcon|ftp[_-]flask[_-]python|ftp.flask|"
+    r"gradio|gradio[_-]app|huggingface|transformers|diffusers|streamlit|"
+    r"jupyter|notebook|jupyterlab|voila|panel|dash|plotly)\b"
 )
 _NPM_PKG_RE = re.compile(
     r"(?i)\b(next\.?js|next|express|koa|hapi|fastify|nuxt|gatsby|"
@@ -9214,6 +9216,57 @@ def _scaffold_pip_lab(target: str, version: str, vuln_class: str,
     on_step((f"scaffolded minimal {pkg} lab at {lab_dir} "
              f"(vuln_class={vuln_class}, pin={pin})"))
     return lab_dir
+
+
+def _detect_pip_package_from_source(source_dir: str) -> "tuple[str, str]":
+    """Lee setup.py/pyproject.toml/setup.cfg del source_dir clonado y devuelve
+    (package_name_lower, version). Devuelve ('', '') si no detecta un paquete pip.
+    Usado para redirigir targets Python a _scaffold_pip_lab en vez de
+    _scaffold_llm_lab_for_class (que genera Node.js para cualquier target)."""
+    import pathlib as _pl
+    src = _pl.Path(source_dir)
+    name, ver = "", ""
+    ppt = src / "pyproject.toml"
+    if ppt.exists():
+        try:
+            txt = ppt.read_text(errors="replace")
+            m = re.search(r'(?m)^\s*name\s*=\s*["\']([^"\']+)["\']', txt)
+            if m:
+                name = m.group(1).lower().replace("_", "-")
+            m = re.search(r'(?m)^\s*version\s*=\s*["\']([^"\']+)["\']', txt)
+            if m:
+                ver = m.group(1)
+        except Exception:
+            pass
+    if not name:
+        scfg = src / "setup.cfg"
+        if scfg.exists():
+            try:
+                txt = scfg.read_text(errors="replace")
+                m = re.search(r'(?m)^name\s*=\s*(.+)', txt)
+                if m:
+                    name = m.group(1).strip().lower().replace("_", "-")
+                m = re.search(r'(?m)^version\s*=\s*(.+)', txt)
+                if m:
+                    ver = m.group(1).strip()
+            except Exception:
+                pass
+    if not name:
+        spy = src / "setup.py"
+        if spy.exists():
+            try:
+                txt = spy.read_text(errors="replace")
+                m = re.search(r"name\s*=\s*['\"]([^'\"]+)['\"]", txt)
+                if m:
+                    name = m.group(1).lower().replace("_", "-")
+                m = re.search(r"version\s*=\s*['\"]([^'\"]+)['\"]", txt)
+                if m:
+                    ver = m.group(1)
+            except Exception:
+                pass
+    if name and re.search(r'(wordpress|drupal|joomla|wp-)', name):
+        name = ""
+    return name, ver
 
 
 def _scaffold_npm_lab(target: str, version: str, vuln_class: str,
@@ -12715,12 +12768,58 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _pt_custom_hdrs = notes.get("custom_headers") or None
                 _pt_dockerfile = notes.get("dockerfile_body") or ""
                 _pt_extra_files = notes.get("extra_files") or None
+                # Si el source_dir ya tiene un Dockerfile propio (p.ej. _scaffold_httpd_lab lo
+                # creó), léelo — evita que _scaffold_llm_lab_for_class lo sobreescriba con
+                # Node.js. Antes del fix del cache (40920f2), el _scaffold_cache enmascaraba
+                # este problema reutilizando un lab exitoso guardado; ahora hay que leerlo.
+                if not _pt_dockerfile:
+                    _local_df_path = os.path.join(str(fr.local_path), "Dockerfile")
+                    if os.path.exists(_local_df_path):
+                        try:
+                            with open(_local_df_path) as _ldf:
+                                _pt_dockerfile = _ldf.read()
+                            if not _pt_extra_files:
+                                _pt_extra_files = {}
+                            for _ef_name in os.listdir(str(fr.local_path)):
+                                if _ef_name in ("Dockerfile", ".git", "__pycache__"):
+                                    continue
+                                _ef_full = os.path.join(str(fr.local_path), _ef_name)
+                                if os.path.isfile(_ef_full) and os.path.getsize(_ef_full) < 512_000:
+                                    try:
+                                        with open(_ef_full) as _ef_fh:
+                                            _pt_extra_files[_ef_name] = _ef_fh.read()
+                                    except Exception:
+                                        pass
+                        except Exception:
+                            pass
                 # Motor autonomo: si no hay Dockerfile, Qwen diseña el lab desde el codigo fuente
                 _scf_pt = False
                 if not _pt_dockerfile and llm is not None:
-                    _scf = _scaffold_llm_lab_for_class(
-                        llm, str(fr.local_path), notes, inv.cve_id, "path-traversal", step, es,
-                            patch_diff=inv.llm_notes.get("patch_diff_analysis"))
+                    # Para targets Python (Gradio, Flask, etc.): usar _scaffold_pip_lab que ya
+                    # genera el Dockerfile correcto con el puerto y server_name adecuados.
+                    _pip_pkg, _pip_ver = _detect_pip_package_from_source(str(fr.local_path))
+                    _scf = None
+                    if _pip_pkg:
+                        import pathlib as _pathlib
+                        _pip_lab_dir = _scaffold_pip_lab(_pip_pkg, _pip_ver, "path-traversal", notes, step)
+                        if _pip_lab_dir:
+                            _pp = _pathlib.Path(_pip_lab_dir)
+                            _pip_df  = (_pp / "Dockerfile").read_text() if (_pp / "Dockerfile").exists() else ""
+                            _pip_app = (_pp / "app.py").read_text() if (_pp / "app.py").exists() else ""
+                            if _pip_df:
+                                _scf = {
+                                    "dockerfile_body": _pip_df,
+                                    "extra_files":     {"app.py": _pip_app} if _pip_app else {},
+                                    "endpoint":        notes.get("endpoint") or "",
+                                    "url_suffix":      "",
+                                    "query_suffix":    "",
+                                    "path_param":      "",
+                                    "parameters":      notes.get("parameters") or {},
+                                }
+                    if _scf is None:
+                        _scf = _scaffold_llm_lab_for_class(
+                            llm, str(fr.local_path), notes, inv.cve_id, "path-traversal", step, es,
+                                patch_diff=inv.llm_notes.get("patch_diff_analysis"))
                     if _scf:
                         _pt_dockerfile   = _scf["dockerfile_body"]
                         _pt_extra_files  = _scf["extra_files"]
