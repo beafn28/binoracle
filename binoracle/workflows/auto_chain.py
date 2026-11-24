@@ -1727,29 +1727,30 @@ def auto_queue_nvd(days_back: int = 2, min_cvss: float = 7.0,
                                         -e.cvss_score))
     # default "cvss" — poll_nvd_new already returns sorted by CVSS desc
 
-    step(f"auto_queue_nvd: {len(entries)} CVEs nuevos — procesando hasta {max_cves}")
-    results = []
-    for entry in entries[:max_cves]:
+    # parallel controls concurrent investigation (default 1 = serial for safety
+    # since each investigation spins up Docker containers)
+    _parallel = max(1, min(int(os.environ.get("BINORACLE_PARALLEL", "1")), 4))
+    step(f"auto_queue_nvd: {len(entries)} CVEs nuevos — procesando hasta {max_cves} "
+         f"(concurrencia={_parallel})")
+    results: list = []
+
+    def _run_one(entry) -> "ChainResult":
         step(f"\n{'='*60}")
         step(f"auto_queue_nvd: investigando {entry.cve_id} (CVSS {entry.cvss_score})")
         step(f"  {entry.description[:120]}…")
         stack = detect_stack(entry.description)
         prior = get_lessons(stack)
         if prior:
-            step(f"  lecciones previas ({stack}): tasa_verificación={prior.get('verified_rate', 0):.0%}, "
+            step(f"  lecciones previas ({stack}): tasa_verificación="
+                 f"{prior.get('verified_rate', 0):.0%}, "
                  f"endpoints={prior.get('top_endpoints', [])[:2]}")
         try:
             r = run_full_chain(entry.cve_id, lang=lang, budget_s=budget_s,
                                on_step=step, save_report=True)
-            results.append(r)
             status = "✓ VERIFICADO" if r.verified else "? LLM-razonado"
             step(f"  {entry.cve_id}: {status}")
-            # Record lesson
             inv = getattr(r, "inv", None)
-            endpoint = ""
-            bypass_hdr = ""
-            bypass_val = ""
-            vuln_cls = ""
+            endpoint = bypass_hdr = bypass_val = vuln_cls = ""
             if inv:
                 notes = getattr(inv, "llm_notes", {}) or {}
                 endpoint = notes.get("endpoint") or ""
@@ -1763,9 +1764,26 @@ def auto_queue_nvd(days_back: int = 2, min_cvss: float = 7.0,
             elif r.error and is_transient_error(r.error):
                 step(f"  {entry.cve_id}: error transitorio — añadiendo a retry queue")
                 add_to_retry(entry.cve_id, r.error, stack)
+            return r
         except Exception as exc:
             step(f"  {entry.cve_id}: error — {exc}")
             add_to_retry(entry.cve_id, str(exc), "")
+            _err = ChainResult(cve_id=entry.cve_id)
+            _err.error = str(exc)
+            return _err
+
+    if _parallel > 1:
+        import concurrent.futures as _cf
+        with _cf.ThreadPoolExecutor(max_workers=_parallel) as pool:
+            futures = [pool.submit(_run_one, e) for e in entries[:max_cves]]
+            for fut in _cf.as_completed(futures):
+                try:
+                    results.append(fut.result())
+                except Exception as exc:
+                    step(f"auto_queue_nvd: error en hilo — {exc}")
+    else:
+        for entry in entries[:max_cves]:
+            results.append(_run_one(entry))
     return results
 
 
