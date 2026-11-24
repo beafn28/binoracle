@@ -1744,6 +1744,10 @@ def _render_chain_log(result: ChainResult, lang: str = "es",
     if _cwe_id:
         out.append(f"- **CWE**: [{_cwe_id}](https://cwe.mitre.org/data/definitions/"
                    f"{_cwe_id.replace('CWE-','')}.html)")
+    # OSV packages: show affected package name + fixed version when available
+    _osv_pkgs = result.evidence.get("osv_packages", [])
+    if _osv_pkgs:
+        out.append(f"- **Paquetes OSV**: {'; '.join(_osv_pkgs[:2])}")
     out.append(f"- **Risk**: {result.risk_label}")
     out.append(f"- **Verificado**: {'SÍ ✓' if result.verified else 'NO ✗'}")
     _conf_pct = int(result.engine_confidence * 100)
