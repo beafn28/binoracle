@@ -397,6 +397,8 @@ class _Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
+        elif path == "/api/repair-stats":
+            self._repair_stats()
         elif path == "/api/delete-failed":
             self._delete_failed_history()
         elif path.startswith("/api/delete-history/"):
@@ -659,6 +661,33 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(200, {"items": payload, "total": len(payload)})
         except Exception as exc:
             self._send_json(500, {"error": str(exc)})
+
+    def _repair_stats(self):
+        """Return autonomous repair memory statistics as JSON."""
+        try:
+            from .workflows.repair_memory import RepairMemory
+            mem = RepairMemory()
+            stats = mem.stats()
+            # Recent repairs: last 20 cases sorted by most recent
+            try:
+                import sqlite3
+                db_path = mem._db_path
+                with sqlite3.connect(db_path) as conn:
+                    rows = conn.execute(
+                        "SELECT error_id, category, fix_applied, outcome, times_tried, "
+                        "times_succeeded, last_seen FROM repair_cases "
+                        "ORDER BY last_seen DESC LIMIT 20"
+                    ).fetchall()
+                recent = [
+                    {"error_id": r[0], "category": r[1], "fix": (r[2] or "")[:80],
+                     "outcome": r[3], "tried": r[4], "succeeded": r[5], "when": r[6]}
+                    for r in rows
+                ]
+            except Exception:
+                recent = []
+            self._send_json(200, {**stats, "recent": recent})
+        except Exception as e:
+            self._send_json(500, {"error": str(e)})
 
     def _delete_failed_history(self):
         deleted = []
@@ -1513,6 +1542,56 @@ main {
   background: rgba(0,212,255,.15); color: var(--cyan); border-radius: 10px;
   padding: 1px 7px; font-size: 10px; font-weight: 700;
 }
+/* ── repair stats panel ── */
+#repairs-btn {
+  background: none; border: 1px solid var(--border); border-radius: 6px;
+  color: var(--dim); font-family: var(--sans); font-size: 12px; font-weight: 500;
+  padding: 6px 12px; cursor: pointer; display: flex; align-items: center; gap: 6px;
+  transition: color .15s, border-color .15s; white-space: nowrap;
+}
+#repairs-btn:hover { color: #a78bfa; border-color: #a78bfa; }
+#repairs-btn .rep-count {
+  background: rgba(167,139,250,.18); color: #a78bfa; border-radius: 10px;
+  padding: 1px 7px; font-size: 10px; font-weight: 700;
+}
+.rep-panel {
+  position: fixed; top: 0; right: 0; bottom: 0; width: 340px;
+  background: var(--bg2); border-left: 1px solid var(--border);
+  display: flex; flex-direction: column; z-index: 101;
+  transform: translateX(100%); transition: transform .22s ease;
+  box-shadow: -4px 0 20px rgba(0,0,0,.4); overflow-y: auto;
+}
+.rep-panel.open { transform: translateX(0); }
+.rep-panel-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 16px; border-bottom: 1px solid var(--border);
+  font-size: 13px; font-weight: 600; letter-spacing: .05em; color: #a78bfa;
+  position: sticky; top: 0; background: var(--bg2); z-index: 1;
+}
+.rep-panel-head button { background: none; border: none; color: var(--dim); cursor: pointer; font-size: 18px; line-height: 1; padding: 2px 6px; }
+.rep-panel-head button:hover { color: var(--text); }
+.rep-stat-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 14px 16px 0;
+}
+.rep-stat-tile {
+  background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+  padding: 10px 12px; display: flex; flex-direction: column; gap: 2px;
+}
+.rep-stat-tile .rst-val { font-size: 22px; font-weight: 700; color: var(--text); line-height: 1; }
+.rep-stat-tile .rst-lbl { font-size: 10px; color: var(--dim); font-weight: 500; }
+.rep-row {
+  margin: 0 16px; padding: 10px 0; border-bottom: 1px solid var(--border);
+  font-size: 11px;
+}
+.rep-row-cat { font-weight: 600; color: #a78bfa; font-size: 10px; text-transform: uppercase; }
+.rep-row-fix { color: var(--dim); margin-top: 2px; word-break: break-all; }
+.rep-row-meta { color: var(--dim); font-size: 10px; margin-top: 3px; }
+.rep-row-ok  { color: var(--green); font-weight: 600; }
+.rep-row-fail{ color: var(--yellow); font-weight: 600; }
+.rep-section-hd {
+  padding: 12px 16px 4px; font-size: 10px; font-weight: 700;
+  letter-spacing: .07em; color: var(--dim); text-transform: uppercase;
+}
 .hist-panel {
   position: fixed; top: 0; right: 0; bottom: 0; width: 320px;
   background: var(--bg2); border-left: 1px solid var(--border);
@@ -1937,11 +2016,33 @@ main {
     <div style="margin-left:auto;display:flex;align-items:center;gap:10px">
       <span id="status-badge"></span>
       <a class="wiki-link" href="https://beafn28.github.io/binoracle/" target="_blank" rel="noopener">Docs</a>
+      <button id="repairs-btn" title="Autonomous repair stats" onclick="openRepairs()">
+        Repairs <span class="rep-count" id="rep-count">0</span>
+      </button>
       <button id="history-btn" title="Session history">
         History <span class="hist-count" id="hist-count">0</span>
       </button>
     </div>
   </header>
+
+  <!-- Repair stats panel -->
+  <div class="rep-panel" id="rep-panel">
+    <div class="rep-panel-head">
+      <span>Auto Repair Stats</span>
+      <button onclick="closeRepairs()" title="Close">×</button>
+    </div>
+    <div class="rep-stat-grid" id="rep-stat-grid">
+      <div class="rep-stat-tile"><div class="rst-val" id="rs-total">—</div><div class="rst-lbl">Total repairs</div></div>
+      <div class="rep-stat-tile"><div class="rst-val" id="rs-succ">—</div><div class="rst-lbl">Succeeded</div></div>
+      <div class="rep-stat-tile"><div class="rst-val" id="rs-rate">—</div><div class="rst-lbl">Success rate</div></div>
+      <div class="rep-stat-tile"><div class="rst-val" id="rs-cats">—</div><div class="rst-lbl">Error classes</div></div>
+    </div>
+    <div class="rep-section-hd">By category</div>
+    <div id="rep-by-cat"></div>
+    <div class="rep-section-hd">Recent repairs</div>
+    <div id="rep-recent"></div>
+    <div style="height:20px"></div>
+  </div>
 
   <!-- History panel -->
   <div class="hist-overlay" id="hist-overlay"></div>
@@ -3169,9 +3270,65 @@ main {
   $('hist-close').addEventListener('click', closeHistPanel);
   $('hist-overlay').addEventListener('click', closeHistPanel);
 
+  // ── Repair stats panel ────────────────────────────────────────────────────
+  async function openRepairs() {
+    $('rep-panel').classList.add('open');
+    try {
+      const r = await fetch('/api/repair-stats');
+      if (!r.ok) { console.warn('repair-stats', r.status); return; }
+      const d = await r.json();
+      // summary tiles
+      const total = (d.total_cases || 0);
+      const succ  = (d.total_succeeded || 0);
+      const rate  = total > 0 ? Math.round(succ / total * 100) + '%' : '—';
+      const cats  = Object.keys(d.by_category || {}).length;
+      $('rs-total').textContent = total;
+      $('rs-succ').textContent  = succ;
+      $('rs-rate').textContent  = rate;
+      $('rs-cats').textContent  = cats;
+      $('rep-count').textContent = total;
+      // by category
+      const catEl = $('rep-by-cat');
+      const byCat = d.by_category || {};
+      catEl.innerHTML = Object.keys(byCat).length === 0
+        ? '<div style="padding:10px 16px;color:var(--dim);font-size:11px">No data yet</div>'
+        : Object.entries(byCat).map(([cat, info]) => {
+            const t = info.tried || 0, s = info.succeeded || 0;
+            const pct = t > 0 ? Math.round(s/t*100) : 0;
+            return `<div class="rep-row">
+              <div class="rep-row-cat">${escHtml(cat)}</div>
+              <div class="rep-row-meta">${s}/${t} succeeded &nbsp;
+                <span style="color:${pct>=70?'var(--green)':pct>=40?'var(--yellow)':'rgba(255,100,100,.8)'}">${pct}%</span>
+              </div></div>`;
+          }).join('');
+      // recent repairs
+      const recEl = $('rep-recent');
+      const recent = d.recent || [];
+      recEl.innerHTML = recent.length === 0
+        ? '<div style="padding:10px 16px;color:var(--dim);font-size:11px">No repairs yet</div>'
+        : recent.map(rep => {
+            const ok = rep.outcome === 'success';
+            const when = rep.when ? new Date(rep.when * 1000).toLocaleString() : '';
+            return `<div class="rep-row">
+              <div style="display:flex;justify-content:space-between;align-items:baseline">
+                <span class="rep-row-cat">${escHtml(rep.category || '?')}</span>
+                <span class="${ok ? 'rep-row-ok' : 'rep-row-fail'}">${ok ? '✓' : '✗'}</span>
+              </div>
+              ${rep.fix ? `<div class="rep-row-fix">${escHtml(rep.fix)}</div>` : ''}
+              <div class="rep-row-meta">${escHtml(when)}</div>
+            </div>`;
+          }).join('');
+    } catch(e) { console.error('repair-stats', e); }
+  }
+  function closeRepairs() {
+    $('rep-panel').classList.remove('open');
+  }
 
   // Load count on page load
   loadHistory();
+  fetch('/api/repair-stats').then(r=>r.json()).then(d=>{
+    $('rep-count').textContent = d.total_cases || 0;
+  }).catch(()=>{});
 
   // ── utils ─────────────────────────────────────────────────────────────────
   function escHtml(s) {
