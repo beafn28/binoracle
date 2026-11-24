@@ -426,19 +426,31 @@ def learn_from_chain_result(result: object) -> None:
             pkg_version=_pkg_ver,
         )
 
-    # For verified runs: also record the response_body_analysis impact class
-    # so the LLM can know what kind of data was exposed
-    if result.verified and ev.get("response_body_analysis"):
-        _rba = ev["response_body_analysis"]
-        _impact = _rba.get("impact_class", "")
+    # For verified runs: record impact_class from multiple evidence sources.
+    # Priority: impact_escalation (most concrete) > response_body_analysis > direct impact_class key
+    if result.verified:
+        _impact = ""
+        _confidence_bonus = 0.0
+        # 1. impact_escalation (Stage 5c) — most specific: credential_exposure, admin_access, etc.
+        _esc = ev.get("impact_escalation", {})
+        if isinstance(_esc, dict):
+            _impact = _esc.get("impact_class", "")
+        # 2. response_body_analysis — from semantic response analysis
+        if not _impact and ev.get("response_body_analysis"):
+            _rba = ev["response_body_analysis"]
+            _impact = _rba.get("impact_class", "")
+            _confidence_bonus = _rba.get("confidence_bonus", 0.0)
+        # 3. Direct impact_class key in evidence
+        if not _impact:
+            _impact = ev.get("impact_class", "")
         if _impact:
             data = _load()
             _entry = data.get(_stack, {})
             if _entry and _entry.get("runs"):
-                # Find the run we just recorded and add impact_class
                 for _run in reversed(_entry["runs"]):
                     if _run.get("cve_id") == result.cve_id:
                         _run["impact_class"] = _impact
-                        _run["confidence_bonus"] = _rba.get("confidence_bonus", 0.0)
+                        if _confidence_bonus:
+                            _run["confidence_bonus"] = _confidence_bonus
                         break
                 _save(data)
