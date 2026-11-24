@@ -1522,15 +1522,49 @@ def cmd_cve(args, config):
     else:
         on_step = _make_cve_step_printer()
 
-    inv = investigate_cve(
-        cve_id,
-        config=config,
-        on_step=on_step,
-        lang=config.lang,
-        budget_s=float(getattr(args, "budget", 600) or 600),
-        hints=hints or None,
-        use_cache=not getattr(args, "no_cache", False),
-    )
+    _lang = getattr(args, "lang", None) or config.lang
+    _budget = float(getattr(args, "budget", 600) or 600)
+    _no_cache = getattr(args, "no_cache", False)
+
+    if getattr(args, "chain", False):
+        from .workflows.auto_chain import run_full_chain
+        chain_result = run_full_chain(
+            cve_id,
+            lang=_lang,
+            budget_s=_budget,
+            on_step=on_step,
+            config=config,
+            no_cache=_no_cache,
+        )
+        # Adapt ChainResult → Investigation-like object for the shared render path below
+        inv_chain = type("_InvProxy", (), {
+            "verified": chain_result.verified,
+            "verified_detail": chain_result.evidence.get("verify_detail", ""),
+            "verified_evidence": chain_result.evidence,
+            "attempt_evidence": {},
+            "poc_kind": "chain",
+            "developed_script": "",
+            "vuln_class": chain_result.cve_class,
+            "llm_notes": {},
+            "dynamic_verify": (getattr(chain_result.inv, "dynamic_verify", {}) or {})
+                              if chain_result.inv else {},
+        })()
+        # Print chain report directly (already formatted by run_full_chain)
+        if chain_result.report_md:
+            print("\n" + chain_result.report_md[:8000])
+        if chain_result.report_path:
+            colorlog.ok(f"informe guardado → {chain_result.report_path}")
+        inv = inv_chain
+    else:
+        inv = investigate_cve(
+            cve_id,
+            config=config,
+            on_step=on_step,
+            lang=_lang,
+            budget_s=_budget,
+            hints=hints or None,
+            use_cache=not _no_cache,
+        )
 
     elapsed_total = _time.time() - t_start
 
@@ -1804,6 +1838,37 @@ def cmd_scan(args, config):
             _json.dump(dataclasses.asdict(result), f, indent=2, default=_enc)
         print(f"\nJSON → {json_out}")
 
+    # Dynamic verification pass: re-runs investigate_cve for each CVE with source set
+    if getattr(args, "verify", False):
+        from .workflows.cve_agent import investigate_cve, render_investigation
+        _verify_cves = list(cve_ids or [])
+        # Also pick up CVEs discovered by the OSV scan (if engine added them)
+        for _dep in getattr(result, "dependency_vulns", []) or []:
+            _cid = _dep.get("cve") or _dep.get("id") or ""
+            if _cid and _cid not in _verify_cves:
+                _verify_cves.append(_cid)
+        if not _verify_cves:
+            print("\n[verify] no CVE IDs to verify (pass --cve CVE-XXXX-YYYY)")
+        else:
+            _vlang  = getattr(args, "lang", None) or config.lang
+            _vbdgt  = float(getattr(args, "budget", 300) or 300)
+            print(f"\n[verify] running dynamic verification for {len(_verify_cves)} CVE(s) "
+                  f"(budget={_vbdgt:.0f}s each)…")
+            for _vcve in _verify_cves:
+                print(f"\n  ── {_vcve} ──────────────────────────────────")
+                _vinv = investigate_cve(
+                    _vcve,
+                    config=config,
+                    on_step=lambda m: print(f"    {m}"),
+                    lang=_vlang,
+                    budget_s=_vbdgt,
+                    hints={"source_url": source_dir},
+                    use_cache=False,
+                )
+                _vstatus = "VERIFIED" if _vinv.verified else "not confirmed"
+                print(f"  {_vcve}: {_vstatus}")
+                print("  " + render_investigation(_vinv, _vlang, embed_images=False)[:1200])
+
 
 def cmd_investigate(args, config):
     """Agente de investigacion guiado por LLM: de la CVE al exploit, investigando y probando. El LLM
@@ -1885,9 +1950,30 @@ def cmd_investigate(args, config):
         except BurpMCPError as e:
             colorlog.warn(f"no se pudo conectar a Burp ({e}) -- se sigue sin Burp, peticiones "
                          f"directas", file=sys.stderr)
-    inv = investigate_cve(args.cve, binary=getattr(args, "binary", "") or "",
-                          config=config, on_step=lambda m: colorlog.line(m), lang=config.lang,
-                          budget_s=float(getattr(args, "budget", 300) or 300), hints=hints or None,
+    _inv_lang   = getattr(args, "lang", None) or config.lang
+    _inv_budget = float(getattr(args, "budget", 300) or 300)
+    _inv_cve    = args.cve.upper() if hasattr(args, "cve") else args.cve
+    if getattr(args, "chain", False):
+        from .workflows.auto_chain import run_full_chain
+        _cr = run_full_chain(
+            _inv_cve,
+            binary=getattr(args, "binary", "") or "",
+            lang=_inv_lang,
+            budget_s=_inv_budget,
+            on_step=lambda m: colorlog.line(m),
+            config=config,
+            no_cache=getattr(args, "no_cache", False),
+        )
+        colorlog.ok(f"cadena completa terminada — verified={_cr.verified} "
+                    f"confidence={_cr.engine_confidence:.0%}")
+        if _cr.report_path:
+            colorlog.ok(f"informe → {_cr.report_path}")
+        if _cr.report_md:
+            print(_cr.report_md[:8000])
+        return
+    inv = investigate_cve(_inv_cve, binary=getattr(args, "binary", "") or "",
+                          config=config, on_step=lambda m: colorlog.line(m), lang=_inv_lang,
+                          budget_s=_inv_budget, hints=hints or None,
                           use_cache=not getattr(args, "no_cache", False))
     # el terminal no puede pintar imagenes: embed_images=False cambia cada captura por un aviso
     # corto en vez de volcar decenas de KB de base64 como texto ilegible. El export HTML (abajo)
@@ -2734,6 +2820,13 @@ def build_parser() -> argparse.ArgumentParser:
                          "'http://localhost:1337'. El motor hace las peticiones directamente "
                          "contra esa URL sin construir ni arrancar ningun contenedor.")
     cv.add_argument("--no-cache", action="store_true", help="force fresh investigation (no cache)")
+    cv.add_argument("--chain", action="store_true",
+                    help="use the full autonomous 8-stage chain (run_full_chain) instead of "
+                         "the single-stage investigate_cve — slower but runs intelligence, "
+                         "hypothesis, classify, verify, enrich, patchdiff and report stages "
+                         "in sequence; also saves the result to ~/.binoracle/history/")
+    cv.add_argument("--lang", default=None, choices=["es", "en"],
+                    help="report language (default: from config, usually 'es')")
     cv.add_argument("-o", "--html", help="export full HTML report (with screenshots) to this path")
     cv.add_argument("--json", dest="json_out", help="dump full evidence JSON to this path")
     cv.add_argument("-q", "--quiet", action="store_true",
@@ -2908,6 +3001,12 @@ def build_parser() -> argparse.ArgumentParser:
                          "yourself inside the container. The report gives the lab's base URL "
                          "and admin credentials; you are responsible for tearing it down "
                          "afterwards (docker network/volume/container matching the printed tag)")
+    ip.add_argument("--lang", default=None, choices=["es", "en"],
+                    help="report language override (default: from config)")
+    ip.add_argument("--chain", action="store_true",
+                    help="use the full autonomous 8-stage chain (run_full_chain) for deeper "
+                         "analysis: intelligence, hypothesis, classify, verify, enrich, "
+                         "patchdiff, report and auto YWH writeup")
     ip.set_defaults(func=cmd_investigate)
 
     ipb = sub.add_parser("investigate-batch", help="run several 'investigate's IN PARALLEL "
@@ -3019,6 +3118,14 @@ def build_parser() -> argparse.ArgumentParser:
     sc2.add_argument("--max-files", type=int, default=500,
                      help="max files to scan for static findings (default 500)")
     sc2.add_argument("--json", dest="json_out", help="dump full result as JSON to this path")
+    sc2.add_argument("--verify", action="store_true",
+                     help="after static scan, automatically run investigate_cve on each CVE found "
+                          "in --cve or discovered via OSV, using the scanned source as --source; "
+                          "requires Docker for dynamic lab verification")
+    sc2.add_argument("--budget", type=float, default=300,
+                     help="verification budget per CVE when --verify is used (default 300s)")
+    sc2.add_argument("--lang", default=None, choices=["es", "en"],
+                     help="report language when --verify is used (default: from config)")
     sc2.set_defaults(func=cmd_scan)
 
     return p
