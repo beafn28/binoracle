@@ -4910,6 +4910,104 @@ def _prescan_source_for_llm_context(source_dir: str, vuln_class: str,
     return result
 
 
+def _reason_poc_from_description(inv: "Investigation", llm: Any, step: Any, es: bool) -> None:
+    """Genera un PoC razonado SOLO desde la descripcion NVD cuando no hay PoC publico
+    NI codigo fuente disponible.
+
+    Esto cierra el gap: CVE HUECO sin fuente → el LLM razona en 5 pasos y produce
+    una hipotesis de ataque concreta (endpoint, parametros, payload, bypass, auth).
+    Los resultados se escriben en inv.llm_notes bajo la clave 'hueco_reasoning' y
+    'hueco_payload_hint', y se marcan como 'description_only' para que el motor de
+    verificacion sepa que es una hipotesis derivada sin fuente, no grounded.
+
+    Se activa SOLO cuando:
+      - inv.is_gap = True
+      - fuente NO disponible (fr.ok=False o fr.local_path vacío)
+      - LLM disponible
+      - descripcion NVD no vacía
+    """
+    if not getattr(inv, "is_gap", False):
+        return
+    if llm is None or not getattr(llm, "available", lambda: False)():
+        return
+    desc = (inv.description or "").strip()
+    if not desc:
+        return
+
+    from ..llm.base import Message
+
+    vc = inv.vuln_class or inv.llm_notes.get("vuln_class", "unknown")
+    advisory = inv.llm_notes.get("advisory_notes", "")
+
+    sys_prompt = (
+        "Eres un investigador de explotacion para objetivos AUTORIZADOS. "
+        "No hay exploit publico ni codigo fuente disponible. "
+        "Tu tarea: derivar un PoC hipotetico RAZONADO desde la descripcion oficial de la CVE.\n"
+        "Razona paso a paso:\n"
+        "  1. SINK: ¿donde termina la entrada del atacante? ¿que funcion/codigo peligroso la procesa?\n"
+        "  2. RUTA DE ENTRADA: ¿que parametro/cabecera/cookie lleva el valor del atacante?\n"
+        "  3. SANITIZACION: ¿que filtros/escapes mencionan la descripcion o el advisory? "
+        "¿son bypass posibles?\n"
+        "  4. AUTENTICACION: ¿requiere rol? ¿o es unauthenticated?\n"
+        "  5. PAYLOAD MINIMO: construye el payload mas sencillo que alcanzaria el sink.\n"
+        "Responde SOLO con JSON valido. Nunca inventes datos no derivables de la descripcion: "
+        "si no se puede inferir un campo, dejalo vacio."
+    )
+    user_prompt = (
+        f"CVE: {inv.cve_id}\n"
+        f"Clase: {vc}\n"
+        f"CVSS: {inv.cvss_score} ({inv.cvss_severity})\n\n"
+        f"Descripcion oficial NVD:\n{desc[:1200]}\n\n"
+        + (f"Advisory adicional:\n{advisory[:600]}\n\n" if advisory else "")
+        + "Devuelve JSON con claves:\n"
+        "  sink_description (que hace el codigo peligroso — 1 frase),\n"
+        "  input_path (parametro/cabecera que lleva el payload),\n"
+        "  sanitization_bypass (como eludir el filtro si lo hay, o 'ninguno visible'),\n"
+        "  auth_required (none/low/medium/high),\n"
+        "  payload_hint (payload minimo de prueba — especifico, no generico),\n"
+        "  endpoint (ruta HTTP si se puede inferir, o vacia),\n"
+        "  http_method (GET/POST si inferible),\n"
+        "  confidence (0.0-1.0 — baja si es pura hipotesis),\n"
+        "  reasoning_steps (lista de 5 strings — los 5 pasos de derivacion anteriores),\n"
+        "  limitations (lista de lo que NO se puede confirmar sin el codigo/lab)"
+    )
+    try:
+        import json as _j, re as _re
+        raw = llm.chat(
+            [Message("system", sys_prompt), Message("user", user_prompt)],
+            temperature=0.1,
+            max_tokens=1200,
+        )
+        raw_str = raw.content if hasattr(raw, "content") else str(raw)
+        m = _re.search(r"\{[\s\S]*\}", raw_str)
+        if m:
+            parsed = _j.loads(m.group(0))
+            # Merge into llm_notes under protected HUECO keys
+            inv.llm_notes["hueco_reasoning"] = parsed.get("reasoning_steps", [])
+            inv.llm_notes["hueco_payload_hint"] = parsed.get("payload_hint", "")
+            inv.llm_notes["hueco_confidence"] = parsed.get("confidence", 0.0)
+            inv.llm_notes["hueco_limitations"] = parsed.get("limitations", [])
+            inv.llm_notes["hueco_source"] = "description_only"
+            # Also seed endpoint/parameters if LLM produced them and we don't have them yet
+            if parsed.get("endpoint") and not inv.llm_notes.get("endpoint"):
+                inv.llm_notes["endpoint"] = parsed["endpoint"]
+            if parsed.get("http_method") and not inv.llm_notes.get("http_method"):
+                inv.llm_notes["http_method"] = parsed["http_method"]
+            if parsed.get("input_path") and not inv.llm_notes.get("parameters"):
+                param = parsed["input_path"].strip()
+                if param and param not in ("?", "unknown", ""):
+                    inv.llm_notes["parameters"] = [param]
+            conf = parsed.get("confidence", 0.0)
+            payload = parsed.get("payload_hint", "")
+            step((f"[hueco:desc-only] PoC hipotetico derivado (confidence={conf:.2f}): "
+                  f"{payload[:80]}..." if es else
+                  f"[hueco:desc-only] hypothesis PoC derived (confidence={conf:.2f}): "
+                  f"{payload[:80]}..."))
+    except Exception as e:
+        step(f"[hueco:desc-only] fallo derivando PoC desde descripcion: {e}" if es else
+             f"[hueco:desc-only] failed to derive PoC from description: {e}")
+
+
 def _hueco_code_analysis(inv: "Investigation", fr: Any, llm: Any, step: Any, es: bool) -> None:
     """Para CVEs HUECO (sin PoC publico): analiza el codigo fuente real del plugin
     para fundamentar la hipotesis en evidencia concreta ANTES de intentar la verificacion.
@@ -8986,6 +9084,13 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 fn_names = notes.get("vulnerable_functions") or []
                 if isinstance(fn_names, str):
                     fn_names = [fn_names]
+            elif inv.is_gap and llm and not (fr.ok and fr.local_path):
+                # No source code available — reason from description alone
+                step(("sin codigo fuente: derivando PoC hipotetico desde la descripcion NVD..."
+                      if es else
+                      "no source code: deriving hypothesis PoC from NVD description alone..."))
+                _reason_poc_from_description(inv, llm, step, es)
+                notes = inv.llm_notes   # re-bind after potential update
             if fn_names:
                 step("confirmando en el codigo real las funciones citadas por el LLM..." if es else
                      "confirming the LLM-cited functions in the real source...")
@@ -13918,6 +14023,32 @@ def render_investigation(inv: Investigation, lang: str = "es", embed_images: boo
         sev, txt = (sev_es, txt_es) if es else (sev_en, txt_en)
         out.append("\n### " + ("Impacto" if es else "Impact"))
         out.append(f"\n> **[{sev}]** {txt}")
+    # HUECO description-only: show derived PoC hypothesis when no source/PoC available
+    _hueco_src = inv.llm_notes.get("hueco_source") if inv.llm_notes else None
+    if _hueco_src == "description_only" and inv.llm_notes:
+        _h_payload = inv.llm_notes.get("hueco_payload_hint", "")
+        _h_conf = inv.llm_notes.get("hueco_confidence", 0.0)
+        _h_steps = inv.llm_notes.get("hueco_reasoning", [])
+        _h_limits = inv.llm_notes.get("hueco_limitations", [])
+        out.append("\n### " + ("PoC razonado (sin fuente — hipotesis)" if es else
+                               "Reasoned PoC (no source — hypothesis)"))
+        out.append("> " + ("SIN PoC PUBLICO NI CODIGO FUENTE. El LLM derivo este PoC razonando "
+                           "SOLO desde la descripcion NVD. Confianza: " if es else
+                           "NO PUBLIC PoC OR SOURCE CODE. The LLM derived this PoC by reasoning "
+                           "from the NVD description ONLY. Confidence: ") + f"**{_h_conf:.0%}**")
+        if _h_payload:
+            out.append("\n**" + ("Payload hipotetico:" if es else "Hypothesis payload:") +
+                       f"** `{_h_payload}`")
+        if _h_steps:
+            out.append("\n**" + ("Derivacion paso a paso:" if es else "Step-by-step derivation:") + "**")
+            for i, s in enumerate(_h_steps, 1):
+                out.append(f"  {i}. {s}")
+        if _h_limits:
+            out.append("\n**" + ("Limitaciones (sin confirmar sin lab):" if es else
+                                 "Limitations (unconfirmed without lab):") + "**")
+            for lim in _h_limits:
+                out.append(f"  - {lim}")
+
     if inv.llm_notes:
         out.append("\n### " + ("Investigacion del LLM (hipotesis)" if es else "LLM research (hypothesis)"))
         for k in ("primitive", "target_binary", "trigger", "strategy", "source_url",
