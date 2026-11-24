@@ -249,6 +249,77 @@ def _classify(cve_info, llm_notes: dict) -> str:
     return best if scores[best] > 0 else "unknown"
 
 
+def _auto_learn_web_signal(cve_info, llm_notes: dict, llm, step) -> bool:
+    """When CVE is classified as binary/native but description suggests a web app,
+    ask the LLM to extract the key technology term, add it to _WEB_SIGNALS in memory
+    AND patch auto_chain.py on disk so future runs benefit immediately.
+
+    Returns True if a new signal was added and reclassification should happen.
+    """
+    if llm is None or not getattr(llm, "available", lambda: False)():
+        return False
+    desc = ((getattr(cve_info, "description", "") or "") + " " + str(llm_notes)).lower()
+    # Quick heuristic: if any generic web indicator is present in the raw description
+    # but _WEB_SIGNALS didn't score it, the specific product name is likely missing.
+    _QUICK_WEB_HINTS = ["http", "web", "api", "rest", "endpoint", "request", "server",
+                        "authentication", "authorization", "login", "admin", "dashboard"]
+    if not any(h in desc for h in _QUICK_WEB_HINTS):
+        return False  # genuinely not a web CVE
+
+    from ..llm.base import Message
+    prompt = (
+        "CVE description: " + (getattr(cve_info, "description", "") or "") + "\n\n"
+        "This CVE was misclassified as 'binary/native' by a keyword scorer. "
+        "The description suggests it may be a web application vulnerability. "
+        "Extract the SINGLE most specific technology keyword that identifies this as a web app "
+        "(e.g. 'mattermost', 'nextcloud', 'grafana', 'keycloak', 'harbor'). "
+        "Rules: lowercase, 1-3 words max, no version numbers, must appear in the description. "
+        'Reply with ONLY valid JSON: {"signal": "keyword"} or {"signal": ""} if unsure.'
+    )
+    try:
+        raw = llm.chat([Message("user", prompt)], json_mode=True)
+        import json as _json
+        data = _json.loads(raw)
+        signal = (data.get("signal") or "").strip().lower()
+    except Exception:
+        return False
+
+    if not signal or len(signal) > 40 or signal in _WEB_SIGNALS:
+        return False
+
+    # Verify the signal actually appears in the description (guard against hallucination)
+    if signal not in desc:
+        return False
+
+    step(f"  AUTO-LEARN: añadiendo '{signal}' a _WEB_SIGNALS")
+
+    # 1) Update in-memory list immediately (affects this run)
+    _WEB_SIGNALS.append(signal)
+
+    # 2) Patch auto_chain.py on disk (affects all future runs)
+    try:
+        _this_file = os.path.abspath(__file__)
+        with open(_this_file, "r", encoding="utf-8") as fh:
+            src = fh.read()
+        # Find the last signal in _WEB_SIGNALS list and append after it
+        old_tail = '"express", "fastify", "nextjs", "nuxt", "svelte", "astro",\n]'
+        new_tail = f'"express", "fastify", "nextjs", "nuxt", "svelte", "astro",\n    "{signal}",\n]'
+        if old_tail in src:
+            src = src.replace(old_tail, new_tail, 1)
+        else:
+            # Fallback: append before the closing bracket of _WEB_SIGNALS
+            old_last = '"astro",\n]'
+            if old_last in src:
+                src = src.replace(old_last, f'"astro",\n    "{signal}",\n]', 1)
+        with open(_this_file, "w", encoding="utf-8") as fh:
+            fh.write(src)
+        step(f"  AUTO-LEARN: auto_chain.py actualizado en disco con '{signal}'")
+    except Exception as exc:
+        step(f"  AUTO-LEARN: fallo al parchear disco ({exc}) — solo en memoria")
+
+    return True
+
+
 # ── Patch diff stage ──────────────────────────────────────────────────────────
 
 def _find_patch_urls(cve_info) -> List[str]:
@@ -919,6 +990,12 @@ def run_full_chain(
         result.cve_class = "binary"
     else:
         result.cve_class = _classify(cve_info, llm_notes)
+        # Auto-learn: if classified as non-web but description hints at web, ask LLM
+        # to extract the missing technology keyword and patch _WEB_SIGNALS automatically.
+        if result.cve_class in ("binary", "native", "unknown"):
+            if _auto_learn_web_signal(cve_info, llm_notes, llm, step):
+                result.cve_class = _classify(cve_info, llm_notes)
+                step(f"  CVE class (tras auto-learn): {result.cve_class}")
     step(f"  CVE class: {result.cve_class}")
     result.add_step("classify", "ok", result.cve_class)
 
