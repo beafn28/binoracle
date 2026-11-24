@@ -1261,9 +1261,15 @@ def _github_repo_fallback(name: str, version: str = "",
     Only called when WP/Drupal/PyPI/npm paths all failed.
     """
     step = on_step or (lambda _m: None)
-    # Normalize: remove version suffixes like "through-v0-12-34" or "-1-2-3"
+    # Normalize: strip version-range qualifiers ("through-v0-12-34", "before-1-2-3", etc.)
+    # and standalone version numbers so GitHub gets just the product name.
     import re as _re
-    clean = _re.sub(r"[-_]?(through|before|prior|v)?[-_v]?\d[\d.\-]*$", "", name, flags=_re.I)
+    clean = name
+    # 1. Strip whole range suffix: "-through-v0-12-34", "-before-3-0", "-prior-to-1-2"
+    clean = _re.sub(r"[-_]+(through|before|prior[-_]?to?|up[-_]?to|since|from)[-_].*$",
+                    "", clean, flags=_re.I)
+    # 2. Strip trailing version number: "-v0-12-34", "-1-2-3", "-0.12.34"
+    clean = _re.sub(r"[-_]+v?\d[\d.\-]*$", "", clean, flags=_re.I)
     clean = clean.strip("-_ ").lower()
     if not clean or len(clean) < 3:
         return None
