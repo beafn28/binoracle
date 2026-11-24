@@ -107,12 +107,19 @@ def _build_stack_signals() -> tuple:
         ("package.json", "node:20-alpine", 3000,
          ["WORKDIR /app", "COPY . .", "RUN npm install || npm install --legacy-peer-deps || true",
           'CMD ["sh", "-c", "npm start || node index.js || node app.js || node server.js"]']),
-        # Ruby/Rack: se chequea antes que requirements.txt porque "rack" coincide con el patron pip
-        ("Gemfile", "ruby:3.1-slim", 9292,
-         ["WORKDIR /app", "COPY . .",
-          "RUN gem install bundler --no-document && bundle install --retry 5 "
-          "|| gem install rack rackup webrick && bundle install --retry 3 || true",
-          'CMD ["bundle", "exec", "rackup", "--host", "0.0.0.0", "--port", "9292", "config.ru"]']),
+        # Ruby/Rails/Rack: se chequea antes que requirements.txt porque "rack" coincide
+        # con el patron pip. Intenta rails server primero (si es una app Rails), luego rackup.
+        ("Gemfile", "ruby:3.2-slim", 3000,
+         ["RUN apt-get update -qq && apt-get install -y --no-install-recommends "
+          "build-essential libsqlite3-dev nodejs npm && rm -rf /var/lib/apt/lists/*",
+          "WORKDIR /app", "COPY . .",
+          "RUN gem install bundler --no-document && bundle install --retry 3 || true",
+          "RUN bundle exec rails db:create db:migrate 2>/dev/null || true",
+          "ENV RAILS_ENV=development SECRET_KEY_BASE=binoracle_test_secret_32chars",
+          'CMD ["sh", "-c", '
+          '"bundle exec rails server -b 0.0.0.0 -p 3000 || '
+          'bundle exec rackup --host 0.0.0.0 --port 3000 config.ru || '
+          'ruby app.rb"]']),
         ("requirements.txt", py_image, 5000, py_run_lines),
         ("composer.json", "php:8.2-cli", 8000,
          ["WORKDIR /app", "COPY . .",
