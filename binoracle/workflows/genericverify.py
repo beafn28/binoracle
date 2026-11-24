@@ -461,6 +461,64 @@ def _detect_and_write_auto_dockerfile(source_dir: str,
     return None
 
 
+def cleanup_stale_lab_containers(prefix: str = "bo_lab_", max_age_minutes: int = 60,
+                                  dry_run: bool = False) -> List[str]:
+    """Stop and remove binoracle lab containers older than max_age_minutes.
+
+    Called automatically at the start of each lab spin-up to avoid port
+    collisions from interrupted previous runs. Non-fatal: any error is ignored.
+
+    Returns list of container names that were cleaned up.
+    """
+    import json as _json
+    killed: List[str] = []
+    try:
+        out = subprocess.run(
+            ["docker", "ps", "-a", "--format", "{{json .}}"],
+            capture_output=True, text=True, timeout=10)
+        if out.returncode != 0:
+            return []
+        for line in (out.stdout or "").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                info = _json.loads(line)
+            except Exception:
+                continue
+            name = info.get("Names", "")
+            status = (info.get("Status") or "").lower()
+            if not name.startswith(prefix):
+                continue
+            # Parse container age from Status string (e.g. "Up 2 hours", "Exited (0) 3 hours ago")
+            age_minutes = 0
+            import re as _re_age
+            _m = _re_age.search(r'(\d+)\s+(second|minute|hour|day)', status)
+            if _m:
+                n, unit = int(_m.group(1)), _m.group(2)
+                if unit.startswith("second"):
+                    age_minutes = n / 60
+                elif unit.startswith("minute"):
+                    age_minutes = n
+                elif unit.startswith("hour"):
+                    age_minutes = n * 60
+                elif unit.startswith("day"):
+                    age_minutes = n * 1440
+            else:
+                # Unknown age → treat as old
+                age_minutes = max_age_minutes + 1
+            if age_minutes >= max_age_minutes:
+                if not dry_run:
+                    subprocess.run(["docker", "stop", name],
+                                   capture_output=True, timeout=15)
+                    subprocess.run(["docker", "rm", "-f", name],
+                                   capture_output=True, timeout=10)
+                killed.append(name)
+    except Exception:
+        pass
+    return killed
+
+
 def _dockerfile_is_buildable(df_path: str, context_dir: str) -> bool:
     """Return False for 'deployment Dockerfiles' that COPY pre-built binaries not present
     in the source tree (e.g. COPY app-linux-amd64 /bin/app). These are release packaging
@@ -1070,6 +1128,12 @@ def _bootstrap_generic_lab(source_dir: str, step, res: WpVerifyResult,
 
     `extra_files` (opcional): diccionario {nombre_fichero: contenido} que se escribe en el
     directorio de contexto Docker ANTES de construir -- necesario para COPY app.py etc."""
+    # Cleanup stale containers from interrupted runs (non-fatal)
+    _stale = cleanup_stale_lab_containers(prefix="bo_lab_", max_age_minutes=60)
+    if _stale:
+        step(f"  cleanup: {len(_stale)} contenedor(es) huérfano(s) eliminados: "
+             f"{', '.join(_stale[:3])}")
+
     # Lab ya corriendo externamente (--target-url) — saltar Docker por completo
     if prebuilt_url:
         step(f"usando target externo pre-arrancado: {prebuilt_url} (sin Docker)")
@@ -1142,6 +1206,14 @@ def _bootstrap_generic_lab(source_dir: str, step, res: WpVerifyResult,
         _openapi_routes = _discover_routes_from_openapi(base_url, step)
         if _openapi_routes:
             res.evidence["openapi_routes"] = _openapi_routes[:20]
+    except Exception:
+        pass
+
+    # Also probe for GraphQL endpoints — many modern CMSs expose /graphql
+    try:
+        _gql_eps = _discover_graphql_endpoints(base_url, step)
+        if _gql_eps:
+            res.evidence["graphql_endpoints"] = _gql_eps
     except Exception:
         pass
 
@@ -4471,6 +4543,60 @@ def verify_generic_header_bypass_candidates(
     finally:
         step("desmontando el laboratorio generico (bypass candidatos)...")
         lab.teardown()
+
+
+# ── GraphQL helpers ───────────────────────────────────────────────────────────
+
+def _graphql_post(base_url: str, endpoint: str, query: str,
+                  variables: Optional[dict] = None,
+                  auth_header: str = "",
+                  step: Optional[Callable] = None) -> dict:
+    """POST a GraphQL query and return the parsed JSON response body or {}."""
+    import json as _json
+    _step = step or (lambda _m: None)
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    if auth_header:
+        headers["Authorization"] = auth_header
+    payload = {"query": query}
+    if variables:
+        payload["variables"] = variables
+    body = _json.dumps(payload).encode()
+    try:
+        status, _, resp = _http_request(base_url, endpoint, "POST",
+                                        headers=headers, body=body, timeout=15.0)
+        if resp:
+            return _json.loads(resp.decode("utf-8", "replace"))
+    except Exception as exc:
+        _step(f"  graphql_post error: {exc}")
+    return {}
+
+
+def _discover_graphql_endpoints(base_url: str,
+                                step: Optional[Callable] = None) -> List[str]:
+    """Probe common GraphQL endpoint paths and return confirmed ones.
+
+    A path is confirmed when it responds to a minimal introspection query
+    with data containing '__typename' or '__schema', or returns HTTP 200.
+    """
+    _step = step or (lambda _m: None)
+    _CANDIDATES = ["/graphql", "/api/graphql", "/graphql/v1", "/v1/graphql",
+                   "/api/v1/graphql", "/cms/graphql", "/content/graphql"]
+    _INTRO = '{"query":"{ __typename }"}'
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    confirmed: List[str] = []
+    for ep in _CANDIDATES:
+        try:
+            status, _, resp_b = _http_request(base_url, ep, "POST",
+                                              headers=headers,
+                                              body=_INTRO.encode(), timeout=8.0)
+            if status in (200, 400):
+                body = (resp_b or b"").decode("utf-8", "replace")
+                if "__typename" in body or "__schema" in body or status == 200:
+                    _step(f"  graphql: endpoint confirmado {ep} (status={status})")
+                    confirmed.append(ep)
+        except Exception:
+            continue
+    return confirmed
 
 
 # ── GraphQL auth-bypass verifier ──────────────────────────────────────────────

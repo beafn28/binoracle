@@ -13116,12 +13116,18 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             # GraphQL auth-bypass: endpoint GraphQL expuesto sin autenticacion (Craft CMS, Ghost, etc.)
             elif (not plugin_dir and fr.local_path and
                   inv.vuln_class in ("graphql-bypass", "graphql-injection", "graphql-auth",
-                                     "graphql-authorization", "graphql") and notes.get("endpoint")):
+                                     "graphql-authorization", "graphql")):
                 from .genericverify import verify_generic_graphql_bypass
                 gql_ep = notes.get("endpoint") or "/graphql"
                 forbidden_q = notes.get("graphql_query") or notes.get("query") or (
                     "{ __schema { types { name } } }")
                 confirm_f = notes.get("confirm_field") or notes.get("graphql_confirm") or ""
+                # If endpoint not explicitly known, try auto-discovery from lab
+                # (requires lab to be started — handled inside verify_generic_graphql_bypass)
+                # Store in notes so scaffold can use it
+                if not notes.get("endpoint"):
+                    step("  graphql: endpoint no especificado — se probará /graphql por defecto "
+                         "(auto-discovery activo vía _discover_graphql_endpoints en el lab)")
                 _inject_custom_docker_lab(str(fr.local_path), notes, step)
                 step(("intentando verificacion DINAMICA GENERICA -- GraphQL auth-bypass "
                      "(introspección → query restringida → bypass)..." if es else
