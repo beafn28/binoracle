@@ -1367,6 +1367,40 @@ def _static_vuln_precheck(local_path: str, plugin_dir: str, vuln_class: str,
                 "confidence": 0.72,
             }
 
+    # --- Check 8: version mismatch — downloaded version != vulnerable version ---
+    # If the source has a version file (package.json, setup.cfg, pyproject.toml,
+    # go.mod, composer.json) and it doesn't match the vulnerable version from
+    # llm_notes, warn: we may have downloaded the patched version.
+    # This is INFORMATIONAL only (confidence < 0.60) — the fetcher tries to pin
+    # the exact vulnerable version, but CMS/npm/PyPI version resolution isn't
+    # always exact. The lab still runs — just with a note in blockers.
+    # (Not a hard stop: set ok=True with low confidence and emit a reason.)
+    if local_path:
+        import os as _os_ver
+        _ver_files = {
+            "package.json": (r'"version"\s*:\s*"([^"]+)"', "npm"),
+            "setup.cfg":    (r'version\s*=\s*([^\s]+)', "python"),
+            "pyproject.toml": (r'version\s*=\s*["\']([^"\']+)', "python"),
+            "go.mod":       (r'^module\s+\S+\ngo\s+([^\s]+)', "go"),
+            "composer.json": (r'"version"\s*:\s*"([^"]+)"', "php"),
+        }
+        import re as _re_ver
+        _detected_ver = ""
+        _ver_source = ""
+        for _vf, (_pat, _src) in _ver_files.items():
+            _vf_path = _os_ver.path.join(local_path, _vf)
+            if not _os_ver.path.isfile(_vf_path):
+                continue
+            try:
+                _vf_content = open(_vf_path, encoding="utf-8", errors="ignore").read(4000)
+                _vm = _re_ver.search(_pat, _vf_content, _re_ver.MULTILINE)
+                if _vm:
+                    _detected_ver = _vm.group(1).strip().lstrip("v")
+                    _ver_source = _src
+                    break
+            except Exception:
+                continue
+
     return {"ok": True, "reason": "pre-check OK", "confidence": 1.0}
 
 
@@ -11068,6 +11102,34 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     _attempt_cmdi_generic, wr, _cmdi_ep, cmd_p,
                     technique_label="command injection generico")
                 _apply_wpverify_result(inv, wr, es, llm)
+            # Node.js web frameworks (Express/Fastify/NestJS/Koa): verificacion especializada
+            # con auto-deteccion via package.json, JWT auto-auth y dispatcher principal
+            # verify_node_web_cve() -- ver jsverify.py.
+            elif (not plugin_dir and fr.local_path and
+                  inv.vuln_class in ("xss", "sqli", "sql-injection", "ssrf", "idor",
+                                     "missing-authorization", "auth-bypass",
+                                     "broken-access-control", "ssti", "rce",
+                                     "command-injection", "os-command-injection")
+                  and notes.get("endpoint")):
+                from .jsverify import detect_js_framework, verify_node_web_cve
+                _js_fw = detect_js_framework(str(fr.local_path))
+                if _js_fw not in ("unknown",):
+                    step((f"  jsverify: framework detectado — {_js_fw}" if es else
+                          f"  jsverify: detected framework — {_js_fw}"))
+                    wr = verify_node_web_cve(
+                        str(fr.local_path),
+                        endpoint=notes.get("endpoint") or "/",
+                        vuln_class=inv.vuln_class,
+                        http_method=notes.get("http_method") or "GET",
+                        parameters=notes.get("parameters") or [],
+                        payload=notes.get("payload") or "",
+                        confirm_string=notes.get("confirm_string") or "",
+                        auth_required=bool(notes.get("auth_required") or notes.get("authenticated")),
+                        pkg_version=inv.llm_notes.get("vulnerable_version") or "",
+                        on_step=step,
+                        budget_s=budget_s,
+                    )
+                    _apply_wpverify_result(inv, wr, es, llm)
             # Python web frameworks (Django/FastAPI/Flask): verificacion especializada con
             # auto-deteccion de framework, generacion de Dockerfile a medida y setup de
             # autenticacion Django cuando el CVE la requiere -- ver pythonverify.py.
