@@ -679,6 +679,162 @@ def _render_chain_log(result: ChainResult, lang: str = "es") -> str:
     return "\n".join(out)
 
 
+# ── Index HTML auto-update ────────────────────────────────────────────────────
+
+def _index_path() -> str:
+    """Find index.html relative to this file's project root."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    for _ in range(5):
+        candidate = os.path.join(here, "index.html")
+        if os.path.isfile(candidate):
+            return candidate
+        here = os.path.dirname(here)
+    return ""
+
+
+_CVSS_COLOR = {
+    "critical": "#b91c1c",
+    "high":     "#d97706",
+    "medium":   "#374151",
+    "low":      "#374151",
+    "info":     "#374151",
+}
+
+_BADGE_VERIFIED   = '<span class="badge badge-sm" style="background:#065f46">✓ Verif.</span>'
+_BADGE_LLM        = '<span class="badge badge-sm" style="background:#6d28d9">LLM-razonado</span>'
+_BADGE_POC        = '<span class="badge badge-sm" style="background:#1e40af">PoC publico</span>'
+_BADGE_AUTH       = '<span class="badge badge-sm" style="background:#374151">authenticated</span>'
+_BADGE_UNAUTH     = '<span class="badge badge-sm" style="background:#065f46">unauthenticated</span>'
+
+
+def _update_index_html(result: "ChainResult", cve_info, llm_notes: dict,
+                       step: Callable) -> None:
+    """Add a new row for this CVE to index.html if not already present."""
+    idx = _index_path()
+    if not idx:
+        step("  index update: index.html no encontrado")
+        return
+
+    try:
+        with open(idx, "r", encoding="utf-8") as fh:
+            html = fh.read()
+    except Exception as e:
+        step(f"  index update: lectura fallida — {e}")
+        return
+
+    # Skip if CVE already has a row
+    if result.cve_id in html:
+        step(f"  index update: {result.cve_id} ya existe en index.html")
+        return
+
+    # ── Determine row number ──────────────────────────────────────────────────
+    import re as _re
+    nums = [int(m) for m in _re.findall(r'class="td-num">(\d+)<', html)]
+    row_num = (max(nums) + 1) if nums else 1
+
+    # ── CVE metadata ─────────────────────────────────────────────────────────
+    score    = result.cvss_score or "N/A"
+    severity = (result.cvss_severity or "medium").lower()
+    sev_color = _CVSS_COLOR.get(severity, "#374151")
+    sev_label = severity.upper()
+
+    cve_class = (llm_notes.get("vuln_class") or result.cve_class or "unknown").lower()
+    tech      = (llm_notes.get("technique") or llm_notes.get("cve_class") or cve_class).lower()
+    tech      = tech.replace(" ", "-")[:40]
+
+    # Badge: verified > PoC public > LLM-razonado
+    has_poc = bool(getattr(cve_info, "poc_urls", None)) if cve_info else False
+    if result.verified:
+        verif_badge = _BADGE_VERIFIED
+    elif has_poc:
+        verif_badge = _BADGE_POC
+    else:
+        verif_badge = _BADGE_LLM
+
+    # Auth badge
+    auth_raw = str(llm_notes.get("auth_required", "")).lower()
+    auth_badge = _BADGE_AUTH if auth_raw in ("true", "yes", "1", "authenticated") else _BADGE_UNAUTH
+
+    # Affected component: prefer cve_info CPE vendor/product, else description keywords
+    affected = ""
+    if cve_info:
+        cpus = getattr(cve_info, "cpe_matches", []) or []
+        if cpus:
+            parts = str(cpus[0]).split(":")
+            if len(parts) > 4:
+                affected = parts[4]
+        if not affected:
+            refs = getattr(cve_info, "references", []) or []
+            for r in refs:
+                s = str(r)
+                for domain in ("github.com", "pypi.org", "npmjs.com"):
+                    if domain in s:
+                        seg = s.split(domain + "/")[-1].split("/")
+                        if len(seg) >= 2:
+                            affected = seg[1]
+                            break
+                if affected:
+                    break
+    if not affected:
+        affected = result.cve_id.lower().replace("cve-", "pkg-")
+
+    # Description: first 200 chars of CVE description
+    desc_raw = (getattr(cve_info, "description", "") or result.description or "").strip()
+    desc_html = desc_raw[:220].replace("<", "&lt;").replace(">", "&gt;")
+
+    # Published date
+    pub = getattr(cve_info, "published", "") or ""
+    if hasattr(pub, "strftime"):
+        pub = pub.strftime("%Y-%m-%d")
+    else:
+        pub = str(pub)[:10]
+
+    # Data attributes
+    is_gap   = "true" if not has_poc else "false"
+    auth_dat = "true" if auth_raw in ("true", "yes", "1", "authenticated") else "false"
+    sev_dat  = severity
+
+    row_html = (
+        f'\n<tr class="cve-row" data-cls="{cve_class}" data-sev="{sev_dat}" '
+        f'data-poc="{("false" if is_gap == "true" else "true")}" '
+        f'data-auth="{auth_dat}" data-gap="{is_gap}">\n'
+        f'  <td class="td-num">{row_num}</td>\n'
+        f'  <td class="td-cve"><code>{result.cve_id}</code></td>\n'
+        f'  <td><span class="badge" style="background:{sev_color}">{score} {sev_label}</span></td>\n'
+        f'  <td><span class="badge badge-sm" style="background:#374151">{cve_class}</span></td>\n'
+        f'  <td><code class="tech">{tech}</code></td>\n'
+        f'  <td>{verif_badge}</td>\n'
+        f'  <td>{auth_badge}</td>\n'
+        f'  <td class="td-aff"><code>{affected}</code></td>\n'
+        f'  <td class="td-pub">{pub}</td>\n'
+        f'  <td class="td-desc">{desc_html}</td>\n'
+        f'  <td class="td-links"></td>\n'
+        f'</tr>'
+    )
+
+    # Also update the DYN_VERIFIED JS map if verified
+    if result.verified:
+        dyn_marker = "const DYN_VERIFIED = {"
+        if dyn_marker in html:
+            html = html.replace(
+                dyn_marker,
+                f'{dyn_marker}\n  "{result.cve_id}": true,',
+                1,
+            )
+
+    new_html = html.replace("</tbody>", row_html + "\n</tbody>", 1)
+
+    try:
+        with open(idx, "w", encoding="utf-8") as fh:
+            fh.write(new_html)
+        step(f"  index update: fila {row_num} añadida para {result.cve_id} "
+             f"({'✓ Verif.' if result.verified else 'LLM-razonado'})")
+        result.add_step("index_update", "ok", f"row={row_num}")
+    except Exception as e:
+        step(f"  index update: escritura fallida — {e}")
+        result.add_step("index_update", "error", str(e)[:80])
+
+
 # ── MAIN ENTRY POINT ──────────────────────────────────────────────────────────
 
 def run_full_chain(
@@ -797,6 +953,9 @@ def run_full_chain(
     # ── Stage 7: Report ───────────────────────────────────────────────────────
     result.elapsed_s = time.time() - t0
     result.report_md = _run_report_stage(result, step, lang=lang, save=save_report)
+
+    # ── Stage 7.5: Index update ───────────────────────────────────────────────
+    _update_index_html(result, cve_info, llm_notes, step)
 
     # ── Stage 8: Done ─────────────────────────────────────────────────────────
     _banner(step, f"[8/8] COMPLETADO en {result.elapsed_s:.1f}s")

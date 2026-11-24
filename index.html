@@ -1183,7 +1183,7 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
   <td><span class="badge" style="background:#2563eb">6.4 MEDIUM</span></td>
   <td><span class="badge badge-sm" style="background:#9333ea">xss</span></td>
   <td><code class="tech">stored-xss</code></td>
-  <td><span class="badge badge-sm" style="background:#6d28d9">LLM-razonado</span></td>
+  <td><span class="badge badge-sm" style="background:#065f46">&#10003; Verif.</span></td>
   <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
   <td class="td-aff"><code>2.0.28</code></td>
   <td class="td-pub">2024-12-12</td>
@@ -1191,6 +1191,7 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
   <td class="td-links">
     <a href="CVE-2024-10784_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
     <a href="CVE-2024-10784_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
+    <a href="reports/CVE-2024-10784_evidence.html" class="btn-evidence" target="_blank">EVIDENCIA</a>
   </td>
 </tr>
 <tr class="cve-row" data-cls="open-redirect" data-sev="medium" data-poc="true" data-auth="false" data-gap="false">
@@ -1413,6 +1414,84 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
     <a href="reports/CVE-2026-77355_evidence.html" class="btn-evidence" target="_blank">EVIDENCIA</a>
   </td>
 </tr>
+<tr class="cve-row" data-cls="code-injection" data-sev="medium" data-poc="false" data-auth="true" data-gap="true">
+  <td class="td-num">81</td>
+  <td class="td-cve"><code>CVE-2024-56201</code></td>
+  <td><span class="badge" style="background:#d97706">5.4 MEDIUM</span></td>
+  <td><span class="badge badge-sm" style="background:#374151">code-injection</span></td>
+  <td><code class="tech">ssti-sandbox-escape</code></td>
+  <td><span class="badge badge-sm" style="background:#6d28d9">LLM-razonado</span></td>
+  <td><span class="badge badge-sm" style="background:#374151">authenticated</span></td>
+  <td class="td-aff"><code>Jinja2</code></td>
+  <td class="td-pub">2024-12-23</td>
+  <td class="td-desc">Jinja2 &lt; 3.1.5 — sandbox escape via Python 3.13 AST nodes; requires app to render user-controlled templates via render_template_string()</td>
+  <td class="td-links"></td>
+</tr>
+<tr class="cve-row" data-cls="code-injection" data-sev="medium" data-poc="false" data-auth="true" data-gap="true">
+  <td class="td-num">82</td>
+  <td class="td-cve"><code>CVE-2024-56326</code></td>
+  <td><span class="badge" style="background:#d97706">5.4 MEDIUM</span></td>
+  <td><span class="badge badge-sm" style="background:#374151">code-injection</span></td>
+  <td><code class="tech">ssti-sandbox-bypass</code></td>
+  <td><span class="badge badge-sm" style="background:#6d28d9">LLM-razonado</span></td>
+  <td><span class="badge badge-sm" style="background:#374151">authenticated</span></td>
+  <td class="td-aff"><code>Jinja2</code></td>
+  <td class="td-pub">2024-12-23</td>
+  <td class="td-desc">Jinja2 &lt; 3.1.5 — sandbox bypass via str.format method call detection oversight; arbitrary attribute access escalates to RCE via wrapper app</td>
+  <td class="td-links"></td>
+</tr>
+<tr class="cve-row" data-cls="auth-bypass" data-sev="high" data-poc="false" data-auth="false" data-gap="true">
+  <td class="td-num">83</td>
+  <td class="td-cve"><code>CVE-2023-30861</code></td>
+  <td><span class="badge" style="background:#d97706">7.5 HIGH</span></td>
+  <td><span class="badge badge-sm" style="background:#374151">session-leak</span></td>
+  <td><code class="tech">proxy-cache-session-disclosure</code></td>
+  <td><span class="badge badge-sm" style="background:#6d28d9">LLM-razonado</span></td>
+  <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
+  <td class="td-aff"><code>Flask</code></td>
+  <td class="td-pub">2023-05-02</td>
+  <td class="td-desc">Flask &lt; 3.0.3 / 2.3.3 — absent Vary: Cookie header causes misconfigured reverse proxy to cache session responses; different users receive others' session data</td>
+  <td class="td-links"></td>
+</tr>
+<tr class="cve-row" data-cls="info-disclosure" data-sev="medium" data-poc="false" data-auth="false" data-gap="true">
+  <td class="td-num">84</td>
+  <td class="td-cve"><code>CVE-2024-45231</code></td>
+  <td><span class="badge" style="background:#374151">5.3 MEDIUM</span></td>
+  <td><span class="badge badge-sm" style="background:#374151">info-disclosure</span></td>
+  <td><code class="tech">user-enumeration-timing</code></td>
+  <td><span class="badge badge-sm" style="background:#6d28d9">LLM-razonado</span></td>
+  <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
+  <td class="td-aff"><code>Django</code></td>
+  <td class="td-pub">2024-09-10</td>
+  <td class="td-desc">Django 4.2/5.0/5.1 — PasswordResetForm timing difference in get_users() leaks whether email exists in DB (CWE-203)</td>
+  <td class="td-links"></td>
+</tr>
+<tr class="cve-row" data-cls="code-injection" data-sev="high" data-poc="false" data-auth="false" data-gap="true">
+  <td class="td-num">85</td>
+  <td class="td-cve"><code>CVE-2024-34069</code></td>
+  <td><span class="badge" style="background:#d97706">7.5 HIGH</span></td>
+  <td><span class="badge badge-sm" style="background:#374151">rce</span></td>
+  <td><code class="tech">debugger-pin-bypass</code></td>
+  <td><span class="badge badge-sm" style="background:#6d28d9">LLM-razonado</span></td>
+  <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
+  <td class="td-aff"><code>Werkzeug</code></td>
+  <td class="td-pub">2024-05-06</td>
+  <td class="td-desc">Werkzeug &lt; 3.0.3 — interactive debugger PIN bypass via /etc/machine-id + MAC address; arbitrary Python execution when FLASK_DEBUG=1</td>
+  <td class="td-links"></td>
+</tr>
+<tr class="cve-row" data-cls="sqli" data-sev="high" data-poc="false" data-auth="true" data-gap="true">
+  <td class="td-num">86</td>
+  <td class="td-cve"><code>CVE-2024-42005</code></td>
+  <td><span class="badge" style="background:#d97706">7.3 HIGH</span></td>
+  <td><span class="badge badge-sm" style="background:#374151">sqli</span></td>
+  <td><code class="tech">rawsql-annotation-injection</code></td>
+  <td><span class="badge badge-sm" style="background:#6d28d9">LLM-razonado</span></td>
+  <td><span class="badge badge-sm" style="background:#374151">authenticated</span></td>
+  <td class="td-aff"><code>Django</code></td>
+  <td class="td-pub">2024-08-07</td>
+  <td class="td-desc">Django 4.2.x/5.0.x — SQLi in QuerySet.values()/values_list() with JSONField and RawSQL annotation; column alias injection into generated SQL</td>
+  <td class="td-links"></td>
+</tr>
 </tbody>
 </table>
 <div class="no-results" id="no-results">Sin resultados para los filtros seleccionados.</div>
@@ -1520,7 +1599,7 @@ function applyFilters() {
 // Ground-truth dynamic verification map — built from dynamic_verify.verified in backend JSONs
 // false = NOT dynamically verified (may be static analysis, LLM hypothesis, or test inconclusive)
 // true  = Docker lab confirmed exploit executed successfully
-const DYN_VERIFIED = {"CVE-2021-41773": false, "CVE-2022-45808": false, "CVE-2023-32590": true, "CVE-2024-10516": false, "CVE-2024-10586": false, "CVE-2024-1071": false, "CVE-2024-10784": false, "CVE-2024-12025": true, "CVE-2024-12157": false, "CVE-2024-12209": false, "CVE-2024-12270": false, "CVE-2024-12404": true, "CVE-2024-12542": false, "CVE-2024-12849": true, "CVE-2024-13800": false, "CVE-2024-1561": false, "CVE-2024-2044": false, "CVE-2024-23334": false, "CVE-2024-23340": false, "CVE-2024-28255": false, "CVE-2024-29041": false, "CVE-2024-32640": false, "CVE-2024-35184": false, "CVE-2024-49607": false, "CVE-2024-50450": false, "CVE-2024-50491": false, "CVE-2024-50493": false, "CVE-2024-50498": true, "CVE-2024-50507": false, "CVE-2024-52380": false, "CVE-2024-54239": false, "CVE-2024-54292": false, "CVE-2024-54374": true, "CVE-2024-55972": true, "CVE-2024-55976": false, "CVE-2024-55978": false, "CVE-2024-55980": true, "CVE-2024-55981": false, "CVE-2024-55988": false, "CVE-2024-56145": false, "CVE-2024-6330": false, "CVE-2024-9234": false, "CVE-2024-9932": true, "CVE-2024-9933": true, "CVE-2025-12630": false, "CVE-2025-22785": false, "CVE-2025-27516": true, "CVE-2025-27610": false, "CVE-2025-29927": false, "CVE-2025-30208": false, "CVE-2025-32432": false, "CVE-2025-39471": false, "CVE-2025-53092": false, "CVE-2025-55746": false, "CVE-2025-57633": true, "CVE-2025-64459": false, "CVE-2025-67494": false, "CVE-2025-67923": false, "CVE-2025-8422": false, "CVE-2026-10795": false, "CVE-2026-114516": false, "CVE-2026-129502": true, "CVE-2026-130082": true, "CVE-2026-130647": true, "CVE-2026-132165": false, "CVE-2026-134694": true, "CVE-2026-2413": false, "CVE-2026-27641": true, "CVE-2026-35409": false, "CVE-2026-39732": false, "CVE-2026-39942": false, "CVE-2026-55849": true, "CVE-2026-70595": false, "CVE-2026-71209": false, "CVE-2026-77355": true, "CVE-2026-86253": false, "CVE-2026-94259": false};
+const DYN_VERIFIED = {"CVE-2021-41773": false, "CVE-2022-45808": false, "CVE-2023-32590": true, "CVE-2024-10516": false, "CVE-2024-10586": false, "CVE-2024-1071": false, "CVE-2024-10784": true, "CVE-2024-12025": true, "CVE-2024-12157": false, "CVE-2024-12209": false, "CVE-2024-12270": false, "CVE-2024-12404": true, "CVE-2024-12542": false, "CVE-2024-12849": true, "CVE-2024-13800": false, "CVE-2024-1561": false, "CVE-2024-2044": false, "CVE-2024-23334": false, "CVE-2024-23340": false, "CVE-2024-28255": false, "CVE-2024-29041": false, "CVE-2024-32640": false, "CVE-2024-35184": false, "CVE-2024-49607": false, "CVE-2024-50450": false, "CVE-2024-50491": false, "CVE-2024-50493": false, "CVE-2024-50498": true, "CVE-2024-50507": false, "CVE-2024-52380": false, "CVE-2024-54239": false, "CVE-2024-54292": false, "CVE-2024-54374": true, "CVE-2024-55972": true, "CVE-2024-55976": false, "CVE-2024-55978": false, "CVE-2024-55980": true, "CVE-2024-55981": false, "CVE-2024-55988": false, "CVE-2024-56145": false, "CVE-2024-6330": false, "CVE-2024-9234": false, "CVE-2024-9932": true, "CVE-2024-9933": true, "CVE-2025-12630": false, "CVE-2025-22785": false, "CVE-2025-27516": true, "CVE-2025-27610": false, "CVE-2025-29927": false, "CVE-2025-30208": false, "CVE-2025-32432": false, "CVE-2025-39471": false, "CVE-2025-53092": false, "CVE-2025-55746": false, "CVE-2025-57633": true, "CVE-2025-64459": false, "CVE-2025-67494": false, "CVE-2025-67923": false, "CVE-2025-8422": false, "CVE-2026-10795": false, "CVE-2026-114516": false, "CVE-2026-129502": true, "CVE-2026-130082": true, "CVE-2026-130647": true, "CVE-2026-132165": false, "CVE-2026-134694": true, "CVE-2026-2413": false, "CVE-2026-27641": true, "CVE-2026-35409": false, "CVE-2026-39732": false, "CVE-2026-39942": false, "CVE-2026-55849": true, "CVE-2026-70595": false, "CVE-2026-71209": false, "CVE-2026-77355": true, "CVE-2026-86253": false, "CVE-2026-94259": false};
 
 // Apply data-dyn attribute and visual indicators, then compute accurate stats
 (function computeStats() {
