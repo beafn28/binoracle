@@ -587,6 +587,71 @@ def _detect_nopriv_from_source(plugin_source_dir: str, action_name: str) -> bool
     return False
 
 
+def _scan_php_files_field(plugin_source_dir: str) -> Optional[str]:
+    """Scan PHP source for $_FILES['fieldname'] patterns and return the most likely upload field.
+
+    Looks for:  $_FILES['campo']  $_FILES["campo"]  $_FILES[$var] (skipped)
+    Also checks move_uploaded_file / is_uploaded_file context to pick the right field when
+    multiple $_FILES references exist.
+
+    Fallback: if the plugin bypasses WordPress mime checks (UnfilteredFileSupport,
+    upload_mimes filter, ALLOW_UNFILTERED_UPLOADS) but doesn't use direct $_FILES,
+    it hooks into the standard WP async-upload mechanism → returns 'async-upload'.
+
+    Returns the field name most associated with upload handling, or None if nothing is found.
+    """
+    if not plugin_source_dir or not os.path.isdir(plugin_source_dir):
+        return None
+
+    files_re = re.compile(r"\$_FILES\s*\[\s*['\"]([A-Za-z0-9_\[\]]+)['\"]", re.IGNORECASE)
+    move_re  = re.compile(r"move_uploaded_file\s*\(\s*\$_FILES\s*\[\s*['\"]([A-Za-z0-9_\[\]]+)['\"]",
+                          re.IGNORECASE)
+    # Signals that the plugin hooks into WP's native media uploader
+    wp_native_upload_re = re.compile(
+        r"(unfiltered_upload|upload_mimes|wp_check_filetype|UnfilteredFile"
+        r"|async-upload|wp_handle_upload|media_handle_upload)",
+        re.IGNORECASE,
+    )
+
+    from collections import Counter
+    counts: Counter = Counter()
+    priority: set = set()
+    has_wp_native_upload = False
+
+    for root, _, filenames in os.walk(plugin_source_dir):
+        for fname in filenames:
+            if not fname.endswith(".php"):
+                continue
+            try:
+                content = open(os.path.join(root, fname), "r", errors="replace").read()
+            except Exception:
+                continue
+            for m in move_re.finditer(content):
+                field = m.group(1)
+                priority.add(field)
+                counts[field] += 10
+            for m in files_re.finditer(content):
+                counts[m.group(1)] += 1
+            if not has_wp_native_upload and wp_native_upload_re.search(content):
+                has_wp_native_upload = True
+
+    if not counts:
+        # If the plugin hooks into WP's native uploader (UnfilteredFileSupport etc.)
+        # the upload field is WordPress's standard async-upload field.
+        if has_wp_native_upload:
+            return "async-upload"
+        return None
+    # Priority: fields seen next to move_uploaded_file first; then by frequency
+    if priority:
+        return max(priority, key=lambda f: counts[f])
+    # Filter obvious meta-keys (name, type, size, error, tmp_name) — those are sub-keys, not fields
+    _META = {"name", "type", "size", "error", "tmp_name"}
+    candidates = {k: v for k, v in counts.items() if k.lower() not in _META}
+    if candidates:
+        return max(candidates, key=lambda f: candidates[f])
+    return max(counts, key=lambda f: counts[f])
+
+
 def _detect_directory_cpt_from_source(plugin_source_dir: str, param_name: str) -> Optional[str]:
     """Detect what CPT to create for a directory-id-style parameter by scanning the plugin
     source for register_post_type calls whose CPT slug contains the parameter's keyword.
@@ -9242,6 +9307,11 @@ def verify_wordpress_file_upload(
 
     file_param = file_param_hint or _pick_param(parameters, _FILE_UPLOAD_HINTS)
     # Si se usa file_field_tpl, no hace falta file_param: el campo del fichero viene del template.
+    if not file_param and not file_field_tpl:
+        # Fallback: escanear el codigo fuente PHP del plugin buscando $_FILES['campo']
+        file_param = _scan_php_files_field(plugin_source_dir)
+        if file_param:
+            step(f"[file-upload] campo detectado desde codigo fuente PHP: '{file_param}'")
     if not file_param and not file_field_tpl:
         res.detail = "no se identifico el parametro (campo de formulario) del fichero subido"
         res.limitations.append("la verificacion de file-upload necesita saber que campo lleva el "
