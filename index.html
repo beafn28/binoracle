@@ -67,11 +67,11 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
     <div class="brand-sub">CVE Verification Engine</div>
   </div>
   <div class="hdr-spacer"></div>
-  <div class="hdr-date">22 NOVIEMBRE 2026 &mdash; 75 CVEs investigados</div>
+  <div class="hdr-date">22 NOVIEMBRE 2026 &mdash; 80 CVEs investigados</div>
 </header>
 
 <div class="stats-bar">
-  <div class="stat"><div class="stat-n s-white" id="stat-total">75</div><div class="stat-l">Total</div></div>
+  <div class="stat"><div class="stat-n s-white" id="stat-total">80</div><div class="stat-l">Total</div></div>
   <div class="stat"><div class="stat-n s-green" id="stat-dinamico">—</div><div class="stat-l">Dinámico ✓</div></div>
   <div class="stat"><div class="stat-n s-purple" id="stat-hipotesis">—</div><div class="stat-l">Hipótesis</div></div>
   <div class="stat"><div class="stat-n s-crit" id="stat-critical">40</div><div class="stat-l">Critical</div></div>
@@ -102,7 +102,7 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
   <button class="f-btn" data-filter="auth" data-val="false">Unauthenticated</button>
   <button class="f-btn" data-filter="auth" data-val="true">Autenticado</button>
   <input class="search-box" type="text" id="search" placeholder="Buscar CVE, plugin, endpoint...">
-  <span class="filter-count" id="filter-count"><span id="vis-count">75</span> / 75 CVEs</span>
+  <span class="filter-count" id="filter-count"><span id="vis-count">80</span> / 80 CVEs</span>
 </div>
 
 <div class="wrap">
@@ -1336,6 +1336,81 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
   <td class="td-links">
     <a href="CVE-2026-94259_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
     <a href="CVE-2026-94259_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
+  </td>
+</tr>
+<tr class="cve-row" data-cls="command-injection" data-sev="critical" data-poc="false" data-auth="false" data-gap="true">
+  <td class="td-num">76</td>
+  <td class="td-cve"><a href="reports/CVE-2025-57633_evidence.html" target="_blank"><code>CVE-2025-57633</code></a></td>
+  <td><span class="badge" style="background:#dc2626">9.8 CRITICAL</span></td>
+  <td><span class="badge badge-sm" style="background:#374151">command-injection</span></td>
+  <td><code class="tech">os-command-injection</code></td>
+  <td><span class="badge badge-sm" style="background:#065f46">✓ Verif.</span></td>
+  <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
+  <td class="td-aff"><code>FTP-Flask-python</code></td>
+  <td class="td-pub">2025-05-14</td>
+  <td class="td-desc">Command injection in FTP-Flask-python through 5173b68 allows unauthenticated remote attackers to execute arbitrary OS commands</td>
+  <td class="td-links">
+    <a href="reports/CVE-2025-57633_evidence.html" class="btn-evidence" target="_blank">EVIDENCIA</a>
+  </td>
+</tr>
+<tr class="cve-row" data-cls="sqli" data-sev="high" data-poc="false" data-auth="true" data-gap="true">
+  <td class="td-num">77</td>
+  <td class="td-cve"><a href="reports/CVE-2026-130082_evidence.html" target="_blank"><code>CVE-2026-130082</code></a></td>
+  <td><span class="badge" style="background:#d97706">8.7 HIGH</span></td>
+  <td><span class="badge badge-sm" style="background:#374151">sqli</span></td>
+  <td><code class="tech">sql-injection-postgres</code></td>
+  <td><span class="badge badge-sm" style="background:#065f46">✓ Verif.</span></td>
+  <td><span class="badge badge-sm" style="background:#1e3a5f">authenticated</span></td>
+  <td class="td-aff"><code>django-tenants</code></td>
+  <td class="td-pub">2026-01-15</td>
+  <td class="td-desc">django-tenants 3.4.8 before 4.0.1 — SQL injection in PostgreSQL backend allows extraction of tenant data via schema parameter</td>
+  <td class="td-links">
+    <a href="reports/CVE-2026-130082_evidence.html" class="btn-evidence" target="_blank">EVIDENCIA</a>
+  </td>
+</tr>
+<tr class="cve-row" data-cls="code-injection" data-sev="high" data-poc="false" data-auth="false" data-gap="true">
+  <td class="td-num">78</td>
+  <td class="td-cve"><a href="reports/CVE-2026-134694_evidence.html" target="_blank"><code>CVE-2026-134694</code></a></td>
+  <td><span class="badge" style="background:#d97706">8.5 HIGH</span></td>
+  <td><span class="badge badge-sm" style="background:#374151">code-injection</span></td>
+  <td><code class="tech">fits-header-code-injection</code></td>
+  <td><span class="badge badge-sm" style="background:#065f46">✓ Verif.</span></td>
+  <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
+  <td class="td-aff"><code>gammapy</code></td>
+  <td class="td-pub">2026-02-08</td>
+  <td class="td-desc">Gammapy through 2.1 — code injection in WcsGeom.from_header() passes WCSSHAPE FITS header value directly to Python eval()</td>
+  <td class="td-links">
+    <a href="reports/CVE-2026-134694_evidence.html" class="btn-evidence" target="_blank">EVIDENCIA</a>
+  </td>
+</tr>
+<tr class="cve-row" data-cls="command-injection" data-sev="high" data-poc="false" data-auth="false" data-gap="true">
+  <td class="td-num">79</td>
+  <td class="td-cve"><a href="reports/CVE-2026-55849_evidence.html" target="_blank"><code>CVE-2026-55849</code></a></td>
+  <td><span class="badge" style="background:#d97706">8.5 HIGH</span></td>
+  <td><span class="badge badge-sm" style="background:#374151">command-injection</span></td>
+  <td><code class="tech">cli-argument-injection</code></td>
+  <td><span class="badge badge-sm" style="background:#065f46">✓ Verif.</span></td>
+  <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
+  <td class="td-aff"><code>@cyclonedx/cyclonedx-npm</code></td>
+  <td class="td-pub">2026-04-02</td>
+  <td class="td-desc">@cyclonedx/cyclonedx-npm 2.1.0–5.0.0 — CLI argument injection allows execution of arbitrary commands via crafted npm package names</td>
+  <td class="td-links">
+    <a href="reports/CVE-2026-55849_evidence.html" class="btn-evidence" target="_blank">EVIDENCIA</a>
+  </td>
+</tr>
+<tr class="cve-row" data-cls="command-injection" data-sev="high" data-poc="false" data-auth="false" data-gap="true">
+  <td class="td-num">80</td>
+  <td class="td-cve"><a href="reports/CVE-2026-77355_evidence.html" target="_blank"><code>CVE-2026-77355</code></a></td>
+  <td><span class="badge" style="background:#d97706">8.8 HIGH</span></td>
+  <td><span class="badge badge-sm" style="background:#374151">command-injection</span></td>
+  <td><code class="tech">git-tree-entry-injection</code></td>
+  <td><span class="badge badge-sm" style="background:#065f46">✓ Verif.</span></td>
+  <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
+  <td class="td-aff"><code>isomorphic-git</code></td>
+  <td class="td-pub">2026-05-19</td>
+  <td class="td-desc">isomorphic-git before 1.38.7 — tree-entry validation bypass allows path traversal and command injection via crafted git repository</td>
+  <td class="td-links">
+    <a href="reports/CVE-2026-77355_evidence.html" class="btn-evidence" target="_blank">EVIDENCIA</a>
   </td>
 </tr>
 </tbody>
