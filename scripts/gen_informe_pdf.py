@@ -237,6 +237,8 @@ def _burp_block(endpoint, method, params_dict, status, resp_body, auth="", extra
         srv_headers = "Content-Type: text/html; charset=utf-8\nServer: Werkzeug/3.0.1 Python/3.11\n"
     elif "ruby" in _stk or "rails" in _stk:
         srv_headers = "Content-Type: text/html; charset=utf-8\nX-Powered-By: Phusion Passenger\n"
+    elif "go" in _stk:
+        srv_headers = "Content-Type: application/json\nServer: Go\n"
     else:
         srv_headers = "Content-Type: text/html; charset=UTF-8\nX-Content-Type-Options: nosniff\nX-Powered-By: PHP/8.0.x\n"
 
@@ -1314,17 +1316,22 @@ def _infer_stack(r, ve):
     desc = (r.get("description") or "").lower()
     endpoint = (ve.get("endpoint") or "").lower()
     detail = (r.get("detail") or "").lower()
-    # Node.js signals
-    if any(x in desc+detail for x in ["node.js","nodejs","npm","express","fastify","isomorphic-git",".js"]):
+    # Node.js signals — explicit CMS names that are Node.js
+    if any(x in desc+detail for x in ["ghost", "strapi", "directus", "payload cms", "payloadcms",
+                                       "node.js","nodejs","npm","express","fastify","isomorphic-git",
+                                       "nestjs","next.js","nuxt","deno"]):
         return "nodejs"
     if any(x in endpoint for x in ["/api/","/npm/",".js"]):
         return "nodejs"
     # Python signals
-    if any(x in desc+detail for x in ["python","flask","django","werkzeug","pip "]):
+    if any(x in desc+detail for x in ["python","flask","django","werkzeug","pip ","wagtail","fastapi"]):
         return "python"
     # Ruby
     if any(x in desc+detail for x in ["ruby","rails","gem "]):
         return "ruby"
+    # Go
+    if any(x in desc+detail for x in ["golang"," go ", "gitea","mattermost"]):
+        return "go"
     # Default: PHP/WP
     return "php"
 
@@ -2099,8 +2106,11 @@ def build_informe(cve_id, r, ve, ev_shots, logs):
     # Error-based attempts
     eb_html = render_error_based(eb_intentos)
 
-    # HTTP captures (Burp-style) — always generated from verified_evidence
-    http_caps_html = _generate_http_captures_html(cve_id, r, ve)
+    # HTTP captures (Burp-style) — only from real verified_evidence, not fabricated for unverified CVEs
+    if _is_verified:
+        http_caps_html = _generate_http_captures_html(cve_id, r, ve)
+    else:
+        http_caps_html = ""  # suppressed: no lab run → no real captures to show
 
     # POC source tag
     poc_tag = (
@@ -2171,7 +2181,7 @@ def build_informe(cve_id, r, ve, ev_shots, logs):
     <div class="mc"><div class="ml">Versiones Afectadas</div><div class="mv">{h(affected)}</div></div>
     <div class="mc"><div class="ml">Clase</div><div class="mv">{h(vuln_class)}</div></div>
     <div class="mc"><div class="ml">PoC Publico</div><div class="mv">{('<a href="' + h(poc_source) + '">' + h(poc_source.replace('https://','')) + '</a>') if poc_source else '— HUECO (sin PoC previo)'}</div></div>
-    <div class="mc"><div class="ml">Verificado</div><div class="mv ok">Si — lab Docker aislado</div></div>
+    <div class="mc"><div class="ml">Verificado</div><div class="mv {'ok' if _is_verified else 'warn'}">{('Si — lab Docker aislado' if _is_verified else 'NO — sin verificacion dinamica')}</div></div>
     <div class="mc"><div class="ml">Publicado (NVD)</div><div class="mv">{h(published)}</div></div>
     <div class="mc"><div class="ml">Tecnica Confirmada</div><div class="mv">{h(technique or vuln_class)}</div></div>
     <div class="mc"><div class="ml">Auth Requerida</div><div class="mv {'ok' if not auth else ''}">{h(auth_text)}</div></div>
