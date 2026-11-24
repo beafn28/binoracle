@@ -9686,6 +9686,27 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         step("sin LLM disponible o sin nada que afinar: se mantiene la hipotesis "
                              "inicial" if es else "no LLM available or nothing to refine: keeping "
                              "the initial hypothesis")
+                elif (fr.ok and fr.local_path
+                      and inv.vuln_class in ("missing-authorization", "idor", "auth-bypass",
+                                             "broken-access-control")
+                      and (notes.get("endpoint") or "?") in ("?", "", "unknown", "n/a")):
+                    # Unconditional route discovery for missing-authorization CVEs when grounding
+                    # found nothing (e.g. Go data-driven JSONAPI routers, permission-helper-only
+                    # codebases). Pass empty found={} so _refine_web_hints_from_source falls
+                    # through to the Go router/test-file fallback immediately.
+                    step(("route discovery incondicional para missing-authorization sin grounding"
+                          ) if es else "unconditional route discovery for missing-authorization")
+                    llm_refined_ungrounded = _refine_web_hints_from_source(
+                        llm, fr.local_path, found={})
+                    if llm_refined_ungrounded:
+                        _ep_ungrounded = (llm_refined_ungrounded.get("endpoint") or "").strip()
+                        if _ep_ungrounded and _ep_ungrounded not in ("?", "", "unknown"):
+                            notes = {**notes, **llm_refined_ungrounded}
+                            inv.llm_notes.update(
+                                {k: notes[k] for k in ("endpoint", "http_method")
+                                 if k in notes})
+                            step((f"route discovery: endpoint={notes.get('endpoint')}") if es
+                                 else (f"route discovery: endpoint={notes.get('endpoint')}"))
             # Synthesis mode: dado el código fuente vulnerable + toda la inteligencia CVE,
             # pedir al LLM que sintetice el payload EXACTO para esta vulnerabilidad concreta.
             # El resultado propaga sql_context, bypass_needed y setup_steps a notes para que
