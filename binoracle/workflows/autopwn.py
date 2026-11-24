@@ -506,24 +506,89 @@ def autopwn(binary: str, config=None, store=None,
     return res
 
 
+_AUTOPWN_TECHNIQUES = (
+    # Stack / control-flow
+    "ret2win",          # win() present, no canary — direct ret to gift
+    "srop",             # no-PIE, no win(), syscall gadget — sigreturn execve
+    "srop-aarch64",     # ARM64 — svc #139 sigreturn execve
+    "ret2csu",          # no pop-rsi/rdx — __libc_csu_init gadgets
+    "pivot",            # short overflow — leave;ret migrates RSP to staged chain
+    "callme",           # pop-rdi/rsi/rdx available, gift split across functions
+    "write4",           # write-what-where via pop+mov pair, then call
+    "badchars",         # write4 shape but input filtered — XOR-encode the string
+    "rop-chain",        # ret2libc / execve full chain (generic ROP)
+    "ret2libc",         # dynamic binary — puts@GOT leak -> system
+    "ret2dlresolve",    # dynamic no-PIE, no win, no leak — forge linker resolver
+    "canary-bypass",    # canary ON + win() — leak canary then overflow to win
+    # NX bypass / shellcode
+    "shellcode-stack",  # NX off — shellcode directly on stack
+    "mprotect-shellcode", # NX on — ROP mprotect() then shellcode
+    # Format-string
+    "format-string",    # printf-family sink — GOT overwrite via %n
+    # Heap exploitation families
+    "heap-shell",       # tcache poison -> free@GOT = win
+    "uaf-funcptr",      # UAF — reuse chunk -> funcptr = win
+    "tcache-dup",       # double-free tcache -> GOT = system
+    "write-what-where", # unchecked index -> GOT = win
+    "house-of-force",   # top-chunk pre-2.29 -> arbitrary malloc
+    "house-of-spirit",  # fake chunk in tcache -> hijack
+    "house-of-einherjar", # backwards consolidation -> overlap
+    "house-of-botcake", # double-free via unsorted -> tcache poison
+    "largebin-attack",  # largebin insertion -> pointer write
+    "house-of-mind",    # forged ar_ptr -> fastbin
+    "iofile-fsop",      # _IO_FILE vtable -> __overflow
+    "fastbin-dup",      # pre-safe-linking A,B,A double-free
+    "unsafe-unlink",    # bypass 2.3.4+ check -> ptr near itself
+    "house-of-corrosion", # global_max_fast -> unbounded fastbin index
+    "tcache-stash",     # smallbin->tcache stash -> fake chunk
+    "leak-chain",       # OOB read -> libc base -> write-what-where
+)
+
+_AUTOPWN_TECH_PATTERN = "|".join(
+    _t.replace("-", r"[\-_]?")  # accept both dash and underscore variants
+    for _t in sorted(_AUTOPWN_TECHNIQUES, key=len, reverse=True)  # longest first
+)
+
+
 def _ai_plan(llm, facts: str, prior: str):
     from ..llm.base import Message
-    sys = ("Eres un analista de explotacion. Segun los hechos del binario, decide QUE tecnicas "
-           "probar y en QUE ORDEN, eligiendo solo de esta lista: ret2win, rop-chain, "
-           "shellcode-stack, format-string. Responde en 2-3 frases el razonamiento y termina con "
-           "una linea 'ORDEN: t1, t2, ...' con las tecnicas priorizadas. Usa solo la evidencia dada.")
-    user = f"Hechos:\n{facts}" + (f"\n\nConocimiento previo:\n{prior}" if prior else "")
+    import re as _re
+
+    _tech_list = "\n".join(f"  - {t}" for t in _AUTOPWN_TECHNIQUES)
+    sys_prompt = (
+        "Eres un analista de explotacion de binarios. Tu tarea: dado un conjunto de hechos del "
+        "binario objetivo, priorizar las tecnicas de explotacion disponibles en el orden mas "
+        "probable de exito, de mayor a menor. No tienes que probarlas — solo ordenarlas.\n\n"
+        "Razona brevemente (2-4 frases) basandote SOLO en los hechos dados, luego escribe una "
+        "linea exactamente con el formato:\n"
+        "ORDEN: t1, t2, t3, ...\n\n"
+        "usando EXACTAMENTE los nombres de esta lista (sin inventar nuevos):\n"
+        f"{_tech_list}\n\n"
+        "Reglas:\n"
+        "- Incluye solo las tecnicas que tengan sentido dado el perfil del binario. "
+        "Las que no incluyas quedan con prioridad baja por defecto.\n"
+        "- ret2win requiere una funcion gift; srop requiere gadget syscall + string '/bin/sh'; "
+        "shellcode-stack requiere NX desactivado; heap-* requieren operaciones de heap; "
+        "canary-bypass requiere canary activo + gift; ret2dlresolve requiere dinamico + no-PIE.\n"
+        "- Si el binario es aarch64, srop-aarch64 va antes que srop.\n"
+        "- Usa solo la evidencia dada — no inventes hechos."
+    )
+    user = f"Hechos del binario:\n{facts}" + (f"\n\nConocimiento previo de sesiones anteriores:\n{prior}" if prior else "")
     try:
-        txt = llm.chat([Message("system", sys), Message("user", user)])
+        txt = llm.chat([Message("system", sys_prompt), Message("user", user)])
     except Exception:
         return None, ""
     order = None
     for line in txt.splitlines():
         if "ORDEN" in line.upper():
-            import re as _re
-            toks = _re.findall(r"ret2win|rop-chain|shellcode-stack|format-string", line.lower())
-            if toks:
-                order = list(dict.fromkeys(toks))
+            toks = _re.findall(_AUTOPWN_TECH_PATTERN, line.lower())
+            # Normalize: replace underscores with dashes to match the canonical names
+            normalized = [t.replace("_", "-") for t in toks]
+            # Keep only names that exist in the master list
+            valid = [t for t in normalized if t in _AUTOPWN_TECHNIQUES]
+            if valid:
+                order = list(dict.fromkeys(valid))  # dedup preserving order
+            break
     return order, txt.strip()
 
 
