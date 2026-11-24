@@ -2030,6 +2030,82 @@ def _static_vuln_precheck(local_path: str, plugin_dir: str, vuln_class: str,
                 "confidence": 0.0,
             }
 
+    # --- Check 18: Weak cryptography — unsafe password hashing (MD5/SHA1 without salt) ---
+    # Triggered for: weak-crypto, insecure-hashing, password-hash, cryptography-weakness.
+    # Looks for passwords hashed with MD5 or SHA1 directly (no bcrypt/argon2/scrypt).
+    # Also detects use of static/predictable salt in HMAC or symmetric encryption.
+    _vc_crypto = (vuln_class or "").lower()
+    if _vc_crypto in ("weak-crypto", "insecure-hashing", "password-hash",
+                      "cryptography-weakness", "weak-password-hash",
+                      "insecure-randomness") and local_path:
+        import os as _os_crypto
+        # Unsafe: MD5/SHA1 for password hashing (direct hash of password)
+        _CRYPTO_UNSAFE_RE = re.compile(
+            r'md5\s*\(\s*\$?password|sha1\s*\(\s*\$?password'
+            r'|hashlib\.md5\s*\(\s*password|hashlib\.sha1\s*\(\s*password'
+            r'|MD5\.digest\s*\(\s*password|SHA1\.digest\s*\(\s*password'
+            r'|MessageDigest\.getInstance\s*\(\s*["\']MD5|MessageDigest\.getInstance\s*\(\s*["\']SHA-?1'
+            r'|createHash\s*\(\s*["\']md5|createHash\s*\(\s*["\']sha1',
+            re.IGNORECASE,
+        )
+        # Unsafe: static/hardcoded secret/key
+        _STATIC_SECRET_RE = re.compile(
+            r'["\'](?:secret|password|key|salt)["\']?\s*[:=]\s*["\'][^"\']{4,32}["\']'
+            r'|SECRET_KEY\s*=\s*["\'][a-zA-Z0-9_]{4,32}["\']'
+            r'|JWT_SECRET\s*=\s*["\'][a-zA-Z0-9_]{4,32}["\']',
+            re.IGNORECASE,
+        )
+        # Safe: strong password hashing
+        _CRYPTO_SAFE_RE = re.compile(
+            r'bcrypt|argon2|scrypt|password_hash\s*\(|pbkdf2'
+            r'|Bcrypt\.hashpw|PasswordHasher\s*\(\s*|werkzeug\.security'
+            r'|hashlib\.pbkdf2_hmac|secrets\.token_',
+            re.IGNORECASE,
+        )
+        _exts_crypto = {".php", ".py", ".js", ".ts", ".java", ".rb", ".cs", ".go"}
+        _crypto_unsafe_files: list[str] = []
+        _crypto_safe_files: list[str] = []
+        try:
+            for _r_cr, _d_cr, _f_cr in _os_crypto.walk(local_path):
+                _d_cr[:] = [d for d in _d_cr if d not in
+                            (".git", "node_modules", "dist", "__pycache__", "vendor")]
+                for _fn_cr in _f_cr:
+                    if not any(_fn_cr.endswith(e) for e in _exts_crypto):
+                        continue
+                    _fp_cr = _os_crypto.path.join(_r_cr, _fn_cr)
+                    try:
+                        _txt_cr = open(_fp_cr, encoding="utf-8",
+                                        errors="ignore").read(100_000)
+                        _unsafe = (_CRYPTO_UNSAFE_RE.search(_txt_cr) or
+                                   _STATIC_SECRET_RE.search(_txt_cr))
+                        _safe = _CRYPTO_SAFE_RE.search(_txt_cr)
+                        if _unsafe:
+                            _crypto_unsafe_files.append(
+                                _os_crypto.path.relpath(_fp_cr, local_path))
+                        if _safe:
+                            _crypto_safe_files.append(
+                                _os_crypto.path.relpath(_fp_cr, local_path))
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        if _crypto_safe_files and not _crypto_unsafe_files:
+            return {
+                "ok": False,
+                "reason": (f"pre-check Weak Crypto: bcrypt/argon2/pbkdf2 detectados en "
+                           f"{', '.join(_crypto_safe_files[:2])} — no se encontró hashing débil "
+                           f"— probable versión parchada"),
+                "confidence": 0.62,
+            }
+        if _crypto_unsafe_files:
+            return {
+                "ok": True,
+                "reason": (f"pre-check Weak Crypto: MD5/SHA1 para passwords o secreto estático "
+                           f"detectado en {', '.join(_crypto_unsafe_files[:2])} "
+                           f"— hashing débil probable"),
+                "confidence": 0.0,
+            }
+
     return {"ok": True, "reason": "pre-check OK", "confidence": 1.0}
 
 
