@@ -55,6 +55,11 @@ class CVEInfo:
     exploit_refs: List[ExploitRef] = field(default_factory=list)
     has_public_exploit: bool = False
     note: str = ""
+    # EPSS — Exploit Prediction Scoring System (FIRST.org)
+    epss_score: Optional[float] = None        # 0.0–1.0 probability of exploitation in 30 days
+    epss_percentile: Optional[float] = None   # percentile vs all CVEs
+    # CISA KEV — Known Exploited Vulnerabilities catalog
+    in_cisa_kev: bool = False
 
     @property
     def is_gap(self) -> bool:
@@ -148,6 +153,109 @@ def _nvd_cache_save(cve_id: str, data: dict) -> None:
             json.dump(data, f)
     except OSError:
         pass
+
+
+_EPSS_CACHE_DIR = os.path.join(os.path.expanduser("~"), ".cache", "binoracle", "epss")
+_EPSS_CACHE_TTL = 86400          # 24 h
+_CISA_KEV_CACHE = os.path.join(os.path.expanduser("~"), ".cache", "binoracle", "cisa_kev.json")
+_CISA_KEV_TTL  = 86400 * 0.25   # 6 h
+
+
+def _fetch_epss(cve_id: str, timeout: float = 10.0) -> Optional[dict]:
+    """Return EPSS data for `cve_id` from FIRST.org, with 24-h disk cache.
+
+    Returns dict(epss, percentile, date) or None on any network/parse error.
+    EPSS (Exploit Prediction Scoring System) gives the probability that the
+    CVE will be exploited in the wild in the next 30 days (0.0–1.0).
+    """
+    cid = (cve_id or "").upper().strip()
+    cache_path = os.path.join(_EPSS_CACHE_DIR, f"{cid}.json")
+    # disk cache
+    try:
+        st = os.stat(cache_path)
+        if time.time() - st.st_mtime < _EPSS_CACHE_TTL:
+            with open(cache_path, "r", encoding="utf-8") as fh:
+                return json.load(fh)
+    except (OSError, ValueError):
+        pass
+    try:
+        url = f"https://api.first.org/data/v1/epss?cve={cid}"
+        req = urllib.request.Request(url, headers={"User-Agent": "binoracle/1.0"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            raw = json.loads(r.read().decode("utf-8", "replace"))
+        data_list = raw.get("data") or []
+        if not data_list:
+            return None
+        item = data_list[0]
+        result = {
+            "epss":       float(item.get("epss", 0)),
+            "percentile": float(item.get("percentile", 0)),
+            "date":       item.get("date", ""),
+        }
+        # save to cache
+        try:
+            os.makedirs(_EPSS_CACHE_DIR, exist_ok=True)
+            with open(cache_path, "w", encoding="utf-8") as fh:
+                json.dump(result, fh)
+        except OSError:
+            pass
+        return result
+    except Exception:
+        return None
+
+
+def _fetch_cisa_kev(timeout: float = 15.0) -> set:
+    """Return the set of CVE IDs in the CISA Known Exploited Vulnerabilities catalog.
+
+    Caches the full catalog locally for 6 hours. Returns empty set on any error.
+    KEV inclusion means active, real-world exploitation has been confirmed by CISA.
+    """
+    try:
+        st = os.stat(_CISA_KEV_CACHE)
+        if time.time() - st.st_mtime < _CISA_KEV_TTL:
+            with open(_CISA_KEV_CACHE, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            return {v.get("cveID", "") for v in (data.get("vulnerabilities") or [])}
+    except (OSError, ValueError):
+        pass
+    try:
+        url = ("https://www.cisa.gov/sites/default/files/feeds/"
+               "known_exploited_vulnerabilities.json")
+        req = urllib.request.Request(url, headers={"User-Agent": "binoracle/1.0"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            data = json.loads(r.read().decode("utf-8", "replace"))
+        try:
+            os.makedirs(os.path.dirname(_CISA_KEV_CACHE), exist_ok=True)
+            with open(_CISA_KEV_CACHE, "w", encoding="utf-8") as fh:
+                json.dump(data, fh)
+        except OSError:
+            pass
+        return {v.get("cveID", "") for v in (data.get("vulnerabilities") or [])}
+    except Exception:
+        return set()
+
+
+def risk_label(info: "CVEInfo") -> str:
+    """Combine CVSS + EPSS + CISA KEV into a single triage risk label.
+
+    Labels (most severe first):
+      CRITICAL-WEAPONIZED — in CISA KEV (confirmed active exploitation)
+      CRITICAL            — CVSS >= 9.0 or (CVSS >= 7 and EPSS >= 0.5)
+      HIGH                — CVSS >= 7.0 or EPSS >= 0.2
+      MEDIUM              — CVSS >= 4.0
+      LOW                 — everything else
+    """
+    if info.in_cisa_kev:
+        return "CRITICAL-WEAPONIZED"
+    cvss = info.cvss_score or 0.0
+    epss = info.epss_score or 0.0
+    if cvss >= 9.0 or (cvss >= 7.0 and epss >= 0.5):
+        return "CRITICAL"
+    if cvss >= 7.0 or epss >= 0.2:
+        return "HIGH"
+    if cvss >= 4.0:
+        return "MEDIUM"
+    return "LOW"
 
 
 def fetch_cve(cve_id: str, timeout: float = 20.0, enrich: bool = True) -> CVEInfo:
@@ -252,6 +360,16 @@ def fetch_cve(cve_id: str, timeout: float = 20.0, enrich: bool = True) -> CVEInf
                 }})
         except Exception:
             pass
+        # EPSS — probability of exploitation in next 30 days
+        epss_data = _fetch_epss(cid)
+        if epss_data:
+            info.epss_score = epss_data.get("epss")
+            info.epss_percentile = epss_data.get("percentile")
+        # CISA KEV — confirmed active exploitation in the wild
+        kev_cves = _fetch_cisa_kev()
+        if cid in kev_cves:
+            info.in_cisa_kev = True
+            info.has_public_exploit = True  # KEV = real-world exploitation confirmed
     info.ok = bool(info.description)
     if not info.ok and not info.note:
         info.note = "la NVD no incluyo descripcion para esa CVE"
