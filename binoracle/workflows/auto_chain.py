@@ -588,15 +588,30 @@ def _find_patch_urls(cve_info) -> List[str]:
     """Find ALL patch/diff URLs from CVE references, ordered by quality."""
     refs = getattr(cve_info, "references", []) or []
     urls = []
+    _ghsa_ids: list[str] = []  # GitHub Security Advisory IDs to fetch later
     for ref in refs:
         url = ref.get("url", "") if isinstance(ref, dict) else str(ref)
         if not url:
             continue
+        # Direct commit diff (highest quality)
         m = re.search(r"(https://github\.com/[^/]+/[^/]+/commit/[0-9a-f]{7,40})", url)
         if m:
             urls.append(m.group(1) + ".diff")
-        elif url.endswith(".diff") or url.endswith(".patch"):
+            continue
+        # Pull request / compare view (extract merge commit if visible)
+        m_pr = re.search(
+            r"(https://github\.com/[^/]+/[^/]+/pull/\d+/commits/[0-9a-f]{7,40})", url)
+        if m_pr:
+            urls.append(m_pr.group(1).replace("/pull/", "/commit/").rsplit("/commits/", 1)[0]
+                        + "/commit/" + m_pr.group(1).rsplit("/", 1)[-1] + ".diff")
+            continue
+        if url.endswith(".diff") or url.endswith(".patch"):
             urls.append(url)
+            continue
+        # GitHub Security Advisory: collect GHSA IDs to try the API
+        m_ghsa = re.search(r"(GHSA-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4})", url, re.I)
+        if m_ghsa:
+            _ghsa_ids.append(m_ghsa.group(1).upper())
     # Also check patch_intel block
     for ref in refs:
         if not isinstance(ref, dict):
@@ -607,6 +622,22 @@ def _find_patch_urls(cve_info) -> List[str]:
                 fc_url = fc.get("url", "")
                 if fc_url and "github.com" in fc_url:
                     urls.append(fc_url + ".diff")
+    # Try fetching GHSA advisory JSON from api.github.com to find patch commits
+    for _ghsa in _ghsa_ids[:2]:  # max 2 GHSA lookups per CVE
+        try:
+            _ghsa_url = f"https://api.github.com/advisories/{_ghsa}"
+            _ghsa_data = _download(_ghsa_url, timeout=10)
+            if _ghsa_data:
+                import json as _jj
+                _d = _jj.loads(_ghsa_data)
+                for _ref in (_d.get("references") or []):
+                    _ru = _ref if isinstance(_ref, str) else _ref.get("url", "")
+                    _mc = re.search(
+                        r"(https://github\.com/[^/]+/[^/]+/commit/[0-9a-f]{7,40})", _ru)
+                    if _mc:
+                        urls.append(_mc.group(1) + ".diff")
+        except Exception:
+            pass
     return list(dict.fromkeys(urls))  # deduplicate, preserve order
 
 
