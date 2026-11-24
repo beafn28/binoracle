@@ -124,6 +124,58 @@ def _django_create_superuser(container: str, step: Callable) -> Optional[str]:
         return None
 
 
+def _get_fastapi_token(base_url: str, username: str, password: str,
+                       step: Callable) -> Optional[str]:
+    """Get FastAPI OAuth2 Bearer token via password flow.
+
+    Tries common FastAPI auth endpoints:
+    - POST /token (OAuth2PasswordRequestForm — form-encoded)
+    - POST /api/token
+    - POST /auth/token
+    - POST /api/auth/token
+    - POST /login (JSON body)
+    """
+    _endpoints = ["/token", "/api/token", "/auth/token", "/api/auth/token",
+                  "/api/v1/token", "/api/v1/auth/token"]
+    for ep in _endpoints:
+        url = base_url.rstrip("/") + ep
+        try:
+            # OAuth2PasswordRequestForm — form-encoded (FastAPI standard)
+            r = _http_request("POST", url,
+                              data=f"username={username}&password={password}&grant_type=password",
+                              headers={"Content-Type": "application/x-www-form-urlencoded"},
+                              timeout=8)
+            if r.status in (200, 201):
+                import json as _j
+                body = _j.loads(r.body or "{}")
+                token = (body.get("access_token") or body.get("token") or
+                         body.get("jwt") or "")
+                if token:
+                    step(f"  fastapi: Bearer token obtenido vía {ep}")
+                    return f"Bearer {token}"
+        except Exception:
+            continue
+    # Fallback: JSON body login
+    for ep in ["/login", "/api/login", "/auth/login", "/api/auth/login"]:
+        url = base_url.rstrip("/") + ep
+        try:
+            import json as _j
+            body_str = _j.dumps({"username": username, "password": password,
+                                  "email": f"{username}@binoracle.dev"})
+            r = _http_request("POST", url, data=body_str,
+                              headers={"Content-Type": "application/json"}, timeout=8)
+            if r.status in (200, 201):
+                body = _j.loads(r.body or "{}")
+                token = (body.get("access_token") or body.get("token") or
+                         (body.get("data") or {}).get("token") or "")
+                if token:
+                    step(f"  fastapi: Bearer token obtenido vía {ep} (JSON)")
+                    return f"Bearer {token}"
+        except Exception:
+            continue
+    return None
+
+
 def _get_django_session(base_url: str, username: str, password: str,
                         step: Callable) -> Optional[str]:
     """Login to Django admin and return sessionid cookie."""
@@ -221,17 +273,28 @@ def verify_python_web_cve(source_path: str, endpoint: str,
 
         # Setup auth if needed
         cookie = None
-        if auth_required and framework == "django":
-            creds = _django_create_superuser(container, step)
-            if creds:
-                user, pwd = creds.split(":", 1)
-                cookie = _get_django_session(base_url, user, pwd, step)
+        bearer = None
+        _user = "binoracle_test"
+        _pwd = "Binoracle123!"
+        if auth_required:
+            if framework == "django":
+                creds = _django_create_superuser(container, step)
+                if creds:
+                    user, pwd = creds.split(":", 1)
+                    cookie = _get_django_session(base_url, user, pwd, step)
+            elif framework == "fastapi":
+                bearer = _get_fastapi_token(base_url, _user, _pwd, step)
+            elif framework == "flask":
+                # Flask: try JSON login endpoints
+                bearer = _get_fastapi_token(base_url, _user, _pwd, step)
 
         # Fire the PoC
         target_url = base_url + endpoint
         headers = {}
         if cookie:
             headers["Cookie"] = cookie
+        if bearer:
+            headers["Authorization"] = bearer
 
         param = (parameters or [None])[0] if parameters else None
         body = None
