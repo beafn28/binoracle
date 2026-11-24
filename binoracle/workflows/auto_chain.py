@@ -3493,6 +3493,11 @@ def auto_queue_nvd(days_back: int = 2, min_cvss: float = 7.0,
     else:
         # "cvss" or default: sort by combined triage score (web relevance + CVSS)
         entries = sorted(entries, key=_triage_score, reverse=True)
+        # Log top-5 scores for debugging/auditing triage decisions
+        if entries:
+            _score_summary = [(e.cve_id, round(_triage_score(e), 2)) for e in entries[:5]]
+            step("auto_queue_nvd: triage top-5 scores: "
+                 + ", ".join(f"{cid}={sc}" for cid, sc in _score_summary))
     # default "cvss" — poll_nvd_new already returns sorted by CVSS desc
 
     # parallel controls concurrent investigation (default 1 = serial for safety
