@@ -46,7 +46,11 @@ jobs:
       - name: Copy reports to site
         run: |
           mkdir -p docs/site/reports
-          cp reports/*.html docs/site/reports/ 2>/dev/null || true
+          # Copy main reports only — exclude *_evidence.html (large base64 files, served locally)
+          for f in reports/CVE-*.html; do
+            [[ "$f" == *_evidence.html ]] && continue
+            cp "$f" docs/site/reports/ 2>/dev/null || true
+          done
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
