@@ -11072,6 +11072,34 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         budget_s=budget_s,
                     )
                     _apply_wpverify_result(inv, wr, es, llm)
+            # Go / Rust web frameworks: verificacion especializada con auto-deteccion de
+            # framework (Gin/Echo/Fiber/Chi/Gorilla/Actix/Axum), JWT auto-auth y API key
+            # scan -- ver goverify.py.
+            elif (not plugin_dir and fr.local_path and
+                  inv.vuln_class in ("xss", "sqli", "sql-injection", "ssrf", "idor",
+                                     "missing-authorization", "auth-bypass",
+                                     "broken-access-control", "ssti", "rce",
+                                     "command-injection", "os-command-injection")
+                  and notes.get("endpoint")):
+                from .goverify import detect_go_framework, verify_go_web_cve
+                _go_fw = detect_go_framework(str(fr.local_path))
+                if _go_fw != "unknown":
+                    step((f"  goverify: framework detectado — {_go_fw}" if es else
+                          f"  goverify: detected framework — {_go_fw}"))
+                    wr = verify_go_web_cve(
+                        str(fr.local_path),
+                        endpoint=notes.get("endpoint") or "/",
+                        vuln_class=inv.vuln_class,
+                        http_method=notes.get("http_method") or "GET",
+                        parameters=notes.get("parameters") or [],
+                        payload=notes.get("payload") or "",
+                        confirm_string=notes.get("confirm_string") or "",
+                        auth_required=bool(notes.get("auth_required") or notes.get("authenticated")),
+                        pkg_version=inv.llm_notes.get("vulnerable_version") or "",
+                        on_step=step,
+                        budget_s=budget_s,
+                    )
+                    _apply_wpverify_result(inv, wr, es, llm)
             # mismo laboratorio efimero, para SQLi en Drupal (quinta clase de Drupal, "poco a
             # poco" -- ver drupalverify.py).
             elif (is_drupal and fr.kind in ("drupal-module", "local-zip", "zip-url") and plugin_dir
