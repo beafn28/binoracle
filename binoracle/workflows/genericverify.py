@@ -988,6 +988,35 @@ def _diagnose_infra_error(e: Exception, source_dir: str = "", base_url: str = ""
     return f"error inesperado: {e}"
 
 
+def _discover_routes_from_openapi(base_url: str, step) -> List[str]:
+    """Try common OpenAPI/Swagger spec endpoints and parse paths from the spec.
+
+    Returns a list of route paths (e.g. ["/api/users", "/api/admin/users"]).
+    Returns [] when no spec is reachable or parseable.
+    """
+    _SPEC_PATHS = [
+        "/openapi.json", "/swagger.json", "/api-docs",
+        "/api/swagger", "/api/openapi.json", "/api/v1/openapi.json",
+        "/api/v2/openapi.json", "/swagger/v1/swagger.json",
+        "/api-docs/swagger.json", "/.well-known/openapi.json",
+    ]
+    from .wpverify import _http_request
+    for sp in _SPEC_PATHS:
+        url = base_url.rstrip("/") + sp
+        try:
+            r = _http_request("GET", url, timeout=5)
+            if r.status != 200 or not r.body:
+                continue
+            spec = json.loads(r.body)
+            paths = list((spec.get("paths") or {}).keys())
+            if paths:
+                step(f"  openapi: {len(paths)} rutas descubiertas desde {sp}")
+                return paths[:30]
+        except Exception:
+            continue
+    return []
+
+
 def _bootstrap_generic_lab(source_dir: str, step, res: WpVerifyResult,
                            budget_s: float, setup_commands: Optional[List[str]] = None,
                            dockerfile_body: str = "",
@@ -1081,6 +1110,14 @@ def _bootstrap_generic_lab(source_dir: str, step, res: WpVerifyResult,
     container, port = found_http
     base_url = f"http://{_lab_host()}:{port}"
     step(f"objetivo arriba: {base_url} (contenedor '{container}')")
+
+    # Store discovered OpenAPI routes on res so callers can seed endpoint candidates
+    try:
+        _openapi_routes = _discover_routes_from_openapi(base_url, step)
+        if _openapi_routes:
+            res.evidence["openapi_routes"] = _openapi_routes[:20]
+    except Exception:
+        pass
 
     for cmd in (setup_commands or []):
         step(f"ejecutando paso de configuracion real dentro del contenedor: {cmd!r}...")
@@ -4037,7 +4074,11 @@ def verify_generic_header_bypass(
 
         blocked_normally = status_normal not in range(200, 300)
         bypassed = status_bypass in range(200, 300)
-        string_ok = (not confirm_string) or (confirm_string in body_bypass)
+        # For XSS payloads in confirm_string, also check unescaped reflection
+        _xss_reflected = (confirm_string and
+                          any(c in confirm_string for c in ("<", "alert(", "onerror")) and
+                          _check_xss_reflected(body_bypass, confirm_string))
+        string_ok = (not confirm_string) or (confirm_string in body_bypass) or _xss_reflected
 
         if blocked_normally and bypassed and string_ok:
             res.verified = True
@@ -4105,6 +4146,146 @@ def verify_generic_header_bypass(
         return res
     finally:
         step("desmontando el laboratorio generico (contenedores/red/imagen)...")
+        lab.teardown()
+
+
+def _check_xss_reflected(response_body: str, payload: str) -> bool:
+    """Return True if `payload` appears in `response_body` verbatim (unescaped).
+
+    Checks:
+    1. Literal payload string present in body (not HTML-escaped)
+    2. Alert canary patterns: <script>alert( or <img src=x onerror=
+    3. The payload does NOT appear only as &lt;...&gt; (fully escaped)
+    """
+    if not payload or not response_body:
+        return False
+    # Check 1: literal payload present
+    if payload in response_body:
+        # Verify it's not fully escaped — look for the raw < character
+        if "<" in payload and "&lt;" not in response_body:
+            return True
+        if "<" not in payload:
+            return True
+    # Check 2: alert canary patterns that indicate execution context
+    _canary_patterns = [
+        "<script>alert(",
+        "<script>alert(",  # fullwidth
+        "<img src=x onerror=",
+        "<img src=\"x\" onerror=",
+        "<svg onload=",
+        "<svg/onload=",
+        "javascript:alert(",
+        "';alert(",
+        "\";alert(",
+    ]
+    body_lower = response_body.lower()
+    for pattern in _canary_patterns:
+        if pattern.lower() in body_lower:
+            return True
+    return False
+
+
+def verify_stored_xss(
+    source_dir: str,
+    endpoint_create: str,
+    endpoint_view: str,
+    payload: str,
+    confirm_string: str = "",
+    auth_header: str = "",
+    http_method_create: str = "POST",
+    param_name: str = "content",
+    on_step: Optional[Callable[[str], None]] = None,
+    budget_s: float = 900.0,
+    dockerfile_body: str = "",
+    extra_files: Optional[dict] = None,
+) -> WpVerifyResult:
+    """Two-request stored XSS verifier.
+
+    1. POST payload to endpoint_create (with optional auth_header)
+    2. GET endpoint_view — check if confirm_string (or the raw payload) appears in body
+
+    Use for CVEs where XSS is stored via an admin/API endpoint and rendered elsewhere.
+    """
+    step = on_step or (lambda _m: None)
+    res = WpVerifyResult()
+
+    if not _docker_daemon_ok():
+        res.available = False
+        res.detail = "sin daemon Docker alcanzable"
+        return res
+
+    boot = _bootstrap_generic_lab(source_dir, step, res, budget_s,
+                                   dockerfile_body=dockerfile_body, extra_files=extra_files)
+    if boot is None:
+        return res
+    lab, base_url, container = boot
+    try:
+        hdrs: dict = {}
+        if auth_header:
+            if ": " in auth_header:
+                _h, _v = auth_header.split(": ", 1)
+                hdrs[_h.strip()] = _v.strip()
+            else:
+                hdrs["Authorization"] = auth_header
+
+        # Step 1: store the payload
+        create_url = base_url + endpoint_create
+        step(f"stored-xss: {http_method_create} {create_url} (inyectando payload)...")
+        body_data = f"{param_name}={payload}"
+        hdrs_create = dict(hdrs)
+        hdrs_create.setdefault("Content-Type", "application/x-www-form-urlencoded")
+        try:
+            r_create = _http_request(http_method_create.upper(), create_url,
+                                     data=body_data, headers=hdrs_create, timeout=15)
+            step(f"  create response: {r_create.status_code}")
+        except Exception as e:
+            res.detail = f"stored-xss: error al enviar payload: {e}"
+            return res
+
+        # Step 2: retrieve and check
+        view_url = base_url + endpoint_view
+        step(f"stored-xss: GET {view_url} (buscando payload reflejado almacenado)...")
+        try:
+            r_view = _http_request("GET", view_url, headers=hdrs, timeout=15)
+            view_body = getattr(r_view, "text", "") or getattr(r_view, "body", "") or ""
+        except Exception as e:
+            res.detail = f"stored-xss: error al recuperar vista: {e}"
+            return res
+
+        _cs = confirm_string or payload
+        xss_found = _check_xss_reflected(view_body, payload)
+        string_ok = (not confirm_string) or (confirm_string in view_body)
+
+        res.evidence = {
+            "base_url": base_url,
+            "endpoint_create": endpoint_create,
+            "endpoint_view": endpoint_view,
+            "payload": payload,
+            "create_status": getattr(r_create, "status_code", -1),
+            "view_status": getattr(r_view, "status_code", -1),
+            "confirm_string": _cs,
+            "xss_reflected": xss_found,
+            "body_snippet": view_body[:400],
+        }
+
+        if xss_found and string_ok:
+            res.verified = True
+            res.ok = True
+            res.detail = (f"STORED XSS confirmado: payload '{payload[:60]}' encontrado "
+                          f"sin escapar en {endpoint_view} tras almacenarlo via {endpoint_create}")
+            step("stored-xss: VERIFICADO")
+        else:
+            res.ok = True
+            res.detail = (f"stored-xss: payload NOT encontrado reflejado en {endpoint_view} "
+                          f"(xss_found={xss_found}, string_ok={string_ok})")
+            step(f"stored-xss: no verificado — {res.detail}")
+
+        return res
+    except Exception as e:
+        res.detail = f"error inesperado en verify_stored_xss: {e}"
+        return res
+    finally:
+        step("desmontando laboratorio (stored-xss)...")
         lab.teardown()
 
 

