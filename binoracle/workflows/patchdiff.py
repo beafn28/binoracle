@@ -496,6 +496,35 @@ _FIX_RULES: List[tuple] = [
                     r"private_ip|internal_ip|SSRF_PROTECTION)", re.I)],
         0.80,
     ),
+    (
+        "jwt_bypass",
+        "JWT algorithm confusion or missing algorithm enforcement",
+        "added algorithm allowlist or algorithm enforcement",
+        [re.compile(r"(?:jwt\.verify\s*\([^)]+\)(?!\s*,\s*\{.*algorithms)|"
+                    r"jwt\.decode\s*\([^)]*algorithms\s*=\s*None|"
+                    r"verify\s*\(\s*token[^)]*\)(?!\s*,\s*\{.*algorithms)|"
+                    r"alg.*none|algorithm.*none)", re.I)],
+        [re.compile(r"(?:algorithms\s*=\s*\[|\{.*algorithms.*:\s*\[|"
+                    r"jwt\.verify\s*\([^)]+,\s*\{.*algorithms|"
+                    r"allowed_algorithms|allowedAlgorithms|"
+                    r"verifyOptions.*algorithms|"
+                    r"jwt\.decode\s*\([^)]*algorithms\s*=\s*\[)", re.I)],
+        0.85,
+    ),
+    (
+        "xml_injection",
+        "XML external entity (XXE) or XML injection via unsanitized input",
+        "disabled external entities or added XML sanitization",
+        [re.compile(r"(?:lxml\.etree\.parse\s*\(|xml\.dom\.minidom\.parse\s*\(|"
+                    r"DocumentBuilderFactory|SAXParserFactory|XMLReader|"
+                    r"etree\.fromstring\s*\(user|xmltree.*user_input|"
+                    r"new\s+DOMParser\s*\(\s*\)\.parseFromString\s*\(\s*user)", re.I)],
+        [re.compile(r"(?:resolve_entities\s*=\s*False|no_network\s*=\s*True|"
+                    r"setFeature.*external.entities.*false|"
+                    r"XMLInputFactory.*SUPPORT_DTD.*false|"
+                    r"defusedxml|etree\.XMLParser\s*\(.*resolve_entities.*False)", re.I)],
+        0.85,
+    ),
 ]
 
 # Fallback: if nothing matches, look for generic sanitization removal
@@ -550,6 +579,8 @@ _PAYLOADS_FOR_CLASS: Dict[str, str] = {
     "cors_misconfiguration": "",    # no payload; check Origin header reflection
     "mass_assignment":    "",       # no payload; send extra protected fields
     "ssrf":               "http://169.254.169.254/latest/meta-data/",
+    "jwt_bypass":         "",       # payload is a JWT with alg:none
+    "xml_injection":      "<!DOCTYPE foo [<!ENTITY xxe SYSTEM 'file:///etc/passwd'>]>",
     "unknown":            "",
 }
 

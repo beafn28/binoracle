@@ -2524,6 +2524,8 @@ def run_full_chain(
                         "cors_misconfiguration": "cors-misconfiguration",
                         "mass_assignment":    "mass-assignment",
                         "command_injection":  "rce",
+                        "jwt_bypass":         "jwt-bypass",
+                        "xml_injection":      "xxe",
                     }
                     _mapped_vc = _DIFF_TO_VULN_CLASS.get(_pdiff.fix_class, "")
                     if _mapped_vc and result.cve_class not in ("native", "binary"):
