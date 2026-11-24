@@ -1013,12 +1013,14 @@ class _GenericLab:
 
     def __init__(self, tag: str):
         self.tag = tag
-        self.net = f"binoracle-genverify-{tag}"
+        # F28: per-CVE isolated network name prevents cross-lab interference
+        self.net = f"bo_net_{tag}"
         self.container = f"binoracle-genverify-{tag}-app"
         self.image = f"binoracle-genverify-{tag}:latest"
         self.compose_project = f"binoracle-genverify-{tag}"
         self.kind = ""
         self._created: List[str] = []
+        self._net_created = False
 
     def sh(self, *args, timeout=60.0, input_text=None):
         return _run(["docker"] + list(args), timeout=timeout, input_text=input_text)

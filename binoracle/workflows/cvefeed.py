@@ -559,3 +559,75 @@ def poll_osv_new(days_back: int = 2, min_cvss: float = 7.0) -> List[NVDCVEEntry]
         return new
     except Exception:
         return entries
+
+
+def fetch_osv_related(package: str, ecosystem: str = "npm",
+                      exclude_cve: str = "", min_cvss: float = 5.0,
+                      max_results: int = 10) -> List[NVDCVEEntry]:
+    """D20: Fetch OSV advisories for the same package (vulnerability graph).
+
+    Used after a CVE is verified to find sibling CVEs in the same package
+    that might also be exploitable. Returns NVDCVEEntry list (may be empty).
+    """
+    if not package:
+        return []
+    _ecosystem_map = {
+        "npm": "npm", "pypi": "PyPI", "packagist": "Packagist",
+        "rubygems": "RubyGems", "go": "Go", "maven": "Maven",
+        "nuget": "NuGet",
+    }
+    eco = _ecosystem_map.get(ecosystem.lower(), ecosystem)
+    try:
+        payload = json.dumps({
+            "package": {"name": package, "ecosystem": eco}
+        }).encode()
+        req = urllib.request.Request(
+            "https://api.osv.dev/v1/query",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+        entries: List[NVDCVEEntry] = []
+        for vuln in (data.get("vulns") or []):
+            vuln_id = vuln.get("id", "")
+            aliases = vuln.get("aliases") or []
+            # Prefer the CVE alias
+            cve_id = next((a for a in aliases if a.startswith("CVE-")), vuln_id)
+            if cve_id == exclude_cve:
+                continue
+            severity = vuln.get("database_specific", {}).get("severity", "")
+            cvss_score = 0.0
+            for sev in (vuln.get("severity") or []):
+                if sev.get("type") == "CVSS_V3":
+                    try:
+                        # Parse score from vector string last component
+                        parts = sev["score"].split("/")
+                        # Score is not in the vector — use severity heuristic
+                    except Exception:
+                        pass
+            if severity in ("CRITICAL", "HIGH"):
+                cvss_score = 9.0 if severity == "CRITICAL" else 7.5
+            elif severity == "MEDIUM":
+                cvss_score = 5.5
+            if cvss_score < min_cvss:
+                continue
+            summary = vuln.get("summary") or vuln.get("details", "")[:200]
+            e = NVDCVEEntry(
+                cve_id=cve_id,
+                description=summary,
+                cvss_score=cvss_score,
+                cvss_vector="",
+                cwes=[],
+                published="",
+                modified="",
+                source="osv-related",
+            )
+            e.references = vuln.get("references") or []
+            entries.append(e)
+            if len(entries) >= max_results:
+                break
+        return entries
+    except Exception:
+        return []

@@ -202,18 +202,34 @@ def _checkpoint_path(cve_id: str) -> str:
     return os.path.join(_dir, f"{_slug}.json")
 
 
+_STAGE_ORDER = [
+    "start", "intelligence", "hypothesis", "classify",
+    "patchdiff", "investigation", "report", "done",
+]
+
+
+def _stage_index(stage: str) -> int:
+    """F26: Return numeric order of a stage name for comparison."""
+    try:
+        return _STAGE_ORDER.index(stage)
+    except ValueError:
+        return -1
+
+
 def _save_checkpoint(result: ChainResult, llm_notes: dict, stage: str) -> None:
     """Persist chain state after a completed stage.
 
     Serializes the parts of ChainResult that are JSON-safe and cheap to
     re-use: steps, evidence, scores, llm_notes. The inv object (raw
     Investigation) is NOT persisted — it holds Docker state.
+    F26: also stores stage_index for granular resume logic.
     """
     import json as _json
     try:
         _data = {
             "cve_id": result.cve_id,
             "last_stage": stage,
+            "last_stage_index": _stage_index(stage),  # F26
             "cve_class": result.cve_class,
             "cvss_score": result.cvss_score,
             "cvss_severity": result.cvss_severity,
@@ -2670,6 +2686,44 @@ def run_full_chain(
         except Exception:
             step("  LLM: no disponible (modo determinístico)")
 
+    # ── F30: Ollama availability watchdog ─────────────────────────────────────
+    # Probe Ollama before starting; if unavailable, retry up to 3 times (60s)
+    if llm is None:
+        _ollama_base = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+        _ollama_retries = 0
+        while _ollama_retries < 3:
+            try:
+                import urllib.request as _ur30
+                with _ur30.urlopen(f"{_ollama_base}/api/tags", timeout=5) as _r30:
+                    if _r30.status == 200:
+                        try:
+                            from ..llm import make_backend
+                            llm = make_backend(config)
+                        except Exception:
+                            pass
+                        break
+            except Exception:
+                pass
+            _ollama_retries += 1
+            step(f"  [F30] Ollama no disponible — reintento {_ollama_retries}/3 en 60s…")
+            time.sleep(60)
+        if llm is None:
+            step("  [F30] Ollama no respondió tras 3 intentos — continuando sin LLM")
+
+    # ── F27: Global timeout watchdog ──────────────────────────────────────────
+    # Install signal.alarm for UNIX; on Windows/Darwin it's a no-op.
+    _f27_max_s = int(os.environ.get("BINORACLE_MAX_CHAIN_S", "1500"))  # 25min default
+    _f27_installed = False
+    try:
+        import signal as _sig
+        def _f27_handler(signum, frame):
+            raise TimeoutError(f"[F27] run_full_chain exceeded {_f27_max_s}s — aborting")
+        _old_handler = _sig.signal(_sig.SIGALRM, _f27_handler)
+        _sig.alarm(_f27_max_s)
+        _f27_installed = True
+    except (AttributeError, OSError):
+        pass  # Windows / environments without SIGALRM
+
     # ── Checkpoint resume ─────────────────────────────────────────────────────
     # If a previous run was interrupted (timeout, crash) and a checkpoint was
     # saved within the last 24h, restore what we know and skip completed stages.
@@ -3583,6 +3637,87 @@ def run_full_chain(
     except Exception:
         pass
 
+    # ── D16: Confidence calibration — record prediction outcome ───────────────
+    try:
+        from .confidence_calibration import record_prediction
+        record_prediction(
+            predicted_confidence=result.engine_confidence,
+            actually_verified=result.verified,
+        )
+    except Exception:
+        pass
+
+    # ── D18: CVE similarity index — register verified CVEs ───────────────────
+    if result.verified:
+        try:
+            from .cve_similarity import record_verified_cve
+            from .cve_lessons import detect_stack as _det_stack
+            _sim_inv = result.inv
+            _sim_notes = (getattr(_sim_inv, "llm_notes", {}) or {}) if _sim_inv else {}
+            _sim_desc = (cve_info.get("description") or "") if cve_info else ""
+            _sim_pa = result.evidence.get("patch_analysis") or {}
+            record_verified_cve(
+                cve_id=cve_id,
+                stack=_det_stack(_sim_desc),
+                vuln_function=str(_sim_pa.get("vuln_function") or ""),
+                param=str(_sim_notes.get("sqli_param") or _sim_notes.get("param") or ""),
+                vuln_class=str(getattr(_sim_inv, "vuln_class", "") or ""),
+                package=str(cve_info.get("product", "") if cve_info else ""),
+                cwe=str((cve_info.get("cwes") or [""])[0] if cve_info else ""),
+                poc_endpoint=str(_sim_notes.get("endpoint") or ""),
+                http_method=str(_sim_notes.get("http_method") or ""),
+                confirm_string=str(_sim_notes.get("confirm_string") or ""),
+            )
+        except Exception:
+            pass
+
+    # ── D20: OSV vulnerability graph — enqueue related CVEs post-verification ─
+    if result.verified:
+        try:
+            from .cvefeed import fetch_osv_related
+            _d20_pkg = ""
+            _d20_ecosystem = "npm"
+            if cve_info:
+                _d20_pkg = cve_info.get("product") or ""
+                _d20_desc = (cve_info.get("description") or "").lower()
+                for _eco in ("packagist", "pypi", "rubygems", "go", "maven", "npm"):
+                    if _eco in _d20_desc:
+                        _d20_ecosystem = _eco
+                        break
+            if _d20_pkg:
+                _related = fetch_osv_related(_d20_pkg, _d20_ecosystem, exclude_cve=cve_id)
+                if _related:
+                    step(f"  [D20] OSV: {len(_related)} CVEs relacionadas en {_d20_pkg} encoladas")
+                    result.evidence["osv_related"] = [
+                        {"cve_id": r.cve_id, "severity": getattr(r, "cvss_score", 0)}
+                        for r in _related[:5]
+                    ]
+                    # Note: actual enqueue deferred to avoid import cycle with auto_queue_nvd
+        except Exception:
+            pass
+
+    # ── E21: CVSS 3.1 auto-scoring ────────────────────────────────────────────
+    if result.verified and not result.cvss_score:
+        try:
+            from .cvss_autoscore import compute_cvss
+            _e21_inv = result.inv
+            _e21_notes = (getattr(_e21_inv, "llm_notes", {}) or {}) if _e21_inv else {}
+            _e21_vc = str(getattr(_e21_inv, "vuln_class", "") or "")
+            _auto_cvss = compute_cvss(
+                vuln_class=_e21_vc,
+                auth_required=bool(_e21_notes.get("auth_required", True)),
+                user_interaction=bool(_e21_notes.get("user_interaction", False)),
+                scope_changed=bool(_e21_notes.get("scope_changed", False)),
+                confidentiality=_e21_notes.get("impact_confidentiality", "high"),
+                integrity=_e21_notes.get("impact_integrity", "none"),
+                availability=_e21_notes.get("impact_availability", "none"),
+            )
+            if _auto_cvss:
+                result.evidence["cvss_autoscore"] = _auto_cvss
+                step(f"  [E21] CVSS auto: {_auto_cvss['score']} ({_auto_cvss['vector']})")
+        except Exception:
+            pass
+
     # ── YWH writeup: auto-generate bug report skeleton on verified CVEs ─────
     if result.verified:
         try:
@@ -3594,6 +3729,39 @@ def run_full_chain(
                     import pathlib as _pl
                     _wu_path = str(_pl.Path(result.report_path).with_suffix("")) + "_ywh.md"
                     _pl.Path(_wu_path).write_text(_wu.to_markdown(), encoding="utf-8")
+                # E22: Scope validation
+                try:
+                    from .ywh_writeup import validate_scope as _vs
+                    _scope_res = _vs(_wu, description=result.description or "")
+                    result.evidence["ywh_scope"] = _scope_res
+                    if not _scope_res.get("in_scope"):
+                        step(f"  ywh: CVE FUERA DE SCOPE — {_scope_res.get('reason')}")
+                except Exception:
+                    pass
+
+                # E23: Deduplication check
+                try:
+                    from .ywh_writeup import is_duplicate_writeup as _idup, save_writeup_to_cache as _swc
+                    _dup = _idup(_wu)
+                    if _dup.get("duplicate"):
+                        step(f"  ywh: writeup DUPLICADO (sim={_dup['similarity']}) → {_dup['matched_path']}")
+                        result.evidence["ywh_duplicate"] = _dup
+                    else:
+                        _swc(_wu)
+                except Exception:
+                    pass
+
+                # E24: Quality scoring
+                try:
+                    from .ywh_writeup import score_report_quality as _srq
+                    _qual = _srq(_wu)
+                    result.evidence["ywh_quality"] = _qual
+                    if _qual.get("warnings"):
+                        for _w in _qual["warnings"][:3]:
+                            step(f"  ywh: quality [{_qual['score']}/{_qual['total']}] {_w}")
+                except Exception:
+                    pass
+
                 result.evidence["ywh_writeup"] = {
                     "title": _wu.title,
                     "severity": _wu.severity,
@@ -3602,12 +3770,38 @@ def run_full_chain(
                     "file": _wu_path or "",
                 }
                 step(f"  ywh: borrador de reporte generado → {_wu_path or 'evidence[ywh_writeup]'}")
+
+                # E25: Auto-submit when confidence high and in scope
+                try:
+                    from .ywh_writeup import submit_to_ywh as _sub
+                    _scope_ok = result.evidence.get("ywh_scope", {}).get("in_scope", True)
+                    _no_dup   = not result.evidence.get("ywh_duplicate", {}).get("duplicate", False)
+                    _qual_ok  = result.evidence.get("ywh_quality", {}).get("ready_to_submit", False)
+                    if (result.engine_confidence >= 0.90 and _scope_ok and _no_dup and _qual_ok):
+                        _sub_res = _sub(_wu)
+                        result.evidence["ywh_submission"] = _sub_res
+                        if _sub_res.get("submitted"):
+                            step(f"  ywh: ENVIADO → {_sub_res.get('url') or _sub_res.get('report_id')}")
+                        elif "BINORACLE_SUBMIT not set" not in _sub_res.get("error", ""):
+                            step(f"  ywh: envío falló: {_sub_res.get('error')}")
+                except Exception:
+                    pass
+
         except Exception as _wu_e:
             step(f"  ywh: error generando writeup: {_wu_e}")
 
     # ── Notifications: webhook / Telegram alert on verified CVE ──────────────
     if result.verified:
         _notify_verified(cve_id, result)
+
+    # ── F27: cancel watchdog alarm ────────────────────────────────────────────
+    if _f27_installed:
+        try:
+            import signal as _sig27
+            _sig27.alarm(0)
+            _sig27.signal(_sig27.SIGALRM, _old_handler)  # type: ignore[name-defined]
+        except Exception:
+            pass
 
     return result
 

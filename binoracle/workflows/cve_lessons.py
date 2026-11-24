@@ -592,3 +592,89 @@ def export_lessons_csv(out_path: str = "") -> str:
     except Exception as e:
         return f"error: {e}"
     return _out
+
+
+# ── D17: Transfer learning between similar stacks ─────────────────────────────
+
+_STACK_FAMILY: dict[str, list[str]] = {
+    "django":    ["fastapi", "flask"],
+    "fastapi":   ["django", "flask"],
+    "flask":     ["django", "fastapi"],
+    "express":   ["nextjs", "nestjs"],
+    "nextjs":    ["express", "nestjs"],
+    "nestjs":    ["express", "nextjs"],
+    "rails":     ["laravel", "django"],
+    "laravel":   ["rails", "wordpress"],
+    "wordpress": ["drupal", "joomla", "laravel"],
+    "drupal":    ["wordpress", "joomla"],
+    "joomla":    ["wordpress", "drupal"],
+    "strapi":    ["ghost", "directus", "payload"],
+    "ghost":     ["strapi", "directus"],
+    "directus":  ["strapi", "ghost"],
+    "gitea":     ["mattermost", "nextcloud"],
+    "mattermost":["gitea", "nextcloud"],
+    "nextcloud": ["gitea", "mattermost"],
+}
+
+
+def transfer_lessons(target_stack: str, max_transferred: int = 5) -> list[dict]:
+    """D17: Seed lessons for target_stack from sibling stacks.
+
+    Returns a list of run dicts (endpoint, vuln_class, http_method, etc.)
+    sourced from related stacks, filtered to verified=True runs only,
+    for use as seed hints when target_stack has few/no runs.
+    """
+    siblings = _STACK_FAMILY.get(target_stack, [])
+    if not siblings:
+        return []
+    data = _load()
+    # Only return transfer if target has few runs itself
+    target_runs = len((data.get(target_stack) or {}).get("runs") or [])
+    if target_runs >= 10:
+        return []
+    transferred: list[dict] = []
+    for sib in siblings:
+        entry = data.get(sib) or {}
+        for run in (entry.get("runs") or []):
+            if run.get("verified") and run not in transferred:
+                transferred.append(dict(run, _from_stack=sib))
+        if len(transferred) >= max_transferred:
+            break
+    return transferred[:max_transferred]
+
+
+# ── D19: Lessons decay — mark stale runs ──────────────────────────────────────
+
+_DECAY_DAYS = int(os.environ.get("BINORACLE_LESSONS_DECAY_DAYS", "90"))
+
+
+def decay_stale_lessons(dry_run: bool = False) -> dict:
+    """D19: Mark lessons older than BINORACLE_LESSONS_DECAY_DAYS as stale.
+
+    Runs do NOT have timestamps by default; decay is based on cve_id year
+    parsed from the CVE-YYYY-NNNNN pattern — a CVE from >2 years ago is
+    considered stale. Returns {stacks_touched: N, runs_marked: N}.
+    If dry_run=True, returns counts but writes nothing.
+    """
+    import re as _re
+    import datetime as _dt
+
+    cutoff_year = _dt.datetime.utcnow().year - 2
+    data = _load()
+    stacks_touched = 0
+    runs_marked = 0
+    for stack, entry in data.items():
+        changed = False
+        for run in (entry.get("runs") or []):
+            cve_id = run.get("cve_id", "")
+            m = _re.match(r"CVE-(\d{4})-", cve_id)
+            if m and int(m.group(1)) <= cutoff_year:
+                if not run.get("stale"):
+                    run["stale"] = True
+                    runs_marked += 1
+                    changed = True
+        if changed:
+            stacks_touched += 1
+    if not dry_run and runs_marked:
+        _save(data)
+    return {"stacks_touched": stacks_touched, "runs_marked": runs_marked}

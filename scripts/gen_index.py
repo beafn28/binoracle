@@ -1,13 +1,49 @@
 #!/usr/bin/env python3
-"""Generate index.html — filterable table of all CVEs (history + batch + standalone HTML)."""
+"""Generate index.html — filterable table of all CVEs (history + batch + standalone HTML).
+
+Strict filter: only CVEs with confirmed dynamic lab verification are shown.
+A CVE is "truly verified" when ALL of:
+  - top-level verified == True
+  - dynamic_verify.verified == True  (lab confirmed the vuln, not just ran)
+History entries require non-empty verified_evidence AND the evidence must
+contain at least one of: tecnica, respuesta_true_len, bypass_header, marker,
+canary_path (i.e., something a real lab would populate).
+HTML scan entries: only when the report explicitly shows 'VERIFICADO - lab aislado'
+tag (not 'EXPLOTACION CONFIRMADA' which appears in all reports, verified or not).
+"""
 import json, os, re, html as html_mod
 
 HISTORY   = "/Users/beatrizfresnonaumova/.binoracle/history"
 BATCH_DIR = os.path.join(os.path.dirname(__file__), "..", "binoracle_batch_reports")
 OUT       = "/Users/beatrizfresnonaumova/Downloads/binoracle_reports"
-DATE      = "22 NOVIEMBRE 2026"
+DATE      = "24 NOVIEMBRE 2026"
 
 def h(s): return html_mod.escape(str(s or ""))
+
+
+def _batch_truly_verified(d: dict) -> bool:
+    """Return True only when the batch report confirms the vuln via dynamic lab."""
+    if not d.get("verified", False):
+        return False
+    dv = d.get("dynamic_verify") or {}
+    if isinstance(dv, dict) and dv.get("verified"):
+        return True
+    return False
+
+
+def _history_truly_verified(data: dict) -> bool:
+    """Return True only for history entries with real lab evidence."""
+    if not data.get("verified", True):  # history defaults verified=True, still check
+        return False
+    r = data.get("result", {})
+    ve = r.get("verified_evidence") or {}
+    if not isinstance(ve, dict) or len(ve) == 0:
+        return False
+    # Must contain at least one field that only a real lab populates
+    real_lab_keys = {"tecnica", "respuesta_true_len", "bypass_header", "marker",
+                     "canary_path", "mysql_version_extraida", "respuesta_cuerpo_recorte",
+                     "sqli_sesion_admin", "sqli_sesion_subscriber", "respuesta_control_recorte"}
+    return bool(real_lab_keys & set(ve.keys()))
 
 rows = []
 seen = set()
@@ -26,42 +62,20 @@ def add_row(cve, cls, tech, score, sev, poc, auth, aff, desc, pub, endpoint, ver
                      auth=auth,aff=aff,desc=desc,pub=pub,endpoint=endpoint,verified=verified,
                      gap=gap,is_gap=is_gap))
 
-# 1. History (all verified)
-for fname in sorted(os.listdir(HISTORY)):
-    if not fname.endswith(".json"): continue
-    with open(os.path.join(HISTORY, fname)) as fh:
-        data = json.load(fh)
-    r  = data.get("result", {})
-    ve = r.get("verified_evidence", {})
-    cve = data.get("cve_id", "?")
-    cls  = r.get("vuln_class", "?")
-    tech = ve.get("tecnica", "")
-    if not tech:
-        if ve.get("respuesta_true_len"): tech = "boolean-blind"
-        elif ve.get("bypass_header"):    tech = "auth-bypass"
-        elif ve.get("marker"):           tech = "stored-xss"
-        elif ve.get("canary_path"):      tech = "path-traversal"
-    score = r.get("cvss_score", "?")
-    sev   = (r.get("cvss_severity") or "CRITICAL").upper()
-    poc      = bool(r.get("poc_source", ""))
-    auth     = bool(ve.get("login_bajo_privilegio", ""))
-    aff      = r.get("affected_version", "?") or "?"
-    desc     = (r.get("description") or "")[:120]
-    pub      = r.get("published", "?") or "?"
-    endpoint = ve.get("endpoint", "?") or "?"
-    verified_hist = data.get("verified", True)
-    is_gap_h = bool(data.get("is_gap", False) or r.get("is_gap", False))
-    gap_h    = is_gap_h or not poc
-    add_row(cve, cls, tech, score, sev, poc, auth, aff, desc, pub, endpoint, verified=verified_hist,
-            gap=gap_h, is_gap=is_gap_h)
+# 1. History — skipped: source of truth is batch_reports with dynamic_verify.verified=True.
+# History contains older lab runs, some of which don't have the dynamic_verify field.
+# Including them would inflate the count beyond the confirmed 19 from batch_reports.
+# _history_truly_verified() is kept for future use if needed.
 
-# 2. Batch reports
+# 2. Batch reports — only dynamic_verify.verified=True (confirmed by lab)
 batch_dir = os.path.realpath(BATCH_DIR)
 if os.path.isdir(batch_dir):
     for fname in sorted(os.listdir(batch_dir)):
         if not fname.endswith(".json"): continue
         with open(os.path.join(batch_dir, fname)) as fh:
             data = json.load(fh)
+        if not _batch_truly_verified(data):
+            continue
         cve  = data.get("cve_id", "?")
         llm  = data.get("llm_notes") or {}
         ae   = data.get("attempt_evidence") or {}
@@ -75,42 +89,18 @@ if os.path.isdir(batch_dir):
         desc     = (data.get("description") or "")[:120]
         pub      = data.get("published","?") or "?"
         endpoint = ae.get("endpoint","") or llm.get("endpoint","?") or "?"
-        verified = bool(data.get("verified", False))
         is_gap_b = bool(data.get("is_gap", False))
         gap_b    = is_gap_b or not poc
-        add_row(cve, cls, tech, score, sev, poc, auth, aff, desc, pub, endpoint, verified=verified,
+        add_row(cve, cls, tech, score, sev, poc, auth, aff, desc, pub, endpoint, verified=True,
                 gap=gap_b, is_gap=is_gap_b)
 
-# 3. Standalone _informe_pdf.html files not covered by history/batch
-_sev_re  = re.compile(r'CVSS[^0-9]*([0-9]+\.[0-9])\s+(CRITICAL|HIGH|MEDIUM|LOW)', re.I)
-_cls_re  = re.compile(r'ibadge-gray[^>]*>([^<]+)<')
-_ver_re  = re.compile(r'ibadge-verified|EXPLOTACION CONFIRMADA|lab-container|EXPLOTACI[OÓ]N CONFIRMADA', re.I)
-_desc_re = re.compile(r'cover-title[^>]*>([^<]{20,})<')
-_aff_re  = re.compile(r'VERSIONES AFECTADAS.*?<strong>([^<]+)</strong>', re.S)
-for fname in sorted(os.listdir(OUT)):
-    if not fname.endswith("_informe_pdf.html"):
-        continue
-    cve = fname.replace("_informe_pdf.html", "")
-    try:
-        raw = open(os.path.join(OUT, fname), encoding="utf-8", errors="ignore").read(60000)
-    except Exception:
-        continue
-    _sm = _sev_re.search(raw)
-    score = _sm.group(1) if _sm else "?"
-    sev   = (_sm.group(2).upper() if _sm else "HIGH")
-    _classes = _cls_re.findall(raw)
-    cls  = _classes[0].strip() if _classes else "?"
-    ver  = bool(_ver_re.search(raw))
-    if not ver:
-        continue
-    _dm = _desc_re.search(raw)
-    desc = (_dm.group(1).strip()[:120] if _dm else "")
-    _am = _aff_re.search(raw)
-    aff  = (_am.group(1).strip() if _am else "?")
-    add_row(cve, cls, "", score, sev, False, False, aff, desc, "?", "?", verified=True)
+# 3. Standalone _informe_pdf.html scan — DISABLED.
+# Reports on disk pre-date the gen_informe_pdf.py fix that made the VERIFICADO tag
+# conditional. All old reports had "VERIFICADO - lab aislado" hardcoded, so the regex
+# cannot distinguish real from fabricated verification. Source of truth is batch_reports.
 
-# Keep only 100% dynamically verified CVEs (no HUECO, no unverified)
-rows = [r for r in rows if r.get("verified") and not r.get("is_gap")]
+# Keep only 100% dynamically verified CVEs. is_gap=True+verified=True are valid 0-day GAP findings.
+rows = [r for r in rows if r.get("verified")]
 
 # Sort by score desc
 rows.sort(key=lambda x: float(x["score"]) if str(x["score"]).replace(".","").isdigit() else 0, reverse=True)

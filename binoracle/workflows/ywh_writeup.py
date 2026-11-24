@@ -10,6 +10,7 @@ ONLY for authorized targets / bug bounty programs / defensive research.
 """
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 
@@ -374,3 +375,205 @@ def build_writeup_from_chain(result: object, target_url: str = "") -> YwhWriteup
         )
 
     return wu
+
+
+# ── E22: YWH scope validator integration ─────────────────────────────────────
+
+def validate_scope(writeup: "YwhWriteup", description: str = "") -> dict:
+    """E22: Check if this writeup's asset is in scope for any YWH program.
+
+    Returns the result from ywh_scope.cve_matches_scope.
+    """
+    try:
+        from .ywh_scope import cve_matches_scope
+        return cve_matches_scope(
+            cve_id=writeup.cve_id or "",
+            description=(description or writeup.description or writeup.title or ""),
+        )
+    except Exception:
+        return {"in_scope": True, "matched_programs": [], "reason": "scope check unavailable"}
+
+
+# ── E23: Writeup deduplication ────────────────────────────────────────────────
+
+_WRITEUPS_CACHE_DIR = os.path.join(
+    os.environ.get("BINORACLE_CACHE_DIR") or
+    os.path.join(os.path.expanduser("~"), ".cache", "binoracle"),
+    "writeups",
+)
+
+
+def is_duplicate_writeup(writeup: "YwhWriteup", similarity_threshold: float = 0.80) -> dict:
+    """E23: Check if a similar writeup already exists in the writeups cache.
+
+    Returns {"duplicate": bool, "matched_path": str, "similarity": float}.
+    """
+    import os as _os
+    import glob as _glob
+    if not writeup.cve_id:
+        return {"duplicate": False, "matched_path": "", "similarity": 0.0}
+    # Exact CVE-ID match
+    for path in _glob.glob(_os.path.join(_WRITEUPS_CACHE_DIR, "*.md")):
+        base = _os.path.basename(path)
+        if writeup.cve_id.upper() in base.upper():
+            return {"duplicate": True, "matched_path": path, "similarity": 1.0}
+    # Title similarity (Jaccard on words)
+    if writeup.title:
+        words_new = set((writeup.title or "").lower().split())
+        for path in _glob.glob(_os.path.join(_WRITEUPS_CACHE_DIR, "*.md")):
+            try:
+                first_line = open(path, encoding="utf-8").readline().strip("# \n")
+                words_old = set(first_line.lower().split())
+                if not words_old:
+                    continue
+                sim = len(words_new & words_old) / len(words_new | words_old)
+                if sim >= similarity_threshold:
+                    return {"duplicate": True, "matched_path": path, "similarity": round(sim, 3)}
+            except Exception:
+                continue
+    return {"duplicate": False, "matched_path": "", "similarity": 0.0}
+
+
+def save_writeup_to_cache(writeup: "YwhWriteup") -> str:
+    """Save a writeup markdown to the deduplication cache. Returns path."""
+    import os as _os
+    try:
+        _os.makedirs(_WRITEUPS_CACHE_DIR, exist_ok=True)
+        fname = f"{writeup.cve_id or 'unknown'}_{writeup.vuln_class or 'vuln'}.md"
+        path = _os.path.join(_WRITEUPS_CACHE_DIR, fname)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(writeup.to_markdown())
+        return path
+    except Exception:
+        return ""
+
+
+# ── E24: Report quality scorer ────────────────────────────────────────────────
+
+def score_report_quality(writeup: "YwhWriteup") -> dict:
+    """E24: Score report quality before submission. Returns dict with score and warnings."""
+    warnings: list[str] = []
+    score = 0
+    total = 7
+
+    # 1. Has a complete PoC with HTTP capture
+    if writeup.poc_steps and len(writeup.poc_steps) >= 2:
+        score += 1
+    else:
+        warnings.append("PoC incompleto: se necesitan ≥2 pasos con petición HTTP completa")
+
+    # 2. HTTP request capture present
+    if writeup.http_request:
+        score += 1
+    else:
+        warnings.append("Falta captura HTTP de la petición de explotación")
+
+    # 3. HTTP response capture present
+    if writeup.http_response:
+        score += 1
+    else:
+        warnings.append("Falta captura HTTP de la respuesta que confirma la vuln")
+
+    # 4. Impact section with evidence (not generic)
+    _imp = (writeup.impact or "").lower()
+    generic_phrases = ["could allow", "may allow", "puede permitir", "podría permitir",
+                       "arbitrary", "potencialmente"]
+    if _imp and not any(p in _imp for p in generic_phrases) and len(_imp) > 50:
+        score += 1
+    else:
+        warnings.append("Impact section: evitar frases teóricas, basar en evidencia del lab")
+
+    # 5. CVSS vector present
+    if writeup.cvss_vector and writeup.cvss_vector.startswith("CVSS:3.1/"):
+        score += 1
+    else:
+        warnings.append("Falta vector CVSS 3.1 calculado desde la evidencia")
+
+    # 6. Title is specific (not just 'XSS' or 'SQLi')
+    _title = (writeup.title or "").lower()
+    if _title and len(_title.split()) >= 5:
+        score += 1
+    else:
+        warnings.append("Título demasiado genérico — incluir: vuln_class + componente + acción")
+
+    # 7. Remediation is specific (not just 'validate input')
+    _rem = (writeup.remediation or "").lower()
+    if _rem and "validate" not in _rem and "sanitize" not in _rem and len(_rem) > 60:
+        score += 1
+    else:
+        warnings.append("Remediation demasiado genérica — especificar la función y fix exacto")
+
+    return {
+        "score": score,
+        "total": total,
+        "pct": round(score / total * 100),
+        "ready_to_submit": score >= 5,
+        "warnings": warnings,
+    }
+
+
+# ── E25: YWH API submission (opt-in) ─────────────────────────────────────────
+
+def submit_to_ywh(writeup: "YwhWriteup",
+                  program_slug: str = "",
+                  dry_run: bool = False) -> dict:
+    """E25: Submit a writeup to YesWeHack API (opt-in via BINORACLE_SUBMIT=1).
+
+    Requires:
+      BINORACLE_SUBMIT=1          — opt-in gate
+      BINORACLE_YWH_TOKEN         — API token (Bearer)
+      BINORACLE_YWH_PROGRAM_SLUG  — program slug (or pass program_slug arg)
+
+    Returns {"submitted": bool, "report_id": str, "url": str, "error": str}.
+    Non-fatal: on any error, returns submitted=False.
+    """
+    import json as _json
+    import os as _os
+    import urllib.request as _req
+
+    if _os.environ.get("BINORACLE_SUBMIT", "").strip() not in ("1", "true", "yes"):
+        return {"submitted": False, "error": "BINORACLE_SUBMIT not set to 1"}
+    if dry_run:
+        return {"submitted": False, "dry_run": True, "error": "dry_run=True"}
+
+    token = _os.environ.get("BINORACLE_YWH_TOKEN", "").strip()
+    slug  = program_slug or _os.environ.get("BINORACLE_YWH_PROGRAM_SLUG", "").strip()
+    if not token or not slug:
+        return {"submitted": False, "error": "BINORACLE_YWH_TOKEN or BINORACLE_YWH_PROGRAM_SLUG not set"}
+
+    ywh_base = _os.environ.get("BINORACLE_YWH_API_BASE", "").strip()
+    if not ywh_base:
+        return {"submitted": False, "error": "BINORACLE_YWH_API_BASE not set"}
+
+    endpoint = f"{ywh_base.rstrip('/')}/programs/{slug}/reports"
+
+    # Build submission payload (YWH API format v2)
+    payload = {
+        "title": writeup.title or f"{writeup.cve_id} — {writeup.vuln_class}",
+        "scope": writeup.asset_url or "",
+        "vulnerability_type": {"name": writeup.vuln_class or ""},
+        "cvss": writeup.cvss_vector or "",
+        "description": writeup.to_markdown(),
+        "impact": writeup.impact or "",
+        "remediation_recommendation": writeup.remediation or "",
+        "attachments": [],
+    }
+
+    try:
+        body = _json.dumps(payload).encode()
+        rq = _req.Request(
+            endpoint, data=body,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {token}",
+                "User-Agent": "binoracle/1.0",
+            },
+            method="POST",
+        )
+        with _req.urlopen(rq, timeout=20) as resp:
+            resp_data = _json.loads(resp.read())
+        report_id = str(resp_data.get("id") or resp_data.get("report_id") or "")
+        url = str(resp_data.get("url") or resp_data.get("html_url") or "")
+        return {"submitted": True, "report_id": report_id, "url": url, "error": ""}
+    except Exception as exc:
+        return {"submitted": False, "error": str(exc)}

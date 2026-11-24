@@ -43,15 +43,10 @@ code,.tech{font-family:'JetBrains Mono',monospace;font-size:11px}
 .btn-report,.btn-pdf{padding:3px 10px;border-radius:4px;text-decoration:none;font-size:10px;font-weight:700;display:inline-block}
 .btn-report{background:#1e3a5f;color:#38bdf8;border:1px solid #1e40af}
 .btn-pdf{background:#1a2535;color:#a3a3a3;border:1px solid #374151}
-.btn-evidence{background:#065f46;color:#4ade80;border:1px solid rgba(74,222,128,.35)}
-.btn-evidence:hover{background:#166534;border-color:#4ade80}
 .btn-report:hover{background:#1e40af}
 .btn-pdf:hover{background:#374151;color:#e2e8f0}
 .no-results{padding:40px;text-align:center;color:#475569;font-size:14px;display:none}
 .badge-new{background:#065f46;color:#4ade80;border:1px solid #16a34a;font-size:8px;padding:1px 5px;border-radius:3px;vertical-align:middle;margin-left:4px;letter-spacing:.08em;font-weight:800}
-.badge-conf-high{background:#065f46}
-.badge-conf-med{background:#78350f}
-.badge-conf-low{background:#7f1d1d}
 th.sortable{cursor:pointer;user-select:none}
 th.sortable:hover{color:#94a3b8}
 th.sortable::after{content:' ↕';opacity:.4;font-size:9px}
@@ -70,17 +65,16 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
     <div class="brand-sub">CVE Verification Engine</div>
   </div>
   <div class="hdr-spacer"></div>
-  <div class="hdr-date">24 NOVIEMBRE 2026 &mdash; 86 CVEs investigados</div>
+  <div class="hdr-date">24 NOVIEMBRE 2026 &mdash; 19 CVEs verificados dinámicamente</div>
 </header>
 
 <div class="stats-bar">
-  <div class="stat"><div class="stat-n s-white" id="stat-total">86</div><div class="stat-l">Total</div></div>
-  <div class="stat"><div class="stat-n s-green" id="stat-dinamico">—</div><div class="stat-l">Dinámico ✓</div></div>
-  <div class="stat"><div class="stat-n s-purple" id="stat-hipotesis">—</div><div class="stat-l">Hipótesis</div></div>
-  <div class="stat"><div class="stat-n s-crit" id="stat-critical">40</div><div class="stat-l">Critical</div></div>
-  <div class="stat"><div class="stat-n s-high" id="stat-high">26</div><div class="stat-l">High</div></div>
-  <div class="stat"><div class="stat-n s-blue" id="stat-poc">—</div><div class="stat-l">Con PoC</div></div>
-  <div class="stat"><div class="stat-n s-green" id="stat-unauth">—</div><div class="stat-l">Unauthenticated</div></div>
+  <div class="stat"><div class="stat-n s-green">19</div><div class="stat-l">Verificados</div></div>
+  <div class="stat"><div class="stat-n s-crit">8</div><div class="stat-l">Critical</div></div>
+  <div class="stat"><div class="stat-n s-high">10</div><div class="stat-l">High</div></div>
+  <div class="stat"><div class="stat-n s-blue">6</div><div class="stat-l">SQLi</div></div>
+  <div class="stat"><div class="stat-n s-purple">10</div><div class="stat-l">Con PoC</div></div>
+  <div class="stat"><div class="stat-n s-green">11</div><div class="stat-l">Unauthenticated</div></div>
 </div>
 
 <div class="filters">
@@ -105,7 +99,7 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
   <button class="f-btn" data-filter="auth" data-val="false">Unauthenticated</button>
   <button class="f-btn" data-filter="auth" data-val="true">Autenticado</button>
   <input class="search-box" type="text" id="search" placeholder="Buscar CVE, plugin, endpoint...">
-  <span class="filter-count" id="filter-count"><span id="vis-count">80</span> / 80 CVEs</span>
+  <span class="filter-count" id="filter-count"><span id="vis-count">19</span> / 19 CVEs</span>
 </div>
 
 <div class="wrap">
@@ -127,44 +121,36 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
 </thead>
 <tbody>
 
-<tr class="cve-row" data-cls="code-injection" data-sev="critical" data-poc="false" data-auth="false" data-gap="true">
+<tr class="cve-row" data-cls="code-injection" data-sev="critical" data-poc="false" data-auth="true" data-gap="true">
   <td class="td-num">1</td>
   <td class="td-cve"><a href="CVE-2024-50498_informe_pdf.html" target="_blank"><code>CVE-2024-50498</code></a></td>
   <td><span class="badge" style="background:#dc2626">10.0 CRITICAL</span></td>
   <td><span class="badge badge-sm" style="background:#374151">code-injection</span></td>
   <td><code class="tech">php-code-injection-echo</code></td>
-  <td><span class="badge badge-sm" style="background:#065f46">✓ Verif.</span></td>
-  <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
+  <td><span class="badge badge-sm" style="background:#6d28d9">LLM-razonado</span></td>
+  <td><span class="badge badge-sm" style="background:#374151">subscriber</span></td>
   <td class="td-aff"><code>?</code></td>
   <td class="td-pub">2024-10-28</td>
   <td class="td-desc">Improper Control of Generation of Code (&#x27;Code Injection&#x27;) vulnerability in Ajit Bohra WP Query Console wp-query-console </td>
   <td class="td-links">
     <a href="CVE-2024-50498_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
     <a href="CVE-2024-50498_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
-      <a href="reports/CVE-2024-50498_evidence.html" class="btn-evidence" target="_blank">EVIDENCIA</a>
   </td>
 </tr>
-
-
-
-
-
-
-<tr class="cve-row" data-cls="ssrf" data-sev="critical" data-poc="true" data-auth="false" data-gap="false">
+<tr class="cve-row" data-cls="ssrf" data-sev="critical" data-poc="true" data-auth="true" data-gap="false">
   <td class="td-num">2</td>
   <td class="td-cve"><a href="CVE-2024-9932_informe_pdf.html" target="_blank"><code>CVE-2024-9932</code></a></td>
   <td><span class="badge" style="background:#dc2626">9.8 CRITICAL</span></td>
   <td><span class="badge badge-sm" style="background:#374151">ssrf</span></td>
   <td><code class="tech">ssrf</code></td>
-  <td><span class="badge badge-sm" style="background:#065f46">✓ Verif.</span></td>
-  <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
-  <td class="td-aff"><code>?</code></td>
+  <td><span class="badge badge-sm" style="background:#1e40af">PoC publico</span></td>
+  <td><span class="badge badge-sm" style="background:#374151">subscriber</span></td>
+  <td class="td-aff"><code>3.0.0</code></td>
   <td class="td-pub">2024-10-26</td>
   <td class="td-desc">The Wux Blog Editor plugin for WordPress is vulnerable to arbitrary file uploads due to insufficient file type validatio</td>
   <td class="td-links">
     <a href="CVE-2024-9932_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
     <a href="CVE-2024-9932_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
-      <a href="reports/CVE-2024-9932_evidence.html" class="btn-evidence" target="_blank">EVIDENCIA</a>
   </td>
 </tr>
 <tr class="cve-row" data-cls="auth-bypass" data-sev="critical" data-poc="true" data-auth="false" data-gap="false">
@@ -173,26 +159,39 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
   <td><span class="badge" style="background:#dc2626">9.8 CRITICAL</span></td>
   <td><span class="badge badge-sm" style="background:#c2410c">auth-bypass</span></td>
   <td><code class="tech">url-param-login-bypass</code></td>
-  <td><span class="badge badge-sm" style="background:#065f46">✓ Verif.</span></td>
+  <td><span class="badge badge-sm" style="background:#1e40af">PoC publico</span></td>
   <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
-  <td class="td-aff"><code>?</code></td>
+  <td class="td-aff"><code>3.9.6</code></td>
   <td class="td-pub">2024-10-26</td>
   <td class="td-desc">The WatchTowerHQ plugin for WordPress is vulnerable to authentication bypass in versions up to, and including, 3.10.1. T</td>
   <td class="td-links">
     <a href="CVE-2024-9933_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
     <a href="CVE-2024-9933_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
-      <a href="reports/CVE-2024-9933_evidence.html" class="btn-evidence" target="_blank">EVIDENCIA</a>
   </td>
 </tr>
-
-
-<tr class="cve-row" data-cls="ssti" data-sev="critical" data-poc="true" data-auth="false" data-gap="false">
+<tr class="cve-row" data-cls="command-injection" data-sev="critical" data-poc="false" data-auth="false" data-gap="true">
   <td class="td-num">4</td>
+  <td class="td-cve"><a href="CVE-2025-57633_informe_pdf.html" target="_blank"><code>CVE-2025-57633</code></a></td>
+  <td><span class="badge" style="background:#dc2626">9.8 CRITICAL</span></td>
+  <td><span class="badge badge-sm" style="background:#991b1b">command-injection</span></td>
+  <td><code class="tech">command-injection</code></td>
+  <td><span class="badge badge-sm" style="background:#7c3aed">0-day GAP</span></td>
+  <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
+  <td class="td-aff"><code>5173b68</code></td>
+  <td class="td-pub">2025-09-09</td>
+  <td class="td-desc">A command injection vulnerability in FTP-Flask-python through 5173b68 allows unauthenticated remote attackers to execute</td>
+  <td class="td-links">
+    <a href="CVE-2025-57633_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
+    <a href="CVE-2025-57633_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
+  </td>
+</tr>
+<tr class="cve-row" data-cls="ssti" data-sev="critical" data-poc="true" data-auth="false" data-gap="false">
+  <td class="td-num">5</td>
   <td class="td-cve"><a href="CVE-2026-27641_informe_pdf.html" target="_blank"><code>CVE-2026-27641</code></a></td>
   <td><span class="badge" style="background:#dc2626">9.8 CRITICAL</span></td>
   <td><span class="badge badge-sm" style="background:#374151">ssti</span></td>
   <td><code class="tech">ssti</code></td>
-  <td><span class="badge badge-sm" style="background:#065f46">✓ Verif.</span></td>
+  <td><span class="badge badge-sm" style="background:#1e40af">PoC publico</span></td>
   <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
   <td class="td-aff"><code>&lt; 1.5.0</code></td>
   <td class="td-pub">2026-02-25</td>
@@ -200,69 +199,31 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
   <td class="td-links">
     <a href="CVE-2026-27641_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
     <a href="CVE-2026-27641_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
-      <a href="reports/CVE-2026-27641_evidence.html" class="btn-evidence" target="_blank">EVIDENCIA</a>
   </td>
 </tr>
-
-
-
-
-
-
-
-
-
-
-
-
-
-<tr class="cve-row" data-cls="sqli" data-sev="critical" data-poc="true" data-auth="false" data-gap="false">
-  <td class="td-num">5</td>
-  <td class="td-cve"><a href="CVE-2024-55980_informe_pdf.html" target="_blank"><code>CVE-2024-55980</code></a></td>
-  <td><span class="badge" style="background:#dc2626">9.3 CRITICAL</span></td>
-  <td><span class="badge badge-sm" style="background:#1e40af">sqli</span></td>
-  <td><code class="tech">boolean-blind</code></td>
-  <td><span class="badge badge-sm" style="background:#065f46">✓ Verif.</span></td>
-  <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
-  <td class="td-aff"><code>?</code></td>
-  <td class="td-pub">2024-12-16</td>
-  <td class="td-desc">Improper Neutralization of Special Elements used in an SQL Command (&#x27;SQL Injection&#x27;) vulnerability in robindkumar Wr Age</td>
-  <td class="td-links">
-    <a href="CVE-2024-55980_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
-    <a href="CVE-2024-55980_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
-      <a href="reports/CVE-2024-55980_evidence.html" class="btn-evidence" target="_blank">EVIDENCIA</a>
-  </td>
-</tr>
-
-
-<tr class="cve-row" data-cls="sqli" data-sev="critical" data-poc="true" data-auth="false" data-gap="false">
+<tr class="cve-row" data-cls="sqli" data-sev="critical" data-poc="true" data-auth="true" data-gap="false">
   <td class="td-num">6</td>
   <td class="td-cve"><a href="CVE-2023-32590_informe_pdf.html" target="_blank"><code>CVE-2023-32590</code></a></td>
   <td><span class="badge" style="background:#dc2626">9.3 CRITICAL</span></td>
   <td><span class="badge badge-sm" style="background:#1e40af">sqli</span></td>
   <td><code class="tech">error-based</code></td>
-  <td><span class="badge badge-sm" style="background:#065f46">✓ Verif.</span></td>
-  <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
-  <td class="td-aff"><code>?</code></td>
+  <td><span class="badge badge-sm" style="background:#1e40af">PoC publico</span></td>
+  <td><span class="badge badge-sm" style="background:#374151">subscriber</span></td>
+  <td class="td-aff"><code>2.7.4</code></td>
   <td class="td-pub">2023-12-20</td>
   <td class="td-desc">Improper Neutralization of Special Elements used in an SQL Command (&#x27;SQL Injection&#x27;) vulnerability in Daniel Söderström </td>
   <td class="td-links">
     <a href="CVE-2023-32590_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
     <a href="CVE-2023-32590_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
-      <a href="reports/CVE-2023-32590_evidence.html" class="btn-evidence" target="_blank">EVIDENCIA</a>
   </td>
 </tr>
-
-
-
-
 <tr class="cve-row" data-cls="sqli" data-sev="critical" data-poc="true" data-auth="true" data-gap="false">
   <td class="td-num">7</td>
   <td class="td-cve"><a href="CVE-2024-55972_informe_pdf.html" target="_blank"><code>CVE-2024-55972</code></a></td>
   <td><span class="badge" style="background:#dc2626">9.3 CRITICAL</span></td>
   <td><span class="badge badge-sm" style="background:#1e40af">sqli</span></td>
   <td><code class="tech">error-based</code></td>
-  <td><span class="badge badge-sm" style="background:#065f46">✓ Verif.</span></td>
+  <td><span class="badge badge-sm" style="background:#1e40af">PoC publico</span></td>
   <td><span class="badge badge-sm" style="background:#374151">subscriber</span></td>
   <td class="td-aff"><code>0.2.1</code></td>
   <td class="td-pub">2024-12-16</td>
@@ -270,64 +231,95 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
   <td class="td-links">
     <a href="CVE-2024-55972_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
     <a href="CVE-2024-55972_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
-      <a href="reports/CVE-2024-55972_evidence.html" class="btn-evidence" target="_blank">EVIDENCIA</a>
   </td>
 </tr>
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-<tr class="cve-row" data-cls="sqli" data-sev="high" data-poc="true" data-auth="true" data-gap="false">
+<tr class="cve-row" data-cls="sqli" data-sev="critical" data-poc="true" data-auth="false" data-gap="false">
   <td class="td-num">8</td>
-  <td class="td-cve"><a href="CVE-2024-12404_informe_pdf.html" target="_blank"><code>CVE-2024-12404</code></a></td>
-  <td><span class="badge" style="background:#d97706">7.5 HIGH</span></td>
+  <td class="td-cve"><a href="CVE-2024-55980_informe_pdf.html" target="_blank"><code>CVE-2024-55980</code></a></td>
+  <td><span class="badge" style="background:#dc2626">9.3 CRITICAL</span></td>
   <td><span class="badge badge-sm" style="background:#1e40af">sqli</span></td>
-  <td><code class="tech">error-based</code></td>
-  <td><span class="badge badge-sm" style="background:#065f46">✓ Verif.</span></td>
-  <td><span class="badge badge-sm" style="background:#374151">subscriber</span></td>
-  <td class="td-aff"><code>1.1.0</code></td>
-  <td class="td-pub">2025-01-11</td>
-  <td class="td-desc">The CF Internal Link Shortcode plugin for WordPress is vulnerable to SQL Injection via the &#x27;post_title&#x27; parameter in all</td>
+  <td><code class="tech">sqli</code></td>
+  <td><span class="badge badge-sm" style="background:#1e40af">PoC publico</span></td>
+  <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
+  <td class="td-aff"><code>2.0.0</code></td>
+  <td class="td-pub">2024-12-16</td>
+  <td class="td-desc">Improper Neutralization of Special Elements used in an SQL Command (&#x27;SQL Injection&#x27;) vulnerability in robindkumar Wr Age</td>
   <td class="td-links">
-    <a href="CVE-2024-12404_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
-    <a href="CVE-2024-12404_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
-      <a href="reports/CVE-2024-12404_evidence.html" class="btn-evidence" target="_blank">EVIDENCIA</a>
+    <a href="CVE-2024-55980_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
+    <a href="CVE-2024-55980_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
   </td>
 </tr>
-<tr class="cve-row" data-cls="dos" data-sev="high" data-poc="false" data-auth="false" data-gap="true">
+<tr class="cve-row" data-cls="command-injection" data-sev="high" data-poc="false" data-auth="false" data-gap="true">
   <td class="td-num">9</td>
-  <td class="td-cve"><a href="CVE-2026-129502_informe_pdf.html" target="_blank"><code>CVE-2026-129502</code></a></td>
-  <td><span class="badge" style="background:#d97706">7.5 HIGH</span></td>
-  <td><span class="badge badge-sm" style="background:#374151">dos</span></td>
-  <td><code class="tech">dos</code></td>
-  <td><span class="badge badge-sm" style="background:#065f46">✓ Verif.</span></td>
+  <td class="td-cve"><a href="CVE-2026-77355_informe_pdf.html" target="_blank"><code>CVE-2026-77355</code></a></td>
+  <td><span class="badge" style="background:#d97706">8.8 HIGH</span></td>
+  <td><span class="badge badge-sm" style="background:#991b1b">command-injection</span></td>
+  <td><code class="tech">command-injection</code></td>
+  <td><span class="badge badge-sm" style="background:#7c3aed">0-day GAP</span></td>
   <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
-  <td class="td-aff"><code>9.4.0-11.6.9</code></td>
-  <td class="td-pub">2026-11-19</td>
-  <td class="td-desc">@fastify/http-proxy is a Fastify plugin that proxies HTTP and WebSocket traffic to an upstream server. In versions from </td>
+  <td class="td-aff"><code>1.38.6</code></td>
+  <td class="td-pub">2026-11-20</td>
+  <td class="td-desc">isomorphic-git is a pure JavaScript implementation of Git for Node.js and browsers. Prior to 1.38.7, tree-entry validati</td>
   <td class="td-links">
-    <a href="CVE-2026-129502_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
-    <a href="CVE-2026-129502_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
-      <a href="reports/CVE-2026-129502_evidence.html" class="btn-evidence" target="_blank">EVIDENCIA</a>
+    <a href="CVE-2026-77355_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
+    <a href="CVE-2026-77355_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
+  </td>
+</tr>
+<tr class="cve-row" data-cls="sqli" data-sev="high" data-poc="false" data-auth="false" data-gap="true">
+  <td class="td-num">10</td>
+  <td class="td-cve"><a href="CVE-2026-130082_informe_pdf.html" target="_blank"><code>CVE-2026-130082</code></a></td>
+  <td><span class="badge" style="background:#d97706">8.7 HIGH</span></td>
+  <td><span class="badge badge-sm" style="background:#1e40af">sqli</span></td>
+  <td><code class="tech">sqli</code></td>
+  <td><span class="badge badge-sm" style="background:#7c3aed">0-day GAP</span></td>
+  <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
+  <td class="td-aff"><code>3.4.8</code></td>
+  <td class="td-pub">2026-11-16</td>
+  <td class="td-desc">django-tenants 3.4.8 before 4.0.1 contains an SQL injection vulnerability in its PostgreSQL backend that allows attacker</td>
+  <td class="td-links">
+    <a href="CVE-2026-130082_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
+    <a href="CVE-2026-130082_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
+  </td>
+</tr>
+<tr class="cve-row" data-cls="code-injection" data-sev="high" data-poc="false" data-auth="false" data-gap="true">
+  <td class="td-num">11</td>
+  <td class="td-cve"><a href="CVE-2026-134694_informe_pdf.html" target="_blank"><code>CVE-2026-134694</code></a></td>
+  <td><span class="badge" style="background:#d97706">8.5 HIGH</span></td>
+  <td><span class="badge badge-sm" style="background:#374151">code-injection</span></td>
+  <td><code class="tech">code-injection</code></td>
+  <td><span class="badge badge-sm" style="background:#7c3aed">0-day GAP</span></td>
+  <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
+  <td class="td-aff"><code>2.1</code></td>
+  <td class="td-pub">2026-11-22</td>
+  <td class="td-desc">Gammapy through 2.1 contains a code injection vulnerability in WcsGeom.from_header() that passes the WCSSHAPE FITS heade</td>
+  <td class="td-links">
+    <a href="CVE-2026-134694_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
+    <a href="CVE-2026-134694_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
+  </td>
+</tr>
+<tr class="cve-row" data-cls="command-injection" data-sev="high" data-poc="false" data-auth="false" data-gap="true">
+  <td class="td-num">12</td>
+  <td class="td-cve"><a href="CVE-2026-55849_informe_pdf.html" target="_blank"><code>CVE-2026-55849</code></a></td>
+  <td><span class="badge" style="background:#d97706">8.5 HIGH</span></td>
+  <td><span class="badge badge-sm" style="background:#991b1b">command-injection</span></td>
+  <td><code class="tech">command-injection</code></td>
+  <td><span class="badge badge-sm" style="background:#7c3aed">0-day GAP</span></td>
+  <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
+  <td class="td-aff"><code>2.1.0-5.0.0-1</code></td>
+  <td class="td-pub">2026-07-08</td>
+  <td class="td-desc">@cyclonedx/cyclonedx-npm creates CycloneDX Software Bill of Materials from npm projects. From 2.1.0 before 5.0.0, the CL</td>
+  <td class="td-links">
+    <a href="CVE-2026-55849_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
+    <a href="CVE-2026-55849_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
   </td>
 </tr>
 <tr class="cve-row" data-cls="sqli" data-sev="high" data-poc="true" data-auth="true" data-gap="false">
-  <td class="td-num">10</td>
+  <td class="td-num">13</td>
   <td class="td-cve"><a href="CVE-2024-12025_informe_pdf.html" target="_blank"><code>CVE-2024-12025</code></a></td>
   <td><span class="badge" style="background:#d97706">7.5 HIGH</span></td>
   <td><span class="badge badge-sm" style="background:#1e40af">sqli</span></td>
   <td><code class="tech">error-based</code></td>
-  <td><span class="badge badge-sm" style="background:#065f46">✓ Verif.</span></td>
+  <td><span class="badge badge-sm" style="background:#1e40af">PoC publico</span></td>
   <td><span class="badge badge-sm" style="background:#374151">subscriber</span></td>
   <td class="td-aff"><code>3.0.8</code></td>
   <td class="td-pub">2024-12-18</td>
@@ -335,51 +327,79 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
   <td class="td-links">
     <a href="CVE-2024-12025_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
     <a href="CVE-2024-12025_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
-      <a href="reports/CVE-2024-12025_evidence.html" class="btn-evidence" target="_blank">EVIDENCIA</a>
   </td>
 </tr>
-
-<tr class="cve-row" data-cls="path-traversal" data-sev="high" data-poc="true" data-auth="false" data-gap="false">
-  <td class="td-num">11</td>
+<tr class="cve-row" data-cls="sqli" data-sev="high" data-poc="true" data-auth="true" data-gap="false">
+  <td class="td-num">14</td>
+  <td class="td-cve"><a href="CVE-2024-12404_informe_pdf.html" target="_blank"><code>CVE-2024-12404</code></a></td>
+  <td><span class="badge" style="background:#d97706">7.5 HIGH</span></td>
+  <td><span class="badge badge-sm" style="background:#1e40af">sqli</span></td>
+  <td><code class="tech">error-based</code></td>
+  <td><span class="badge badge-sm" style="background:#1e40af">PoC publico</span></td>
+  <td><span class="badge badge-sm" style="background:#374151">subscriber</span></td>
+  <td class="td-aff"><code>1.1.0</code></td>
+  <td class="td-pub">2025-01-11</td>
+  <td class="td-desc">The CF Internal Link Shortcode plugin for WordPress is vulnerable to SQL Injection via the &#x27;post_title&#x27; parameter in all</td>
+  <td class="td-links">
+    <a href="CVE-2024-12404_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
+    <a href="CVE-2024-12404_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
+  </td>
+</tr>
+<tr class="cve-row" data-cls="path-traversal" data-sev="high" data-poc="true" data-auth="true" data-gap="false">
+  <td class="td-num">15</td>
   <td class="td-cve"><a href="CVE-2024-12849_informe_pdf.html" target="_blank"><code>CVE-2024-12849</code></a></td>
   <td><span class="badge" style="background:#d97706">7.5 HIGH</span></td>
   <td><span class="badge badge-sm" style="background:#0891b2">path-traversal</span></td>
   <td><code class="tech">path-traversal</code></td>
-  <td><span class="badge badge-sm" style="background:#065f46">✓ Verif.</span></td>
-  <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
-  <td class="td-aff"><code>?</code></td>
+  <td><span class="badge badge-sm" style="background:#1e40af">PoC publico</span></td>
+  <td><span class="badge badge-sm" style="background:#374151">subscriber</span></td>
+  <td class="td-aff"><code>1.0.1.3</code></td>
   <td class="td-pub">2025-01-07</td>
   <td class="td-desc">The Error Log Viewer By WP Guru plugin for WordPress is vulnerable to Arbitrary File Read in all versions up to, and inc</td>
   <td class="td-links">
     <a href="CVE-2024-12849_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
     <a href="CVE-2024-12849_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
-      <a href="reports/CVE-2024-12849_evidence.html" class="btn-evidence" target="_blank">EVIDENCIA</a>
   </td>
 </tr>
-<tr class="cve-row" data-cls="path-traversal" data-sev="high" data-poc="true" data-auth="false" data-gap="false">
-  <td class="td-num">12</td>
+<tr class="cve-row" data-cls="path-traversal" data-sev="high" data-poc="true" data-auth="true" data-gap="false">
+  <td class="td-num">16</td>
   <td class="td-cve"><a href="CVE-2024-54374_informe_pdf.html" target="_blank"><code>CVE-2024-54374</code></a></td>
   <td><span class="badge" style="background:#d97706">7.5 HIGH</span></td>
   <td><span class="badge badge-sm" style="background:#0891b2">path-traversal</span></td>
   <td><code class="tech">path-traversal</code></td>
-  <td><span class="badge badge-sm" style="background:#065f46">✓ Verif.</span></td>
-  <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
-  <td class="td-aff"><code>?</code></td>
+  <td><span class="badge badge-sm" style="background:#1e40af">PoC publico</span></td>
+  <td><span class="badge badge-sm" style="background:#374151">subscriber</span></td>
+  <td class="td-aff"><code>1.5.6</code></td>
   <td class="td-pub">2024-12-16</td>
   <td class="td-desc">Improper Limitation of a Pathname to a Restricted Directory (&#x27;Path Traversal&#x27;) vulnerability in Sabri Sogrid sogrid allo</td>
   <td class="td-links">
     <a href="CVE-2024-54374_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
     <a href="CVE-2024-54374_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
-      <a href="reports/CVE-2024-54374_evidence.html" class="btn-evidence" target="_blank">EVIDENCIA</a>
   </td>
 </tr>
 <tr class="cve-row" data-cls="dos" data-sev="high" data-poc="false" data-auth="false" data-gap="true">
-  <td class="td-num">13</td>
+  <td class="td-num">17</td>
+  <td class="td-cve"><a href="CVE-2026-129502_informe_pdf.html" target="_blank"><code>CVE-2026-129502</code></a></td>
+  <td><span class="badge" style="background:#d97706">7.5 HIGH</span></td>
+  <td><span class="badge badge-sm" style="background:#374151">dos</span></td>
+  <td><code class="tech">dos</code></td>
+  <td><span class="badge badge-sm" style="background:#6d28d9">LLM-razonado</span></td>
+  <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
+  <td class="td-aff"><code>9.4.0-11.6.9</code></td>
+  <td class="td-pub">2026-11-19</td>
+  <td class="td-desc">@fastify/http-proxy is a Fastify plugin that proxies HTTP and WebSocket traffic to an upstream server. In versions from </td>
+  <td class="td-links">
+    <a href="CVE-2026-129502_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
+    <a href="CVE-2026-129502_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
+  </td>
+</tr>
+<tr class="cve-row" data-cls="dos" data-sev="high" data-poc="false" data-auth="false" data-gap="true">
+  <td class="td-num">18</td>
   <td class="td-cve"><a href="CVE-2026-130647_informe_pdf.html" target="_blank"><code>CVE-2026-130647</code></a></td>
   <td><span class="badge" style="background:#d97706">7.5 HIGH</span></td>
   <td><span class="badge badge-sm" style="background:#374151">dos</span></td>
   <td><code class="tech">dos-pipeline</code></td>
-  <td><span class="badge badge-sm" style="background:#065f46">✓ Verif.</span></td>
+  <td><span class="badge badge-sm" style="background:#6d28d9">LLM-razonado</span></td>
   <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
   <td class="td-aff"><code>9.0.0 - 11.6.9</code></td>
   <td class="td-pub">2026-11-19</td>
@@ -387,31 +407,15 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
   <td class="td-links">
     <a href="CVE-2026-130647_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
     <a href="CVE-2026-130647_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
-      <a href="reports/CVE-2026-130647_evidence.html" class="btn-evidence" target="_blank">EVIDENCIA</a>
   </td>
 </tr>
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 <tr class="cve-row" data-cls="ssti" data-sev="medium" data-poc="false" data-auth="false" data-gap="true">
-  <td class="td-num">14</td>
+  <td class="td-num">19</td>
   <td class="td-cve"><a href="CVE-2025-27516_informe_pdf.html" target="_blank"><code>CVE-2025-27516</code></a></td>
   <td><span class="badge" style="background:#2563eb">5.4 MEDIUM</span></td>
   <td><span class="badge badge-sm" style="background:#374151">ssti</span></td>
   <td><code class="tech">ssti</code></td>
-  <td><span class="badge badge-sm" style="background:#065f46">✓ Verif.</span></td>
+  <td><span class="badge badge-sm" style="background:#6d28d9">LLM-razonado</span></td>
   <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
   <td class="td-aff"><code>3.1.5</code></td>
   <td class="td-pub">2025-03-05</td>
@@ -419,94 +423,8 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
   <td class="td-links">
     <a href="CVE-2025-27516_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
     <a href="CVE-2025-27516_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
-      <a href="reports/CVE-2025-27516_evidence.html" class="btn-evidence" target="_blank">EVIDENCIA</a>
   </td>
 </tr>
-
-
-
-
-<tr class="cve-row" data-cls="command-injection" data-sev="critical" data-poc="false" data-auth="false" data-gap="true">
-  <td class="td-num">15</td>
-  <td class="td-cve"><a href="reports/CVE-2025-57633_evidence.html" target="_blank"><code>CVE-2025-57633</code></a></td>
-  <td><span class="badge" style="background:#dc2626">9.8 CRITICAL</span></td>
-  <td><span class="badge badge-sm" style="background:#374151">command-injection</span></td>
-  <td><code class="tech">os-command-injection</code></td>
-  <td><span class="badge badge-sm" style="background:#065f46">✓ Verif.</span></td>
-  <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
-  <td class="td-aff"><code>FTP-Flask-python</code></td>
-  <td class="td-pub">2025-05-14</td>
-  <td class="td-desc">Command injection in FTP-Flask-python through 5173b68 allows unauthenticated remote attackers to execute arbitrary OS commands</td>
-  <td class="td-links">
-    <a href="reports/CVE-2025-57633_evidence.html" class="btn-evidence" target="_blank">EVIDENCIA</a>
-  </td>
-</tr>
-<tr class="cve-row" data-cls="sqli" data-sev="high" data-poc="false" data-auth="true" data-gap="true">
-  <td class="td-num">16</td>
-  <td class="td-cve"><a href="reports/CVE-2026-130082_evidence.html" target="_blank"><code>CVE-2026-130082</code></a></td>
-  <td><span class="badge" style="background:#d97706">8.7 HIGH</span></td>
-  <td><span class="badge badge-sm" style="background:#374151">sqli</span></td>
-  <td><code class="tech">sql-injection-postgres</code></td>
-  <td><span class="badge badge-sm" style="background:#065f46">✓ Verif.</span></td>
-  <td><span class="badge badge-sm" style="background:#1e3a5f">authenticated</span></td>
-  <td class="td-aff"><code>django-tenants</code></td>
-  <td class="td-pub">2026-01-15</td>
-  <td class="td-desc">django-tenants 3.4.8 before 4.0.1 — SQL injection in PostgreSQL backend allows extraction of tenant data via schema parameter</td>
-  <td class="td-links">
-    <a href="reports/CVE-2026-130082_evidence.html" class="btn-evidence" target="_blank">EVIDENCIA</a>
-  </td>
-</tr>
-<tr class="cve-row" data-cls="code-injection" data-sev="high" data-poc="false" data-auth="false" data-gap="true">
-  <td class="td-num">17</td>
-  <td class="td-cve"><a href="reports/CVE-2026-134694_evidence.html" target="_blank"><code>CVE-2026-134694</code></a></td>
-  <td><span class="badge" style="background:#d97706">8.5 HIGH</span></td>
-  <td><span class="badge badge-sm" style="background:#374151">code-injection</span></td>
-  <td><code class="tech">fits-header-code-injection</code></td>
-  <td><span class="badge badge-sm" style="background:#065f46">✓ Verif.</span></td>
-  <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
-  <td class="td-aff"><code>gammapy</code></td>
-  <td class="td-pub">2026-02-08</td>
-  <td class="td-desc">Gammapy through 2.1 — code injection in WcsGeom.from_header() passes WCSSHAPE FITS header value directly to Python eval()</td>
-  <td class="td-links">
-    <a href="reports/CVE-2026-134694_evidence.html" class="btn-evidence" target="_blank">EVIDENCIA</a>
-  </td>
-</tr>
-<tr class="cve-row" data-cls="command-injection" data-sev="high" data-poc="false" data-auth="false" data-gap="true">
-  <td class="td-num">18</td>
-  <td class="td-cve"><a href="reports/CVE-2026-55849_evidence.html" target="_blank"><code>CVE-2026-55849</code></a></td>
-  <td><span class="badge" style="background:#d97706">8.5 HIGH</span></td>
-  <td><span class="badge badge-sm" style="background:#374151">command-injection</span></td>
-  <td><code class="tech">cli-argument-injection</code></td>
-  <td><span class="badge badge-sm" style="background:#065f46">✓ Verif.</span></td>
-  <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
-  <td class="td-aff"><code>@cyclonedx/cyclonedx-npm</code></td>
-  <td class="td-pub">2026-04-02</td>
-  <td class="td-desc">@cyclonedx/cyclonedx-npm 2.1.0–5.0.0 — CLI argument injection allows execution of arbitrary commands via crafted npm package names</td>
-  <td class="td-links">
-    <a href="reports/CVE-2026-55849_evidence.html" class="btn-evidence" target="_blank">EVIDENCIA</a>
-  </td>
-</tr>
-<tr class="cve-row" data-cls="command-injection" data-sev="high" data-poc="false" data-auth="false" data-gap="true">
-  <td class="td-num">19</td>
-  <td class="td-cve"><a href="reports/CVE-2026-77355_evidence.html" target="_blank"><code>CVE-2026-77355</code></a></td>
-  <td><span class="badge" style="background:#d97706">8.8 HIGH</span></td>
-  <td><span class="badge badge-sm" style="background:#374151">command-injection</span></td>
-  <td><code class="tech">git-tree-entry-injection</code></td>
-  <td><span class="badge badge-sm" style="background:#065f46">✓ Verif.</span></td>
-  <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
-  <td class="td-aff"><code>isomorphic-git</code></td>
-  <td class="td-pub">2026-05-19</td>
-  <td class="td-desc">isomorphic-git before 1.38.7 — tree-entry validation bypass allows path traversal and command injection via crafted git repository</td>
-  <td class="td-links">
-    <a href="reports/CVE-2026-77355_evidence.html" class="btn-evidence" target="_blank">EVIDENCIA</a>
-  </td>
-</tr>
-
-
-
-
-
-
 </tbody>
 </table>
 <div class="no-results" id="no-results">Sin resultados para los filtros seleccionados.</div>
@@ -610,67 +528,6 @@ function applyFilters() {
   document.getElementById('filter-count').innerHTML =
     `<span id="vis-count">${visible}</span> / ${total} CVEs`;
 }
-
-// Ground-truth dynamic verification map — built from dynamic_verify.verified in backend JSONs
-// false = NOT dynamically verified (may be static analysis, LLM hypothesis, or test inconclusive)
-// true  = Docker lab confirmed exploit executed successfully
-const DYN_VERIFIED = {"CVE-2021-41773": false, "CVE-2022-45808": false, "CVE-2023-32590": true, "CVE-2024-10516": false, "CVE-2024-10586": false, "CVE-2024-1071": false, "CVE-2024-10784": true, "CVE-2024-12025": true, "CVE-2024-12157": false, "CVE-2024-12209": false, "CVE-2024-12270": false, "CVE-2024-12404": true, "CVE-2024-12542": false, "CVE-2024-12849": true, "CVE-2024-13800": false, "CVE-2024-1561": false, "CVE-2024-2044": false, "CVE-2024-23334": false, "CVE-2024-23340": false, "CVE-2024-28255": false, "CVE-2024-29041": false, "CVE-2024-32640": false, "CVE-2024-35184": false, "CVE-2024-49607": false, "CVE-2024-50450": false, "CVE-2024-50491": false, "CVE-2024-50493": false, "CVE-2024-50498": true, "CVE-2024-50507": false, "CVE-2024-52380": false, "CVE-2024-54239": false, "CVE-2024-54292": false, "CVE-2024-54374": true, "CVE-2024-55972": true, "CVE-2024-55976": false, "CVE-2024-55978": false, "CVE-2024-55980": true, "CVE-2024-55981": false, "CVE-2024-55988": false, "CVE-2024-56145": false, "CVE-2024-6330": false, "CVE-2024-9234": false, "CVE-2024-9932": true, "CVE-2024-9933": true, "CVE-2025-12630": false, "CVE-2025-22785": false, "CVE-2025-27516": true, "CVE-2025-27610": false, "CVE-2025-29927": true, "CVE-2025-30208": false, "CVE-2025-32432": false, "CVE-2025-39471": false, "CVE-2025-53092": false, "CVE-2025-55746": false, "CVE-2025-57633": true, "CVE-2025-64459": false, "CVE-2025-67494": false, "CVE-2025-67923": false, "CVE-2025-8422": false, "CVE-2026-10795": false, "CVE-2026-114516": false, "CVE-2026-129502": true, "CVE-2026-130082": true, "CVE-2026-130647": true, "CVE-2026-132165": false, "CVE-2026-134694": true, "CVE-2026-2413": false, "CVE-2026-27641": true, "CVE-2026-35409": false, "CVE-2026-39732": false, "CVE-2026-39942": false, "CVE-2026-55849": true, "CVE-2026-70595": false, "CVE-2026-71209": false, "CVE-2026-77355": true, "CVE-2026-86253": false, "CVE-2026-94259": false, "CVE-2024-56201": false, "CVE-2024-56326": false, "CVE-2024-34069": false, "CVE-2024-42005": false, "CVE-2023-30861": false, "CVE-2024-45231": false};
-
-// Apply data-dyn attribute and visual indicators, then compute accurate stats
-(function computeStats() {
-  let dinamico = 0, hipotesis = 0, conPoc = 0, unauth = 0;
-  document.querySelectorAll('.cve-row').forEach(row => {
-    const cveEl = row.querySelector('code');
-    const cveId = cveEl ? cveEl.textContent.trim() : '';
-    const isDyn = DYN_VERIFIED[cveId] === true;
-    row.dataset.dyn = isDyn ? 'true' : 'false';
-
-    // PoC badge text
-    const badges = row.querySelectorAll('.badge-sm');
-    let pocTxt = '';
-    for (const b of badges) {
-      const t = b.textContent.trim();
-      if (t.includes('PoC') || t.includes('LLM') || t.includes('HUECO')) { pocTxt = t; break; }
-    }
-
-    const isLLM = pocTxt.includes('LLM-razonado');
-    row.dataset.pocType = isLLM ? 'llm' : (pocTxt.includes('HUECO') ? 'hueco' : 'poc');
-
-    // Stats
-    if (isDyn) dinamico++;
-    if (isLLM) hipotesis++;
-    if (!isLLM) conPoc++;
-
-    // Visual: add "⚠ Hipótesis" row tint for LLM-reasoned entries
-    if (isLLM) {
-      row.style.opacity = '0.80';
-      const pocBadge = Array.from(badges).find(b => b.textContent.includes('LLM'));
-      if (pocBadge) pocBadge.title = 'Hipótesis LLM — no verificado dinámicamente en lab Docker';
-    }
-    // Visual: add ✓ indicator to dynamically confirmed rows
-    if (isDyn && cveEl) {
-      const td = cveEl.closest('td');
-      if (td && !td.querySelector('.dyn-badge')) {
-        const mark = document.createElement('span');
-        mark.className = 'dyn-badge';
-        mark.style.cssText = 'display:inline-block;margin-left:5px;padding:1px 5px;border-radius:3px;font-size:8px;font-weight:800;background:#065f46;color:#4ade80;border:1px solid #16a34a;letter-spacing:.05em;vertical-align:middle';
-        mark.textContent = 'DYN';
-        mark.title = 'Verificado dinámicamente — exploit ejecutado en lab Docker aislado';
-        td.appendChild(mark);
-      }
-    }
-
-    // Unauthenticated
-    for (const b of badges) {
-      if (b.textContent.trim() === 'unauthenticated') { unauth++; break; }
-    }
-  });
-  document.getElementById('stat-dinamico').textContent = dinamico;
-  document.getElementById('stat-hipotesis').textContent = hipotesis;
-  document.getElementById('stat-poc').textContent = conPoc;
-  document.getElementById('stat-unauth').textContent = unauth;
-  document.getElementById('stat-total').textContent = total;
-})();
 </script>
 </body>
 </html>
