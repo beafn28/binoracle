@@ -2037,6 +2037,50 @@ def cmd_investigate_batch(args, config):
         html_dir, not getattr(args, "no_cache", False))
 
 
+def cmd_nvd_watch(args, config):
+    """Fully autonomous mode: polls NVD API for new high-severity CVEs and investigates each."""
+    import time as _time
+    from .workflows.auto_chain import auto_queue_nvd, retry_failed_cves
+
+    days_back  = int(getattr(args, "days_back", 2) or 2)
+    min_cvss   = float(getattr(args, "min_cvss", 7.0) or 7.0)
+    max_cves   = int(getattr(args, "max_cves", 10) or 10)
+    interval   = float(getattr(args, "interval", 3600) or 3600)
+    once       = bool(getattr(args, "once", False))
+    web_only   = not bool(getattr(args, "all_stacks", False))
+    priority   = getattr(args, "priority", "cvss") or "cvss"
+    budget_s   = float(getattr(args, "budget", 300) or 300)
+    lang       = getattr(args, "lang", "es") or "es"
+    do_retry   = bool(getattr(args, "retry", False))
+
+    def _step(msg):
+        print(msg, flush=True)
+
+    _step(f"binoracle nvd-watch: CVSS≥{min_cvss}, últimos {days_back}d, "
+          f"cada {interval/60:.0f}min, prioridad={priority}")
+
+    while True:
+        _step(f"\n{'='*60}")
+        _step("nvd-watch: consultando NVD...")
+        results = auto_queue_nvd(
+            days_back=days_back, min_cvss=min_cvss, max_cves=max_cves,
+            web_only=web_only, lang=lang, budget_s=budget_s,
+            priority_mode=priority, on_step=_step)
+        verified = sum(1 for r in results if r.verified)
+        _step(f"nvd-watch: {len(results)} CVEs procesados, {verified} verificados")
+
+        if do_retry:
+            _step("nvd-watch: reintentando cola de fallos transitorios...")
+            retry_results = retry_failed_cves(max_cves=5, lang=lang,
+                                              budget_s=budget_s, on_step=_step)
+            _step(f"nvd-watch: {len(retry_results)} CVEs reintentados")
+
+        if once:
+            break
+        _step(f"nvd-watch: próximo ciclo en {interval/60:.0f} min...")
+        _time.sleep(interval)
+
+
 def cmd_investigate_watch(args, config):
     """Vigila un canal publico de Telegram que notifica CVEs nuevas en cuanto se publican (por
     defecto @CVENotify, ver cvefeed.py) y, cada vez que aparece una mencion nueva, lanza
@@ -2881,6 +2925,32 @@ def build_parser() -> argparse.ArgumentParser:
                      help="force a fresh investigation even for a CVE already cached locally "
                           "(same flag as 'investigate', see its help)")
     ipw.set_defaults(func=cmd_investigate_watch)
+
+    nvdw = sub.add_parser("nvd-watch", help="poll NVD API for new high-severity web CVEs and "
+                                            "auto-investigate each — fully autonomous mode: "
+                                            "no manual CVE input needed, runs forever")
+    nvdw.add_argument("--days-back", type=int, default=2,
+                      help="look back this many days for new CVEs (default 2)")
+    nvdw.add_argument("--min-cvss", type=float, default=7.0,
+                      help="minimum CVSS score to process (default 7.0)")
+    nvdw.add_argument("--max-cves", type=int, default=10,
+                      help="max CVEs to process per poll cycle (default 10)")
+    nvdw.add_argument("--interval", type=float, default=3600,
+                      help="seconds between NVD polls (default 3600 = 1h, NVD allows ~100 "
+                           "req/day without API key)")
+    nvdw.add_argument("--once", action="store_true",
+                      help="poll once and exit instead of looping")
+    nvdw.add_argument("--all-stacks", action="store_true",
+                      help="process all CVEs, not just web-related ones")
+    nvdw.add_argument("--priority", default="cvss", choices=["cvss", "new", "cms"],
+                      help="sort order: cvss (default), new (newest first), cms (CMS first)")
+    nvdw.add_argument("--budget", type=float, default=300,
+                      help="investigation budget per CVE in seconds (default 300)")
+    nvdw.add_argument("--lang", default="es", choices=["es", "en"],
+                      help="report language (default es)")
+    nvdw.add_argument("--retry", action="store_true",
+                      help="also retry previously failed CVEs from the retry queue")
+    nvdw.set_defaults(func=cmd_nvd_watch)
 
     sc2 = sub.add_parser("scan", help="static security scan + dependency audit + CVE test strategies "
                                       "for a source directory (wraps the Universal Engine full_analysis)")
