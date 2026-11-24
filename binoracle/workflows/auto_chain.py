@@ -2701,6 +2701,28 @@ def run_full_chain(
     except Exception:
         pass
 
+    # ── YWH writeup: auto-generate bug report skeleton on verified CVEs ─────
+    if result.verified:
+        try:
+            from .ywh_writeup import build_writeup_from_chain
+            _wu = build_writeup_from_chain(result)
+            if _wu.title:
+                _wu_path = None
+                if result.report_path:
+                    import pathlib as _pl
+                    _wu_path = str(_pl.Path(result.report_path).with_suffix("")) + "_ywh.md"
+                    _pl.Path(_wu_path).write_text(_wu.to_markdown(), encoding="utf-8")
+                result.evidence["ywh_writeup"] = {
+                    "title": _wu.title,
+                    "severity": _wu.severity,
+                    "vuln_class": _wu.vuln_class,
+                    "platform_fields": _wu.platform_fields(),
+                    "file": _wu_path or "",
+                }
+                step(f"  ywh: borrador de reporte generado → {_wu_path or 'evidence[ywh_writeup]'}")
+        except Exception as _wu_e:
+            step(f"  ywh: error generando writeup: {_wu_e}")
+
     # ── Notifications: webhook / Telegram alert on verified CVE ──────────────
     if result.verified:
         _notify_verified(cve_id, result)

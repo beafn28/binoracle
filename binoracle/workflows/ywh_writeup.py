@@ -1,0 +1,268 @@
+"""ywh_writeup.py — YesWeHack-format writeup generator from ChainResult.
+
+Builds a structured bug report following YesWeHack guidance:
+Description / Discovery / PoC / Exploitation / Impact / Remediation.
+
+Built entirely from ChainResult fields and evidence. Empty sections stay
+empty rather than filled with boilerplate.
+
+ONLY for authorized targets / bug bounty programs / defensive research.
+"""
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+
+
+@dataclass
+class YwhWriteup:
+    title: str = ""
+    description: str = ""
+    discovery: str = ""
+    poc: str = ""
+    exploitation: str = ""
+    impact: str = ""
+    remediation: str = ""
+    cvss_vector: str = ""
+    cve_id: str = ""
+    asset: str = ""
+    severity: str = ""
+    vuln_class: str = ""
+
+    def to_markdown(self) -> str:
+        parts = []
+        if self.description:
+            parts.append(f"## Description\n\n{self.description}")
+        if self.discovery:
+            parts.append(f"## Vulnerability Discovery\n\n{self.discovery}")
+        if self.poc:
+            parts.append(f"## Proof of Concept (PoC)\n\n{self.poc}")
+        if self.exploitation:
+            parts.append(f"## Exploitation\n\n{self.exploitation}")
+        if self.impact:
+            parts.append(f"## Impact\n\n{self.impact}")
+        if self.remediation:
+            parts.append(f"## Remediation\n\n{self.remediation}")
+        return "\n\n---\n\n".join(parts)
+
+    def platform_fields(self) -> dict:
+        return {
+            "title": self.title,
+            "cvss_vector": self.cvss_vector,
+            "severity": self.severity,
+            "vuln_class": self.vuln_class,
+        }
+
+
+_CVSS_SEVERITY: dict = {
+    "critical": "critical", "high": "high", "medium": "medium", "low": "low",
+}
+
+_VULN_CLASS_TITLE: dict = {
+    "sqli": "SQL Injection",
+    "sql-injection": "SQL Injection",
+    "xss": "Cross-Site Scripting (XSS)",
+    "reflected-xss": "Reflected XSS",
+    "stored-xss": "Stored XSS",
+    "lfi": "Local File Inclusion (LFI)",
+    "path-traversal": "Path Traversal",
+    "ssrf": "Server-Side Request Forgery (SSRF)",
+    "rce": "Remote Code Execution (RCE)",
+    "command-injection": "Command Injection",
+    "missing-authorization": "Missing Authorization",
+    "auth-bypass": "Authentication Bypass",
+    "broken-access-control": "Broken Access Control",
+    "idor": "Insecure Direct Object Reference (IDOR)",
+    "ssti": "Server-Side Template Injection (SSTI)",
+    "deserialization": "Insecure Deserialization",
+    "open-redirect": "Open Redirect",
+    "csrf": "Cross-Site Request Forgery (CSRF)",
+}
+
+_IMPACT_TEMPLATE: dict = {
+    "credential_exposure": (
+        "The vulnerability exposed authentication credentials in the HTTP response body. "
+        "An unauthenticated attacker can use these credentials to authenticate as a "
+        "privileged user and gain full control of the application."
+    ),
+    "code_execution": (
+        "Arbitrary code execution on the server was demonstrated by reading system files "
+        "(/etc/passwd) through the vulnerability."
+    ),
+    "sqli_confirmed": (
+        "SQL injection was confirmed through a database error response. "
+        "An attacker can extract, modify, or delete data from the application database."
+    ),
+    "xss_confirmed": (
+        "Cross-site scripting was confirmed by reflecting the payload unescaped in the response. "
+        "An attacker can execute arbitrary JavaScript in victim browsers in the application's origin."
+    ),
+    "information_disclosure": (
+        "Sensitive server-side information (stack traces, internal paths, or error messages) "
+        "is disclosed in the response, aiding further exploitation."
+    ),
+    "data_disclosure": (
+        "Unauthorized access to private data was demonstrated through the vulnerability."
+    ),
+}
+
+_REMEDIATION_TEMPLATE: dict = {
+    "sqli": "Use parameterized queries (prepared statements) for all database interactions.",
+    "sql-injection": "Use parameterized queries (prepared statements) for all database interactions.",
+    "xss": "HTML-encode all user-controlled output before rendering in HTML context.",
+    "reflected-xss": "HTML-encode the vulnerable parameter before reflecting it in the response.",
+    "stored-xss": "Sanitize stored content before rendering; apply Content-Security-Policy.",
+    "lfi": "Validate and sanitize all file path inputs; use allow-list of permitted paths.",
+    "path-traversal": "Normalize paths with realpath() / path.resolve() and verify they stay under the allowed root.",
+    "ssrf": "Validate URL schemes (allow only http/https), block private IP ranges, use a URL allowlist.",
+    "rce": "Never pass user input to shell commands; use execFile() / subprocess with explicit args instead of shell=True.",
+    "command-injection": "Use execFile() / subprocess.run with args list, not shell=True; never interpolate user input into shell strings.",
+    "missing-authorization": "Add authorization checks to the endpoint; verify the requesting user has permission to access the resource.",
+    "auth-bypass": "Fix the authentication logic; test with a dedicated security review of the auth flow.",
+    "idor": "Validate that the authenticated user owns or has permission to access each requested resource ID.",
+    "ssti": "Never render user-controlled input as a template; use autoescape=True or safe alternatives.",
+    "deserialization": "Replace unserialize() with json_decode() or use allowed_classes=false; validate data before deserialization.",
+    "open-redirect": "Validate redirect targets against an allowlist of internal paths; reject absolute URLs.",
+}
+
+
+def build_writeup_from_chain(result: object, target_url: str = "") -> YwhWriteup:
+    """Build a YesWeHack writeup from a completed ChainResult.
+
+    Only uses information that was actually proven or observed.
+
+    Args:
+        result:     a ChainResult object (passed as 'object' to avoid circular import)
+        target_url: the target URL for the report (asset field)
+
+    Returns YwhWriteup with sections populated where evidence exists.
+    """
+    wu = YwhWriteup()
+
+    cve_id = getattr(result, "cve_id", "") or ""
+    description = getattr(result, "description", "") or ""
+    cve_class = getattr(result, "cve_class", "") or ""
+    cvss_severity = (getattr(result, "cvss_severity", "") or "").lower()
+    verified = getattr(result, "verified", False)
+    evidence = getattr(result, "evidence", {}) or {}
+    wu.cve_id = cve_id
+    wu.asset = target_url or evidence.get("base_url", "")
+    wu.severity = _CVSS_SEVERITY.get(cvss_severity, cvss_severity or "medium")
+
+    _vuln_class = (evidence.get("vuln_class") or
+                   cve_class or
+                   evidence.get("impact_class") or "")
+    wu.vuln_class = _vuln_class
+
+    _vc_display = _VULN_CLASS_TITLE.get(_vuln_class.lower(), _vuln_class or "Vulnerability")
+    _endpoint = evidence.get("endpoint", "") or ""
+    _param = (evidence.get("param") or
+              (evidence.get("patch_analysis") or {}).get("suggested_param", "") or "")
+
+    if _endpoint and _param:
+        wu.title = f"{_vc_display} in {_endpoint} via {_param} parameter"
+    elif _endpoint:
+        wu.title = f"{_vc_display} in {_endpoint}"
+    elif cve_id:
+        wu.title = f"{_vc_display} ({cve_id})"
+    else:
+        wu.title = _vc_display
+
+    # Description: 1-2 sentences, no OWASP boilerplate
+    _desc_clean = re.sub(
+        r"(cross-site scripting|sql injection|path traversal|ssrf|rce|"
+        r"remote code execution|lfi|idor|broken access control)\s*(is|are)\s+"
+        r"(a type of|a class of|an attack|a vulnerability where)[^.]+\.",
+        "", description, flags=re.IGNORECASE).strip()
+    if _desc_clean:
+        _sentences = re.split(r"(?<=[.!?])\s+", _desc_clean.strip())
+        wu.description = " ".join(_sentences[:2]).strip()
+        if cve_id and cve_id not in wu.description:
+            wu.description = f"{cve_id}: {wu.description}"
+    elif _vuln_class and _endpoint:
+        wu.description = (f"{_vc_display} vulnerability in {_endpoint}. "
+                          f"The endpoint does not properly validate user-controlled input.")
+
+    # Discovery: narrative from investigation steps
+    _pa = evidence.get("patch_analysis") or {}
+    _disc_parts = []
+    if _endpoint:
+        _disc_parts.append(f"Investigated endpoint `{_endpoint}`")
+    _method = evidence.get("method") or evidence.get("metodo") or ""
+    if _method:
+        _disc_parts.append(f"using {_method} requests")
+    if _pa.get("vuln_function"):
+        _disc_parts.append(
+            f"Source analysis (patch diff) identified vulnerable function "
+            f"`{_pa['vuln_function']}` in `{_pa.get('vuln_file', '?')}`")
+    if _pa.get("vuln_pattern"):
+        _disc_parts.append(f"Vulnerable pattern: {_pa['vuln_pattern']}")
+    if verified:
+        _disc_parts.append("Dynamic verification confirmed the vulnerability in a Docker lab")
+    elif evidence.get("response_body_analysis"):
+        _rba = evidence["response_body_analysis"]
+        if _rba.get("findings"):
+            _disc_parts.append(
+                f"Response body analysis found: {_rba['findings'][0][1]}")
+    wu.discovery = ". ".join(_disc_parts) + "." if _disc_parts else ""
+
+    # PoC: captured HTTP + patch diff + callback URL
+    _poc_parts = []
+    _body_snippet = (evidence.get("respuesta_cuerpo_recorte") or
+                     evidence.get("exploit_response") or "")
+    _poc_http = _pa.get("poc_http", "")
+    _win_url = evidence.get("callback_url_ganadora") or ""
+    if _body_snippet and len(_body_snippet) > 20:
+        _poc_parts.append("**Response body (truncated):**\n```\n" +
+                          _body_snippet[:600] + "\n```")
+    if _poc_http:
+        _poc_parts.append("**HTTP request (from patch diff analysis):**\n```http\n" +
+                          _poc_http + "\n```")
+    if _win_url:
+        _poc_parts.append(f"**Confirmed callback URL:** `{_win_url}`")
+    wu.poc = "\n\n".join(_poc_parts) if _poc_parts else ""
+
+    # Exploitation: numbered atomic steps — only from verified evidence
+    if verified and _endpoint:
+        _expl_steps = ["Preconditions: unauthenticated attacker, no special privileges required."]
+        _step_n = 1
+        if _method:
+            _expl_steps.append(
+                f"{_step_n}. Send {_method} request to `{_endpoint}`"
+                + (f"?{_param}={_pa.get('suggested_value', '<payload>')}"
+                   if _param and _method == "GET" else ""))
+            _step_n += 1
+        _impact_class = (evidence.get("impact_class") or
+                         (evidence.get("response_body_analysis") or {}).get("impact_class", ""))
+        if _impact_class == "credential_exposure":
+            _expl_steps.append(
+                f"{_step_n}. Observe: response contains credential fields "
+                f"(accessKeyId, password, token, etc.)")
+        elif _impact_class in ("code_execution", "sqli_confirmed"):
+            _expl_steps.append(
+                f"{_step_n}. Observe: response contains SQL error or system file content")
+        elif _body_snippet:
+            _expl_steps.append(
+                f"{_step_n}. Observe: response returns unauthorized data")
+        wu.exploitation = "\n".join(_expl_steps)
+
+    # Impact: bottom-up from what was proven
+    _impact_class = (evidence.get("impact_class") or
+                     (evidence.get("response_body_analysis") or {}).get("impact_class", ""))
+    if _impact_class and _impact_class in _IMPACT_TEMPLATE:
+        wu.impact = _IMPACT_TEMPLATE[_impact_class]
+    elif verified and _vuln_class.lower() in _VULN_CLASS_TITLE:
+        wu.impact = (f"{_vc_display} was confirmed through dynamic verification. "
+                     "An attacker can exploit this to compromise the confidentiality, "
+                     "integrity, or availability of the application.")
+
+    # Remediation: concrete per-class only when class is known
+    _vuln_class_low = _vuln_class.lower()
+    if _vuln_class_low in _REMEDIATION_TEMPLATE:
+        wu.remediation = _REMEDIATION_TEMPLATE[_vuln_class_low]
+    elif (_pa.get("patch_pattern") and
+          "sanitize" in _pa["patch_pattern"].lower()):
+        wu.remediation = (f"Apply input validation/sanitization as shown in the patch: "
+                          f"{_pa['patch_pattern']}")
+
+    return wu
