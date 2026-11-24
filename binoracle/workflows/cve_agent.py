@@ -2368,6 +2368,69 @@ def _static_vuln_precheck(local_path: str, plugin_dir: str, vuln_class: str,
                 "confidence": 0.0,
             }
 
+    # --- Check 23: Open Redirect — unsafe redirect target from request parameter ---
+    if vuln_class in ("open-redirect", "open_redirect", "redirect", "unvalidated-redirect") and local_path:
+        import os as _os_or
+        _OR_UNSAFE_RE = re.compile(
+            r'(?:'
+            r'header\s*\(\s*["\']Location:\s*["\']?\s*\.\s*\$_(?:GET|POST|REQUEST)\['
+            r'|redirect\s*\(\s*\$_(?:GET|POST|REQUEST)\['
+            r'|header\s*\(\s*["\']Location:\s*\$(?:url|next|redirect|return_url|goto)'
+            r'|res\.redirect\s*\(\s*req\.(?:query|body)\.'
+            r'|return\s+RedirectResponse\s*\(\s*request\.(?:GET|POST|args)\['
+            r'|redirect\s*\(\s*params\[:(?:url|redirect|next|return_to)\]'
+            r'|redirect_to\s*\(\s*params\[:(?:url|redirect_url|next|return)\]'
+            r')',
+            re.IGNORECASE,
+        )
+        _OR_SAFE_RE = re.compile(
+            r'(?:'
+            r'allowed_redirect_urls\s*=\s*\['
+            r'|is_safe_url\s*\(|safe_redirect\s*\(|validate_redirect\s*\('
+            r'|startswith\s*\(\s*["\']/'
+            r'|url_has_allowed_host_and_scheme\s*\('
+            r'|redirect_whitelist\s*=\s*\['
+            r'|ALLOWED_REDIRECT_URIS\s*='
+            r')',
+            re.IGNORECASE,
+        )
+        _or_unsafe_files: list[str] = []
+        _or_safe_files: list[str] = []
+        try:
+            for _r_or, _d_or, _f_or in _os_or.walk(local_path):
+                _d_or[:] = [d for d in _d_or if d not in
+                             (".git", "node_modules", "dist", "__pycache__", "vendor")]
+                for _fn_or in _f_or:
+                    if not any(_fn_or.endswith(e) for e in
+                               (".php", ".py", ".rb", ".js", ".ts")):
+                        continue
+                    _fp_or = _os_or.path.join(_r_or, _fn_or)
+                    try:
+                        _txt_or = open(_fp_or, encoding="utf-8", errors="ignore").read(60_000)
+                        if _OR_UNSAFE_RE.search(_txt_or):
+                            _or_unsafe_files.append(_os_or.path.relpath(_fp_or, local_path))
+                        if _OR_SAFE_RE.search(_txt_or):
+                            _or_safe_files.append(_os_or.path.relpath(_fp_or, local_path))
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        if _or_safe_files and not _or_unsafe_files:
+            return {
+                "ok": True,
+                "reason": (f"pre-check OpenRedirect: validación de redirect encontrada en "
+                           f"{', '.join(_or_safe_files[:2])} — probable versión parchada"),
+                "confidence": 0.60,
+            }
+        if _or_unsafe_files:
+            return {
+                "ok": True,
+                "reason": (f"pre-check OpenRedirect: redirect desde parámetro de request "
+                           f"sin validación en {', '.join(_or_unsafe_files[:2])} — "
+                           f"open redirect probable"),
+                "confidence": 0.0,
+            }
+
     return {"ok": True, "reason": "pre-check OK", "confidence": 1.0}
 
 
