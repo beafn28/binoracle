@@ -4760,11 +4760,15 @@ def _refine_web_hints_from_source(llm, local_path: str, found: dict, context_lin
                             + "".join(lines[lo:hi]))
     # Fallback para Go REST APIs: si las funciones grounded son helpers de permiso
     # (no route handlers), buscar archivos de registro de rutas directamente.
+    # Prioridad: 1) archivos con router.GET/POST, 2) test files con /api/ literales
+    # (cubre frameworks data-driven como JSONAPI donde las rutas son auto-generadas).
     if not snippets and local_path:
         import re as _re
         _go_route_re = _re.compile(
             r'''(?:router|r|mux|e|v\d+)\s*\.\s*(GET|POST|PUT|PATCH|DELETE|Handle|HandleFunc)\s*\(\s*"([^"/][^"]*)"''')
+        _api_lit_re = _re.compile(r'["`](/api/[a-zA-Z_][a-zA-Z0-9_/]*)["`]')
         try:
+            test_candidates = []
             for _root, _dirs, _fnames in _os.walk(local_path):
                 _dirs[:] = [d for d in _dirs if d not in (".git", "vendor", "node_modules")]
                 for _fn in _fnames:
@@ -4776,13 +4780,19 @@ def _refine_web_hints_from_source(llm, local_path: str, found: dict, context_lin
                             _content = fh.read(32_000)
                     except OSError:
                         continue
+                    _rel = _os.path.relpath(_fpath, local_path)
                     if _go_route_re.search(_content):
-                        _rel = _os.path.relpath(_fpath, local_path)
-                        snippets.append(f"# {_rel} (archivo de registro de rutas Go)\n{_content[:3000]}")
+                        snippets.append(f"# {_rel} (registro de rutas Go)\n{_content[:3000]}")
+                    elif (_fn.endswith("_test.go") or "test" in _fn.lower()) and _api_lit_re.search(_content):
+                        test_candidates.append((_rel, _content))
                     if len(snippets) >= 3:
                         break
                 if len(snippets) >= 3:
                     break
+            # If no static router found, use test files with /api/ literals
+            if not snippets:
+                for _rel, _content in test_candidates[:3]:
+                    snippets.append(f"# {_rel} (test file — endpoints /api/ literales)\n{_content[:3000]}")
         except Exception:
             pass
     if not snippets:
@@ -4930,13 +4940,22 @@ def _prescan_source_for_llm_context(source_dir: str, vuln_class: str,
                     _route = _m.group(2).strip()
                     if _route and len(result["routes"]) < 12:
                         result["routes"].append(f"{_m.group(1).upper()} {_route}")
-                # Go routes
+                # Go routes — static registrations
                 if _fn.endswith(".go"):
                     for _m in _GO_ROUTE_RE.finditer(_content):
                         _route = _m.group(2).strip()
                         _method = _m.group(1).upper()
                         if _route.startswith("/") and len(result["routes"]) < 20:
                             result["routes"].append(f"{_method} {_route}")
+                    # Data-driven routers (e.g. JSONAPI): extract /api/<resource> literals
+                    # from test files — these reveal the runtime-generated endpoints.
+                    if _fn.endswith("_test.go") or "test" in _fn.lower():
+                        import re as _re2
+                        _api_lit_re = _re2.compile(r'["`](/api/[a-zA-Z_][a-zA-Z0-9_/]*)["`]')
+                        for _m in _api_lit_re.finditer(_content):
+                            _route = _m.group(1).strip()
+                            if len(result["routes"]) < 25:
+                                result["routes"].append(f"GET {_route}")
     except Exception:
         pass
 
