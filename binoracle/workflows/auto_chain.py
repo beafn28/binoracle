@@ -3733,11 +3733,37 @@ def auto_queue_nvd(days_back: int = 2, min_cvss: float = 7.0,
         "ssti", "server-side template injection",
         "jwt", "privilege escalation", "nosql injection",
     ]
+    # CMS/stacks with a dedicated verifier get a fixed priority boost because the
+    # engine can run a full Docker lab for them (not just static analysis).
+    # Ordered by verifier maturity: highest boost = most battle-tested verifiers.
+    _DEDICATED_VERIFIER_BOOST: dict[str, float] = {
+        "wordpress": 3.0, "wp plugin": 3.0, "wp-": 3.0,
+        "drupal": 2.5,
+        "joomla": 2.0,
+        "ghost": 2.0, "ghost cms": 2.0,
+        "strapi": 2.0,
+        "directus": 1.8,
+        "wagtail": 1.8,
+        "craft cms": 1.8, "craftcms": 1.8,
+        "payload cms": 1.8, "payloadcms": 1.8,
+        "django": 1.5, "flask": 1.5, "fastapi": 1.5,
+        "rails": 1.5, "ruby on rails": 1.5,
+        "express": 1.3, "nestjs": 1.3, "next.js": 1.3,
+        "gitea": 1.2, "nextcloud": 1.2, "mattermost": 1.2,
+        "concrete5": 1.0, "concrete cms": 1.0,
+        "modx": 1.0,
+    }
+
     def _triage_score(e) -> float:
         _d = e.description.lower()
         _web_score = sum(1 for _pw in _PREFER_PATTERNS if _pw in _d)
         # Bonus for explicitly named verifiable vuln classes — the engine has precheck rules for these
         _vc_score = sum(1.5 for _vc in _VERIFIABLE_VULN_CLASSES if _vc in _d)
+        # Fixed boost for CMS/stacks with a dedicated Docker verifier
+        _verifier_boost = max(
+            (_v for _kw, _v in _DEDICATED_VERIFIER_BOOST.items() if _kw in _d),
+            default=0.0,
+        )
         # Dynamic boost: if we have good verification rate on this stack, prioritize
         _stack_boost = max(
             (_vr * 2.0 for _st, _vr in _verified_stacks.items() if _st in _d),
@@ -3750,7 +3776,8 @@ def auto_queue_nvd(days_back: int = 2, min_cvss: float = 7.0,
             for r in _refs[:10]
         )
         _source_boost = 1.5 if _has_source_ref else 0.0
-        return _web_score + _vc_score + _stack_boost + _source_boost + e.cvss_score / 10.0
+        return (_web_score + _vc_score + _verifier_boost + _stack_boost
+                + _source_boost + e.cvss_score / 10.0)
 
     # Apply priority_mode sort
     _cms_kws = ("wordpress", "drupal", "joomla", "wp-")
