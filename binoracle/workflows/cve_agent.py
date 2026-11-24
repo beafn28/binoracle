@@ -1891,6 +1891,71 @@ def _static_vuln_precheck(local_path: str, plugin_dir: str, vuln_class: str,
                 "confidence": 0.0,
             }
 
+    # --- Check 16: Prototype pollution — unsafe object merge / deep-merge in JS/TS ---
+    # Triggered for prototype-pollution, prototype_pollution, object-injection,
+    # mass-assignment in Node.js apps (Express, Strapi, Ghost, Next.js).
+    # Looks for unsafe deep-merge patterns that allow __proto__ or constructor
+    # manipulation. Checks for the presence/absence of prototype-safe merge guards.
+    _vc_pp = (vuln_class or "").lower()
+    if _vc_pp in ("prototype-pollution", "prototype_pollution", "object-injection",
+                  "mass-assignment", "prototype-injection") and local_path:
+        import os as _os_pp
+        # Unsafe: deep merge / assign with recursive object spread without guard
+        _PP_UNSAFE_RE = re.compile(
+            r'Object\.assign\s*\(\s*\w+\s*,\s*(?:req\.|body\.|params\.|query\.)'
+            r'|merge\s*\(\s*\w+\s*,\s*(?:req\.|body\.|params\.)'
+            r'|deepMerge\s*\(\s*\w+\s*,\s*(?:req\.|body\.)'
+            r'|\w+\[(?:req|body|params)(?:\.[a-z]+)+\]\s*='   # dynamic key set from request
+            r'|extend\s*\(\s*(?:true|{),\s*\w+\s*,\s*(?:req\.|body\.)',
+            re.IGNORECASE,
+        )
+        # Safe: prototype-aware guards
+        _PP_SAFE_RE = re.compile(
+            r'hasOwnProperty\s*\(\s*[\'"]__proto__[\'"]\)'
+            r'|Object\.create\s*\(\s*null\s*\)'               # null prototype base
+            r'|sanitize.*(?:proto|__proto__|constructor)'      # explicit proto sanitization
+            r'|\bforbiddenKeys\b.*(?:__proto__|constructor)'
+            r'|deepmerge.*\{[^}]*prototype[^}]*\}',           # deepmerge with proto filter
+            re.IGNORECASE,
+        )
+        _pp_unsafe_files: list[str] = []
+        _pp_safe_files: list[str] = []
+        _exts_pp = {".js", ".ts", ".jsx", ".tsx", ".mjs", ".cjs"}
+        try:
+            for _r_pp, _d_pp, _f_pp in _os_pp.walk(local_path):
+                _d_pp[:] = [d for d in _d_pp if d not in
+                            (".git", "node_modules", "dist", "__pycache__", ".next")]
+                for _fn_pp in _f_pp:
+                    if not any(_fn_pp.endswith(e) for e in _exts_pp):
+                        continue
+                    _fp_pp = _os_pp.path.join(_r_pp, _fn_pp)
+                    try:
+                        _txt_pp = open(_fp_pp, encoding="utf-8", errors="ignore").read(100_000)
+                        if _PP_UNSAFE_RE.search(_txt_pp):
+                            _pp_unsafe_files.append(_os_pp.path.relpath(_fp_pp, local_path))
+                        if _PP_SAFE_RE.search(_txt_pp):
+                            _pp_safe_files.append(_os_pp.path.relpath(_fp_pp, local_path))
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        if _pp_safe_files and not _pp_unsafe_files:
+            return {
+                "ok": False,
+                "reason": (f"pre-check Prototype Pollution: se detectaron guardas de prototipo "
+                           f"({', '.join(_pp_safe_files[:2])}) — no se encontraron merges inseguros "
+                           f"— probable versión parchada"),
+                "confidence": 0.63,
+            }
+        if _pp_unsafe_files:
+            return {
+                "ok": True,
+                "reason": (f"pre-check Prototype Pollution: merge/assign inseguro con input de "
+                           f"request detectado en {', '.join(_pp_unsafe_files[:2])} "
+                           f"— prototype pollution probable"),
+                "confidence": 0.0,
+            }
+
     return {"ok": True, "reason": "pre-check OK", "confidence": 1.0}
 
 
