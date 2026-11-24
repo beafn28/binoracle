@@ -1640,6 +1640,145 @@ def _static_vuln_precheck(local_path: str, plugin_dir: str, vuln_class: str,
                 "confidence": 0.65,
             }
 
+    # --- Check 13: Deserialization / object injection — detect unsafe unserialize/pickle/yaml ---
+    # PHP unserialize() with user input, Python pickle.loads() with user bytes,
+    # PyYAML yaml.load() without Loader=SafeLoader, Java ObjectInputStream.readObject().
+    # If the code has these sinks but also wraps them in allowed-class checks or
+    # uses safe alternatives (json.loads, yaml.safe_load, pickle with HMAC), block.
+    if vuln_class in ("deserialization", "php-object-injection", "insecure-deserialization",
+                      "rce") and local_path:
+        import os as _os_ds
+        _DESER_SINK_RE = re.compile(
+            # PHP
+            r'unserialize\s*\(\s*\$_(?:GET|POST|REQUEST|COOKIE)'
+            r'|unserialize\s*\(\s*\$(?:data|input|body|value|payload|raw)'
+            # Python
+            r'|pickle\.loads\s*\(\s*(?!b["\'])'   # pickle.loads(variable)
+            r'|yaml\.load\s*\([^,)]+\)'            # yaml.load(x) without Loader
+            r'|marshal\.loads\s*\('                # marshal.loads
+            # Java
+            r'|readObject\s*\(\s*\)'               # ObjectInputStream.readObject()
+            # Node.js
+            r'|\.deserialize\s*\(\s*(?:req|body|input)'
+            r'|node-serialize.*\.unserialize\s*\(',
+            re.IGNORECASE,
+        )
+        _DESER_SAFE_RE = re.compile(
+            # PHP allowed_classes=false
+            r'allowed_classes\s*=>\s*false'
+            r'|allowed_classes\s*=>\s*\[\s*\]'
+            # Python safe
+            r'|yaml\.safe_load\s*\('
+            r'|Loader\s*=\s*yaml\.SafeLoader'
+            r'|hmac\.compare_digest|pickle.*HMAC'
+            # Java filters
+            r'|ObjectInputFilter|resolveClass.*throw',
+            re.IGNORECASE,
+        )
+        _ds_sink_hits: list[str] = []
+        _ds_safe_hits: list[str] = []
+        _exts_ds = {".php", ".py", ".java", ".js", ".ts", ".rb"}
+        try:
+            for _r_ds, _d_ds, _f_ds in _os_ds.walk(local_path):
+                _d_ds[:] = [d for d in _d_ds if d not in
+                            (".git", "node_modules", "dist", "__pycache__", "vendor")]
+                for _fn_ds in _f_ds:
+                    if not any(_fn_ds.endswith(e) for e in _exts_ds):
+                        continue
+                    _fp_ds = _os_ds.path.join(_r_ds, _fn_ds)
+                    try:
+                        _txt_ds = open(_fp_ds, encoding="utf-8", errors="ignore").read(200_000)
+                        if _DESER_SINK_RE.search(_txt_ds):
+                            _ds_sink_hits.append(_os_ds.path.relpath(_fp_ds, local_path))
+                        if _DESER_SAFE_RE.search(_txt_ds):
+                            _ds_safe_hits.append(_os_ds.path.relpath(_fp_ds, local_path))
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        if _ds_sink_hits and not _ds_safe_hits:
+            return {
+                "ok": True,
+                "reason": (f"pre-check deser: sink inseguro detectado "
+                           f"({', '.join(_ds_sink_hits[:2])}) sin allowed_classes/safe_load "
+                           f"— deserialización insegura probable"),
+                "confidence": 0.0,  # positive signal, don't block
+            }
+        if _ds_safe_hits and not _ds_sink_hits:
+            return {
+                "ok": False,
+                "reason": (f"pre-check deser: solo se encontraron variantes seguras "
+                           f"(SafeLoader/allowed_classes) en {', '.join(_ds_safe_hits[:2])} "
+                           f"— sink inseguro no detectado"),
+                "confidence": 0.72,
+            }
+
+    # --- Check 14: XSS — output encoding presence near user-controlled output ---
+    # If every output of user data goes through htmlspecialchars/esc_html/esc_attr/
+    # e() (Laravel), h() (Rails), or the template engine auto-escapes, XSS is blocked.
+    if vuln_class in ("xss", "reflected-xss", "stored-xss", "cross-site-scripting") and local_path:
+        import os as _os_xss
+        _XSS_ECHO_RE = re.compile(
+            # PHP raw echo of user input
+            r'echo\s+\$_(?:GET|POST|REQUEST|COOKIE)'
+            r'|echo\s+\$(?:data|input|name|title|body|content|value)'
+            r'|<\?=\s*\$_(?:GET|POST|REQUEST)'
+            # Node.js / EJS / Pug
+            r'|res\.send\s*\([^)]*(?:req\.|body\.)'
+            r'|<%=\s*.*(?:req\.|body\.|params\.|query\.)'   # EJS unescaped
+            r'|innerHTML\s*=\s*.*(?:req\.|body\.|params\.)',
+            re.IGNORECASE | re.DOTALL,
+        )
+        _XSS_ESCAPE_RE = re.compile(
+            r'htmlspecialchars\s*\(|htmlentities\s*\('
+            r'|esc_html\s*\(|esc_attr\s*\(|esc_url\s*\('      # WordPress escaping
+            r'|e\s*\(\s*\$(?:data|input|name|title|value)'     # Laravel e()
+            r'|h\s*\(\s*(?:params\.|request\.)'                # Rails h()
+            r'|strip_tags\s*\(|sanitize_text_field\s*\('       # WordPress sanitize
+            r'|DOMPurify\.sanitize\s*\('                        # JS DOMPurify
+            r'|\.textContent\s*=\s*'                            # safe DOM assignment
+            r'|React\.createElement|dangerouslySetInnerHTML(?!.*sanitize)',
+            re.IGNORECASE,
+        )
+        _xss_echo_files: list[str] = []
+        _xss_escape_files: list[str] = []
+        _exts_xss = {".php", ".js", ".ts", ".html", ".htm", ".ejs", ".pug", ".hbs", ".erb", ".twig"}
+        try:
+            for _r_xss, _d_xss, _f_xss in _os_xss.walk(local_path):
+                _d_xss[:] = [d for d in _d_xss if d not in
+                             (".git", "node_modules", "dist", "__pycache__", "vendor")]
+                for _fn_xss in _f_xss:
+                    if not any(_fn_xss.endswith(e) for e in _exts_xss):
+                        continue
+                    _fp_xss = _os_xss.path.join(_r_xss, _fn_xss)
+                    try:
+                        _txt_xss = open(_fp_xss, encoding="utf-8", errors="ignore").read(100_000)
+                        if _XSS_ECHO_RE.search(_txt_xss):
+                            _xss_echo_files.append(_os_xss.path.relpath(_fp_xss, local_path))
+                        if _XSS_ESCAPE_RE.search(_txt_xss):
+                            _xss_escape_files.append(_os_xss.path.relpath(_fp_xss, local_path))
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        # Unescaped echo found in same files that have escape functions → check closer
+        # If ONLY escape functions found, no raw echo → XSS likely patched
+        if _xss_escape_files and not _xss_echo_files:
+            return {
+                "ok": False,
+                "reason": (f"pre-check XSS: solo se detectaron funciones de escape de output "
+                           f"({', '.join(_xss_escape_files[:2])}) — no se encontró echo directo "
+                           f"de input de usuario — probable versión parchada"),
+                "confidence": 0.68,
+            }
+        if _xss_echo_files:
+            return {
+                "ok": True,
+                "reason": (f"pre-check XSS: echo de input de usuario sin escape detectado "
+                           f"en {', '.join(_xss_echo_files[:2])} — XSS probable"),
+                "confidence": 0.0,  # positive signal
+            }
+
     return {"ok": True, "reason": "pre-check OK", "confidence": 1.0}
 
 
