@@ -64,6 +64,8 @@ class ChainResult:
     inv:            Any             = None   # raw Investigation object
     error:          str             = ""
     elapsed_s:      float           = 0.0
+    engine_confidence: float        = 0.0   # 0–1: how confident the engine is in its own result
+    evidence:       dict            = field(default_factory=dict)  # {endpoint, status, body_snippet, ...}
 
     def add_step(self, name: str, status: str, detail: str = "", elapsed: float = 0.0):
         self.steps.append(ChainStep(name, status, detail, elapsed))
@@ -1601,6 +1603,25 @@ def run_full_chain(
     step(result.banner())
     if result.report_path:
         step(f"  informe: {result.report_path}")
+
+    # ── Engine confidence score ───────────────────────────────────────────────
+    # Composite score (0–1) summarizing how trustworthy the result is:
+    # - verified dynamically → 0.90 base
+    # - LLM-only hypothesis  → 0.30 base
+    # Bonuses: has patch diff (+0.05), has CVSS (+0.03), CISA KEV (+0.07)
+    # Penalty: error present (-0.20), class=unknown (-0.10)
+    _conf = 0.90 if result.verified else 0.30
+    if result.patch_summary:
+        _conf += 0.05
+    if result.cvss_score:
+        _conf += 0.03
+    if result.in_cisa_kev:
+        _conf += 0.07
+    if result.error:
+        _conf -= 0.20
+    if result.cve_class == "unknown":
+        _conf -= 0.10
+    result.engine_confidence = round(max(0.0, min(1.0, _conf)), 2)
 
     # ── Lessons: record this CVE's outcome for future runs ────────────────────
     try:
