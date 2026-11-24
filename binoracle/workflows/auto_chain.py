@@ -2398,49 +2398,92 @@ def run_full_chain(
         step(f"  fallo en Stage 5: {_fail_reason} — consultando LLM para hipotesis revisada")
 
         if _fail_reason in _actionable_failures:
-            _revised = _llm_rehypothesis(
-                cve_id=cve_id,
-                description=result.description,
-                failure_ctx=_fail_ctx,
-                original_notes=llm_notes,
-                llm=llm,
-                step=step,
-            )
-            if (_revised
-                    and isinstance(_revised, dict)
-                    and _revised.get("endpoint")
-                    and _revised.get("endpoint") != _fail_ctx.get("tried_endpoint")):
-                # Merge revised notes — keep originals for fields LLM didn't revise
-                llm_notes.update(_revised)
-                result.add_step(
-                    "rehypothesis", "ok",
-                    f"revised endpoint: {_revised.get('endpoint')} "
-                    f"(was: {_fail_ctx.get('tried_endpoint')})",
+            _tried_ep = _fail_ctx.get("tried_endpoint", "")
+
+            # ── 5b-fast: try ranked alt_endpoints from Stage 2.5 first ──────────
+            # This avoids a full LLM round-trip when we already have ranked
+            # alternative hypotheses from multi-hypothesis generation.
+            _alt_eps = llm_notes.get("alt_endpoints") or []
+            _alt_tried = False
+            if _alt_eps:
+                # Pick the top-ranked alt that wasn't the one that just failed
+                _next_alt = next(
+                    (a for a in _alt_eps
+                     if a.get("endpoint") and a.get("endpoint") != _tried_ep),
+                    None,
                 )
-                step(f"  hipotesis revisada: {_revised.get('http_method','GET')} "
-                     f"{_revised.get('endpoint')} — relanzando Stage 5")
+                if _next_alt:
+                    step(f"  [5b-fast] probando alt_endpoint rankeado: "
+                         f"{_next_alt.get('endpoint')} "
+                         f"(motivo: {_next_alt.get('reason', '?')[:60]})")
+                    _fast_notes = dict(llm_notes)
+                    _fast_notes["endpoint"] = _next_alt["endpoint"]
+                    if _next_alt.get("param"):
+                        _fast_notes["param"] = _next_alt["param"]
+                    _remaining_fast = max(0.0, budget_s - (time.time() - t0))
+                    _fast_budget = min(_remaining_fast * 0.35, 100.0)
+                    if _fast_budget >= 30.0:
+                        _run_web_stage(
+                            cve_id, cve_info, _fast_notes, result, step,
+                            budget_s=_fast_budget, config=config, llm=llm, lang=lang)
+                        _status_fast = "VERIFICADO" if result.verified else "no confirmado"
+                        step(f"  [5b-fast] resultado: {_status_fast}")
+                        result.add_step("rehypothesis_alt_ep", "ok" if result.verified else "fail",
+                                        f"{_next_alt['endpoint']}: {_status_fast}")
+                        # If alt verified, update main llm_notes with working endpoint
+                        if result.verified:
+                            llm_notes["endpoint"] = _next_alt["endpoint"]
+                            if _next_alt.get("param"):
+                                llm_notes["param"] = _next_alt["param"]
+                        _alt_tried = True
+                    else:
+                        step("  [5b-fast] presupuesto insuficiente — omitido")
 
-                # Cap re-hypothesis budget at 40% of remaining or 120 s max
-                _remaining = max(0.0, budget_s - (time.time() - t0))
-                _rehyp_budget = min(_remaining * 0.40, 120.0)
+            # ── 5b-llm: full LLM re-hypothesis if alt_ep didn't verify ──────────
+            if not result.verified and not _alt_tried or (not result.verified and not _alt_eps):
+                _revised = _llm_rehypothesis(
+                    cve_id=cve_id,
+                    description=result.description,
+                    failure_ctx=_fail_ctx,
+                    original_notes=llm_notes,
+                    llm=llm,
+                    step=step,
+                )
+                if (_revised
+                        and isinstance(_revised, dict)
+                        and _revised.get("endpoint")
+                        and _revised.get("endpoint") != _tried_ep):
+                    # Merge revised notes — keep originals for fields LLM didn't revise
+                    llm_notes.update(_revised)
+                    result.add_step(
+                        "rehypothesis", "ok",
+                        f"revised endpoint: {_revised.get('endpoint')} "
+                        f"(was: {_tried_ep})",
+                    )
+                    step(f"  hipotesis revisada: {_revised.get('http_method','GET')} "
+                         f"{_revised.get('endpoint')} — relanzando Stage 5")
 
-                if _rehyp_budget >= 30.0:
-                    _run_web_stage(
-                        cve_id, cve_info, llm_notes, result, step,
-                        budget_s=_rehyp_budget, config=config, llm=llm, lang=lang)
-                    _status = "VERIFICADO" if result.verified else "no confirmado"
-                    step(f"  [5b] resultado: {_status}")
-                    result.add_step("rehypothesis_run", "ok" if result.verified else "fail",
-                                    _status)
+                    # Cap re-hypothesis budget at 40% of remaining or 120 s max
+                    _remaining = max(0.0, budget_s - (time.time() - t0))
+                    _rehyp_budget = min(_remaining * 0.40, 120.0)
+
+                    if _rehyp_budget >= 30.0:
+                        _run_web_stage(
+                            cve_id, cve_info, llm_notes, result, step,
+                            budget_s=_rehyp_budget, config=config, llm=llm, lang=lang)
+                        _status = "VERIFICADO" if result.verified else "no confirmado"
+                        step(f"  [5b] resultado: {_status}")
+                        result.add_step("rehypothesis_run", "ok" if result.verified else "fail",
+                                        _status)
+                    else:
+                        step("  [5b] presupuesto insuficiente para re-run — omitido")
+                        result.add_step("rehypothesis_run", "skip", "budget < 30 s")
+                elif _revised and _revised.get("endpoint") == _tried_ep:
+                    step("  [5b] LLM propuso el mismo endpoint — descartado")
+                    result.add_step("rehypothesis", "skip", "same endpoint as original")
                 else:
-                    step("  [5b] presupuesto insuficiente para re-run — omitido")
-                    result.add_step("rehypothesis_run", "skip", "budget < 30 s")
-            elif _revised and _revised.get("endpoint") == _fail_ctx.get("tried_endpoint"):
-                step("  [5b] LLM propuso el mismo endpoint — descartado")
-                result.add_step("rehypothesis", "skip", "same endpoint as original")
-            else:
-                step("  [5b] LLM no devolvió hipotesis revisada válida")
-                result.add_step("rehypothesis", "skip", "no valid hypothesis")
+                    step("  [5b] LLM no devolvió hipotesis revisada válida")
+                    result.add_step("rehypothesis", "skip", "no valid hypothesis")
         else:
             step(f"  [5b] fallo no accionable ({_fail_reason}) — sin re-hipotesis")
             result.add_step("rehypothesis", "skip", f"non-actionable failure: {_fail_reason}")
