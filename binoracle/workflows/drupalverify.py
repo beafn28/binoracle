@@ -33,7 +33,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional
 
-from .wpverify import (WpVerifyResult, _docker_daemon_ok, _lab_host, _pick_param,
+from .wpverify import (WpVerifyResult, _docker_daemon_ok, _http_request, _lab_host, _pick_param,
                        _redirect_location_is_external, _screenshot_response, _token,
                        _XssBrowserSession, _ID_HINTS, _EMAIL_HINTS, _PASS_HINTS, _PATH_HINTS,
                        _CMD_HINTS, _SQLI_HINTS, _URL_HINTS, _XSS_HINTS, _XML_HINTS,
@@ -249,6 +249,57 @@ def _drupal_login(base_url: str, user: str, password: str, timeout: float = 15.0
     return s if logged_in else None
 
 
+def _try_drupal_oauth(base_url: str, step: Callable) -> Optional[str]:
+    """Try Drupal Simple OAuth module: POST /oauth/token with common client credentials.
+
+    Returns 'Bearer <access_token>' or None. Only relevant when the target has the
+    Simple OAuth / OAuth2 contrib module installed (common on API-first Drupal sites).
+    Tries client_credentials grant first, then password grant with the lab admin account.
+    """
+    import json as _j
+    _common_client_ids = ["drupal", "default", "api_client", "oauth2_client", "rest_api"]
+    _common_secrets = ["drupal", "secret", "password", "default", ""]
+    _token_endpoints = ["/oauth/token", "/oauth2/token"]
+
+    for ep in _token_endpoints:
+        url = base_url.rstrip("/") + ep
+        # Try client_credentials grant
+        for cid in _common_client_ids:
+            for csecret in _common_secrets:
+                try:
+                    body = (f"grant_type=client_credentials"
+                            f"&client_id={cid}&client_secret={csecret}")
+                    r = _http_request("POST", url, data=body,
+                                      headers={"Content-Type": "application/x-www-form-urlencoded"},
+                                      timeout=8)
+                    if r.status == 200:
+                        data = _j.loads(r.body or "{}")
+                        t = data.get("access_token") or ""
+                        if t:
+                            step(f"  drupalverify: OAuth2 Bearer token (client_credentials, {cid})")
+                            return f"Bearer {t}"
+                except Exception:
+                    continue
+        # Try password grant with lab admin credentials
+        for cid in _common_client_ids:
+            try:
+                body = (f"grant_type=password&username=binoracle_admin"
+                        f"&client_id={cid}&client_secret=drupal"
+                        f"&scope=administrator")
+                r = _http_request("POST", url, data=body,
+                                  headers={"Content-Type": "application/x-www-form-urlencoded"},
+                                  timeout=8)
+                if r.status == 200:
+                    data = _j.loads(r.body or "{}")
+                    t = data.get("access_token") or ""
+                    if t:
+                        step(f"  drupalverify: OAuth2 Bearer token (password grant, {cid})")
+                        return f"Bearer {t}"
+            except Exception:
+                continue
+    return None
+
+
 def _substitute_path_param(endpoint: str, param_name: str, value: str) -> "tuple[str, bool]":
     """Si `{param_name}` aparece LITERAL dentro de `endpoint` (la convencion de ruta de Symfony/
     Drupal, p.ej. '/mymodule/update/{uid}'), lo sustituye por `value` y devuelve
@@ -292,6 +343,7 @@ class _DrupalLabSession:
     sub_sess: object
     admin_sess: object
     shots: list = field(default_factory=list)
+    oauth_bearer: Optional[str] = None  # Set if Simple OAuth module is active
 
 
 def _bootstrap_drupal_lab(lab: "_Lab", module_source_dir: str, slug: str, step,
@@ -370,9 +422,13 @@ def _bootstrap_drupal_lab(lab: "_Lab", module_source_dir: str, slug: str, step,
 
     admin_sess = _drupal_login(base_url, admin_user, admin_pass)
 
+    # Try Simple OAuth Bearer token as supplemental auth (non-fatal if absent)
+    _oauth_bearer = _try_drupal_oauth(base_url, step)
+
     return _DrupalLabSession(lab=lab, base_url=base_url, admin_user=admin_user,
                              admin_pass=admin_pass, sub_user=sub_user, sub_pass=sub_pass,
-                             sub_sess=sub_sess, admin_sess=admin_sess, shots=[])
+                             sub_sess=sub_sess, admin_sess=admin_sess, shots=[],
+                             oauth_bearer=_oauth_bearer)
 
 
 def verify_drupal_account_takeover(
