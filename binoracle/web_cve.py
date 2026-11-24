@@ -2072,6 +2072,12 @@ main {
 .pi-label { font-weight: 600; color: var(--text); margin-right: 6px; }
 .pi-items { display: flex; flex-direction: column; gap: 3px; margin-top: 4px; }
 .pi-item { color: var(--dim); line-height: 1.5; }
+.pi-item-clickable {
+  cursor: pointer; border-radius: 4px; padding: 1px 4px; margin: 0 -4px;
+  transition: background .15s;
+}
+.pi-item-clickable:hover { background: rgba(99,179,237,.08); }
+.pi-item-clickable:hover .pi-cve-id { text-decoration: underline; }
 .pi-link { color: var(--cyan); text-decoration: none; font-family: var(--mono); font-size: 11px; }
 .pi-link:hover { text-decoration: underline; }
 .pi-msg { color: var(--dim); font-size: 11px; }
@@ -2330,6 +2336,15 @@ main {
   $('cve-input').addEventListener('keydown', e => { if (e.key === 'Enter') startRun(); });
 
   // Update placeholder based on mode
+  function investigateRelated(cveId) {
+    $('cve-input').value = cveId;
+    $('cve-input').dispatchEvent(new Event('input', {bubbles: true}));
+    // Close history modal if open
+    const histModal = document.querySelector('[id*="hist"], .modal, .overlay');
+    if (histModal) histModal.style.display = 'none';
+    startRun();
+  }
+
   async function startRun() {
     const rawInput = $('cve-input').value.trim();
     if (!rawInput) { alert('Enter a CVE ID, e.g. CVE-2024-1071'); return; }
@@ -2850,12 +2865,57 @@ main {
     const related = corr.related || [];
     if (!related.length) return;
 
-    let html = '<div class="pi-panel"><div class="pi-title">Related CVEs (' + related.length + ') — ' + escHtml(corr.component || '') + '</div>';
-    html += '<div class="pi-items">';
-    for (const c of related.slice(0, 6)) {
-      const scoreStr = c.cvss ? c.cvss.toFixed(1) : '—';
-      let scoreCol = c.cvss >= 9 ? 'var(--red)' : c.cvss >= 7 ? '#f97316' : c.cvss >= 4 ? 'var(--yellow)' : 'var(--dim)';
-      html += `<div class="pi-item"><span class="pi-cve-id">${escHtml(c.cve_id)}</span> <span style="color:${scoreCol};font-size:11px">${scoreStr}</span> <span class="pi-rel-tag">${escHtml(c.relation)}</span> <span class="pi-msg">${escHtml((c.desc||'').slice(0,80))}</span></div>`;
+    // Build a quick lookup of history (cve_id → {verified, job_id}) from the sidebar
+    const histLookup = {};
+    document.querySelectorAll('.hist-item').forEach(el => {
+      const cid = el.dataset.cve;
+      const isConf = el.querySelector('.hist-badge-conf') !== null;
+      if (cid) histLookup[cid.toUpperCase()] = {verified: isConf};
+    });
+
+    function scoreLabel(cvss) {
+      if (!cvss) return {label:'N/A', col:'var(--dim)', cls:'badge-na'};
+      if (cvss >= 9)  return {label: cvss.toFixed(1)+' CRITICAL', col:'var(--red)',    cls:'badge-crit'};
+      if (cvss >= 7)  return {label: cvss.toFixed(1)+' HIGH',     col:'#f97316',       cls:'badge-high'};
+      if (cvss >= 4)  return {label: cvss.toFixed(1)+' MEDIUM',   col:'var(--yellow)', cls:'badge-med'};
+      return             {label: cvss.toFixed(1)+' LOW',           col:'var(--dim)',    cls:'badge-low'};
+    }
+
+    function relIcon(rel) {
+      if (!rel) return '';
+      if (rel.includes('component')) return '&#9632;';  // same component
+      if (rel.includes('cwe'))       return '&#9650;';  // same weakness class
+      if (rel.includes('vendor'))    return '&#9679;';  // same vendor
+      return '&#9670;';
+    }
+
+    let html = `<div class="pi-panel corr-panel">
+      <div class="pi-title">
+        Related CVEs (${related.length}) — ${escHtml(corr.component || 'same component')}
+        <span class="corr-hint">click any to investigate</span>
+      </div>
+      <div class="corr-grid">`;
+
+    for (const c of related.slice(0, 8)) {
+      const sc = scoreLabel(c.cvss);
+      const hist = histLookup[(c.cve_id||'').toUpperCase()];
+      const histBadge = hist ? (hist.verified
+        ? '<span class="corr-hist-badge corr-hist-conf">CONF</span>'
+        : '<span class="corr-hist-badge corr-hist-fail">tested</span>')
+        : '';
+      const fullDesc = (c.desc || '').trim();
+      const shortDesc = fullDesc.length > 100 ? fullDesc.slice(0, 100) + '…' : fullDesc;
+      html += `
+        <div class="corr-row" onclick="investigateRelated(${JSON.stringify(c.cve_id)})" title="Investigate ${escHtml(c.cve_id)}">
+          <div class="corr-row-top">
+            <span class="pi-cve-id corr-cve-id">${escHtml(c.cve_id)}</span>
+            <span class="corr-score-badge" style="color:${sc.col}">${sc.label}</span>
+            <span class="corr-rel-tag">${relIcon(c.relation)} ${escHtml(c.relation||'')}</span>
+            ${histBadge}
+            <span class="corr-investigate-btn">Investigate →</span>
+          </div>
+          <div class="corr-desc">${escHtml(shortDesc)}</div>
+        </div>`;
     }
     html += '</div></div>';
     panel.insertAdjacentHTML('beforeend', html);
