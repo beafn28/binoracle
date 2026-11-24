@@ -1956,6 +1956,72 @@ def _static_vuln_precheck(local_path: str, plugin_dir: str, vuln_class: str,
                 "confidence": 0.0,
             }
 
+    # --- Check 17: Race condition / TOCTOU — non-atomic check-then-act patterns ---
+    # Triggered for race-condition, toctou, time-of-check-time-of-use, concurrency.
+    # Looks for patterns where a check is done in one step and the action in another
+    # without holding a lock or using atomic DB operations.
+    _vc_race = (vuln_class or "").lower()
+    if _vc_race in ("race-condition", "toctou", "time-of-check-time-of-use",
+                    "concurrency", "race_condition") and local_path:
+        import os as _os_race
+        # Unsafe: check-then-act without lock
+        _RACE_UNSAFE_RE = re.compile(
+            r'if\s+.*\.exists\s*\([^)]*\).*\n.*(?:open|create|write|insert|update)'  # check then write
+            r'|\.findOne\([^)]+\).*\n.*\.save\s*\('   # findOne then save (no transaction)
+            r'|SELECT.*WHERE.*\n.*UPDATE.*WHERE'        # SELECT then UPDATE without transaction
+            r'|time\.sleep\s*\([^)]+\).*(?:token|session|nonce)'  # sleep near auth — not race safe
+            r'|balance\s*[-+]=\s*|balance\s*=\s*balance\s*[-+]',  # balance arithmetic without lock
+            re.IGNORECASE | re.DOTALL,
+        )
+        # Safe: atomic operations or explicit locking
+        _RACE_SAFE_RE = re.compile(
+            r'transaction\s*\(\s*|atomic\s*\(\s*|with_lock\s*\('
+            r'|SELECT\s+FOR\s+UPDATE|\.lock\(\)|\.acquire\(\)'
+            r'|atomic_int|AtomicReference|std::atomic'
+            r'|compare_and_swap|\.update_one\([^)]*\$inc\)'  # MongoDB atomic inc
+            r'|db\.transaction|BEGIN\s+TRANSACTION|SERIALIZABLE',
+            re.IGNORECASE,
+        )
+        _race_unsafe_files: list[str] = []
+        _race_safe_files: list[str] = []
+        _exts_race = {".js", ".ts", ".py", ".rb", ".go", ".php", ".java", ".cs"}
+        try:
+            for _r_race, _d_race, _f_race in _os_race.walk(local_path):
+                _d_race[:] = [d for d in _d_race if d not in
+                              (".git", "node_modules", "dist", "__pycache__", "vendor")]
+                for _fn_race in _f_race:
+                    if not any(_fn_race.endswith(e) for e in _exts_race):
+                        continue
+                    _fp_race = _os_race.path.join(_r_race, _fn_race)
+                    try:
+                        _txt_race = open(_fp_race, encoding="utf-8",
+                                         errors="ignore").read(100_000)
+                        if _RACE_UNSAFE_RE.search(_txt_race):
+                            _race_unsafe_files.append(
+                                _os_race.path.relpath(_fp_race, local_path))
+                        if _RACE_SAFE_RE.search(_txt_race):
+                            _race_safe_files.append(
+                                _os_race.path.relpath(_fp_race, local_path))
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        if _race_safe_files and not _race_unsafe_files:
+            return {
+                "ok": False,
+                "reason": (f"pre-check Race Condition: operaciones atómicas/transaccionales "
+                           f"detectadas ({', '.join(_race_safe_files[:2])}) — no se encontraron "
+                           f"patrones check-then-act — probable versión parchada"),
+                "confidence": 0.60,
+            }
+        if _race_unsafe_files:
+            return {
+                "ok": True,
+                "reason": (f"pre-check Race Condition: patrón check-then-act sin lock detectado "
+                           f"en {', '.join(_race_unsafe_files[:2])} — race condition probable"),
+                "confidence": 0.0,
+            }
+
     return {"ok": True, "reason": "pre-check OK", "confidence": 1.0}
 
 
