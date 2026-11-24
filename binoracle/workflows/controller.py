@@ -356,11 +356,21 @@ def execute_repair(
         ctx_hint = f"container={context.get('container','?')} cwd={cwd} phase={error.stage}"
         llm_cmd = _ask_qwen_for_fix(error, ctx_hint)
         if llm_cmd:
-            # Reject commands that need a container/file arg but have none
+            # Reject commands that need a container arg but have none
             _needs_arg = re.match(r"docker\s+(restart|start|stop|rm)\s*$", llm_cmd.strip())
             if _needs_arg:
                 log(f"[repair:qwen] skipped (no container arg): {llm_cmd}")
                 llm_cmd = None
+        if llm_cmd and re.match(r"docker\s+(restart|start|stop|rm)\s+(\S+)", llm_cmd):
+            # Validate the container name actually exists before trying to restart it
+            _m = re.match(r"docker\s+(?:restart|start|stop|rm)\s+(\S+)", llm_cmd)
+            _cname = _m.group(1) if _m else ""
+            if _cname:
+                _r = subprocess.run(["docker", "inspect", "--format", "{{.Name}}", _cname],
+                                    capture_output=True, text=True, timeout=5)
+                if _r.returncode != 0:
+                    log(f"[repair:qwen] skipped (container '{_cname}' not found): {llm_cmd}")
+                    llm_cmd = None
         if llm_cmd:
             log(f"[repair:qwen] proposed: {llm_cmd}")
             ok, out = _run_cmd(llm_cmd, cwd)
