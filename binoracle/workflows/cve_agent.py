@@ -2287,6 +2287,87 @@ def _static_vuln_precheck(local_path: str, plugin_dir: str, vuln_class: str,
                 "confidence": 0.0,
             }
 
+    # --- Check 22: Business Logic — missing price/quantity server-side validation ---
+    # Common in eCommerce plugins (WooCommerce, payment gateways) and subscription
+    # plugins where price or quantity from client-side request is trusted without
+    # server-side validation.
+    # Unsafe: total_price = qty * unit_price from request (no catalog lookup)
+    # Safe: price verified against product catalog, negative qty check, min/max enforced
+    if vuln_class in ("business-logic", "price-manipulation", "quantity-manipulation",
+                      "insufficient-validation", "improper-input-validation") and local_path:
+        import os as _os_bl
+        _BL_UNSAFE_RE = re.compile(
+            r'(?:'
+            # PHP: price/amount/total from $_POST/$_GET/$_REQUEST
+            r'\$(?:price|amount|total|qty|quantity|unit_price)\s*=\s*\$_(?:POST|GET|REQUEST|INPUT)\['
+            r'|wc_price\s*\(\s*\$_(?:POST|GET)\['
+            r'|WC\(\)->cart->(?:add|set_quantity)\s*\([^)]*\$_(?:POST|GET)\['
+            # Node.js / Express: price from req.body without verification
+            r'|(?:price|amount|total|quantity)\s*=\s*req\.body\.'
+            r'|parseFloat\s*\(\s*req\.body\.(?:price|amount|total)\s*\)'
+            r'|parseInt\s*\(\s*req\.body\.(?:qty|quantity)\s*\)'
+            # Python: price from request.POST/request.data
+            r'|(?:price|amount|total)\s*=\s*request\.(?:POST|data|json)\['
+            r'|float\s*\(\s*request\.(?:POST|data)\[.{0,20}(?:price|amount)\]'
+            r')',
+            re.IGNORECASE,
+        )
+        _BL_SAFE_RE = re.compile(
+            r'(?:'
+            # Server-side catalog lookup
+            r'get_product\s*\(\s*\$(?:product_id|id)\)'
+            r'|Product\.objects\.get\s*\('
+            r'|\.find_by_id\s*\(\s*(?:product_id|id)\)'
+            r'|Price\.where\s*\('
+            # Negative quantity guards
+            r'|if\s*\(\s*\$qty\s*[<>]=?\s*0\s*\)'
+            r'|if\s*\(\s*(?:qty|quantity)\s*[<>]=?\s*0\s*\)'
+            r'|quantity\s*>\s*0\s*\?'
+            # Explicit price verification
+            r'|verify_price\s*\(|validate_amount\s*\(|check_price\s*\('
+            r'|assert.*price\s*==\s*|expected_price'
+            r')',
+            re.IGNORECASE,
+        )
+        _bl_unsafe_files: list[str] = []
+        _bl_safe_files: list[str] = []
+        try:
+            for _r_bl, _d_bl, _f_bl in _os_bl.walk(local_path):
+                _d_bl[:] = [d for d in _d_bl
+                            if d not in ("node_modules", ".git", "vendor", "__pycache__")]
+                for _fn_bl in _f_bl:
+                    if not _fn_bl.endswith((".php", ".js", ".ts", ".py", ".rb")):
+                        continue
+                    _fp_bl = _os_bl.path.join(_r_bl, _fn_bl)
+                    try:
+                        _txt = open(_fp_bl, encoding="utf-8", errors="ignore").read(100_000)
+                        if _BL_UNSAFE_RE.search(_txt):
+                            _bl_unsafe_files.append(
+                                _os_bl.path.relpath(_fp_bl, local_path))
+                        if _BL_SAFE_RE.search(_txt):
+                            _bl_safe_files.append(
+                                _os_bl.path.relpath(_fp_bl, local_path))
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        if _bl_safe_files and not _bl_unsafe_files:
+            return {
+                "ok": False,
+                "reason": (f"pre-check BusinessLogic: validación de precio/cantidad en servidor "
+                           f"detectada en {', '.join(_bl_safe_files[:2])} — "
+                           f"no se encontró lectura directa del cliente sin verificar"),
+                "confidence": 0.58,
+            }
+        if _bl_unsafe_files:
+            return {
+                "ok": True,
+                "reason": (f"pre-check BusinessLogic: precio/cantidad leído directamente de la "
+                           f"request sin verificación en {', '.join(_bl_unsafe_files[:2])} — "
+                           f"business logic bypass probable"),
+                "confidence": 0.0,
+            }
+
     return {"ok": True, "reason": "pre-check OK", "confidence": 1.0}
 
 
