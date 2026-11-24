@@ -2287,6 +2287,19 @@ def run_full_chain(
                 from .patchdiff import analyze_patch_diff
                 _pdiff = analyze_patch_diff(_raw_pt)
                 if _pdiff.confidence >= 0.60:
+                    # Generate PoC HTTP request from diff analysis
+                    _poc_http = ""
+                    try:
+                        from .patchdiff import generate_poc_from_analysis
+                        _poc_http = generate_poc_from_analysis(
+                            _pdiff,
+                            base_url=llm_notes.get("base_url", "http://TARGET"),
+                            http_method=llm_notes.get("method", "GET"),
+                            auth_header="",
+                        )
+                    except Exception:
+                        pass
+
                     result.evidence["patch_analysis"] = {
                         "vuln_function": _pdiff.vuln_function,
                         "vuln_file":     _pdiff.vuln_file,
@@ -2296,10 +2309,12 @@ def run_full_chain(
                         "suggested_value": _pdiff.suggested_value,
                         "fix_class":     _pdiff.fix_class,
                         "confidence":    _pdiff.confidence,
+                        "poc_http":      _poc_http,
                     }
                     step(f"  patch-diff: clase={_pdiff.fix_class} "
                          f"func={_pdiff.vuln_function!r} "
-                         f"conf={_pdiff.confidence:.0%}")
+                         f"conf={_pdiff.confidence:.0%}"
+                         + (" PoC generado" if _poc_http else ""))
                     # Seed llm_notes if LLM didn't provide them yet
                     if not llm_notes.get("parameters") and _pdiff.suggested_param:
                         llm_notes["parameters"] = {
