@@ -97,6 +97,83 @@ def _banner(step, msg: str):
     step(f"{'─'*60}")
 
 
+# ── Chain checkpoint system ───────────────────────────────────────────────────
+
+def _checkpoint_path(cve_id: str) -> str:
+    """Return path to the checkpoint file for a CVE chain run."""
+    _dir = os.path.join(os.path.expanduser("~"), ".binoracle", "checkpoints")
+    os.makedirs(_dir, exist_ok=True)
+    _slug = cve_id.replace("/", "_").replace("\\", "_")
+    return os.path.join(_dir, f"{_slug}.json")
+
+
+def _save_checkpoint(result: ChainResult, llm_notes: dict, stage: str) -> None:
+    """Persist chain state after a completed stage.
+
+    Serializes the parts of ChainResult that are JSON-safe and cheap to
+    re-use: steps, evidence, scores, llm_notes. The inv object (raw
+    Investigation) is NOT persisted — it holds Docker state.
+    """
+    import json as _json
+    try:
+        _data = {
+            "cve_id": result.cve_id,
+            "last_stage": stage,
+            "cve_class": result.cve_class,
+            "cvss_score": result.cvss_score,
+            "cvss_severity": result.cvss_severity,
+            "epss_score": result.epss_score,
+            "risk_label": result.risk_label,
+            "description": result.description,
+            "verified": result.verified,
+            "error": result.error,
+            "patch_summary": result.patch_summary[:2000] if result.patch_summary else "",
+            "evidence": {k: v for k, v in (result.evidence or {}).items()
+                         if isinstance(v, (str, int, float, bool, list, dict, type(None)))},
+            "llm_notes": llm_notes,
+            "steps": [{"name": s.name, "status": s.status,
+                        "detail": s.detail, "elapsed": s.elapsed}
+                       for s in result.steps],
+            "saved_at": time.time(),
+        }
+        with open(_checkpoint_path(result.cve_id), "w", encoding="utf-8") as f:
+            _json.dump(_data, f, indent=2, default=str)
+    except Exception:
+        pass
+
+
+def _load_checkpoint(cve_id: str) -> Optional[dict]:
+    """Load a saved checkpoint for a CVE, if it exists and is recent (< 24h).
+
+    Returns the dict or None if not found / too old.
+    """
+    import json as _json
+    try:
+        path = _checkpoint_path(cve_id)
+        if not os.path.isfile(path):
+            return None
+        with open(path, encoding="utf-8") as f:
+            data = _json.load(f)
+        # Discard checkpoints older than 24 hours
+        age = time.time() - float(data.get("saved_at", 0))
+        if age > 86400:
+            os.unlink(path)
+            return None
+        return data
+    except Exception:
+        return None
+
+
+def _clear_checkpoint(cve_id: str) -> None:
+    """Remove a checkpoint once the chain completes successfully."""
+    try:
+        p = _checkpoint_path(cve_id)
+        if os.path.isfile(p):
+            os.unlink(p)
+    except Exception:
+        pass
+
+
 # ── Intelligence gathering ────────────────────────────────────────────────────
 
 def _gather_intelligence(cve_id: str, result: ChainResult, step: Callable) -> Optional[Any]:
@@ -1831,13 +1908,52 @@ def run_full_chain(
         except Exception:
             step("  LLM: no disponible (modo determinístico)")
 
+    # ── Checkpoint resume ─────────────────────────────────────────────────────
+    # If a previous run was interrupted (timeout, crash) and a checkpoint was
+    # saved within the last 24h, restore what we know and skip completed stages.
+    llm_notes: dict = {}
+    _ckpt = _load_checkpoint(cve_id) if not no_cache else None
+    if _ckpt:
+        step(f"  checkpoint encontrado (stage={_ckpt.get('last_stage', '?')}, "
+             f"{int(time.time() - _ckpt.get('saved_at', 0))/60:.0f}min atrás) — reanudando")
+        # Restore cheap state
+        result.cve_class   = _ckpt.get("cve_class", "")
+        result.cvss_score  = _ckpt.get("cvss_score")
+        result.cvss_severity = _ckpt.get("cvss_severity", "")
+        result.epss_score  = _ckpt.get("epss_score")
+        result.risk_label  = _ckpt.get("risk_label", "")
+        result.description = _ckpt.get("description", "")
+        result.error       = _ckpt.get("error", "")
+        result.patch_summary = _ckpt.get("patch_summary", "")
+        result.evidence.update(_ckpt.get("evidence", {}))
+        llm_notes = _ckpt.get("llm_notes", {})
+        for _s in _ckpt.get("steps", []):
+            result.add_step(_s["name"], _s["status"], _s.get("detail", ""),
+                            _s.get("elapsed", 0.0))
+        result.add_step("checkpoint_resume", "ok",
+                        f"restored from stage={_ckpt.get('last_stage', '?')}")
+
     # ── Stage 1: Intelligence ─────────────────────────────────────────────────
-    cve_info = _gather_intelligence(cve_id, result, step)
+    # Skip if already completed in checkpoint
+    if _ckpt and _ckpt.get("last_stage", "") not in ("", "start"):
+        step("  [1/8] intelligence: restaurado del checkpoint — omitido")
+        # Still need cve_info for later stages
+        try:
+            from .cvelookup import fetch_cve
+            cve_info = fetch_cve(cve_id)
+        except Exception:
+            cve_info = None
+    else:
+        cve_info = _gather_intelligence(cve_id, result, step)
+        _save_checkpoint(result, llm_notes, "intelligence")
 
     # ── Stage 2: LLM Hypothesis ───────────────────────────────────────────────
     _banner(step, "[2/8] LLM HYPOTHESIS")
-    llm_notes: dict = {}
-    if llm and result.description:
+    # llm_notes may already be populated from checkpoint resume above.
+    # Only regenerate if empty (checkpoint didn't have them).
+    if not llm_notes:
+        llm_notes = {}
+    if llm and result.description and not llm_notes.get("vuln_class"):
         try:
             from .cve_agent import _llm_research  # type: ignore
             llm_notes = _llm_research(llm, cve_id, result.description) or {}
@@ -1934,6 +2050,7 @@ def run_full_chain(
                 step(f"  CVE class (tras auto-learn): {result.cve_class}")
     step(f"  CVE class: {result.cve_class}")
     result.add_step("classify", "ok", result.cve_class)
+    _save_checkpoint(result, llm_notes, "classify")
 
     # ── Stage 4: Patch diff ───────────────────────────────────────────────────
     with tempfile.TemporaryDirectory(prefix="bo_chain_") as tmpdir:
@@ -2225,6 +2342,9 @@ def run_full_chain(
 
     # ── Stage 7.5: Index update ───────────────────────────────────────────────
     _update_index_html(result, cve_info, llm_notes, step)
+
+    # Clear checkpoint now that the chain completed successfully
+    _clear_checkpoint(cve_id)
 
     # ── Stage 8: Done ─────────────────────────────────────────────────────────
     _banner(step, f"[8/8] COMPLETADO en {result.elapsed_s:.1f}s")
