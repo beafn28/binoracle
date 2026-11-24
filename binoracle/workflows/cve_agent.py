@@ -10268,7 +10268,7 @@ def _scaffold_llm_lab(llm, source_dir: str, notes: dict, cve_id: str,
     if not isinstance(data, dict):
         return None
 
-    server_code = data.get("server_code") or ""
+    server_code = _force_bind_all_interfaces(data.get("server_code") or "")
     dockerfile  = data.get("dockerfile") or ""
     if not server_code or not dockerfile:
         return None
@@ -10329,7 +10329,7 @@ def _lab_debug_feedback(llm, fail_reason: str, lab_config: dict,
     if not isinstance(data, dict):
         return None
 
-    new_code = data.get("server_code") or server_code
+    new_code = _force_bind_all_interfaces(data.get("server_code") or server_code)
     new_df   = data.get("dockerfile") or lab_config.get("dockerfile_body", "")
     if not new_code or not new_df:
         return None
@@ -10471,6 +10471,42 @@ _SCAFFOLD_SYS_FOR_CLASS = {
 _scaffold_cache: dict = {}
 
 
+_BIND_HOST_FIX_PATTERNS = [
+    # Node/Express/Fastify/h3/Vite-like: .listen(PORT, 'localhost'/'127.0.0.1', ...)
+    (re.compile(r"(\.listen\(\s*[^,]+,\s*)(['\"])(?:localhost|127\.0\.0\.1)\2"), r"\g<1>\g<2>0.0.0.0\g<2>"),
+    # Flask/FastAPI/aiohttp kwarg: host='localhost' / host="127.0.0.1"
+    (re.compile(r"(host\s*=\s*)(['\"])(?:localhost|127\.0\.0\.1)\2"), r"\g<1>\g<2>0.0.0.0\g<2>"),
+    # Go: ListenAndServe("localhost:PORT") / .Run("localhost:PORT") / .bind("localhost:PORT")
+    (re.compile(r"((?:ListenAndServe|\.Run|\.bind|\.Start)\(\s*)(['\"])(?:localhost|127\.0\.0\.1):"), r"\g<1>\g<2>0.0.0.0:"),
+    # Rust axum/actix: bind("127.0.0.1:PORT") / bind("localhost:PORT")
+    (re.compile(r"(bind\(\s*)(['\"])(?:localhost|127\.0\.0\.1):"), r"\g<1>\g<2>0.0.0.0:"),
+    # uvicorn.run(..., host="localhost" / "127.0.0.1")
+    (re.compile(r"(uvicorn\.run\([^)]*host\s*=\s*)(['\"])(?:localhost|127\.0\.0\.1)\2"), r"\g<1>\g<2>0.0.0.0\g<2>"),
+]
+
+
+def _force_bind_all_interfaces(server_code: str) -> str:
+    """Correccion DETERMINISTA (no depende de que Qwen obedezca el prompt): fuerza a
+    0.0.0.0 cualquier bind explicito a 'localhost'/'127.0.0.1' en las formas de
+    listen/bind/run mas comunes (Node, Flask/FastAPI/aiohttp, Go, Rust).
+
+    Motivo: confirmado en vivo repetidas veces (CVE-2021-41773, 24 Nov) que Qwen2.5-Coder:7B
+    diagnostica CORRECTAMENTE "el servidor no hace listen en 0.0.0.0" en su propio paso de
+    feedback, pero el server_code que regenera a continuacion sigue bindeando a localhost de
+    todas formas -- el system prompt ya dice "CRITICO bind: 0.0.0.0" en mayusculas y aun asi
+    un modelo de 7B no lo cumple con fiabilidad. Esto es mecanico y no necesita razonamiento
+    de un LLM, asi que se corrige con regex despues de generar el codigo en vez de confiar en
+    que el modelo lo acierte -- elimina esta clase de fallo de raiz, no solo la mitiga.
+
+    Deliberadamente NO toca ninguna otra aparicion de 'localhost'/'127.0.0.1' (p.ej. una URL
+    objetivo dentro de la logica de negocio de un scaffold SSRF) -- solo las formas de
+    listen/bind/run/host= reconocidas arriba."""
+    fixed = server_code
+    for pattern, repl in _BIND_HOST_FIX_PATTERNS:
+        fixed = pattern.sub(repl, fixed)
+    return fixed
+
+
 def _scaffold_llm_lab_for_class(llm, source_dir: str, notes: dict, cve_id: str,
                                  vuln_class: str, step, es: bool,
                                  patch_diff: Optional[dict] = None) -> Optional[dict]:
@@ -10571,7 +10607,7 @@ def _scaffold_llm_lab_for_class(llm, source_dir: str, notes: dict, cve_id: str,
     if not isinstance(data, dict):
         return None
 
-    server_code = data.get("server_code") or ""
+    server_code = _force_bind_all_interfaces(data.get("server_code") or "")
     dockerfile  = data.get("dockerfile") or ""
     if not server_code or not dockerfile:
         return None
@@ -10732,7 +10768,7 @@ def _lab_feedback_for_class(llm, fail_reason: str, lab_config: dict,
     if not isinstance(data, dict):
         return None
 
-    new_code = data.get("server_code") or server_code
+    new_code = _force_bind_all_interfaces(data.get("server_code") or server_code)
     new_df   = data.get("dockerfile") or lab_config.get("dockerfile_body", "")
     if not new_code or not new_df:
         return None
@@ -12910,6 +12946,12 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         if _auth_curr_cat == _auth_prev_err_cat and _auth_curr_cat not in ("", "unknown"):
                             break
                         _auth_prev_err_cat = _auth_curr_cat
+                if _scf_auth and wr.verified:
+                    _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path)), inv.vuln_class or "missing-authorization")] = {
+                        "dockerfile_body": _auth_dockerfile, "extra_files": _auth_extra_files,
+                        "endpoint": _auth_ep, "confirm_string": notes.get("confirm_string") or "",
+                        "parameters": params if isinstance(params, dict) else {},
+                    }
                 _apply_wpverify_result(inv, wr, es, llm)
             # mismo laboratorio efimero, para command injection en Drupal (cuarta clase de
             # Drupal, "poco a poco" -- ver drupalverify.py).
@@ -13133,6 +13175,12 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
                     _attempt_cmdi_generic, wr, _cmdi_ep, cmd_p,
                     technique_label="command injection generico")
+                if _scf_cmdi and wr.verified:
+                    _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path)), "command-injection")] = {
+                        "dockerfile_body": _cmdi_dockerfile, "extra_files": _cmdi_extra_files,
+                        "endpoint": _cmdi_ep, "confirm_string": notes.get("confirm_string") or "",
+                        "parameters": params if isinstance(params, dict) else {},
+                    }
                 _apply_wpverify_result(inv, wr, es, llm)
             # Node.js web frameworks (Express/Fastify/NestJS/Koa): verificacion especializada
             # con auto-deteccion via package.json, JWT auto-auth y dispatcher principal
@@ -14186,6 +14234,12 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
                     _attempt_ssrf_generic, wr, _ssrf_ep, url_p,
                     technique_label="SSRF generico")
+                if _scf_ssrf and wr.verified:
+                    _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path)), "ssrf")] = {
+                        "dockerfile_body": _ssrf_dockerfile, "extra_files": _ssrf_extra_files,
+                        "endpoint": _ssrf_ep, "confirm_string": notes.get("confirm_string") or "",
+                        "parameters": params if isinstance(params, dict) else {},
+                    }
                 _apply_wpverify_result(inv, wr, es, llm)
             # Fallback generico: cualquier clase web con confirm_string + (docker_image o
             # dockerfile_body) + endpoint -- envia la peticion HTTP y busca confirm_string.
@@ -14465,6 +14519,12 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
                     _attempt_xss_generic, wr, _xss_ep, xss_p,
                     technique_label="XSS generico")
+                if _scf_xss and wr.verified:
+                    _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path)), "xss")] = {
+                        "dockerfile_body": _xss_dockerfile, "extra_files": _xss_extra_files,
+                        "endpoint": _xss_ep, "confirm_string": notes.get("confirm_string") or "",
+                        "parameters": params if isinstance(params, dict) else {},
+                    }
                 _apply_wpverify_result(inv, wr, es, llm)
             elif (is_drupal and fr.kind in ("drupal-module", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class == "ssti" and notes.get("endpoint")):
@@ -14604,6 +14664,12 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
                     _attempt_ssti_generic, wr, _ssti_ep, ssti_p,
                     technique_label="SSTI generico")
+                if _scf_ssti and wr.verified:
+                    _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path)), "ssti")] = {
+                        "dockerfile_body": _ssti_dockerfile, "extra_files": _ssti_extra_files,
+                        "endpoint": _ssti_ep, "confirm_string": notes.get("confirm_string") or "",
+                        "parameters": params if isinstance(params, dict) else {},
+                    }
                 _apply_wpverify_result(inv, wr, es, llm)
             # PHP Object Injection (unserialize() of user-controlled input)
             elif (not plugin_dir and fr.local_path and
@@ -14660,6 +14726,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     if not wr.verified:
                         _escalate_to_analyst(inv, getattr(wr, 'detail', '') or "",
                                              _lab_cfg_poi, es, progress_level=_prog)
+                    else:
+                        _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path)), "php-object-injection")] = _lab_cfg_poi
                 _apply_wpverify_result(inv, wr, es, llm)
             elif (is_drupal and fr.kind in ("drupal-module", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class == "xxe" and notes.get("endpoint")):
@@ -14785,6 +14853,12 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
                     _attempt_xxe_generic, wr, _xxe_ep, xml_p,
                     technique_label="XXE generico")
+                if _scf_xxe and wr.verified:
+                    _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path)), "xxe")] = {
+                        "dockerfile_body": _xxe_dockerfile, "extra_files": _xxe_extra_files,
+                        "endpoint": _xxe_ep, "confirm_string": notes.get("confirm_string") or "",
+                        "parameters": params if isinstance(params, dict) else {},
+                    }
                 _apply_wpverify_result(inv, wr, es, llm)
             elif (is_drupal and fr.kind in ("drupal-module", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class == "open-redirect" and notes.get("endpoint")):
@@ -14916,6 +14990,12 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
                     _attempt_or_generic, wr, _or_ep, redir_p,
                     technique_label="open redirect generico")
+                if _scf_or and wr.verified:
+                    _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path)), "open-redirect")] = {
+                        "dockerfile_body": _or_dockerfile, "extra_files": _or_extra_files,
+                        "endpoint": _or_ep, "confirm_string": notes.get("confirm_string") or "",
+                        "parameters": params if isinstance(params, dict) else {},
+                    }
                 _apply_wpverify_result(inv, wr, es, llm)
             elif (is_drupal and fr.kind in ("drupal-module", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class == "file-upload" and notes.get("endpoint")):
@@ -15093,6 +15173,12 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         if _fu_curr_cat == _fu_prev_err_cat and _fu_curr_cat not in ("", "unknown"):
                             break
                         _fu_prev_err_cat = _fu_curr_cat
+                if _scf_fu and wr.verified:
+                    _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path)), "file-upload")] = {
+                        "dockerfile_body": _fu_dockerfile, "extra_files": _fu_extra_files,
+                        "endpoint": _fu_ep, "confirm_string": notes.get("confirm_string") or "",
+                        "parameters": params if isinstance(params, dict) else {},
+                    }
                 _apply_wpverify_result(inv, wr, es, llm)
             elif (is_drupal and fr.kind in ("drupal-module", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class == "csrf" and notes.get("endpoint")):
@@ -15315,6 +15401,12 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         if _gql_curr_cat == _gql_prev_err_cat and _gql_curr_cat not in ("", "unknown"):
                             break
                         _gql_prev_err_cat = _gql_curr_cat
+                if _scf_gql and wr.verified:
+                    _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path)), "graphql")] = {
+                        "dockerfile_body": _gql_dockerfile, "extra_files": _gql_extra_files,
+                        "endpoint": gql_ep, "confirm_string": notes.get("confirm_string") or "",
+                        "parameters": params if isinstance(params, dict) else {},
+                    }
                 _apply_wpverify_result(inv, wr, es, llm)
             # Prototype pollution (Node.js deepMerge vulnerable → contaminacion de Object.prototype)
             elif (not plugin_dir and fr.local_path and
@@ -15375,6 +15467,12 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         if _pp_curr_cat == _pp_prev_err_cat and _pp_curr_cat not in ("", "unknown"):
                             break
                         _pp_prev_err_cat = _pp_curr_cat
+                if _scf_pp and wr.verified:
+                    _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path)), "prototype-pollution")] = {
+                        "dockerfile_body": _pp_dockerfile, "extra_files": _pp_extra_files,
+                        "endpoint": _pp_ep, "confirm_string": notes.get("confirm_string") or "",
+                        "parameters": params if isinstance(params, dict) else {},
+                    }
                 _apply_wpverify_result(inv, wr, es, llm)
             # Boolean oracle / data-leak: diferencia TRUE/FALSE en respuesta filtra datos privados
             elif (not plugin_dir and fr.local_path and
@@ -15454,6 +15552,12 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     if not wr.verified:
                         _escalate_to_analyst(inv, getattr(wr, 'detail', '') or "", _lab_cfg_bool, es,
                                                        progress_level=_infer_progress_level(getattr(wr, 'detail', '')))
+                if _scf_bool and wr.verified:
+                    _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path)), "boolean-oracle")] = {
+                        "dockerfile_body": _bool_dockerfile, "extra_files": _bool_extra_files,
+                        "endpoint": bool_ep, "confirm_string": notes.get("confirm_string") or "",
+                        "parameters": params if isinstance(params, dict) else {},
+                    }
                 _apply_wpverify_result(inv, wr, es, llm)
             # CORS misconfiguration: reflexion del Origin en ACAO + ACAC: true
             # fr.local_path puede ser None si la descarga del repo fallo — OK mientras
@@ -15518,6 +15622,12 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         if _cors_curr_cat == _cors_prev_err_cat and _cors_curr_cat not in ("", "unknown"):
                             break
                         _cors_prev_err_cat = _cors_curr_cat
+                if _scf_cors and wr.verified:
+                    _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path)), "cors")] = {
+                        "dockerfile_body": _cors_dockerfile, "extra_files": _cors_extra_files,
+                        "endpoint": cors_ep, "confirm_string": notes.get("confirm_string") or "",
+                        "parameters": params if isinstance(params, dict) else {},
+                    }
                 _apply_wpverify_result(inv, wr, es, llm)
             # JWT bypass: alg:none + weak secret
             # Mismo patron que CORS: fr.local_path puede ser None si el repo no se descargo,
@@ -15679,6 +15789,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         if not wr.verified:
                             _escalate_to_analyst(inv, getattr(wr, 'detail', '') or "",
                                                  _lab_cfg_oauth, es, progress_level=_prog)
+                        else:
+                            _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path)), "oauth-bypass")] = _lab_cfg_oauth
                     _apply_wpverify_result(inv, wr, es, llm)
                 else:
                     inv.blockers.append(("oauth-bypass: se necesita confirm_string del "
@@ -15734,6 +15846,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         if not wr.verified:
                             _escalate_to_analyst(inv, getattr(wr, 'detail', '') or "",
                                                  _lab_cfg_dser, es, progress_level=_prog)
+                        else:
+                            _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path)), "deserialization")] = _lab_cfg_dser
                     _apply_wpverify_result(inv, wr, es, llm)
                 else:
                     inv.blockers.append(("deserialization: se necesita confirm_string o "
@@ -15788,6 +15902,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         if not wr.verified:
                             _escalate_to_analyst(inv, getattr(wr, 'detail', '') or "",
                                                  _lab_cfg_race, es, progress_level=_prog)
+                        else:
+                            _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path)), "race-condition")] = _lab_cfg_race
                     _apply_wpverify_result(inv, wr, es, llm)
                 else:
                     inv.blockers.append(("race-condition: se necesita confirm_string del "
@@ -15848,6 +15964,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     if not wr.verified:
                         _escalate_to_analyst(inv, getattr(wr, 'detail', '') or "",
                                              _lab_cfg_pconf, es, progress_level=_prog)
+                    else:
+                        _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path)), "path-confusion")] = _lab_cfg_pconf
                 _apply_wpverify_result(inv, wr, es, llm)
             # Business logic (invariant violations, negative transfer, coupon abuse)
             elif (not plugin_dir and fr.local_path and
@@ -15898,6 +16016,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         if not wr.verified:
                             _escalate_to_analyst(inv, getattr(wr, 'detail', '') or "",
                                                  _lab_cfg_biz, es, progress_level=_prog)
+                        else:
+                            _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path)), "business-logic")] = _lab_cfg_biz
                     _apply_wpverify_result(inv, wr, es, llm)
                 else:
                     inv.blockers.append(("business-logic: se necesita confirm_string del "
@@ -15955,6 +16075,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     if not wr.verified:
                         _escalate_to_analyst(inv, getattr(wr, 'detail', '') or "",
                                              _lab_cfg_csrf, es, progress_level=_prog)
+                    else:
+                        _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path)), "csrf")] = _lab_cfg_csrf
                 _apply_wpverify_result(inv, wr, es, llm)
             # CRLF injection / HTTP response splitting
             elif (not plugin_dir and fr.local_path and
@@ -16004,6 +16126,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     if not wr.verified:
                         _escalate_to_analyst(inv, getattr(wr, 'detail', '') or "",
                                              _lab_cfg_crlf, es, progress_level=_prog)
+                    else:
+                        _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path)), "crlf-injection")] = _lab_cfg_crlf
                 _apply_wpverify_result(inv, wr, es, llm)
             # Multi-step chain (2FA bypass, token-based flows)
             elif (not plugin_dir and fr.local_path and
@@ -16061,6 +16185,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     if not wr.verified:
                         _escalate_to_analyst(inv, getattr(wr, 'detail', '') or "",
                                              _lab_cfg_ms, es, progress_level=_prog)
+                    else:
+                        _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path)), "2fa-bypass")] = _lab_cfg_ms
                 _apply_wpverify_result(inv, wr, es, llm)
             # Mass assignment (privileged field injection in registration / profile update)
             elif (not plugin_dir and fr.local_path and
@@ -16115,6 +16241,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     if not wr.verified:
                         _escalate_to_analyst(inv, getattr(wr, 'detail', '') or "",
                                              _lab_cfg_ma, es, progress_level=_prog)
+                    else:
+                        _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path)), "mass-assignment")] = _lab_cfg_ma
                 _apply_wpverify_result(inv, wr, es, llm)
         else:
             step(f"no se pudo obtener el codigo: {fr.note}" if es else
