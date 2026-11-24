@@ -174,6 +174,126 @@ def _clear_checkpoint(cve_id: str) -> None:
         pass
 
 
+# ── Semantic response body analysis ──────────────────────────────────────────
+
+_RESPONSE_PATTERNS = {
+    # Credentials / secrets exposed in body
+    "aws_key": (re.compile(
+        r'AKIA[0-9A-Z]{16}', re.IGNORECASE), "AWS Access Key ID in response body"),
+    "jwt_token": (re.compile(
+        r'eyJ[A-Za-z0-9_-]{20,}\.eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}'),
+        "JWT token in response body"),
+    "private_key": (re.compile(
+        r'-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----'), "Private key in response body"),
+    "password_field": (re.compile(
+        r'"password"\s*:\s*"[^"]{6,}"', re.IGNORECASE), "Password field in JSON response"),
+    "api_key": (re.compile(
+        r'"api[_-]?key"\s*:\s*"[^"]{8,}"', re.IGNORECASE), "API key in JSON response"),
+    "secret_field": (re.compile(
+        r'"secret"\s*:\s*"[^"]{8,}"', re.IGNORECASE), "Secret field in JSON response"),
+    "auth_token": (re.compile(
+        r'"(?:auth|access|refresh)[_-]?token"\s*:\s*"[^"]{20,}"', re.IGNORECASE),
+        "Auth token in JSON response"),
+    # Technical information disclosure
+    "stack_trace_php": (re.compile(
+        r'(?:Fatal error|Parse error|Warning).*on line \d+', re.IGNORECASE),
+        "PHP error/stack trace in response"),
+    "stack_trace_python": (re.compile(
+        r'Traceback \(most recent call last\)', re.IGNORECASE),
+        "Python traceback in response"),
+    "stack_trace_java": (re.compile(
+        r'(?:java\.|javax\.|org\.|com\.)[A-Za-z]+Exception:', re.IGNORECASE),
+        "Java exception in response"),
+    "stack_trace_node": (re.compile(
+        r'(?:TypeError|ReferenceError|SyntaxError): .+\n\s+at .+:\d+:\d+', re.IGNORECASE),
+        "Node.js stack trace in response"),
+    "sql_error": (re.compile(
+        r"(?:You have an error in your SQL syntax|SQLSTATE\[|pg::SyntaxError|"
+        r"ORA-\d{5}|sqlite3\.OperationalError)", re.IGNORECASE),
+        "SQL error in response — SQLi confirmed"),
+    "etc_passwd": (re.compile(
+        r'root:(?:x|\*|!):0:0:', re.IGNORECASE), "/etc/passwd content in response"),
+    "db_credentials": (re.compile(
+        r'"(?:db_|database_)?(?:user|pass|password|host)"\s*:\s*"[^"]{3,}"', re.IGNORECASE),
+        "Database credentials in response"),
+    "internal_path": (re.compile(
+        r'(?:/var/www/|/usr/local/|/home/\w+/|C:\\\\Users\\\\)', re.IGNORECASE),
+        "Internal server path disclosed in response"),
+    "xss_reflection": (re.compile(
+        r'<script[^>]*>.*?alert\s*\(|<img[^>]+onerror\s*=|<svg[^>]+onload\s*=',
+        re.IGNORECASE | re.DOTALL),
+        "XSS payload reflected unescaped in response"),
+    # Admin / privileged data
+    "user_enumeration": (re.compile(
+        r'"(?:users?|accounts?)"\s*:\s*\[', re.IGNORECASE), "User list in response"),
+    "admin_data": (re.compile(
+        r'"(?:is_admin|is_staff|role)"\s*:\s*"?(?:true|admin|superuser|1)',
+        re.IGNORECASE), "Admin/privileged field in response"),
+}
+
+
+def _analyze_response_body(body: str, vuln_class: str = "") -> dict:
+    """Analyze an HTTP response body for security-significant patterns.
+
+    Returns a dict with:
+      findings: list of (pattern_name, description) tuples
+      severity_upgrade: bool — finding implies higher impact than base vuln_class
+      impact_class: str — 'credential_exposure' | 'data_disclosure' | 'code_execution' |
+                          'information_disclosure' | ''
+      confidence_bonus: float — additional engine_confidence to add (0-0.15)
+    """
+    if not body:
+        return {"findings": [], "severity_upgrade": False,
+                "impact_class": "", "confidence_bonus": 0.0}
+
+    findings = []
+    for name, (pattern, description) in _RESPONSE_PATTERNS.items():
+        if pattern.search(body):
+            findings.append((name, description))
+
+    if not findings:
+        return {"findings": [], "severity_upgrade": False,
+                "impact_class": "", "confidence_bonus": 0.0}
+
+    # Classify impact
+    _cred_findings = {f[0] for f in findings} & {
+        "aws_key", "jwt_token", "private_key", "password_field",
+        "api_key", "secret_field", "auth_token", "db_credentials"}
+    _code_findings = {f[0] for f in findings} & {"xss_reflection", "etc_passwd"}
+    _disclosure_findings = {f[0] for f in findings} & {
+        "stack_trace_php", "stack_trace_python", "stack_trace_java",
+        "stack_trace_node", "sql_error", "internal_path",
+        "user_enumeration", "admin_data"}
+
+    if _cred_findings:
+        impact_class = "credential_exposure"
+        severity_upgrade = True
+        confidence_bonus = 0.12
+    elif _code_findings:
+        impact_class = "code_execution" if "etc_passwd" in _code_findings else "xss_confirmed"
+        severity_upgrade = True
+        confidence_bonus = 0.10
+    elif "sql_error" in {f[0] for f in findings}:
+        impact_class = "sqli_confirmed"
+        severity_upgrade = True
+        confidence_bonus = 0.10
+    elif _disclosure_findings:
+        impact_class = "information_disclosure"
+        severity_upgrade = False
+        confidence_bonus = 0.05
+    else:
+        impact_class = "data_disclosure"
+        severity_upgrade = True
+        confidence_bonus = 0.08
+
+    return {
+        "findings": findings,
+        "severity_upgrade": severity_upgrade,
+        "impact_class": impact_class,
+        "confidence_bonus": confidence_bonus,
+    }
+
+
 # ── Intelligence gathering ────────────────────────────────────────────────────
 
 def _gather_intelligence(cve_id: str, result: ChainResult, step: Callable) -> Optional[Any]:
@@ -1176,6 +1296,41 @@ def _run_web_stage(cve_id: str, cve_info, llm_notes: dict,
         result.inv      = inv
         status = "VERIFICADO" if result.verified else "no confirmado"
         step(f"  resultado: {status}")
+
+        # Semantic response body analysis — extract additional signals from
+        # any response body captured in evidence (stack traces, credentials, etc.)
+        _body_to_analyze = ""
+        for _ev_key in ("respuesta_cuerpo_recorte", "exploit_response", "body_snippet",
+                        "listener_log_recorte"):
+            _ev_body = getattr(inv, "evidence", {}) or {}
+            _ev_body = _ev_body if isinstance(_ev_body, dict) else {}
+            _candidate = _ev_body.get(_ev_key, "")
+            if isinstance(_candidate, str) and len(_candidate) > 20:
+                _body_to_analyze = _candidate
+                break
+        if not _body_to_analyze:
+            # Try result.evidence too
+            for _ev_key in ("respuesta_cuerpo_recorte", "exploit_response"):
+                _candidate = result.evidence.get(_ev_key, "")
+                if isinstance(_candidate, str) and len(_candidate) > 20:
+                    _body_to_analyze = _candidate
+                    break
+
+        if _body_to_analyze:
+            _body_analysis = _analyze_response_body(
+                _body_to_analyze, llm_notes.get("vuln_class", ""))
+            if _body_analysis["findings"]:
+                result.evidence["response_body_analysis"] = _body_analysis
+                _found_names = [f[1] for f in _body_analysis["findings"]]
+                step(f"  respuesta semántica: {', '.join(_found_names[:3])}")
+                # Apply confidence bonus
+                result.engine_confidence = min(
+                    1.0, result.engine_confidence + _body_analysis["confidence_bonus"])
+                # Tag impact class in evidence
+                result.evidence["impact_class"] = _body_analysis["impact_class"]
+                if _body_analysis["severity_upgrade"]:
+                    step(f"  impacto actualizado: {_body_analysis['impact_class']}")
+
         result.add_step("web_investigation", "ok",
                         f"verified={result.verified} findings={len(result.findings)}",
                         elapsed=t())
