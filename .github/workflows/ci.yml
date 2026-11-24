@@ -1,9 +1,27 @@
 name: ci
-# CERO gasto: el workflow NO se ejecuta solo (ni en push ni en PR). Solo corre si lo lanzas a mano
-# desde la pestana Actions ("Run workflow"). Asi no consume minutos de GitHub Actions ni sale en rojo.
-# Las pruebas se corren en LOCAL: .venv/bin/python -m pytest tests/ -q
+# Runs on:
+#   push     — any branch touching binoracle/ code, tests/, or the CI config itself
+#   pull_request — same path filter, so PRs get a gate before merge
+#   workflow_dispatch — manual run from the Actions tab (no-cost on demand)
+#
+# Pushes to branches outside the path filter (docs-only, assets, etc.) still skip CI.
 on:
   workflow_dispatch:
+  push:
+    branches: ["**"]
+    paths:
+      - "binoracle/**"
+      - "tests/**"
+      - ".github/workflows/ci.yml"
+      - "pyproject.toml"
+      - "setup.cfg"
+  pull_request:
+    paths:
+      - "binoracle/**"
+      - "tests/**"
+      - ".github/workflows/ci.yml"
+      - "pyproject.toml"
+      - "setup.cfg"
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -76,4 +94,63 @@ jobs:
         # tests drive real sandboxes/angr/docker). Raise it to the real measured value (rounded
         # down a couple points for headroom) once that run completes, then again over time as
         # coverage grows -- never lower it without a documented reason.
-        run: pytest -q tests/ --cov=binoracle --cov-report=term-missing --cov-fail-under=20
+        run: |
+          pytest -q tests/ \
+            --cov=binoracle \
+            --cov-report=term-missing \
+            --cov-report=json:coverage.json \
+            --cov-fail-under=20 \
+            --tb=short \
+            -v 2>&1 | tee pytest-report.txt
+      - name: Generate regression summary
+        if: always()
+        run: |
+          python - <<'EOF'
+          import json, os, datetime
+
+          cov_ok = os.path.exists("coverage.json")
+          rpt_ok = os.path.exists("pytest-report.txt")
+          passed = failed = skipped = 0
+          coverage_pct = 0.0
+
+          if rpt_ok:
+              with open("pytest-report.txt") as f:
+                  for line in f:
+                      if "passed" in line:
+                          import re
+                          m = re.search(r"(\d+) passed", line)
+                          if m: passed = int(m.group(1))
+                          m = re.search(r"(\d+) failed", line)
+                          if m: failed = int(m.group(1))
+                          m = re.search(r"(\d+) skipped", line)
+                          if m: skipped = int(m.group(1))
+          if cov_ok:
+              with open("coverage.json") as f:
+                  d = json.load(f)
+                  coverage_pct = d.get("totals", {}).get("percent_covered", 0.0)
+
+          summary = {
+              "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+              "run_id":    os.environ.get("GITHUB_RUN_ID", "local"),
+              "sha":       os.environ.get("GITHUB_SHA", "unknown")[:8],
+              "branch":    os.environ.get("GITHUB_REF_NAME", "unknown"),
+              "passed":    passed,
+              "failed":    failed,
+              "skipped":   skipped,
+              "coverage":  round(coverage_pct, 1),
+              "status":    "PASS" if failed == 0 else "FAIL",
+          }
+          with open("regression-summary.json", "w") as f:
+              json.dump(summary, f, indent=2)
+          print(json.dumps(summary, indent=2))
+          EOF
+      - name: Upload regression artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: regression-report-${{ github.run_id }}
+          path: |
+            pytest-report.txt
+            coverage.json
+            regression-summary.json
+          retention-days: 90

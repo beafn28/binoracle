@@ -1,0 +1,405 @@
+<!doctype html>
+<title>Regression Dashboard</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+:root {
+  --bg:       #0d1117;
+  --bg2:      #161b22;
+  --bg3:      #21262d;
+  --border:   #30363d;
+  --fg:       #e6edf3;
+  --fg2:      #8b949e;
+  --accent:   #58a6ff;
+  --pass:     #3fb950;
+  --fail:     #f85149;
+  --warn:     #d29922;
+  --pass-bg:  rgba(63,185,80,.12);
+  --fail-bg:  rgba(248,81,73,.12);
+  --warn-bg:  rgba(210,153,34,.12);
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg:      #f6f8fa;
+    --bg2:     #ffffff;
+    --bg3:     #f0f3f6;
+    --border:  #d0d7de;
+    --fg:      #1f2328;
+    --fg2:     #656d76;
+    --accent:  #0969da;
+    --pass:    #1a7f37;
+    --fail:    #cf222e;
+    --warn:    #9a6700;
+    --pass-bg: rgba(26,127,55,.08);
+    --fail-bg: rgba(207,34,46,.08);
+    --warn-bg: rgba(154,103,0,.08);
+    color-scheme: light;
+  }
+}
+:root[data-theme="light"] {
+  --bg:      #f6f8fa; --bg2: #ffffff; --bg3: #f0f3f6; --border: #d0d7de;
+  --fg:      #1f2328; --fg2: #656d76; --accent: #0969da;
+  --pass:    #1a7f37; --fail: #cf222e; --warn:  #9a6700;
+  --pass-bg: rgba(26,127,55,.08); --fail-bg: rgba(207,34,46,.08); --warn-bg: rgba(154,103,0,.08);
+  color-scheme: light;
+}
+*,*::before,*::after { box-sizing: border-box; margin: 0; padding: 0 }
+body {
+  background: var(--bg); color: var(--fg);
+  font-family: "Inter", system-ui, sans-serif;
+  font-size: 14px; line-height: 1.6;
+  padding-block: calc(env(safe-area-inset-top,0px) + 24px) calc(env(safe-area-inset-bottom,0px) + 48px);
+  padding-left:  max(16px, env(safe-area-inset-left,0px));
+  padding-right: max(16px, env(safe-area-inset-right,0px));
+}
+h1 { font-size: 1.5rem; font-weight: 700; letter-spacing: -.02em; margin-bottom: 4px }
+h2 { font-size: 1rem;   font-weight: 600; margin-bottom: 12px }
+.subtitle { color: var(--fg2); font-size: .85rem; margin-bottom: 32px }
+
+/* Layout */
+.page-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 8px }
+.theme-btn { background: var(--bg3); border: 1px solid var(--border); color: var(--fg2);
+             padding: 4px 10px; border-radius: 6px; cursor: pointer; font-size: .8rem; font-family: inherit }
+.theme-btn:hover { color: var(--fg) }
+
+/* Summary tiles */
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 32px }
+.tile { background: var(--bg2); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px }
+.tile-label { font-size: .75rem; color: var(--fg2); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 6px }
+.tile-val { font-size: 1.75rem; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1 }
+.tile-val.pass { color: var(--pass) }
+.tile-val.fail { color: var(--fail) }
+.tile-val.warn { color: var(--warn) }
+.tile-val.info { color: var(--accent) }
+
+/* Run history table */
+.card { background: var(--bg2); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; margin-bottom: 24px }
+.card-header { padding: 14px 18px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap }
+.table-wrap { overflow-x: auto }
+table { width: 100%; border-collapse: collapse; min-width: 480px }
+th { font-size: .75rem; color: var(--fg2); font-weight: 600; text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--border); text-transform: uppercase; letter-spacing: .05em; white-space: nowrap }
+td { padding: 10px 14px; border-bottom: 1px solid var(--border); font-variant-numeric: tabular-nums; white-space: nowrap }
+tr:last-child td { border-bottom: none }
+tr:hover td { background: var(--bg3) }
+
+/* Badge */
+.badge { display: inline-flex; align-items: center; gap: 5px; font-size: .78rem; font-weight: 600; padding: 2px 8px; border-radius: 20px; white-space: nowrap }
+.badge-pass { background: var(--pass-bg); color: var(--pass) }
+.badge-fail { background: var(--fail-bg); color: var(--fail) }
+.badge-pend { background: var(--warn-bg); color: var(--warn) }
+.dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; display: inline-block }
+
+/* Coverage bar */
+.cov-bar { display: flex; align-items: center; gap: 8px }
+.bar-track { flex: 1; height: 6px; background: var(--bg3); border-radius: 3px; overflow: hidden }
+.bar-fill  { height: 100%; border-radius: 3px; transition: width .4s }
+.bar-pct   { font-size: .75rem; color: var(--fg2); min-width: 36px; text-align: right }
+
+/* Trend sparkline */
+.spark { display: flex; align-items: flex-end; gap: 3px; height: 32px }
+.spark-bar { width: 10px; border-radius: 2px 2px 0 0; min-height: 2px; transition: height .3s }
+
+/* Import controls */
+.import-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 14px 18px; border-top: 1px solid var(--border) }
+.import-row input[type=file] { display: none }
+.btn { background: var(--bg3); border: 1px solid var(--border); color: var(--fg); font-family: inherit;
+       font-size: .82rem; padding: 6px 14px; border-radius: 6px; cursor: pointer }
+.btn:hover { background: var(--border) }
+.btn-accent { background: var(--accent); border-color: var(--accent); color: #fff }
+.btn-accent:hover { opacity: .88 }
+.import-hint { color: var(--fg2); font-size: .78rem }
+
+/* Empty state */
+.empty { text-align: center; padding: 48px 24px; color: var(--fg2) }
+.empty-icon { font-size: 2.5rem; margin-bottom: 12px }
+.empty p { max-width: 360px; margin: 0 auto; line-height: 1.6 }
+
+code { font-family: "JetBrains Mono", monospace; font-size: .85em; background: var(--bg3); padding: 1px 5px; border-radius: 4px }
+</style>
+
+<div class="page-header">
+  <div>
+    <h1>Regression Dashboard</h1>
+    <p class="subtitle">binoracle CI pass/fail history &amp; coverage trends</p>
+  </div>
+  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+    <span id="last-updated" style="color:var(--fg2);font-size:.8rem"></span>
+    <button class="theme-btn" onclick="toggleTheme()">Toggle theme</button>
+  </div>
+</div>
+
+<!-- Summary tiles -->
+<div class="tiles">
+  <div class="tile">
+    <div class="tile-label">Last run</div>
+    <div class="tile-val" id="tile-status">—</div>
+  </div>
+  <div class="tile">
+    <div class="tile-label">Tests passed</div>
+    <div class="tile-val pass" id="tile-passed">—</div>
+  </div>
+  <div class="tile">
+    <div class="tile-label">Tests failed</div>
+    <div class="tile-val fail" id="tile-failed">—</div>
+  </div>
+  <div class="tile">
+    <div class="tile-label">Coverage</div>
+    <div class="tile-val info" id="tile-cov">—</div>
+  </div>
+  <div class="tile">
+    <div class="tile-label">Total runs</div>
+    <div class="tile-val info" id="tile-total">—</div>
+  </div>
+  <div class="tile">
+    <div class="tile-label">Pass rate</div>
+    <div class="tile-val" id="tile-passrate">—</div>
+  </div>
+</div>
+
+<!-- Run history -->
+<div class="card">
+  <div class="card-header">
+    <h2 style="margin:0">Run history</h2>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <span id="run-count" style="color:var(--fg2);font-size:.8rem"></span>
+      <button class="btn" onclick="clearData()">Clear data</button>
+    </div>
+  </div>
+  <div id="history-body">
+    <div class="empty">
+      <div class="empty-icon">📊</div>
+      <p>No run data yet. Import a <code>regression-summary.json</code> file from a CI
+         artifact, or paste JSON manually.</p>
+    </div>
+  </div>
+  <div class="import-row">
+    <label class="btn btn-accent" for="file-input">Import JSON</label>
+    <input type="file" id="file-input" accept=".json" onchange="importFile(event)">
+    <button class="btn" onclick="showPasteModal()">Paste JSON</button>
+    <button class="btn" onclick="loadDemo()">Load demo</button>
+    <span class="import-hint">Drag &amp; drop also works</span>
+  </div>
+</div>
+
+<!-- Coverage trend -->
+<div class="card">
+  <div class="card-header"><h2 style="margin:0">Coverage trend</h2></div>
+  <div style="padding:18px 18px 20px">
+    <div id="cov-trend" class="spark"></div>
+    <div style="font-size:.75rem;color:var(--fg2);margin-top:8px" id="cov-trend-label">No data yet</div>
+  </div>
+</div>
+
+<!-- Paste modal -->
+<div id="paste-overlay" hidden style="position:fixed;inset:0;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;z-index:100;padding:16px">
+  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:24px;width:100%;max-width:520px">
+    <h2 style="margin-bottom:12px">Paste regression-summary.json</h2>
+    <p style="color:var(--fg2);font-size:.82rem;margin-bottom:12px">
+      Paste the content of one or multiple JSON objects (array or single object).
+    </p>
+    <textarea id="paste-box" style="width:100%;height:160px;background:var(--bg3);border:1px solid var(--border);border-radius:6px;color:var(--fg);font-family:'JetBrains Mono',monospace;font-size:.82rem;padding:8px;resize:vertical" placeholder='{"status":"PASS","passed":120,"failed":0,"coverage":34.2,...}'></textarea>
+    <div style="display:flex;gap:8px;margin-top:12px;justify-content:flex-end">
+      <button class="btn" onclick="closePasteModal()">Cancel</button>
+      <button class="btn btn-accent" onclick="importPasted()">Import</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const STORAGE_KEY = "binoracle_regression_runs";
+
+function loadRuns() {
+  try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]"); } catch { return []; }
+}
+function saveRuns(runs) {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(runs.slice(-200))); } catch {}
+}
+
+function addRuns(newRuns) {
+  const existing = loadRuns();
+  const ids = new Set(existing.map(r => r.run_id));
+  const added = newRuns.filter(r => !ids.has(r.run_id));
+  const all = [...existing, ...added].sort((a,b) => a.timestamp < b.timestamp ? -1 : 1);
+  saveRuns(all);
+  render(all);
+  return added.length;
+}
+
+function render(runs) {
+  if (!runs) runs = loadRuns();
+  updateTiles(runs);
+  updateTable(runs);
+  updateSparkline(runs);
+  document.getElementById("last-updated").textContent =
+    runs.length ? "Last updated " + fmtRelative(new Date()) : "";
+}
+
+function updateTiles(runs) {
+  if (!runs.length) return;
+  const last = runs[runs.length-1];
+  const tStatus = document.getElementById("tile-status");
+  tStatus.textContent = last.status;
+  tStatus.className = "tile-val " + (last.status === "PASS" ? "pass" : last.status === "FAIL" ? "fail" : "warn");
+  document.getElementById("tile-passed").textContent = last.passed ?? "—";
+  const tf = document.getElementById("tile-failed");
+  tf.textContent = last.failed ?? "—";
+  tf.className = "tile-val " + (last.failed > 0 ? "fail" : "pass");
+  const tc = document.getElementById("tile-cov");
+  tc.textContent = last.coverage != null ? last.coverage + "%" : "—";
+  document.getElementById("tile-total").textContent = runs.length;
+  const passRate = runs.length ? Math.round(100 * runs.filter(r=>r.status==="PASS").length / runs.length) : 0;
+  const tpr = document.getElementById("tile-passrate");
+  tpr.textContent = passRate + "%";
+  tpr.className = "tile-val " + (passRate >= 90 ? "pass" : passRate >= 70 ? "warn" : "fail");
+  document.getElementById("run-count").textContent = runs.length + " run" + (runs.length !== 1 ? "s" : "");
+}
+
+function updateTable(runs) {
+  const body = document.getElementById("history-body");
+  if (!runs.length) {
+    body.innerHTML = `<div class="empty"><div class="empty-icon">📊</div><p>No run data yet.</p></div>`;
+    return;
+  }
+  const rows = [...runs].reverse().slice(0, 100).map(r => {
+    const badge = r.status === "PASS"
+      ? `<span class="badge badge-pass"><span class="dot"></span>PASS</span>`
+      : r.status === "FAIL"
+      ? `<span class="badge badge-fail"><span class="dot"></span>FAIL</span>`
+      : `<span class="badge badge-pend">—</span>`;
+    const covPct = r.coverage != null ? r.coverage : "—";
+    const covBar = r.coverage != null
+      ? `<div class="cov-bar"><div class="bar-track"><div class="bar-fill" style="width:${Math.min(r.coverage,100)}%;background:${r.coverage>=30?"var(--pass)":r.coverage>=15?"var(--warn)":"var(--fail)"}"></div></div><span class="bar-pct">${covPct}%</span></div>`
+      : "—";
+    return `<tr>
+      <td>${fmtDate(r.timestamp)}</td>
+      <td>${badge}</td>
+      <td style="color:var(--pass)">${r.passed ?? "—"}</td>
+      <td style="color:${r.failed>0?"var(--fail)":"var(--fg2)"}">${r.failed ?? "—"}</td>
+      <td style="color:var(--fg2)">${r.skipped ?? "—"}</td>
+      <td>${covBar}</td>
+      <td><code style="color:var(--accent)">${(r.sha||"").slice(0,8)||"—"}</code></td>
+      <td style="color:var(--fg2);max-width:120px;overflow:hidden;text-overflow:ellipsis">${r.branch||"—"}</td>
+    </tr>`;
+  }).join("");
+  body.innerHTML = `<div class="table-wrap"><table>
+    <thead><tr>
+      <th>Date</th><th>Status</th><th>Passed</th><th>Failed</th><th>Skipped</th>
+      <th>Coverage</th><th>SHA</th><th>Branch</th>
+    </tr></thead>
+    <tbody>${rows}</tbody>
+  </table></div>`;
+}
+
+function updateSparkline(runs) {
+  const el = document.getElementById("cov-trend");
+  const lbl = document.getElementById("cov-trend-label");
+  const withCov = runs.filter(r => r.coverage != null).slice(-40);
+  if (!withCov.length) { el.innerHTML = ""; lbl.textContent = "No coverage data yet."; return; }
+  const max = Math.max(...withCov.map(r=>r.coverage), 1);
+  el.innerHTML = withCov.map(r => {
+    const h = Math.max(2, Math.round((r.coverage / max) * 32));
+    const color = r.coverage >= 30 ? "var(--pass)" : r.coverage >= 15 ? "var(--warn)" : "var(--fail)";
+    return `<div class="spark-bar" style="height:${h}px;background:${color}" title="${r.coverage}% · ${fmtDate(r.timestamp)}"></div>`;
+  }).join("");
+  const last = withCov[withCov.length-1];
+  const trend = withCov.length > 1
+    ? (last.coverage - withCov[0].coverage > 0 ? "▲" : last.coverage - withCov[0].coverage < 0 ? "▼" : "→") : "";
+  lbl.textContent = `Latest: ${last.coverage}%  ${trend}  (${withCov.length} runs with coverage data)`;
+}
+
+function fmtDate(ts) {
+  if (!ts) return "—";
+  try {
+    const d = new Date(ts);
+    return d.toLocaleDateString() + " " + d.toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"});
+  } catch { return ts; }
+}
+function fmtRelative(d) {
+  return d.toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"});
+}
+
+function importFile(evt) {
+  const file = evt.target.files[0]; if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => { parseAndImport(e.target.result); };
+  reader.readAsText(file);
+  evt.target.value = "";
+}
+
+function parseAndImport(text) {
+  try {
+    let data = JSON.parse(text);
+    if (!Array.isArray(data)) data = [data];
+    const n = addRuns(data);
+    alert(`Imported ${n} new run(s).`);
+  } catch(e) {
+    alert("Invalid JSON: " + e.message);
+  }
+}
+
+function showPasteModal() {
+  document.getElementById("paste-overlay").hidden = false;
+  document.getElementById("paste-box").focus();
+}
+function closePasteModal() { document.getElementById("paste-overlay").hidden = true; }
+function importPasted() {
+  const text = document.getElementById("paste-box").value.trim();
+  if (!text) return;
+  parseAndImport(text);
+  closePasteModal();
+  document.getElementById("paste-box").value = "";
+}
+
+function clearData() {
+  if (!confirm("Clear all stored run data?")) return;
+  try { localStorage.removeItem(STORAGE_KEY); } catch {}
+  render([]);
+}
+
+function loadDemo() {
+  const base = new Date();
+  const demo = Array.from({length: 18}, (_, i) => {
+    const d = new Date(base - (17-i) * 6*3600*1000);
+    const failed = i === 5 ? 2 : i === 11 ? 1 : 0;
+    return {
+      timestamp: d.toISOString(),
+      run_id: "demo-" + i,
+      sha: Math.random().toString(16).slice(2,10),
+      branch: i < 8 ? "main" : i < 14 ? "feat/engine" : "main",
+      passed: 90 + Math.floor(Math.random()*15),
+      failed,
+      skipped: Math.floor(Math.random()*5),
+      coverage: Math.min(100, 18 + i * 1.4 + (Math.random()-.5)*3),
+      status: failed > 0 ? "FAIL" : "PASS",
+    };
+  });
+  addRuns(demo);
+}
+
+function toggleTheme() {
+  const root = document.documentElement;
+  const cur = root.getAttribute("data-theme");
+  root.setAttribute("data-theme", cur === "light" ? "dark" : "light");
+}
+
+// Drag & drop
+document.addEventListener("dragover", e => e.preventDefault());
+document.addEventListener("drop", e => {
+  e.preventDefault();
+  const file = e.dataTransfer?.files?.[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = ev => parseAndImport(ev.target.result);
+  reader.readAsText(file);
+});
+
+// Paste overlay keyboard
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape") closePasteModal();
+});
+
+render();
+</script>
