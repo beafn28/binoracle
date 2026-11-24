@@ -3360,7 +3360,14 @@ def auto_queue_nvd(days_back: int = 2, min_cvss: float = 7.0,
             (_vr * 2.0 for _st, _vr in _verified_stacks.items() if _st in _d),
             default=0.0,
         )
-        return _web_score + _vc_score + _stack_boost + e.cvss_score / 10.0
+        # Source code availability boost (+1.5) — CVEs with GitHub/GitLab refs can get patch diffs
+        _refs = getattr(e, "references", []) or []
+        _has_source_ref = any(
+            any(h in str(r) for h in ("github.com", "gitlab.com", "gitea.io", "codeberg.org"))
+            for r in _refs[:10]
+        )
+        _source_boost = 1.5 if _has_source_ref else 0.0
+        return _web_score + _vc_score + _stack_boost + _source_boost + e.cvss_score / 10.0
 
     # Apply priority_mode sort
     _cms_kws = ("wordpress", "drupal", "joomla", "wp-")
