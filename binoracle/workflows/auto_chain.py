@@ -1870,6 +1870,30 @@ def _render_chain_log(result: ChainResult, lang: str = "es",
             _next.append("ajustar confirm_string o inspeccionar la respuesta real del lab")
         if any("docker" in d.lower() or "contenedor" in d.lower() for d in _diag_items):
             _next.append("revisar `docker ps` y `docker logs bo_lab_*` para diagnóstico")
+
+        # Add fix_class-specific next steps from patch diff analysis
+        _pa_diag = result.evidence.get("patch_analysis") or {}
+        _fc_diag = _pa_diag.get("fix_class", "")
+        _vfn_diag = _pa_diag.get("vuln_function", "")
+        _conf_diag = float(_pa_diag.get("confidence", 0))
+        if _fc_diag and _conf_diag >= 0.60:
+            _FC_NEXT_STEPS = {
+                "sqli": f"inyectar en función {_vfn_diag!r}: parámetro `{_pa_diag.get('suggested_param','?')}` con payload SQLi clásico",
+                "nosqli": f"probar operador MongoDB `{{\"$gt\": \"\"}}` en parámetro `{_pa_diag.get('suggested_param','?')}` (p.ej. username/password en JSON body)",
+                "xss": f"inyectar `<script>alert(1)</script>` en parámetro `{_pa_diag.get('suggested_param','?')}` sin encoding",
+                "ssrf": f"probar URL interna: `http://169.254.169.254/latest/meta-data/` en parámetro `{_pa_diag.get('suggested_param','?')}`",
+                "path_traversal": f"probar `../../../../etc/passwd` en parámetro `{_pa_diag.get('suggested_param','?')}`",
+                "ssti": f"probar `{{{{7*7}}}}` en parámetro `{_pa_diag.get('suggested_param','?')}`",
+                "jwt_bypass": "intentar JWT con `alg:none` o firmar con clave pública como HMAC",
+                "auth_bypass": f"probar endpoint `{_pa_diag.get('vuln_file','?')}` sin cabecera de autenticación",
+                "missing_auth_bypass": f"probar endpoint `{_pa_diag.get('vuln_file','?')}` sin cabecera de autenticación",
+                "cors_misconfiguration": "añadir `Origin: https://evil.example.com` y verificar reflexión en `Access-Control-Allow-Origin`",
+                "file_upload_bypass": "subir archivo `shell.php` con Content-Type `image/jpeg` y verificar si es accesible",
+            }
+            _step_hint = _FC_NEXT_STEPS.get(_fc_diag)
+            if _step_hint:
+                _next.append(f"[patch diff] {_step_hint}")
+
         if _diag_items or _next:
             out.append("\n### " + ("Diagnóstico" if es else "Diagnosis"))
             for d in _diag_items:
