@@ -1484,6 +1484,149 @@ def _static_vuln_precheck(local_path: str, plugin_dir: str, vuln_class: str,
                 "confidence": 0.70,
             }
 
+    # --- Check 11: SSTI — detect template render with unescaped user input ---
+    # Jinja2: render_template_string(user_input), Twig: twig.render(user_input),
+    # Pebble/Freemarker/Velocity: template.evaluate(context) with user field.
+    # If the code passes user-controlled input directly to a template render call
+    # WITHOUT filtering {{ / }} sequences first, SSTI is likely exploitable.
+    if vuln_class in ("ssti", "template-injection", "server-side-template-injection") and local_path:
+        import os as _os_ssti
+        _SSTI_SINK_RE = re.compile(
+            # Python / Jinja2 / Mako
+            r'render_template_string\s*\([^)]*(?:\$_(?:GET|POST|REQUEST)|request\.|g\.)'
+            r'|render_template_string\s*\([^)]*\b(?:user|name|title|body|template)\b'
+            r'|Environment\s*\(\s*\).*\.from_string\s*\('
+            r'|Template\s*\(\s*(?![\'"]).+\)'           # Template(variable) not Template("literal")
+            # PHP Twig / Smarty / Blade
+            r'|twig.*->render\s*\([^)]*\$_(?:GET|POST|REQUEST)'
+            r'|->render\s*\([^)]*\$(?:input|template|name|title|body)'
+            r'|\$smarty->display\s*\([^)]*\$_'
+            # Node.js / Pug / EJS / Handlebars with raw output
+            r'|res\.render\s*\([^,]+,\s*\{[^}]*(?:req\.|body\.|params\.)'
+            r'|new Function\s*\([^)]*(?:req\.|body\.|params\.)'
+            r'|\{!!\s*.*(?:req\.|body\.|params\.)',      # EJS/Handlebars unescaped {!! ... !!}
+            re.IGNORECASE | re.DOTALL,
+        )
+        _SSTI_SAFE_RE = re.compile(
+            r'escape\s*\([^)]*(?:input|template|name|body)'
+            r'|autoescape\s*=\s*True'                   # Jinja2 autoescape
+            r'|html\.escape\s*\(|markupsafe\.escape\s*\('
+            r'|Markup\s*\([^)]*(?:input|name|body)'
+            r'|\{%-?\s*autoescape\s+true\s*-%\}',       # Twig autoescape
+            re.IGNORECASE,
+        )
+        _ssti_sink_hits: list[str] = []
+        _ssti_safe_hits: list[str] = []
+        _exts_ssti = {".py", ".php", ".js", ".ts", ".rb", ".java"}
+        try:
+            for _r_ssti, _d_ssti, _f_ssti in _os_ssti.walk(local_path):
+                _d_ssti[:] = [d for d in _d_ssti if d not in
+                              (".git", "node_modules", "dist", "__pycache__", "vendor")]
+                for _fn_ssti in _f_ssti:
+                    if not any(_fn_ssti.endswith(e) for e in _exts_ssti):
+                        continue
+                    _fp_ssti = _os_ssti.path.join(_r_ssti, _fn_ssti)
+                    try:
+                        _txt_ssti = open(_fp_ssti, encoding="utf-8", errors="ignore").read(200_000)
+                        if _SSTI_SINK_RE.search(_txt_ssti):
+                            _rel_ssti = _os_ssti.path.relpath(_fp_ssti, local_path)
+                            _ssti_sink_hits.append(_rel_ssti)
+                        if _SSTI_SAFE_RE.search(_txt_ssti):
+                            _ssti_safe_hits.append(_os_ssti.path.relpath(_fp_ssti, local_path))
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        # Sinks found with no safety mechanisms → SSTI likely present
+        if _ssti_sink_hits and not _ssti_safe_hits:
+            _ssti_sum = "; ".join(_ssti_sink_hits[:2])
+            return {
+                "ok": True,
+                "reason": (f"pre-check SSTI: render de template con input de usuario detectado "
+                           f"en {_ssti_sum} — sin autoescape detectado — SSTI probable"),
+                "confidence": 0.0,  # Positive signal, don't block lab
+            }
+        # Autoescape/safety found → SSTI blocked
+        if not _ssti_sink_hits and _ssti_safe_hits:
+            _safe_sum = "; ".join(_ssti_safe_hits[:2])
+            return {
+                "ok": False,
+                "reason": (f"pre-check SSTI: se detectaron mecanismos de escape/autoescape "
+                           f"en {_safe_sum} — el template injection puede estar bloqueado"),
+                "confidence": 0.68,
+            }
+
+    # --- Check 12: IDOR — detect missing ownership check on direct object lookup ---
+    # Pattern: code looks up a resource by ID from user input (params/query) but
+    # does NOT validate that the resource belongs to the authenticated user.
+    # Signals: findById/find_by_id/get(pk=) with request parameter, without
+    # user_id comparison, owner check, or permission check near the lookup.
+    if vuln_class in ("idor", "broken-object-level-authorization", "bola",
+                      "broken-access-control") and local_path:
+        import os as _os_idor
+        _IDOR_LOOKUP_RE = re.compile(
+            # Django ORM: Model.objects.get(pk=request.GET/POST/...)
+            r'\.objects\.get\s*\(\s*(?:pk|id)\s*=\s*request\.'
+            r'|get_object_or_404\s*\([^,]+,\s*(?:pk|id)\s*=\s*'
+            # Node.js / Mongoose / Sequelize
+            r'|findById\s*\(\s*req\.'
+            r'|findOne\s*\(\s*\{[^}]*_id\s*:\s*req\.'
+            r'|findByPk\s*\(\s*req\.'
+            # PHP
+            r'|\$(?:db|pdo|wpdb)->(?:get_row|query|prepare)\s*\([^)]*\$_(?:GET|POST|REQUEST)\[.*id'
+            r'|::find\s*\(\s*\$(?:request|_GET|_POST)\[',
+            re.IGNORECASE,
+        )
+        _IDOR_OWNERSHIP_RE = re.compile(
+            # Ownership checks near the lookup
+            r'user_id\s*==?\s*request\.'
+            r'|\.user\s*==?\s*request\.user'
+            r'|check_object_permissions\s*\('  # DRF
+            r'|has_perm\s*\(|HasPermission'
+            r'|owner\s*==?\s*|created_by\s*==?\s*'
+            r'|is_owner|isOwner|can_access'
+            r'|raise_exception\s*=\s*True.*IsAuthenticated',
+            re.IGNORECASE,
+        )
+        _idor_lookup_hits: list[str] = []
+        _idor_safe_hits: list[str] = []
+        _exts_idor = {".py", ".js", ".ts", ".php", ".rb"}
+        try:
+            for _r_idor, _d_idor, _f_idor in _os_idor.walk(local_path):
+                _d_idor[:] = [d for d in _d_idor if d not in
+                              (".git", "node_modules", "dist", "__pycache__", "vendor")]
+                for _fn_idor in _f_idor:
+                    if not any(_fn_idor.endswith(e) for e in _exts_idor):
+                        continue
+                    _fp_idor = _os_idor.path.join(_r_idor, _fn_idor)
+                    try:
+                        _txt_idor = open(_fp_idor, encoding="utf-8", errors="ignore").read(200_000)
+                        if _IDOR_LOOKUP_RE.search(_txt_idor):
+                            _rel_idor = _os_idor.path.relpath(_fp_idor, local_path)
+                            _idor_lookup_hits.append(_rel_idor)
+                            if _IDOR_OWNERSHIP_RE.search(_txt_idor):
+                                _idor_safe_hits.append(_rel_idor)
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        if _idor_lookup_hits and not _idor_safe_hits:
+            _idor_sum = "; ".join(_idor_lookup_hits[:2])
+            return {
+                "ok": True,
+                "reason": (f"pre-check IDOR: lookup por ID con input de usuario detectado "
+                           f"en {_idor_sum} — sin verificacion de propiedad — IDOR probable"),
+                "confidence": 0.0,  # Positive signal, don't block lab
+            }
+        if _idor_lookup_hits and _idor_safe_hits:
+            _safe_idor = "; ".join(_idor_safe_hits[:2])
+            return {
+                "ok": False,
+                "reason": (f"pre-check IDOR: se detectaron comprobaciones de propiedad/permisos "
+                           f"junto al lookup en {_safe_idor} — el IDOR puede estar mitigado"),
+                "confidence": 0.65,
+            }
+
     return {"ok": True, "reason": "pre-check OK", "confidence": 1.0}
 
 
