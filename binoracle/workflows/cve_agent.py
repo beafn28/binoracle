@@ -11332,6 +11332,60 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         budget_s=budget_s,
                     )
                     _apply_wpverify_result(inv, wr, es, llm)
+            # Wagtail CMS: Django-based CMS with admin/login/ CSRF flow.
+            elif (not plugin_dir and fr.local_path and
+                  (any(w in (inv.cms or "").lower() for w in ("wagtail",))
+                   or any(w in (notes.get("cms") or "").lower() for w in ("wagtail",)))
+                  and inv.vuln_class in ("xss", "sqli", "sql-injection", "ssrf", "idor",
+                                         "missing-authorization", "auth-bypass",
+                                         "broken-access-control", "ssti", "rce",
+                                         "path-traversal")
+                  and notes.get("endpoint")):
+                from .wagtailverify import detect_wagtail, verify_wagtail_web_cve
+                if detect_wagtail(str(fr.local_path)):
+                    step(("  wagtailverify: Wagtail detectado — iniciando lab" if es else
+                          "  wagtailverify: Wagtail detected — starting lab"))
+                    wr = verify_wagtail_web_cve(
+                        str(fr.local_path),
+                        endpoint=notes.get("endpoint") or "/",
+                        vuln_class=inv.vuln_class,
+                        http_method=notes.get("http_method") or "GET",
+                        parameters=notes.get("parameters") or [],
+                        payload=notes.get("payload") or "",
+                        confirm_string=notes.get("confirm_string") or "",
+                        auth_required=bool(notes.get("auth_required") or notes.get("authenticated")),
+                        pkg_version=inv.llm_notes.get("vulnerable_version") or "",
+                        on_step=step,
+                        budget_s=budget_s,
+                    )
+                    _apply_wpverify_result(inv, wr, es, llm)
+            # Directus headless CMS: Node.js with Bearer JWT auth and REST/GraphQL API.
+            elif (not plugin_dir and fr.local_path and
+                  (any(w in (inv.cms or "").lower() for w in ("directus",))
+                   or any(w in (notes.get("cms") or "").lower() for w in ("directus",)))
+                  and inv.vuln_class in ("xss", "sqli", "sql-injection", "ssrf", "idor",
+                                         "missing-authorization", "auth-bypass",
+                                         "broken-access-control", "ssti", "rce",
+                                         "path-traversal")
+                  and notes.get("endpoint")):
+                from .directusverify import detect_directus, verify_directus_web_cve
+                if detect_directus(str(fr.local_path)):
+                    step(("  directusverify: Directus detectado — iniciando lab" if es else
+                          "  directusverify: Directus detected — starting lab"))
+                    wr = verify_directus_web_cve(
+                        str(fr.local_path),
+                        endpoint=notes.get("endpoint") or "/",
+                        vuln_class=inv.vuln_class,
+                        http_method=notes.get("http_method") or "GET",
+                        parameters=notes.get("parameters") or [],
+                        payload=notes.get("payload") or "",
+                        confirm_string=notes.get("confirm_string") or "",
+                        auth_required=bool(notes.get("auth_required") or notes.get("authenticated")),
+                        pkg_version=inv.llm_notes.get("vulnerable_version") or "",
+                        on_step=step,
+                        budget_s=budget_s,
+                    )
+                    _apply_wpverify_result(inv, wr, es, llm)
             # Go / Rust web frameworks: verificacion especializada con auto-deteccion de
             # framework (Gin/Echo/Fiber/Chi/Gorilla/Actix/Axum), JWT auto-auth y API key
             # scan -- ver goverify.py.
