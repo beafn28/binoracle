@@ -79,6 +79,103 @@ _DOCKER_IMAGE_PROFILES: dict[str, dict] = {
     "mattermost/mattermost-team-edition:": None,
     # needs docker-compose with elasticsearch and other services
     "openmetadata/server:": None,
+    # --- Drupal (PHP CMS) ---
+    "drupal:": {
+        "port": 80,
+        "envs": {
+            "MYSQL_ROOT_PASSWORD": "binoracle",
+            "MYSQL_DATABASE": "drupal",
+        },
+        "cmd": None,
+        "startup_wait": 20,
+        "health_path": "/",
+        "note": "needs mysql sidecar; LLM uses docker-compose for drupal+mysql",
+    },
+    # standalone drupal with SQLite (simpletest profile)
+    "drupal/recommended-project": None,
+    # --- CraftCMS ---
+    "craftcms/craft:": {
+        "port": 8080,
+        "envs": {
+            "CRAFT_APP_ID": "CraftCMS--binoracle",
+            "CRAFT_SECURITY_KEY": "binoracle-secret-key-for-craft",
+            "CRAFT_DB_DRIVER": "mysql",
+            "DB_SERVER": "localhost",
+            "DB_DATABASE": "craft",
+            "DB_USER": "root",
+            "DB_PASSWORD": "binoracle",
+            "CRAFT_ALLOW_ADMIN_CHANGES": "true",
+        },
+        "cmd": None,
+        "startup_wait": 25,
+        "health_path": "/",
+        "note": "needs mysql sidecar; use docker-compose",
+    },
+    # --- Strapi (Node.js headless CMS) ---
+    "strapi/strapi:": {
+        "port": 1337,
+        "envs": {
+            "DATABASE_CLIENT": "sqlite",
+            "DATABASE_FILENAME": "/tmp/.tmp/data.db",
+            "JWT_SECRET": "binoracle-jwt-secret",
+            "APP_KEYS": "binoracle-key1,binoracle-key2",
+            "API_TOKEN_SALT": "binoracle-token-salt",
+            "ADMIN_JWT_SECRET": "binoracle-admin-jwt",
+            "STRAPI_DISABLE_STARTUP_MESSAGE": "true",
+        },
+        "cmd": None,
+        "startup_wait": 30,
+        "health_path": "/",
+    },
+    # --- Paperless-ngx (Django-based DMS) ---
+    "ghcr.io/paperless-ngx/paperless-ngx:": {
+        "port": 8000,
+        "envs": {
+            "PAPERLESS_SECRET_KEY": "binoracle-secret-key-for-paperless",
+            "PAPERLESS_URL": "http://localhost:8000",
+            "PAPERLESS_CSRF_TRUSTED_ORIGINS": "http://localhost:8000",
+            "PAPERLESS_ADMIN_USER": "admin",
+            "PAPERLESS_ADMIN_PASSWORD": "BinOracle123!",
+            "PAPERLESS_REDIS": "",
+            "PAPERLESS_DBENGINE": "sqlite",
+            "PAPERLESS_DBNAME": "/tmp/paperless.db",
+        },
+        "cmd": None,
+        "startup_wait": 30,
+        "health_path": "/api/",
+    },
+    # --- Gradio (Python ML web UI) ---
+    "python:": {
+        "port": 7860,
+        "envs": {
+            "GRADIO_SERVER_PORT": "7860",
+            "GRADIO_SERVER_NAME": "0.0.0.0",
+        },
+        "cmd": None,
+        "startup_wait": 15,
+        "health_path": "/",
+    },
+    # --- Rack/Ruby web apps ---
+    "ruby:": {
+        "port": 9292,
+        "envs": {
+            "RACK_ENV": "production",
+        },
+        "cmd": None,
+        "startup_wait": 10,
+        "health_path": "/",
+    },
+    # --- Node.js apps (Express, Hono, etc.) ---
+    "node:": {
+        "port": 3000,
+        "envs": {
+            "NODE_ENV": "production",
+            "PORT": "3000",
+        },
+        "cmd": None,
+        "startup_wait": 10,
+        "health_path": "/",
+    },
 }
 
 

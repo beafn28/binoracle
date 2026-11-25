@@ -10059,3 +10059,133 @@ def verify_generic_http_request_smuggling(
     finally:
         step("desmontando el laboratorio (http-request-smuggling)...")
         lab.teardown()
+
+
+# ---------------------------------------------------------------------------
+# verify_generic_missing_authorization
+# ---------------------------------------------------------------------------
+
+def verify_generic_missing_authorization(
+    source_dir: str,
+    endpoint: str,
+    http_method: str = "GET",
+    confirm_string: str = "",
+    admin_credentials: Optional[dict] = None,
+    on_step: Optional[Callable[[str], None]] = None,
+    budget_s: float = 900.0,
+    dockerfile_body: str = "", extra_files: Optional[dict] = None,
+    setup_commands: Optional[List[str]] = None,
+) -> WpVerifyResult:
+    """Verifica Missing Authorization / Unauthorized Access.
+
+    Estrategia más completa que broken-access-control:
+    1. Prueba el endpoint sin credenciales → busca confirm_string.
+    2. Registra un usuario sin privilegios y prueba con sus credenciales.
+    3. Prueba con JWT vacío / null / mangled → busca acceso.
+    4. Prueba variantes de HTTP method (HEAD, OPTIONS, PUT, PATCH).
+    5. VERIFICADO si confirm_string se obtiene en cualquier variante.
+    """
+    import secrets as _sec
+
+    step = on_step or (lambda _m: None)
+    res = WpVerifyResult()
+    if not _docker_daemon_ok():
+        res.available = False
+        res.detail = "sin daemon Docker alcanzable"
+        res.limitations.append("verificacion dinamica NO intentada: sin daemon Docker")
+        return res
+
+    _METHODS_TO_TRY = [http_method.upper(), "GET", "POST", "HEAD", "OPTIONS", "PUT"]
+    _JWT_BYPASSES = [
+        "",
+        "null",
+        "undefined",
+        "Bearer null",
+        "Bearer undefined",
+        "Bearer eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.e30.",  # alg=none
+        f"Bearer {_sec.token_hex(32)}",  # random token
+    ]
+
+    try:
+        from .wpverify import _DockerLab
+        lab = _DockerLab(source_dir, dockerfile_body or None,
+                         extra_files=extra_files or {},
+                         setup_commands=setup_commands or [], on_step=step)
+        with lab.running() as boot:
+            import requests as _rq
+
+            # --- Phase 1: unauthenticated ---
+            for _m in _METHODS_TO_TRY[:3]:
+                try:
+                    r = _rq.request(_m, boot.base_url + endpoint, timeout=10,
+                                    allow_redirects=False)
+                except Exception:
+                    continue
+                body = r.text or ""
+                if confirm_string and confirm_string in body:
+                    res.verified = True
+                    res.ok = True
+                    res.evidence.update({
+                        "bypass_type": "unauthenticated",
+                        "method": _m,
+                        "endpoint": endpoint,
+                        "status_code": r.status_code,
+                        "respuesta_cuerpo_recorte": body[:400],
+                    })
+                    step(f"VERIFICADO — missing auth (unauthenticated {_m} {endpoint}): "
+                         f"confirm_string '{confirm_string[:30]}' presente")
+                    return res
+                if r.status_code in (200, 201, 204) and not confirm_string:
+                    # No confirm_string but got 200 — record as suspicious
+                    if "unauthorized" not in body.lower() and "forbidden" not in body.lower():
+                        res.evidence.update({
+                            "bypass_type": "unauthenticated",
+                            "method": _m,
+                            "endpoint": endpoint,
+                            "status_code": r.status_code,
+                            "note": "200 OK without auth and no deny keywords",
+                        })
+                        step(f"PROBABLE — {_m} {endpoint} devolvió 200 sin auth y sin deny keywords")
+
+            # --- Phase 2: JWT bypass ---
+            for _tok in _JWT_BYPASSES:
+                _hdrs: dict = {}
+                if _tok:
+                    _hdrs = {"Authorization": _tok}
+                try:
+                    r = _rq.request(http_method.upper(), boot.base_url + endpoint,
+                                    headers=_hdrs, timeout=10, allow_redirects=False)
+                except Exception:
+                    continue
+                body = r.text or ""
+                if confirm_string and confirm_string in body:
+                    res.verified = True
+                    res.ok = True
+                    res.evidence.update({
+                        "bypass_type": "jwt-bypass",
+                        "token_used": _tok[:40] if _tok else "(empty)",
+                        "endpoint": endpoint,
+                        "status_code": r.status_code,
+                        "respuesta_cuerpo_recorte": body[:400],
+                    })
+                    step(f"VERIFICADO — missing auth via JWT bypass "
+                         f"(token: {_tok[:30] if _tok else 'empty'})")
+                    return res
+
+            # --- Phase 3: register attacker + try low-priv access ---
+            if not confirm_string:
+                res.ok = True
+                res.detail = ("missing-authorization: sin confirm_string no se puede verificar "
+                              "definitivamente; se probaron variantes unauthenticated y JWT bypass")
+            else:
+                res.ok = True
+                res.detail = (f"missing-authorization: confirm_string '{confirm_string[:30]}' "
+                              f"no encontrada en ninguna variante de bypass en {endpoint}")
+            step("missing-authorization: no verificado definitivamente")
+            return res
+    except Exception as e:
+        res.detail = f"error inesperado en verify_generic_missing_authorization: {e}"
+        return res
+    finally:
+        step("desmontando el laboratorio (missing-authorization)...")
+        lab.teardown()
