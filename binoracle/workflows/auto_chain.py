@@ -2598,9 +2598,9 @@ def _extract_failure_context(result: "ChainResult", llm_notes: dict) -> dict:
     )
 
     return {
-        "tried_endpoint": llm_notes.get("endpoint", ""),
-        "tried_method":   llm_notes.get("http_method", "GET"),
-        "tried_payload":  llm_notes.get("payload", ""),
+        "tried_endpoint": llm_notes.get("endpoint") or "",
+        "tried_method":   llm_notes.get("http_method") or "GET",
+        "tried_payload":  llm_notes.get("payload") or "",
         "response_status":  status,
         "response_snippet": snippet,
         "failure_reason":   reason,
@@ -2629,9 +2629,9 @@ def _llm_rehypothesis(
     except Exception:
         return None
 
-    tried_ep  = failure_ctx.get("tried_endpoint", "")
-    tried_m   = failure_ctx.get("tried_method", "GET")
-    tried_pl  = failure_ctx.get("tried_payload", "")
+    tried_ep  = failure_ctx.get("tried_endpoint") or ""
+    tried_m   = failure_ctx.get("tried_method") or "GET"
+    tried_pl  = failure_ctx.get("tried_payload") or ""
     http_st   = failure_ctx.get("response_status", 0)
     snippet   = failure_ctx.get("response_snippet", "")
     reason    = failure_ctx.get("failure_reason", "unknown")

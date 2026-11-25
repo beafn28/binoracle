@@ -6007,7 +6007,7 @@ def _synthesize_exploit_from_intel(
     cwes_str = ", ".join(
         f"{c} ({_cwe_map.get(c, c)})" for c in cve_intel.get("cwes", []))
     patch_summary = ""
-    if patch_diff and patch_diff.get("ok"):
+    if isinstance(patch_diff, dict) and patch_diff.get("ok"):
         patch_summary = (
             f"Patch diff (what changed to fix it):\n"
             f"- Files: {patch_diff.get('changed_files', [])}\n"
@@ -11590,7 +11590,7 @@ def _scaffold_llm_lab_for_class(llm, source_dir: str, notes: dict, cve_id: str,
         if _vuln_fns_hint:
             prompt += f"Funciones/metodos mencionados: {_vuln_fns_hint[:5]}\n"
     # Inyectar info del parche si está disponible — Qwen usa las funciones cambiadas
-    if patch_diff and patch_diff.get("ok"):
+    if isinstance(patch_diff, dict) and patch_diff.get("ok"):
         _vuln_fns = patch_diff.get("vuln_functions", [])
         _files    = patch_diff.get("changed_files", [])
         _fix_type = patch_diff.get("fix_type", "")
