@@ -7092,6 +7092,29 @@ def _hueco_code_analysis(inv: "Investigation", fr: Any, llm: Any, step: Any, es:
                         _hit.get("handler", _hit.get("route", "?"))] = [
                         f"{_hit.get('file','?')}:{_hit.get('line', 0)}"]
 
+    # ------------------------------------------------------------------ File Upload (WP PHP)
+    elif vc in ("file-upload", "arbitrary-file-upload", "unrestricted-file-upload",
+                "arbitrary-file-write") and tech == "php" and not notes.get("endpoint"):
+        from .websource import find_file_upload_handlers
+        upload_hits = find_file_upload_handlers(lpath)
+        if upload_hits:
+            _best = upload_hits[0]
+            _action = _best.get("action", "")
+            _endpoint = f"/wp-admin/admin-ajax.php?action={_action}" if _action else ""
+            step((f"[HUECO] escaner file-upload PHP: action='{_action}' nopriv={_best.get('nopriv',False)} "
+                  f"({len(upload_hits)} handlers con $_FILES detectados)") if es else
+                 (f"[HUECO] file-upload PHP scanner: action='{_action}' nopriv={_best.get('nopriv',False)} "
+                  f"({len(upload_hits)} handlers with $_FILES detected)"))
+            if _endpoint and not notes.get("endpoint"):
+                inv.llm_notes["endpoint"] = _endpoint
+            # Register other actions as alt_endpoints
+            _upload_alts = [
+                {"endpoint": f"/wp-admin/admin-ajax.php?action={h['action']}", "parameters": []}
+                for h in upload_hits[1:5] if h.get("action")
+            ]
+            if _upload_alts and not notes.get("alt_endpoints"):
+                inv.llm_notes["alt_endpoints"] = _upload_alts
+
     # ------------------------------------------------------------------ Deserialization
     elif vc in ("deserialization", "object-injection", "unsafe-deserialization",
                 "insecure-deserialization", "php-object-injection",

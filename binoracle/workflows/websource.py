@@ -4431,6 +4431,72 @@ def find_request_smuggling_sinks(local_path: str, tech: str = "auto") -> List[Vu
     return _scan_sinks(local_path, patterns, tech)[:10]
 
 
+def find_file_upload_handlers(local_path: str) -> list:
+    """Scan WordPress plugin PHP code for AJAX handlers that process file uploads.
+
+    Returns list of dicts: {action, handler_fn, file, line, nopriv, issues}
+    sorted by severity (unauthenticated handlers first).
+    Used when file-upload CVE has no endpoint in llm_notes.
+    """
+    if not local_path or not os.path.isdir(local_path):
+        return []
+
+    _AJAX_REG = re.compile(
+        r"""add_action\s*\(\s*['"]wp_ajax_(nopriv_)?([A-Za-z0-9_]+)['"]\s*,\s*"""
+        r"""(?:['"]([\w\\:]+)['"]|array\s*\([^)]{0,80}['\"]([\w\\:]+)['\"])""",
+        re.S)
+    _FILES_USE = re.compile(r'\$_FILES\b', re.I)
+    _UPLOAD_FNS = re.compile(
+        r'\b(?:wp_handle_upload|move_uploaded_file|wp_handle_sideload'
+        r'|media_handle_upload|is_uploaded_file)\s*\(', re.I)
+    _AUTH_CHECK = re.compile(
+        r'\b(?:check_ajax_referer|wp_verify_nonce|current_user_can|check_admin_referer)\s*\(', re.I)
+
+    all_texts: dict = {}
+    for dirpath, _dirs, files in os.walk(local_path):
+        if "node_modules" in dirpath or "/.git" in dirpath:
+            continue
+        for fn in sorted(files):
+            if not fn.lower().endswith(".php"):
+                continue
+            fpath = os.path.join(dirpath, fn)
+            try:
+                with open(fpath, encoding="utf-8", errors="ignore") as fh:
+                    all_texts[fpath] = fh.read(200_000)
+            except Exception:
+                continue
+
+    handlers: dict = {}
+    for fpath, text in all_texts.items():
+        for m in _AJAX_REG.finditer(text):
+            nopriv = bool(m.group(1))
+            action = m.group(2)
+            handler_fn = m.group(3) or m.group(4) or ""
+            handlers.setdefault(action, {
+                "action": action, "handler_fn": handler_fn,
+                "file": fpath, "line": text[:m.start()].count("\n") + 1,
+                "nopriv": nopriv, "has_upload": False, "has_auth": False,
+            })
+            if nopriv:
+                handlers[action]["nopriv"] = True
+
+    for action, info in handlers.items():
+        handler_fn = info["handler_fn"]
+        for fpath, text in all_texts.items():
+            if _FILES_USE.search(text) or _UPLOAD_FNS.search(text):
+                if handler_fn and handler_fn in text:
+                    info["has_upload"] = True
+                elif action in text and (_FILES_USE.search(text) or _UPLOAD_FNS.search(text)):
+                    info["has_upload"] = True
+            if _AUTH_CHECK.search(text) and (handler_fn in text or action in text):
+                info["has_auth"] = True
+
+    results = [h for h in handlers.values() if h["has_upload"]]
+    # Sort: nopriv+no-auth first (most exploitable), then nopriv, then with auth
+    results.sort(key=lambda h: (not h["nopriv"], h["has_auth"]))
+    return results
+
+
 # ── Fix 2: Patch-diff grounding ───────────────────────────────────────────────
 
 def fetch_wp_plugin_patch_diff(slug: str, vuln_version: str, fixed_version: str,
