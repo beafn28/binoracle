@@ -7469,7 +7469,11 @@ def verify_wordpress_sqli(
             res.confidence = "probable"
             res.evidence["tecnica"] = "boolean-blind-differential"
             # Capture TRUE/FALSE response sizes for report generation
-            _winning_pair = next((e for e in bool_tried if e.get("difiere") and e.get("true_coincide_con_base")), None)
+            # Accept both AND-pairs (true≈control) and OR-pairs (false≈control).
+            _winning_pair = next(
+                (e for e in bool_tried if e.get("difiere") and
+                 (e.get("true_coincide_con_base") or e.get("false_coincide_con_base"))),
+                None)
             if _winning_pair:
                 res.evidence["respuesta_true_len"] = _winning_pair.get("len_true", 0)
                 res.evidence["respuesta_false_len"] = _winning_pair.get("len_false", 0)
