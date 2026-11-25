@@ -1328,6 +1328,17 @@ class ExploitReasoningEngine:
          "WP REST API CSRF token missing — add X-WP-Nonce header; "
          "engine auto-generates this for /wp-json/ endpoints now"),
 
+        # INJECTION_CONTEXT — URL-encoded bracket parameters not reaching the app
+        # Payload CMS CVE-2026-25544: Python requests encodes [] as %5B%5D which Express
+        # qs-parser does NOT decode back into nested object; param arrives as literal string
+        # e.g. "data%5Btype%5D" → flathen to "data_type" to pass as plain parameter.
+        (r"\b(?:validation\s+error|invalid\s+value|expected\s+string|"
+         r"required\s+field|missing\s+required|bad\s+request.*field|"
+         r"schema\s+validation|zod\s+error|joi\s+error)\b",
+         "INJECTION_CONTEXT", 0.65,
+         "validation error — bracket-params may be URL-encoded by the client and not decoded "
+         "by the server; flatten nested params (data[type] → data_type or use JSON body)"),
+
         # INJECTION_CONTEXT — PostgreSQL error signatures
         (r"\b(?:pg_query|psql\s+error|pdo.*pgsql|ERROR:\s+syntax\s+error\s+at\s+or\s+near|"
          r"unterminated\s+quoted\s+string|invalid\s+input\s+syntax\s+for\s+type)\b",
