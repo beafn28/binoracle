@@ -65,6 +65,16 @@ _DOCKER_IMAGE_PROFILES: dict[str, dict] = {
         "startup_wait": 10,
         "health_path": "/",
     },
+    "dpage/pgadmin4:": {
+        "port": 80,
+        "envs": {
+            "PGADMIN_DEFAULT_EMAIL": "admin@example.com",
+            "PGADMIN_DEFAULT_PASSWORD": "BinOracle123!",
+        },
+        "cmd": None,
+        "startup_wait": 15,
+        "health_path": "/misc/ping",
+    },
     # needs postgres — cannot run standalone; LLM must handle it
     "mattermost/mattermost-team-edition:": None,
     # needs docker-compose with elasticsearch and other services
