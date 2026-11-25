@@ -11588,9 +11588,14 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                          (f"vulnerable parameter from advisory: "
                           f"'{_cve_intel['vulnerable_param']}'"))
                 if _cve_intel.get("endpoint_hint") and not notes.get("endpoint"):
-                    step((f"endpoint hint del advisory: "
-                          f"'{_cve_intel['endpoint_hint']}'") if es else
-                         (f"endpoint hint from advisory: '{_cve_intel['endpoint_hint']}'"))
+                    _ep_hint = _cve_intel["endpoint_hint"]
+                    # Si el hint es solo el nombre de una accion AJAX (sin "/"), construir URL completa
+                    if _ep_hint and "/" not in _ep_hint and len(_ep_hint) >= 3:
+                        _ep_hint = f"/wp-admin/admin-ajax.php?action={_ep_hint}"
+                    notes["endpoint"] = _ep_hint
+                    inv.llm_notes["endpoint"] = _ep_hint
+                    step((f"endpoint hint del advisory: '{_ep_hint}'") if es else
+                         (f"endpoint hint from advisory: '{_ep_hint}'"))
                 inv.llm_notes["cve_intel"] = {
                     k: v for k, v in _cve_intel.items() if k != "sources"
                 }
