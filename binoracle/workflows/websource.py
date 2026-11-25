@@ -4681,6 +4681,14 @@ def find_web_routes(local_path: str, tech: str = "auto", max_routes: int = 40) -
             _re.compile(
                 r'route\s*\(\s*[\'"`]([^\'"`]+)[\'"`]\s*\)\s*\.\s*(get|post|put|patch|delete)',
                 _re.IGNORECASE),
+            # Hono: app.get('/path', ...) / hono.post('/path', ...)
+            _re.compile(
+                r'(?:app|hono|api|v\d+)\s*\.\s*(get|post|put|patch|delete|all)\s*\(\s*[\'"`]([^\'"`]+)[\'"`]',
+                _re.IGNORECASE),
+            # h3: router.get('/path', ...) / createRouter().get('/path', ...)
+            _re.compile(
+                r'(?:router|createRouter\(\))\s*\.\s*(get|post|put|patch|delete)\s*\(\s*[\'"`]([^\'"`]+)[\'"`]',
+                _re.IGNORECASE),
         ]
 
     elif _tech in ("python", "django", "flask", "fastapi"):
