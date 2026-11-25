@@ -1569,7 +1569,7 @@ def _run_web_stage(cve_id: str, cve_info, llm_notes: dict,
     # If the investigation will likely be blocked by a high-confidence precheck
     # skip, try a quick 10-endpoint probe to find the real endpoint before giving up.
     # This runs BEFORE investigate_cve so it can patch llm_notes["endpoint"] in-place.
-    _c15_base_url = (config or {}).get("target_url") if config else None
+    _c15_base_url = getattr(config, "target_url", None) if config else None
     if not _c15_base_url and not skip_source_download:
         try:
             _c15_fuzz_candidates: list[str] = []
