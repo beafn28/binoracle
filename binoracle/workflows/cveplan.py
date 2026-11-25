@@ -255,7 +255,8 @@ def classify_cve(text: str) -> Optional[str]:
         return "sqli"
     if has("cross-site", "scripting") or re.search(r"\bxss\b", t):
         return "xss"
-    if "cors" in t and ("misconfigur" in t or "bypass" in t or "origin" in t or "header" in t):
+    if ("cors" in t and ("misconfigur" in t or "bypass" in t or "origin" in t or "header" in t)) or \
+            ("access-control-allow-origin" in t and "access-control-allow-credentials" in t):
         return "cors-misconfiguration"
     if has("server-side", "request", "forgery") or re.search(r"\bssrf\b", t):
         return "ssrf"
@@ -267,6 +268,8 @@ def classify_cve(text: str) -> Optional[str]:
             ("context" in t or "php" in t or "execution" in t)):
         return "lfi"
     if has("remote", "code", "execution") or re.search(r"\brce\b", t):
+        return "rce"
+    if has("execute", "code") or has("code", "execution"):
         return "rce"
     if has("path", "traversal") or has("directory", "traversal"):
         return "path-traversal"
@@ -296,13 +299,15 @@ def classify_cve(text: str) -> Optional[str]:
             has("information", "disclosure") or has("data", "exposure") or
             has("hardcoded", "api", "key") or has("hardcoded", "credential") or
             has("api", "key", "exposed") or has("credentials", "exposed") or
-            has("sensitive", "file") or has("info", "leak")):
+            has("sensitive", "file") or has("info", "leak") or
+            has("enumerat", "user") or has("enumerate", "email") or
+            has("enumerate", "address")):
         return "information-disclosure"
     # --- unauthorized access / privilege escalation ---
     if (has("unauthorized", "access") or has("unauthorized", "modification") or
             has("unauthorized", "read") or has("unauthorized", "file") or
             has("privilege", "escalation") or has("improper", "access", "control") or
-            has("insufficient", "authorization")):
+            has("insufficient", "authorization") or has("improper", "authorization")):
         return "missing-authorization"
     return None
 
