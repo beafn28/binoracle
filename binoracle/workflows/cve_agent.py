@@ -12822,6 +12822,26 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                          (_pt_pc_msg + " — lab continues to confirm"))
                     if _pt_precheck["confidence"] >= 0.68:
                         inv.blockers.append(f"pre-check estático: {_pt_precheck['reason']}")
+                        if (fr.kind == "wordpress-plugin" and fr.source and fr.resolved_version
+                                and "parchada" in _pt_precheck["reason"].lower()
+                                and _pt_precheck["confidence"] >= 0.80):
+                            try:
+                                from .websource import fetch_wordpress_plugin as _fwp_pt_retry
+                                step((f"[Fix-C] probable versión parchada → intentando anterior") if es
+                                     else "[Fix-C] probable patched version → trying previous")
+                                _fr_pt_older = _fwp_pt_retry(
+                                    fr.source, version=fr.resolved_version, dest_dir="",
+                                    on_step=step, timeout=60.0, exclusive_upper_bound=True)
+                                if (_fr_pt_older.ok
+                                        and _fr_pt_older.resolved_version != fr.resolved_version):
+                                    _pc2 = _static_vuln_precheck(
+                                        _fr_pt_older.local_path, "", inv.vuln_class,
+                                        endpoint=notes.get("endpoint") or "")
+                                    if _pc2["ok"] or _pc2["confidence"] < _pt_precheck["confidence"]:
+                                        step(f"[Fix-C] usando versión {_fr_pt_older.resolved_version}")
+                                        fr = _fr_pt_older
+                            except Exception:
+                                pass
                 _inject_custom_docker_lab(str(fr.local_path), notes, step)
                 step(("intentando verificacion DINAMICA GENERICA -- fichero canario, el objetivo "
                      "se construye desde su propio Dockerfile/compose..." if es else
@@ -13943,6 +13963,46 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                          (_pc_msg + " — lab continues to confirm"))
                     if _precheck["confidence"] >= 0.80:
                         inv.blockers.append(f"pre-check estático: {_precheck['reason']}")
+                        # --- AUTO-RETRY versión anterior para WP plugins (Fix C) ---
+                        # Si la versión descargada parece ya parchada (pre-check confianza ≥80%),
+                        # intentar descargar la versión anterior desde WP.org/SVN con
+                        # exclusive_upper_bound=True: "dame la última publicada ANTES de esta".
+                        # Solo un reintento y solo para wordpress-plugin (no para git/zip/pip).
+                        if (fr.kind == "wordpress-plugin" and fr.source and fr.resolved_version
+                                and "parchada" in _precheck["reason"].lower()):
+                            try:
+                                from .websource import fetch_wordpress_plugin as _fwp_retry
+                                step((f"[Fix-C] probable versión parchada ({fr.resolved_version}) "
+                                      f"— intentando versión anterior vía SVN...") if es else
+                                     (f"[Fix-C] probable patched version ({fr.resolved_version})"
+                                      f" — trying previous version via SVN..."))
+                                _fr_older = _fwp_retry(
+                                    fr.source, version=fr.resolved_version,
+                                    dest_dir="", on_step=step, timeout=60.0,
+                                    exclusive_upper_bound=True)
+                                if _fr_older.ok and _fr_older.resolved_version != fr.resolved_version:
+                                    _pc2 = _static_vuln_precheck(
+                                        _fr_older.local_path, plugin_dir, inv.vuln_class,
+                                        endpoint=notes.get("endpoint") or "",
+                                        sqli_param=sqli_p or "",
+                                        grounded_fns=list((_sg.get("found") or {}).keys()),
+                                        not_found_fns=list(_sg.get("not_found") or []),
+                                    )
+                                    if _pc2["ok"] or _pc2["confidence"] < _precheck["confidence"]:
+                                        step((f"[Fix-C] versión anterior {_fr_older.resolved_version}"
+                                              f" pasa el pre-check → usando para el lab") if es else
+                                             (f"[Fix-C] older version {_fr_older.resolved_version}"
+                                              f" passes pre-check → using for lab"))
+                                        fr = _fr_older
+                                        inv.source_fetch["resolved_version"] = fr.resolved_version
+                                        inv.source_fetch["local_path"] = fr.local_path
+                                    else:
+                                        step((f"[Fix-C] versión anterior {_fr_older.resolved_version}"
+                                              f" también parece parchada — sin más reintentos") if es else
+                                             (f"[Fix-C] older version {_fr_older.resolved_version}"
+                                              f" also looks patched — no more retries"))
+                            except Exception as _fxc_exc:
+                                step(f"[Fix-C] reintento fallido: {_fxc_exc}")
 
                     # --- AUTO-DETECT json_body para endpoints REST (Fix B) ---
                     # Si el endpoint empieza por /wp-json/ o el plugin usa get_json_params()
