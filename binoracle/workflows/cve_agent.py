@@ -11001,14 +11001,36 @@ def _scaffold_llm_lab_for_class(llm, source_dir: str, notes: dict, cve_id: str,
     step(("razonando lab autonomamente desde codigo fuente (Qwen)..." if es
           else "auto-reasoning lab from source code (Qwen)..."))
 
+    # Get CVE description from notes (from cve_intel or llm_notes) for context when no source
+    _cve_desc = (notes.get("cve_intel", {}) or {}).get("description", "") or \
+                notes.get("description", "") or ""
+    _affected_ver = notes.get("affected_version") or notes.get("vuln_version") or ""
+    _target_binary = notes.get("target_binary") or ""
+    _vuln_fns_hint = notes.get("vulnerable_functions") or []
+
     prompt = (
         f"CVE: {cve_id}\nClase de vulnerabilidad: {vuln_class}\nStack: {tech}\n"
         f"Endpoint conocido: {endpoint}\nconfirm_string: {confirm}\n"
     )
+    if _affected_ver:
+        prompt += f"Version vulnerable: {_affected_ver}\n"
+    if _target_binary:
+        prompt += f"Componente/binario afectado: {_target_binary}\n"
     if snippet:
         prompt += f"\nCodigo vulnerable (replica este patron):\n```\n{snippet[:2500]}\n```\n"
     else:
-        prompt += "\nNo se encontro codigo fuente; genera un servidor generico para esta clase.\n"
+        # Sin fuente: dar toda la inteligencia disponible sobre el CVE para que el LLM
+        # razone sobre como construir el lab correcto (en vez de un servidor generico)
+        if _cve_desc:
+            prompt += (
+                f"\nNo hay codigo fuente disponible. Razona sobre esta descripcion del CVE "
+                f"para construir un servidor que reproduzca el patron vulnerable:\n"
+                f"DESCRIPCION: {_cve_desc[:800]}\n"
+            )
+        else:
+            prompt += "\nNo se encontro codigo fuente; genera un servidor generico para esta clase.\n"
+        if _vuln_fns_hint:
+            prompt += f"Funciones/metodos mencionados: {_vuln_fns_hint[:5]}\n"
     # Inyectar info del parche si está disponible — Qwen usa las funciones cambiadas
     if patch_diff and patch_diff.get("ok"):
         _vuln_fns = patch_diff.get("vuln_functions", [])
@@ -17479,7 +17501,8 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
     # El LLM analizo la causa raiz especifica (p.ej. "path-traversal"); la descripcion puede
     # mencionar la CONSECUENCIA (p.ej. "remote code execution"). La hipotesis del LLM gana
     # sobre la clasificacion por keyword en la descripcion cuando el LLM fue consultado.
-    _llm_class = classify_cve(inv.llm_notes.get("vuln_class", ""))
+    _llm_raw_class = inv.llm_notes.get("vuln_class", "") or ""
+    _llm_class = classify_cve(_llm_raw_class)
     _desc_class = classify_cve(inv.description)
     # "file-upload" es un VECTOR de entrega, no el impacto final. Si la descripcion identifica
     # un mecanismo de impacto mas especifico (ssti, path-traversal, command-injection, xxe...),
@@ -17491,8 +17514,27 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
     _UPLOAD_OVERRIDE = {"ssti", "path-traversal", "command-injection", "xxe", "sqli", "ssrf"}
     if _llm_class in ("file-upload", "deserialization") and _desc_class in _UPLOAD_OVERRIDE:
         inv.vuln_class = _desc_class
+    elif _llm_class:
+        inv.vuln_class = _llm_class
+    elif _desc_class:
+        inv.vuln_class = _desc_class
+    elif _llm_raw_class:
+        # LLM returned a class our keyword classifier doesn't know (e.g. "type-juggling",
+        # "insecure-randomness", "weak-token"). Trust the LLM's reasoning: use the raw
+        # class directly if it looks like a web/app mechanism (not "unknown" or empty).
+        # is_web_class checks WEB_CLASSES aliases, but also accept any hyphenated class
+        # the LLM produced that looks like a mechanism name — better to try than to drop.
+        _raw_norm = _llm_raw_class.lower().strip().replace("_", "-").replace(" ", "-")
+        if is_web_class(_raw_norm) or ("-" in _raw_norm and len(_raw_norm) >= 4):
+            inv.vuln_class = _raw_norm
+            step((f"[TRUST-LLM] classify_cve no reconoce '{_llm_raw_class}' — "
+                  f"usando clase del LLM directamente: {_raw_norm}") if es else
+                 (f"[TRUST-LLM] classify_cve doesn't recognize '{_llm_raw_class}' — "
+                  f"trusting LLM class directly: {_raw_norm}"))
+        else:
+            inv.vuln_class = ""
     else:
-        inv.vuln_class = _llm_class or _desc_class or ""
+        inv.vuln_class = ""
     has_bin = bool(binary and os.path.exists(binary))
 
     if is_web_class(inv.vuln_class):
