@@ -5537,6 +5537,7 @@ def verify_wordpress_sqli(
     sqli_via_orderby: bool = False,
     _tried_params_set: Optional[frozenset] = None,
     sqli_header_hint: str = "",
+    seed_sql: Optional[list] = None,
 ) -> WpVerifyResult:
     """Verifica SQL injection con CINCO tecnicas, de mas a menos dura, probando varios contextos
     de inyeccion (numerico sin comillas, comilla simple, comilla doble, cierre de parentesis) y
@@ -5831,6 +5832,18 @@ def verify_wordpress_sqli(
                         res.evidence["cpt_seed_realizado"] = _cpt_types[:3]
                     elif _cpt_count > 0:
                         res.evidence["cpt_seed_ya_existia"] = _cpt_types[:3]
+
+            # Run any seed_sql statements from the CVE JSON (custom table population).
+            # Needed for plugins whose SQLi endpoint queries custom tables (not wp_posts):
+            # WP Hotel Booking (hb_room posts), Events Manager (em_events), etc.
+            # All statements run in a SINGLE mysql -e call so session vars (@room_id) persist.
+            if seed_sql:
+                _all_seed = "\n".join(s.rstrip(";").strip() + ";" for s in seed_sql if s.strip())
+                _ssql_r = lab.exec_mysql(_all_seed, boot.db_pw)
+                step(f"seed_sql: {len(seed_sql)} statements → {'OK' if _ssql_r is not None else 'ERROR'}")
+                if _ssql_r is None:
+                    step(f"seed_sql ADVERTENCIA: algunos statements fallaron — el lab sigue")
+                res.evidence["seed_sql_ejecutado"] = len(seed_sql)
 
             import socket as _sock_uri, time as _time_uri
 

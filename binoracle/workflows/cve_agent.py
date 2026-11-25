@@ -661,6 +661,8 @@ def _hueco_sys(tech: str, vuln_class: str) -> str:
             "time-based como ultimo recurso; "
             "para ORDER BY injection el payload es una subconsulta sin comillas ni AND/OR), "
             "payload_hint (payload minimo de prueba para la tecnica elegida), "
+            "seed_sql (lista de sentencias MySQL a ejecutar antes de probar la inyeccion cuando "
+            "el endpoint necesita datos en tablas custom; dejar [] cuando wp_posts es suficiente), "
             "parameters (lista de TODOS los parametros que el handler acepta), "
             "reasoning (una linea explicando por que el parametro llega sin sanear a la query)."
         )
@@ -967,6 +969,11 @@ _HUECO_SQLI_SYS = (
     "editor o admin si exige un rol especifico), "
     "sqli_technique (error-based | union-based | boolean-blind | time-based), "
     "payload_hint (payload minimo de prueba; para ORDER BY injection usa payload ORDER BY sin comillas), "
+    "seed_sql (lista de sentencias MySQL a ejecutar antes de probar la inyeccion cuando el endpoint "
+    "necesita datos en tablas personalizadas que el engine no siembra automaticamente; "
+    "ejemplo: ['INSERT IGNORE INTO wp_posts (...) VALUES (...);', "
+    "'SET @id = LAST_INSERT_ID();', 'INSERT INTO wp_postmeta (post_id,meta_key,meta_value) VALUES (@id,...)'] — "
+    "dejar [] cuando wp_posts ya tiene datos suficientes para el diferencial boolean), "
     "parameters (lista de TODOS los parametros que el handler lee de $_POST/$_GET/$_REQUEST), "
     "required_extra_params (objeto JSON {nombre: valor_ejemplo} de los parametros que el "
     "handler VALIDA o COMPRUEBA ANTES de llegar al codigo vulnerable — es decir, los que si "
@@ -15169,7 +15176,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     json_body=bool(notes.get("json_body")),
                     sqli_via_request_uri=_via_uri,
                     sqli_via_rawurldecode=_via_rawurldecode,
-                    sqli_via_orderby=_via_orderby)
+                    sqli_via_orderby=_via_orderby,
+                    seed_sql=notes.get("seed_sql") or [])
                 # Inject full params list into evidence so the LLM knows all available
                 # parameters to suggest as alternatives during retries.
                 if not wr.verified and params and not wr.evidence.get("parametros_disponibles"):
@@ -15232,7 +15240,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         json_body=bool(notes.get("json_body")),
                         sqli_via_request_uri=_via_uri,
                         sqli_via_rawurldecode=_via_rawurldecode,
-                        sqli_via_orderby=_via_orderby)
+                        sqli_via_orderby=_via_orderby,
+                        seed_sql=notes.get("seed_sql") or [])
                 _ep_lock_active = bool(notes.get("analyst_endpoint_lock")
                                        or notes.get("poc_raw_http_lock")
                                        or notes.get("poc_llm_endpoint_lock"))
