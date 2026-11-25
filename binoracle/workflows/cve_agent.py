@@ -7294,19 +7294,20 @@ def _hueco_code_analysis(inv: "Investigation", fr: Any, llm: Any, step: Any, es:
         lfi_hits = find_path_traversal_sinks(lpath, tech)
         if lfi_hits:
             _apply_generic_sink(lfi_hits, param_key="path_param")
-            # If taint scanner found a non-standard param (not generic like 'file','path','page')
-            # and the notes have a generic default, override with the specific scanner result.
+            # If taint scanner found a specific param, override when LLM either had no
+            # path_param or only guessed a generic one ('file','path','page','url','src').
             _lfi_param = lfi_hits[0].param or ""
             _generic_lfi_params = {"file", "path", "page", "url", "src"}
+            _existing_pp = notes.get("path_param", "").lower().strip()
             if (_lfi_param and
-                    _lfi_param not in _generic_lfi_params and
-                    notes.get("path_param", "").lower() in _generic_lfi_params):
+                    (_existing_pp == "" or _existing_pp in _generic_lfi_params)):
+                _prev_pp = notes.get("path_param", "")
                 inv.llm_notes["path_param"] = _lfi_param
                 notes["path_param"] = _lfi_param
                 step((f"[HUECO] param LFI especifico detectado por escaner: "
-                      f"'{_lfi_param}' (override '{notes.get('path_param')}')") if es else
+                      f"'{_lfi_param}' (override '{_prev_pp}')") if es else
                      (f"[HUECO] specific LFI param detected by scanner: "
-                      f"'{_lfi_param}' (override '{notes.get('path_param')}')"))
+                      f"'{_lfi_param}' (override '{_prev_pp}')"))
             snippet = notes.get("_hueco_sink_snippet") or _read_snippet(
                 lfi_hits[0].file, lfi_hits[0].line, ctx=40)
             step((f"[HUECO] escaner LFI ({tech}): "
