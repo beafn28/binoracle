@@ -2834,7 +2834,8 @@ class _PartialSignalAccumulator:
 
 _SQLI_RETRY_EVIDENCE_KEYS = {"endpoint_probado": "endpoint", "parametro_probado": "sqli_param",
                             "respuesta_control_recorte": "respuesta_control_recorte",
-                            "diagnostico_scraping_nonce": "nonce_scraping_diagnostico"}
+                            "diagnostico_scraping_nonce": "nonce_scraping_diagnostico",
+                            "parametros_disponibles": "parametros_disponibles"}
 
 # bloqueos de INFRAESTRUCTURA (no de la tecnica en si) que puede encontrar CUALQUIER verificador
 # dinamico de WordPress, no solo SQLi -- un nonce/token sin resolver, o un plugin que no muestra
@@ -2889,9 +2890,12 @@ _SQLI_RETRY_SYS = (
     "negativo: si el cuerpo de la respuesta muestra una pista CONCRETA de que el endpoint o el "
     "parametro probados no son los correctos (p.ej. 'Page not found', un error PHP especifico, "
     "contenido que no tiene nada que ver con el plugin, una redireccion a login...), sugiere UN "
-    "cambio concreto de endpoint y/o parametro que valga la pena reintentar. Si la evidencia NO "
-    "da ninguna pista util (la respuesta parece normal/esperada y aun asi no se confirma), dilo "
-    "honestamente -- no inventes un cambio sin base en la evidencia real que te doy. "
+    "cambio concreto de endpoint y/o parametro que valga la pena reintentar. "
+    "IMPORTANTE — 'parametros_disponibles' en la evidencia lista TODOS los parametros que el "
+    "endpoint acepta: si el parametro_probado no produce diferencial, considera sugerir uno de "
+    "los otros parametros disponibles (especialmente 'sorting', 'orderby', 'order_by', 'sort') "
+    "ya que ORDER BY injection requiere un parametro distinto al WHERE. "
+    "Si la evidencia NO da ninguna pista util, dilo honestamente. "
     + _WP_NONCE_SETUP_RETRY_HINT +
     "Responde SOLO con JSON: {\"tiene_sugerencia\": true/false, \"razon\": \"una frase, citando la "
     "pista concreta de la evidencia\", \"endpoint_alternativo\": \"...\" (opcional, solo si "
@@ -15152,6 +15156,12 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     sqli_via_request_uri=_via_uri,
                     sqli_via_rawurldecode=_via_rawurldecode,
                     sqli_via_orderby=_via_orderby)
+                # Inject full params list into evidence so the LLM knows all available
+                # parameters to suggest as alternatives during retries.
+                if not wr.verified and params and not wr.evidence.get("parametros_disponibles"):
+                    _all_pkeys = list(params.keys()) if isinstance(params, dict) else list(params)
+                    if len(_all_pkeys) > 1 or (len(_all_pkeys) == 1 and _all_pkeys[0] != sqli_p):
+                        wr.evidence["parametros_disponibles"] = _all_pkeys
                 # aprendizaje y reintento: si no se confirmo pero SI hubo laboratorio real (no es
                 # un problema de infraestructura), se le pide al LLM que lea la MISMA evidencia
                 # real (cuerpo de la respuesta de control) que un analista humano leeria a mano --
