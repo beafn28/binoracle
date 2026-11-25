@@ -2848,7 +2848,9 @@ _SQLI_RETRY_EVIDENCE_KEYS = {"endpoint_probado": "endpoint", "parametro_probado"
                             "parametros_disponibles": "parametros_disponibles",
                             "control_vacio": "control_vacio",
                             "control_vacio_body": "control_vacio_body",
-                            "seed_sql_ejecutado": "seed_sql_ejecutado"}
+                            "seed_sql_ejecutado": "seed_sql_ejecutado",
+                            "tablas_plugin_detectadas": "tablas_plugin_detectadas",
+                            "cpt_seed_realizado": "cpt_seed_realizado"}
 
 # bloqueos de INFRAESTRUCTURA (no de la tecnica en si) que puede encontrar CUALQUIER verificador
 # dinamico de WordPress, no solo SQLi -- un nonce/token sin resolver, o un plugin que no muestra
@@ -2912,9 +2914,13 @@ _SQLI_RETRY_SYS = (
     "o si 'control_vacio' aparece en la evidencia, la DB del lab esta vacia: el endpoint "
     "necesita datos en la tabla del plugin para devolver filas. En este caso, sugiere el campo "
     "'seed_sql' con sentencias MySQL que creen la minima data necesaria para que el endpoint "
-    "devuelva al menos una fila: p.ej. INSERT en wp_posts con post_type correcto + wp_postmeta "
-    "con los meta_key/meta_value que el endpoint filtra. Incluye 'tiene_sugerencia: true' con "
-    "'seed_sql_sugerido' como lista de strings SQL. NO sugieras un endpoint distinto a ciegas. "
+    "devuelva al menos una fila. Si 'tablas_plugin_detectadas' aparece en la evidencia, esas "
+    "son las tablas custom que el plugin tiene — genera INSERT IGNORE en esas tablas con "
+    "los campos requeridos (inferidos del nombre del plugin/endpoint/parametro). "
+    "Si no hay tablas custom, inserta en wp_posts con el post_type correcto + wp_postmeta "
+    "con los meta_key/meta_value que el endpoint filtra. "
+    "Incluye 'tiene_sugerencia: true' con 'seed_sql_sugerido' como lista de strings SQL. "
+    "NO sugieras un endpoint distinto a ciegas. "
     "Si la evidencia NO da ninguna pista util, dilo honestamente. "
     + _WP_NONCE_SETUP_RETRY_HINT +
     "Responde SOLO con JSON: {\"tiene_sugerencia\": true/false, \"razon\": \"una frase, citando la "

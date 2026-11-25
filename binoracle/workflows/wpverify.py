@@ -6722,6 +6722,7 @@ def verify_wordpress_sqli(
                 except Exception:
                     pass
             if _plugin_tables:
+                res.evidence["tablas_plugin_detectadas"] = _plugin_tables[:12]
                 _seeded = _seed_plugin_tables(lab, boot.db_pw, _plugin_tables, step,
                                              sqli_param=sqli_param,
                                              sqli_param_value=orig_value,
