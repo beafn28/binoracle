@@ -10690,6 +10690,11 @@ _SCAFFOLD_SYS_FOR_CLASS = {
     "xsrf":                        "_LAB_SCAFFOLD_CSRF_SYS",
     "crlf":                        "_LAB_SCAFFOLD_CRLF_SYS",
     "http-response-splitting":     "_LAB_SCAFFOLD_CRLF_SYS",
+    # Mass assignment / parameter pollution
+    "mass-assignment":             "_LAB_SCAFFOLD_MULTISTEP_SYS",
+    "bulk-assignment":             "_LAB_SCAFFOLD_MULTISTEP_SYS",
+    "over-posting":                "_LAB_SCAFFOLD_MULTISTEP_SYS",
+    "mass-attribute-assignment":   "_LAB_SCAFFOLD_MULTISTEP_SYS",
     # Multi-step chain (2FA bypass, token-based flows)
     "2fa-bypass":                  "_LAB_SCAFFOLD_MULTISTEP_SYS",
     "two-factor-bypass":           "_LAB_SCAFFOLD_MULTISTEP_SYS",
