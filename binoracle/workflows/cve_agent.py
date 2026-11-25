@@ -13378,7 +13378,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             # y el valor exacto via --bypass-header y --bypass-value (o el LLM los propone
             # en bypass_header/bypass_value de la hipotesis). La prueba es simple: sin la
             # cabecera el servidor responde 3xx/401/403; con ella, 2xx.
-            elif (not plugin_dir and fr.local_path and
+            elif (not plugin_dir and
+                  (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
                   inv.vuln_class in ("missing-authorization", "auth-bypass", "idor",
                                      "broken-access-control") and
                   notes.get("endpoint")):
@@ -13396,7 +13397,9 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                       "X-Host: localhost"])
                 from .genericverify import (verify_generic_header_bypass,
                                              verify_generic_header_bypass_candidates)
-                _inject_custom_docker_lab(str(fr.local_path), notes, step)
+                _auth_local_path_str = str(fr.local_path) if fr.local_path else ""
+                if fr.local_path:
+                    _inject_custom_docker_lab(_auth_local_path_str, notes, step)
                 _bypass_kind = ("URL manipulada" if notes.get("bypass_url") else "cabecera HTTP")
                 step((f"intentando verificacion DINAMICA GENERICA -- bypass de autorizacion "
                      f"via {_bypass_kind}, el objetivo se construye desde su propio "
@@ -13415,13 +13418,13 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 # generates the correct Dockerfile. The LLM tends to produce Node.js-style
                 # Dockerfiles for Go apps (COPY package.json etc.), which always fail.
                 import os as _os_go
-                _is_go_project = (fr.local_path and
-                                  _os_go.path.isfile(_os_go.path.join(str(fr.local_path), "go.mod")))
+                _is_go_project = (_auth_local_path_str and
+                                  _os_go.path.isfile(_os_go.path.join(_auth_local_path_str, "go.mod")))
                 # Solo scaffold si no hay bypass_header/url ya definido (el analista sabe mejor)
                 if (not _auth_dockerfile and not _auth_bypass_hdr and not _auth_bypass_url
                         and not _is_go_project and llm is not None):
                     _scf = _scaffold_llm_lab_for_class(
-                        llm, str(fr.local_path), notes, inv.cve_id,
+                        llm, _auth_local_path_str, notes, inv.cve_id,
                         inv.vuln_class or "missing-authorization", step, es,
                         patch_diff=inv.llm_notes.get("patch_diff_analysis"))
                     if _scf:
@@ -13450,7 +13453,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     step((f"probando {len(_parsed_candidates)} candidatos de bypass automaticamente..." if es
                           else f"trying {len(_parsed_candidates)} bypass header candidates automatically..."))
                     wr = verify_generic_header_bypass_candidates(
-                        fr.local_path, _auth_ep, notes.get("http_method") or "GET",
+                        _auth_local_path_str, _auth_ep, notes.get("http_method") or "GET",
                         candidates=_parsed_candidates,
                         confirm_string=_auth_confirm,
                         on_step=step, budget_s=budget_s,
@@ -13460,7 +13463,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         pkg_version=_auth_pkg_ver)
                 else:
                     wr = verify_generic_header_bypass(
-                        fr.local_path, _auth_ep, notes.get("http_method") or "GET",
+                        _auth_local_path_str, _auth_ep, notes.get("http_method") or "GET",
                         bypass_header=_auth_bypass_hdr,
                         bypass_value=_auth_bypass_val,
                         confirm_string=_auth_confirm,
@@ -13488,7 +13491,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         _auth_confirm     = _fb.get("confirm_string") or _auth_confirm
                         _lab_cfg_auth     = _fb
                         wr_fb = verify_generic_header_bypass(
-                            fr.local_path, _auth_ep, notes.get("http_method") or "GET",
+                            _auth_local_path_str, _auth_ep, notes.get("http_method") or "GET",
                             bypass_header=_auth_bypass_hdr,
                             bypass_value=_auth_bypass_val,
                             confirm_string=_auth_confirm,
@@ -13505,7 +13508,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             break
                         _auth_prev_err_cat = _auth_curr_cat
                 if _scf_auth and wr.verified:
-                    _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path)), inv.vuln_class or "missing-authorization")] = {
+                    _scaffold_cache[(_detect_lab_tech_stack(_auth_local_path_str), inv.vuln_class or "missing-authorization")] = {
                         "dockerfile_body": _auth_dockerfile, "extra_files": _auth_extra_files,
                         "endpoint": _auth_ep, "confirm_string": notes.get("confirm_string") or "",
                         "parameters": params if isinstance(params, dict) else {},
