@@ -12472,7 +12472,13 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     and inv.vuln_class in ("sqli", "sql-injection")):
                 from .websource import find_all_ajax_actions, find_ajax_action_for_param
                 _noLLM_pts = ["order", "start", "length", "draw", "search",
-                               "columns", "id", "post_id", "user_id", "orderby", "dir"]
+                               "columns", "id", "post_id", "user_id", "orderby", "dir",
+                               # Additional common SQLi-susceptible parameters:
+                               "event", "event_id", "booking_id", "appointment_id",
+                               "category", "cat", "tag", "term", "taxonomy",
+                               "status", "type", "action", "meta_key", "meta_value",
+                               "sort", "sortby", "sort_col", "column", "field",
+                               "filter", "where", "query", "s", "search_term"]
                 _noLLM_action = None
                 _noLLM_param = ""
                 for _cand_p in _noLLM_pts:
@@ -13260,7 +13266,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             # LFI (Local File Inclusion) en WordPress: include()/require() con parametro
             # controlado por el atacante. Dos niveles: lectura de fichero (/etc/passwd,
             # wp-config.php) y escalada a RCE via log poisoning (ver verify_wordpress_lfi).
-            elif (not is_drupal and not is_joomla
+            # NOTA: 'if' (no 'elif') para que corra en el mismo pass que el auto-detect de arriba.
+            if (not is_drupal and not is_joomla
                   and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class in ("lfi", "path-traversal", "directory-traversal")
                   and notes.get("endpoint")):
@@ -15596,7 +15603,41 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     _attempt_file_upload_drupal, wr, notes.get("endpoint"), file_p,
                     technique_label="file upload Drupal")
                 _apply_wpverify_result(inv, wr, es, llm)
-            elif (not is_drupal and not is_joomla and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
+            # Auto-detect endpoint para file-upload cuando notes esta vacio.
+            # Busca acciones AJAX con $_FILES / wp_handle_upload en el plugin.
+            if (not is_drupal and not is_joomla
+                    and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
+                    and inv.vuln_class in ("file-upload", "arbitrary-file-upload",
+                                           "unrestricted-file-upload", "arbitrary-file-write")
+                    and not notes.get("endpoint") and fr.local_path):
+                from .websource import find_file_upload_handlers
+                try:
+                    _fu_hits = find_file_upload_handlers(fr.local_path)
+                    if _fu_hits:
+                        _fu_best = _fu_hits[0]
+                        _fu_action = _fu_best.get("action", "")
+                        if _fu_action:
+                            _fu_ep = f"/wp-admin/admin-ajax.php?action={_fu_action}"
+                            step((f"[file-upload] endpoint detectado via AJAX scanner: {_fu_ep} "
+                                  f"(nopriv={_fu_best.get('nopriv', False)})") if es else
+                                 (f"[file-upload] endpoint detected via AJAX scanner: {_fu_ep} "
+                                  f"(nopriv={_fu_best.get('nopriv', False)})"))
+                            _fu_param = _fu_best.get("file_param", "") or "file"
+                            notes = {**notes, "endpoint": _fu_ep, "http_method": "POST",
+                                     "file_param": _fu_param}
+                            inv.llm_notes.update({"endpoint": _fu_ep, "http_method": "POST",
+                                                  "file_param": _fu_param})
+                            # Registrar endpoints alternativos
+                            _fu_alts = [
+                                {"endpoint": f"/wp-admin/admin-ajax.php?action={h['action']}", "parameters": []}
+                                for h in _fu_hits[1:5] if h.get("action")
+                            ]
+                            if _fu_alts and not notes.get("alt_endpoints"):
+                                inv.llm_notes["alt_endpoints"] = _fu_alts
+                except Exception:
+                    pass
+            # NOTA: 'if' (no 'elif') para que corra en el mismo pass que el auto-detect de arriba.
+            if (not is_drupal and not is_joomla and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class in ("file-upload", "arbitrary-file-upload") and notes.get("endpoint")):
                 from .wpverify import (verify_wordpress_file_upload, _pick_param,
                                        _FILE_UPLOAD_HINTS, _UPLOAD_FORM_PLUGIN_CONFIG)
