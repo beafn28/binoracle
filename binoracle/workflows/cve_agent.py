@@ -2945,21 +2945,26 @@ _GENERIC_PATH_TRAVERSAL_RETRY_SYS = (
     "path-traversal contra un contenedor Docker REAL (construido desde el propio Dockerfile/"
     "docker-compose del codigo descargado -- puede ser cualquier tecnologia: Node, Python, PHP, "
     "Go, Java...) no se confirmo: se planto un fichero canario con un secreto aleatorio DENTRO "
-    "del contenedor y ninguna de las variantes de ruta/codificacion probadas lo filtro. Te doy "
-    "la evidencia REAL observada: el endpoint/parametro probados, y un recorte del cuerpo REAL "
-    "de la respuesta del primer intento. Lee esa evidencia como lo haria un analista humano "
-    "revisando un negativo: si el cuerpo muestra una pista CONCRETA de que el endpoint o el "
-    "parametro probados no son los correctos (un error de la app, un 404, una ruta de API "
-    "distinta, contenido que no tiene nada que ver con el endpoint esperado...), sugiere UN "
-    "cambio concreto de endpoint y/o parametro que valga la pena reintentar. Si la evidencia NO "
-    "da ninguna pista util, dilo honestamente -- no inventes un cambio sin base real. Responde "
-    "SOLO con JSON: {\"tiene_sugerencia\": true/false, \"razon\": \"una frase, citando la pista "
-    "concreta de la evidencia\", \"endpoint_alternativo\": \"...\" (opcional, solo si "
+    "del contenedor y ninguna de las variantes de ruta/codificacion probadas lo filtro. "
+    "NOTA: el motor ya probo AUTOMATICAMENTE codificaciones ./..%2f/..%252e%252e%252f/.%2e///"
+    "%2e%2e/ ..\\%5C%2F../.. y profundidades de 2 a 12 niveles — NO sugiereas estas mismas "
+    "codificaciones ni las mismas profundidades, ya se probaron todas. "
+    "Te doy la evidencia REAL observada: el endpoint/parametro probados, los endpoints_probados "
+    "(lista de endpoint → status_code de los intentos), y un recorte del cuerpo REAL de la "
+    "respuesta del primer intento. Lee esa evidencia como lo haria un analista humano revisando "
+    "un negativo: si los endpoints_probados muestran que todos los candidatos devolvieron 404 "
+    "habria que probar un endpoint distinto; si devolvieron 200 con cuerpo vacio, el parametro "
+    "puede ser correcto pero necesita una codificacion distinta que no se probo; si hay un 403 "
+    "puede ser un problema de autenticacion. Sugiere UN cambio concreto que sea radicalmente "
+    "distinto de lo ya probado. Si la evidencia NO da ninguna pista util, dilo honestamente. "
+    "Responde SOLO con JSON: {\"tiene_sugerencia\": true/false, \"razon\": \"una frase, citando "
+    "la pista concreta de la evidencia\", \"endpoint_alternativo\": \"...\" (opcional, solo si "
     "tiene_sugerencia), \"parametro_alternativo\": \"...\" (opcional)}"
 )
 _GENERIC_PATH_TRAVERSAL_RETRY_EVIDENCE_KEYS = {
     "endpoint_probado": "endpoint", "parametro_probado": "path_param",
-    "respuesta_cuerpo_recorte": "respuesta_muestra_primer_intento"}
+    "respuesta_cuerpo_recorte": "respuesta_muestra_primer_intento",
+    "endpoints_probados": "endpoints_probados"}
 
 # mapeo de evidencia compartido por cualquier verify_* que ya capture un recorte REAL del cuerpo
 # de la respuesta bajo la clave "respuesta_cuerpo_recorte" (command injection, SSTI, XXE, file
