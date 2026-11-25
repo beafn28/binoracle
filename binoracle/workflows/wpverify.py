@@ -5668,6 +5668,46 @@ def verify_wordpress_sqli(
                                                 plugin_source_dir=plugin_source_dir)
                             step(f"seed via MySQL LIKE: {_mt_names}")
 
+            # CPT seed for plugins that store data as WP posts (no custom tables).
+            # Triggered always if plugin_source_dir is available, regardless of whether
+            # custom tables were found — covers WP Hotel Booking (hb_room CPT),
+            # Course Booking System (course CPT), Events Manager (event CPT), etc.
+            if plugin_source_dir:
+                import glob as _glob_cpt, re as _re_cpt
+                _cpt_re = _re_cpt.compile(
+                    r"register_post_type\s*\(\s*['\"]([a-z0-9_\-]{3,40})['\"]", _re_cpt.I)
+                _cpt_types: list = []
+                for _phpf in _glob_cpt.glob(str(plugin_source_dir) + "/**/*.php", recursive=True):
+                    try:
+                        _phpc = open(_phpf, encoding="utf-8", errors="replace").read(60_000)
+                    except OSError:
+                        continue
+                    for _mc in _cpt_re.finditer(_phpc):
+                        _ct = _mc.group(1)
+                        if _ct not in _cpt_types and _ct != "attachment":
+                            _cpt_types.append(_ct)
+                if _cpt_types:
+                    _cpt_check = lab.exec_mysql(
+                        "SELECT COUNT(*) FROM wp_posts WHERE post_type IN ("
+                        + ", ".join(f"'{c}'" for c in _cpt_types[:6])
+                        + ") AND post_status='publish';", boot.db_pw) or ""
+                    _cpt_count = 0
+                    try:
+                        _cpt_count = int(_cpt_check.strip().split('\n')[-1])
+                    except (ValueError, IndexError):
+                        pass
+                    if _cpt_count == 0:
+                        for _cpt in _cpt_types[:3]:
+                            lab.exec_mysql(
+                                f"INSERT INTO wp_posts "
+                                f"(post_title, post_status, post_type, post_name, guid, "
+                                f"post_date, post_date_gmt, post_modified, post_modified_gmt, "
+                                f"to_ping, pinged, post_content_filtered) "
+                                f"VALUES ('Seed {_cpt}', 'publish', '{_cpt}', "
+                                f"'seed-{_cpt}', 'seed-{_cpt}', NOW(), NOW(), NOW(), NOW(), "
+                                f"'', '', '');", boot.db_pw)
+                        step(f"seed CPT: wp_posts insertados para tipos {_cpt_types[:3]}")
+
             import socket as _sock_uri, time as _time_uri
 
             def _raw_path_request(path: str, timeout: float = 20.0) -> float:
@@ -7862,6 +7902,48 @@ def verify_wordpress_ssrf(
         endpoint, base_params = _auto_resolve_wp_blockers(
             boot, lab, slug, m, endpoint, base_params, url_param, res, step,
             extra_nonce_pages=extra_nonce_pages)
+
+        # Seed plugin tables + CPTs so actions that require an existing record
+        # (e.g. GiveWP get_receipt needs a donation) find data in the DB.
+        if plugin_source_dir:
+            _ssrf_tables = _detect_plugin_tables(plugin_source_dir)
+            if _ssrf_tables:
+                _seed_plugin_tables(lab, boot.db_pw, _ssrf_tables, step,
+                                    plugin_source_dir=plugin_source_dir)
+            import glob as _glob_ssrf, re as _re_ssrf
+            _cpt_re_ssrf = _re_ssrf.compile(
+                r"register_post_type\s*\(\s*['\"]([a-z0-9_\-]{3,40})['\"]", _re_ssrf.I)
+            _ssrf_cpts: list = []
+            for _ssrfp in _glob_ssrf.glob(str(plugin_source_dir) + "/**/*.php", recursive=True):
+                try:
+                    _ssrfc = open(_ssrfp, encoding="utf-8", errors="replace").read(60_000)
+                except OSError:
+                    continue
+                for _mc in _cpt_re_ssrf.finditer(_ssrfc):
+                    _ct = _mc.group(1)
+                    if _ct not in _ssrf_cpts and _ct != "attachment":
+                        _ssrf_cpts.append(_ct)
+            if _ssrf_cpts:
+                _chk = lab.exec_mysql(
+                    "SELECT COUNT(*) FROM wp_posts WHERE post_type IN ("
+                    + ", ".join(f"'{c}'" for c in _ssrf_cpts[:6])
+                    + ") AND post_status='publish';", boot.db_pw) or ""
+                try:
+                    _chkn = int(_chk.strip().split('\n')[-1])
+                except (ValueError, IndexError):
+                    _chkn = 1
+                if _chkn == 0:
+                    for _cpt in _ssrf_cpts[:3]:
+                        lab.exec_mysql(
+                            f"INSERT INTO wp_posts "
+                            f"(post_title, post_status, post_type, post_name, guid, "
+                            f"post_date, post_date_gmt, post_modified, post_modified_gmt, "
+                            f"to_ping, pinged, post_content_filtered) "
+                            f"VALUES ('Seed {_cpt}', 'publish', '{_cpt}', "
+                            f"'seed-{_cpt}', 'seed-{_cpt}', NOW(), NOW(), NOW(), NOW(), "
+                            f"'', '', '');", boot.db_pw)
+                    step(f"seed SSRF CPT: wp_posts insertados para {_ssrf_cpts[:3]}")
+
         found = False
         tried = []
 
