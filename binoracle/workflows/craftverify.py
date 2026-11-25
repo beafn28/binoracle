@@ -52,8 +52,24 @@ def detect_craft(source_dir: str) -> bool:
     return False
 
 
-def _craft_dockerfile(port: int = _CRAFT_PORT) -> str:
-    """Generate a minimal Craft CMS 4 Dockerfile with SQLite."""
+def _craft_dockerfile(port: int = _CRAFT_PORT, cms_version: str = "") -> str:
+    """Generate a minimal Craft CMS Dockerfile with SQLite.
+
+    cms_version: pin to a specific craftcms/cms version (e.g. "5.6.16").
+    Without it, the latest version is installed (may be patched).
+    """
+    # Pin to vulnerable version when specified; otherwise install a Craft 4 baseline
+    if cms_version:
+        _cms_req = f"craftcms/cms:{cms_version}"
+        _create_proj = "craftcms/craft"
+    else:
+        _cms_req = ""
+        _create_proj = "craftcms/craft"
+    _pin_step = (
+        f'RUN composer require "{_cms_req}" --no-interaction 2>&1 | tail -3'
+        if cms_version else
+        "# cms_version not set — using whatever create-project pulls in"
+    )
     return f"""FROM php:8.2-apache
 RUN apt-get update -qq && apt-get install -y -qq \\
     libzip-dev libpng-dev libjpeg-dev libwebp-dev libfreetype6-dev \\
@@ -64,10 +80,10 @@ RUN apt-get update -qq && apt-get install -y -qq \\
     && rm -rf /var/lib/apt/lists/*
 RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
 WORKDIR /var/www/html
-RUN composer create-project craftcms/craft craft --no-interaction --prefer-dist \\
+RUN composer create-project {_create_proj} craft --no-interaction --prefer-dist \\
     || (echo "craft download failed" && exit 1)
 WORKDIR /var/www/html/craft
-RUN composer require craftcms/cms --no-interaction 2>/dev/null || true
+{_pin_step}
 # Configure SQLite
 ENV CRAFT_DB_DRIVER=sqlite \\
     CRAFT_DB_DATABASE=/var/www/html/craft/storage/craft.db \\
@@ -75,7 +91,6 @@ ENV CRAFT_DB_DRIVER=sqlite \\
     CRAFT_ENVIRONMENT=dev \\
     CRAFT_ALLOW_ADMIN_CHANGES=true \\
     PHP_PORT={port}
-COPY . /var/www/html/craft/
 RUN chown -R www-data:www-data /var/www/html/craft
 EXPOSE {port}
 CMD ["apache2-foreground"]
@@ -255,7 +270,7 @@ def verify_craft_web_cve(
     # Fallback: Craft-specific Docker (slow but accurate for Craft-specific auth flows)
     container = f"bo_craft_{os.urandom(4).hex()}"
     try:
-        dockerfile_content = _craft_dockerfile(_CRAFT_PORT)
+        dockerfile_content = _craft_dockerfile(_CRAFT_PORT, cms_version=pkg_version or "")
         import tempfile, pathlib
         with tempfile.TemporaryDirectory(prefix="bo_craft_") as tmpdir:
             pathlib.Path(tmpdir, "Dockerfile").write_text(dockerfile_content)
