@@ -4702,10 +4702,12 @@ def _apply_wpverify_result(inv, wr, es: bool, llm=None) -> None:
             _payload = ev.get("payload_ganador") or ev.get("payload") or ""
             if _ep and _param and _payload:
                 _target_url = _base.rstrip("/") + "/" + _ep.lstrip("/")
+                # Use TARGET placeholder so _build_reproduce_sh substitutes it correctly
+                _ep_path = "/" + _ep.lstrip("/")
                 if _method.upper() in ("GET", "HEAD"):
-                    _curl = f"curl -s '{_target_url}?{_param}={_payload}'"
+                    _curl = f"curl -s \"TARGET{_ep_path}?{_param}={_payload}\""
                 else:
-                    _curl = f"curl -s -X {_method} '{_target_url}' -d '{_param}={_payload}'"
+                    _curl = f"curl -s -X {_method} \"TARGET{_ep_path}\" -d \"{_param}={_payload}\""
                 poc = {
                     "curl": _curl,
                     "technique": inv.vuln_class or "web",
