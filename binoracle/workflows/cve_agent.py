@@ -4441,7 +4441,7 @@ def _notes_dockerfile(notes: dict) -> str:
     2. Fall back to 'FROM {docker_image}' when only docker_image is set
     3. Return "" otherwise
     """
-    df = (_notes_dockerfile(notes)).strip()
+    df = (notes.get("dockerfile_body") or "").strip()
     if df:
         return df
     img = (notes.get("docker_image") or "").strip()
