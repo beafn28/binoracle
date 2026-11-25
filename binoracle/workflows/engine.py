@@ -1387,6 +1387,57 @@ class ExploitReasoningEngine:
          "WRONG_PARAM_TYPE", 0.70,
          "FastAPI/Pydantic validation error — the parameter name or type is wrong; "
          "check the endpoint's schema and send the correct field names"),
+
+        # RESOURCE_NOT_FOUND — Strapi content-type or entry not found
+        (r'\b(?:entry\s+not\s+found|single\s+type\s+not\s+found|'
+         r'contentType.*not\s+found|component.*not\s+found|'
+         r'"error"\s*:\s*"NotFoundError")\b',
+         "RESOURCE_NOT_FOUND", 0.80,
+         "Strapi entry/content-type not found — verify the content-type UID and entry ID; "
+         "check /api/{pluralApiId}/{id} matches the Strapi collection name"),
+
+        # AUTH_GATE_FIRED — CSRF token missing (Rails, Django)
+        (r'\b(?:csrf\s+token\s+(?:missing|invalid|mismatch|not\s+provided)|'
+         r'invalid\s+csrf\s+token|csrf\s+verification\s+failed|'
+         r'authenticity\s+token|forgery\s+protection)\b',
+         "NONCE_MISMATCH", 0.85,
+         "CSRF token missing or invalid — fetch a valid CSRF token from the form/page "
+         "first (e.g. GET / to get the token from the HTML) and include it in the attack request"),
+
+        # INJECTION_CONTEXT — Go runtime panic / nil pointer (broken SQL or JSON)
+        (r'\b(?:panic:\s+runtime\s+error|nil\s+pointer\s+dereference|'
+         r'index\s+out\s+of\s+range|goroutine.*panicked)\b',
+         "INJECTION_CONTEXT", 0.80,
+         "Go runtime panic — injection likely broke JSON/SQL parsing; "
+         "try sending clean JSON body first, then inject inside a string value"),
+
+        # INJECTION_CONTEXT — Node.js TypeError (broken JS parsing from injection)
+        (r'\b(?:TypeError:\s+(?:Cannot\s+read|is\s+not\s+a\s+function|'
+         r'is\s+not\s+defined|undefined\s+is\s+not)|'
+         r'UnhandledPromiseRejectionWarning|at\s+Object\.<anonymous>)\b',
+         "INJECTION_CONTEXT", 0.65,
+         "Node.js TypeError — injection may have broken JS-side JSON parsing; "
+         "ensure the payload is valid JSON if the endpoint expects a JSON body"),
+
+        # INJECTION_CONTEXT — PHP warning/fatal (SQL injection broke PHP before DB)
+        (r'\b(?:Warning:\s+mysqli_|Fatal\s+error:\s+Uncaught|'
+         r'Parse\s+error:\s+syntax\s+error|Deprecated:|Division\s+by\s+zero)\b',
+         "INJECTION_CONTEXT", 0.75,
+         "PHP error/warning in response — the injection may have produced invalid PHP; "
+         "this is diagnostic: check the error message to identify where in the PHP the break occurred"),
+
+        # WRONG_PARAM_TYPE — Strapi/Express field-level errors
+        (r'"errors"\s*:\s*\[\s*\{[^}]*"message"\s*:\s*"[^"]*must\s+be\s+a\s+(?:string|number|boolean)',
+         "WRONG_PARAM_TYPE", 0.72,
+         "Strapi/Express field type error — the field expects a different type; "
+         "send the value as the correct JSON type (string, number, boolean)"),
+
+        # RESOURCE_NOT_FOUND — h3/Nitro/Nuxt route not found
+        (r'\b(?:Cannot\s+find\s+static\s+asset|__ENDPOINT__\s+Not\s+Found|'
+         r'404\s+Not\s+Found|url.*not\s+found|route.*not\s+registered)\b',
+         "RESOURCE_NOT_FOUND", 0.75,
+         "h3/Nitro route not found — check serveStatic mount path; "
+         "for CVE-2026-86253 (%2e%2e traversal), the path must be under the static root"),
     ]
 
     # Signals derived from HTTP status code alone
