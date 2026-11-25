@@ -8007,12 +8007,20 @@ def verify_wordpress_xss(
     t0 = time.time()
 
     xss_param = xss_param_hint or _pick_param(parameters, _XSS_HINTS)
+    # Fallback: si ningún nombre de parámetro coincide con los hints, prueba el primero de la
+    # lista — XSS puede estar en cualquier parámetro y es preferible intentarlo a fallar aquí.
+    _all_params = list(parameters.keys()) if isinstance(parameters, dict) else list(parameters or [])
+    if not xss_param and _all_params:
+        xss_param = _all_params[0]
+        step(f"[XSS] ningun param coincide con hints XSS → probando el primero: '{xss_param}'")
     if not xss_param:
         res.detail = "no se identifico el parametro donde se refleja el payload"
         res.limitations.append("la verificacion de XSS necesita saber que parametro se refleja; "
                                "afina 'parameters' en la hipotesis del LLM o pasalo a mano "
                                "(xss_param_hint)")
         return res
+    # Recopilar parámetros alternativos para probar si el principal falla
+    _xss_alt_params: list = [p for p in _all_params if p != xss_param][:4]
 
     try:
         from playwright.sync_api import sync_playwright  # noqa: F401
@@ -8562,8 +8570,32 @@ def verify_wordpress_xss(
                               f"'{marker}', algo que solo el motor JS del navegador pudo hacer, "
                               f"no una coincidencia de texto reflejado")
         else:
+            # Retry with alternative parameters (reflected XSS only, no stored_xss_view_path)
+            if not stored_xss_view_path and _xss_alt_params and time.time() - t0 < budget_s - 120:
+                _short_attempts = attempts[:12]  # only the most common payloads for alt params
+                step(f"[XSS] param '{xss_param}' sin hit; probando {len(_xss_alt_params)} params alt.: {_xss_alt_params}")
+                with _XssBrowserSession() as xb_alt:
+                    for _alt_p in _xss_alt_params:
+                        if found:
+                            break
+                        for payload_value in _short_attempts:
+                            _ap = dict(base_params)
+                            _ap[_alt_p] = payload_value
+                            title, _ = xb_alt.render(boot.base_url, endpoint, m, _ap, cookies)
+                            tried.append({"payload": payload_value, "xss_param_alt": _alt_p, "title_resultante": title})
+                            if title == marker:
+                                found = True
+                                xss_param = _alt_p
+                                res.evidence["payload_ganador"] = payload_value
+                                res.evidence["param_alt_usado"] = _alt_p
+                                step(f"VERIFICADO con param alt '{_alt_p}': document.title='{marker}'")
+                                break
             res.ok = True
-            if stored_xss_view_path:
+            if found:
+                res.verified = True
+                res.detail = (f"XSS (reflected) confirmado via param alt '{xss_param}': "
+                              f"document.title cambio exactamente a '{marker}'")
+            elif stored_xss_view_path:
                 res.detail = (f"se probaron {len(tried)} payloads en modo stored-XSS (inyeccion "
                               f"via subscriber + vista del admin en '{stored_xss_view_path}') y "
                               f"en ninguno el navegador ejecuto el script -- el XSS almacenado "
