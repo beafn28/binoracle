@@ -296,6 +296,11 @@ def _detect_lfi_param_from_source(plugin_source_dir: str) -> Optional[str]:
     Returns the HTTP param name (e.g. 'source', 'file', 'path') or None if not found.
     Used as a last resort when _PATH_HINTS and the LLM params list don't identify
     the vulnerable parameter — covers non-standard names like sogrid, wp-umbrella.
+
+    Two-pass taint analysis:
+    Pass 1 — direct: $_GET['param'] appears inline in a file-read sink call.
+    Pass 2 — indirect: $var = $_GET['param'] assigned anywhere in the same file,
+              then $var (or a concatenation containing it) appears in a file-read sink.
     """
     import glob as _glf, re as _relf
     _SINKS_RE = _relf.compile(
@@ -306,15 +311,38 @@ def _detect_lfi_param_from_source(plugin_source_dir: str) -> Optional[str]:
             (?:\$_(?:GET|POST|REQUEST|FILES)\[['"]([a-zA-Z0-9_\-]+)['"]\]|
                intval\s*\(\s*\$_(?:GET|POST|REQUEST)\[['"]([a-zA-Z0-9_\-]+)['"]\]\))""",
         _relf.VERBOSE | _relf.IGNORECASE)
+    # Matches: $var = $_GET['param'] or $var = sanitize_*(esc_*($_REQUEST['param']))
+    _ASSIGN_RE = _relf.compile(
+        r'\$([a-zA-Z_]\w*)\s*=\s*(?:[\w_]+\s*\(\s*)*\$_(?:GET|POST|REQUEST)\s*\[\s*'
+        r"['\"]([a-zA-Z0-9_\-]+)['\"]\s*\]",
+        _relf.IGNORECASE)
+    # Matches a file-read sink with a PHP variable argument (possibly in concatenation)
+    _SINK_VAR_RE = _relf.compile(
+        r"""(?:file_get_contents|readfile|file|fopen|include|require|
+            include_once|require_once|highlight_file|show_source)\s*\(
+            [^)]*\$([a-zA-Z_]\w*)""",
+        _relf.VERBOSE | _relf.IGNORECASE)
     for _f in _glf.glob(str(plugin_source_dir) + "/**/*.php", recursive=True):
         try:
             _src = open(_f, encoding="utf-8", errors="replace").read(100_000)
         except OSError:
             continue
+        # Pass 1: direct inline taint
         for _m in _SINKS_RE.finditer(_src):
             _param = _m.group(1) or _m.group(2)
             if _param:
                 return _param
+        # Pass 2: local variable taint (same file)
+        _var_to_param: dict = {}
+        for _ma in _ASSIGN_RE.finditer(_src):
+            _vname, _pname = _ma.group(1), _ma.group(2)
+            if _vname not in _var_to_param:
+                _var_to_param[_vname] = _pname
+        if _var_to_param:
+            for _ms in _SINK_VAR_RE.finditer(_src):
+                _used_var = _ms.group(1)
+                if _used_var in _var_to_param:
+                    return _var_to_param[_used_var]
     return None
 
 
@@ -5427,6 +5455,7 @@ def _seed_plugin_tables(lab: "_Lab", db_pw: str, tables: list, step,
             if _existing_count == 0:
                 # Create one seed post per CPT (up to 3) so JOIN queries find rows
                 _post_id = 1
+                _seeded_post_ids: list = []
                 for _cpt_type in _cpts[:3]:
                     _r_ins = lab.exec_mysql(
                         f"INSERT INTO wp_posts "
@@ -5439,9 +5468,24 @@ def _seed_plugin_tables(lab: "_Lab", db_pw: str, tables: list, step,
                     _id_r = lab.exec_mysql("SELECT LAST_INSERT_ID();", db_pw) or ""
                     try:
                         _post_id = int(_id_r.strip().split('\n')[-1])
+                        _seeded_post_ids.append((_post_id, _cpt_type))
                     except (ValueError, IndexError):
                         _post_id = 1
                 step(f"seed: WP posts creados para CPTs {_cpts[:3]} (ID={_post_id}, JOIN FK seed)")
+                # For order-like CPTs (stm-orders, shop_order, etc.), seed postmeta so
+                # plugins that filter by meta_key='status'/meta_value='completed' find rows.
+                # Without this, LEFT JOIN on postmeta returns NULL and the WHERE filters out all rows.
+                _ORDER_CPT_HINTS = ("order", "booking", "reservation", "ticket", "invoice",
+                                    "purchase", "transaction", "payment", "sale")
+                for _spost_id, _spost_type in _seeded_post_ids:
+                    if any(_h in _spost_type.lower() for _h in _ORDER_CPT_HINTS):
+                        lab.exec_mysql(
+                            f"INSERT IGNORE INTO wp_postmeta (post_id, meta_key, meta_value) "
+                            f"VALUES ({_spost_id}, 'status', 'completed'), "
+                            f"({_spost_id}, '_order_total', '99.00'), "
+                            f"({_spost_id}, 'user_id', '1');",
+                            db_pw)
+                        step(f"seed postmeta: status=completed para {_spost_type} ID={_spost_id}")
                 # Update FK columns in plugin tables to reference the seeded post
                 # so queries like `WHERE post_id = X` find the row.
                 _fk_col_names = ("post_id", "event_id", "booking_id", "product_id",
@@ -5743,6 +5787,8 @@ def verify_wordpress_sqli(
                     except (ValueError, IndexError):
                         pass
                     if _cpt_count == 0:
+                        _ORDER_HINTS_CPT = ("order", "booking", "reservation", "ticket",
+                                            "invoice", "purchase", "transaction", "payment")
                         for _cpt in _cpt_types[:3]:
                             lab.exec_mysql(
                                 f"INSERT INTO wp_posts "
@@ -5752,6 +5798,20 @@ def verify_wordpress_sqli(
                                 f"VALUES ('Seed {_cpt}', 'publish', '{_cpt}', "
                                 f"'seed-{_cpt}', 'seed-{_cpt}', NOW(), NOW(), NOW(), NOW(), "
                                 f"'', '', '');", boot.db_pw)
+                            # For order-like CPTs, also add postmeta so queries filtering
+                            # by meta_key='status'/meta_value='completed' find rows
+                            if any(_oh in _cpt.lower() for _oh in _ORDER_HINTS_CPT):
+                                _id_cpt_r = lab.exec_mysql("SELECT LAST_INSERT_ID();", boot.db_pw) or ""
+                                try:
+                                    _last_cpt_id = int(_id_cpt_r.strip().split('\n')[-1])
+                                    lab.exec_mysql(
+                                        f"INSERT IGNORE INTO wp_postmeta (post_id, meta_key, meta_value) "
+                                        f"VALUES ({_last_cpt_id}, 'status', 'completed'), "
+                                        f"({_last_cpt_id}, '_order_total', '99.00'), "
+                                        f"({_last_cpt_id}, 'user_id', '1');", boot.db_pw)
+                                    step(f"seed CPT postmeta: status=completed para {_cpt} ID={_last_cpt_id}")
+                                except (ValueError, IndexError):
+                                    pass
                         step(f"seed CPT: wp_posts insertados para tipos {_cpt_types[:3]}")
                         res.evidence["cpt_seed_realizado"] = _cpt_types[:3]
                     elif _cpt_count > 0:
