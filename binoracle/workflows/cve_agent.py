@@ -540,7 +540,16 @@ _RESEARCH_SYS = (
     "'url', 'input'), redos_payload (cadena de entrada que causa backtracking catastrofico, "
     "p.ej. 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!' para (a+)+ o "
     "'aaaa@aaaa.aaaa.aaaa.aaaa.aaaa.aaaa.aaaa.aaaa.aaaa.aaaa.X' para email regex; "
-    "deja vacio si no conoces el patron exacto y el verificador usara un default)."
+    "deja vacio si no conoces el patron exacto y el verificador usara un default). "
+    "Para CVEs de AUTH BYPASS via debilidad criptografica (clave fija, clave cero, IV "
+    "predecible, algoritmo debil, token predecible): usa vuln_class='auth-bypass' y en "
+    "strategy describe la debilidad cripto concreta; pon en bypass_header/bypass_value los "
+    "headers que llevan el token/mensaje cifrado; si el bypass requiere construir un mensaje "
+    "cifrado propio (p.ej. AES-CBC con clave cero), pon request_chain con el paso de "
+    "construccion del mensaje como is_final=false y el paso de verificacion como is_final=true. "
+    "NUNCA olvides que estos bugs requieren que el atacante construya un payload valido "
+    "segun el algoritmo vulnerable (openssl, PyCrypto, etc.) -- doc_cmd_setup (opcional, "
+    "lista de comandos para instalar dependencias cripto en el lab) facilita esto."
 )
 
 
