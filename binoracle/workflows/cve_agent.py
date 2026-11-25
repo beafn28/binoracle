@@ -4690,8 +4690,28 @@ def _apply_wpverify_result(inv, wr, es: bool, llm=None) -> None:
         inv.verified_detail = wr.detail
         inv.verified_evidence = wr.evidence
         inv.confidence = getattr(wr, "confidence", "confirmed")
-        # Generate reproduce.sh when exploit_poc is available
+        # Generate reproduce.sh when exploit_poc is available; if the verifier
+        # did not generate a PoC dict (genericverify doesn't), synthesize one from evidence
         poc = getattr(wr, "exploit_poc", {})
+        if not poc and wr.evidence:
+            ev = wr.evidence
+            _ep = ev.get("endpoint", "")
+            _method = ev.get("metodo") or ev.get("method") or "GET"
+            _base = ev.get("base_url", "TARGET")
+            _param = ev.get("parametro_ganador") or ev.get("path_param") or ev.get("sqli_param") or ""
+            _payload = ev.get("payload_ganador") or ev.get("payload") or ""
+            if _ep and _param and _payload:
+                _target_url = _base.rstrip("/") + "/" + _ep.lstrip("/")
+                if _method.upper() in ("GET", "HEAD"):
+                    _curl = f"curl -s '{_target_url}?{_param}={_payload}'"
+                else:
+                    _curl = f"curl -s -X {_method} '{_target_url}' -d '{_param}={_payload}'"
+                poc = {
+                    "curl": _curl,
+                    "technique": inv.vuln_class or "web",
+                    "description": f"{inv.vuln_class or 'vulnerability'} confirmed via {_param}={_payload!r} at {_ep}",
+                    "target_url": _target_url,
+                }
         if poc:
             inv.reproduce_sh = _build_reproduce_sh(inv.cve_id, poc, inv.confidence)
     elif not wr.available:
