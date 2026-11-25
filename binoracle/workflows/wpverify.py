@@ -6214,6 +6214,25 @@ def verify_wordpress_sqli(
         except Exception as e:
             res.detail = f"la peticion de control fallo: {e}"
             return res
+        # HTTP method rotation: if control returned 405 (Method Not Allowed), flip GET↔POST
+        # and rebuild the send() closure with the corrected method.
+        if getattr(base_resp, "status_code", None) == 405:
+            _alt_method = "GET" if m == "POST" else "POST"
+            step(f"control devolvio 405 con {m} -- reintentando con {_alt_method}...")
+            m = _alt_method
+            # Rebuild send() with the new method
+            def send(val, _m=m, _params=base_params, _ep=endpoint, _sess=_attack_sess,
+                     _bu=boot.site_url, _jb=json_body):
+                _p = {**_params, sqli_param: val}
+                return _http_request(_m, _bu + _ep, timeout=15,
+                                     data=_p if _m != "GET" else None,
+                                     params=_p if _m == "GET" else None,
+                                     session=_sess, json_body=_jb)
+            try:
+                base_resp = send(orig_value)
+            except Exception as e:
+                res.detail = f"la peticion de control fallo tras method rotation: {e}"
+                return res
         # If the control response contains a MySQL ORDER BY error, the LLM-supplied default
         # value for the sqli_param is not a valid column name. Scan the plugin source for the
         # ORDER BY sink to find the right fallback values, then try them before giving up.

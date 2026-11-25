@@ -363,7 +363,15 @@ def fetch_wordpress_plugin(slug: str, version: str = "", dest_dir: str = "",
             _r_svn = _svn_fetch_wp_plugin_version(slug, version, dest_dir, step, timeout)
             if _r_svn.ok:
                 return _r_svn
+            # Fallback: GitHub mirror search — many WP plugins have public mirrors
+            _r_gh = _github_mirror_fetch_wp_plugin(slug, version, dest_dir, step, timeout)
+            if _r_gh.ok:
+                return _r_gh
             return _r_direct  # devuelve el resultado del intento directo con su error
+        # Fallback for plugins without version: try GitHub mirror
+        _r_gh_nover = _github_mirror_fetch_wp_plugin(slug, "", dest_dir, step, timeout)
+        if _r_gh_nover.ok:
+            return _r_gh_nover
         res.note = (f"plugin '{slug}' no resuelto en WordPress.org: {e}. Posibles causas: (a) es "
                     f"COMERCIAL/premium (vendido directo por el fabricante, nunca estuvo en el "
                     f"directorio gratuito), o (b) fue CERRADO/retirado del directorio (frecuente "
@@ -604,6 +612,46 @@ def _svn_fetch_wp_plugin_version(slug: str, version: str, dest_dir: str, step,
                 pass
     except Exception as exc:
         step(f"SVN fetch error para '{slug}' {version}: {exc}")
+    return res
+
+
+def _github_mirror_fetch_wp_plugin(slug: str, version: str, dest_dir: str, step,
+                                    timeout: float) -> "SourceFetchResult":
+    """GitHub mirror fallback for WP plugins deleted from WordPress.org.
+    Many plugins have public GitHub mirrors (wordpress-develop/<slug>,
+    wp-plugins/<slug>, or the author's own account). Try a release tag ZIP
+    first, then the branch archive at the target version.
+    """
+    res = SourceFetchResult(kind="wordpress-plugin", source=slug)
+    _candidate_orgs = ("wp-plugins", "wordpress-plugins", "WordPress")
+    # If a version is given, try release tag zip from common GitHub mirror orgs
+    for _org in _candidate_orgs:
+        if version:
+            _gh_zip_url = (f"https://github.com/{_org}/{slug}/archive/refs/tags/{version}.zip")
+        else:
+            _gh_zip_url = f"https://github.com/{_org}/{slug}/archive/refs/heads/main.zip"
+        try:
+            req = _ur.Request(_gh_zip_url, headers={"User-Agent": "binoracle/1.0"})
+            with _ur.urlopen(req, timeout=min(timeout, 20)) as r:
+                if r.status == 200:
+                    step(f"GitHub mirror encontrado para '{slug}' en {_org} -- descargando...")
+                    _zip_data = r.read(50 * 1024 * 1024)  # 50MB max
+            if not _zip_data:
+                continue
+            import zipfile, io
+            with zipfile.ZipFile(io.BytesIO(_zip_data)) as zf:
+                zf.extractall(dest_dir)
+            # ZIP from GitHub contains a single top-level dir; find it
+            _extracted_dirs = [d for d in _os.listdir(dest_dir)
+                               if _os.path.isdir(_os.path.join(dest_dir, d))]
+            if _extracted_dirs:
+                res.ok = True
+                res.local_path = _os.path.join(dest_dir, _extracted_dirs[0])
+                res.resolved_version = version or "main"
+                step(f"GitHub mirror '{slug}' extraido en {res.local_path}")
+                return res
+        except Exception:
+            continue
     return res
 
 
@@ -4041,9 +4089,11 @@ def find_auth_bypass_generic(local_path: str, tech: str = "auto") -> List[dict]:
 
 def _scan_sinks(local_path: str, pattern_sets: list, tech: str) -> List[VulnSink]:
     """Generic scan helper for input→sink patterns."""
-    # PHP variable-assignment regex: $var = $_GET['param'] style
+    # PHP variable-assignment regex: $var = $_GET['param'] OR $var = func($_GET['param'])
     _PHP_VAR_ASSIGN = re.compile(
-        r"\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\$_(?:GET|POST|REQUEST|COOKIE)\s*\[['\"]([A-Za-z0-9_]+)['\"]"
+        r"\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"
+        r"(?:[A-Za-z_][\w]*\s*\()?"  # optional wrapping function call
+        r"\s*\$_(?:GET|POST|REQUEST|COOKIE)\s*\[['\"]([A-Za-z0-9_]+)['\"]"
     )
     results: List[VulnSink] = []
     for _tech, _user_re, _sink_re, _exts in pattern_sets:
@@ -4072,11 +4122,12 @@ def _scan_sinks(local_path: str, pattern_sets: list, tech: str) -> List[VulnSink
                         param = next((g for g in _user_m2.groups() if g), "?")
                         conf = 2
                     elif _tech == "php" and _var_map:
-                        # Variable backtrack: check if sink uses a var that was tainted
-                        _sink_snippet = line + "\n".join(lines[max(0, i-5):i])
+                        # Variable backtrack: check up to 100 lines around the sink for
+                        # any tainted variable ($var = $_GET[...] defined earlier in file)
+                        _sink_window = "\n".join(lines[max(0, i-100):i+5])
                         _param_found = None
                         for _var, _p in _var_map.items():
-                            if f"${_var}" in _sink_snippet or f"${{{_var}}}" in _sink_snippet:
+                            if f"${_var}" in _sink_window or f"${{{_var}}}" in _sink_window:
                                 _param_found = _p
                                 break
                         if not _param_found:
@@ -4896,6 +4947,55 @@ def find_web_routes(local_path: str, tech: str = "auto", max_routes: int = 40) -
                     results.append({"method": _method, "path": _path, "file": _rel, "line": _line})
                     if len(results) >= max_routes:
                         return results
+
+    # Django include() resolution: scan urls.py for path('prefix/', include('app.urls'))
+    # and re-scan the included module's urls.py file to get sub-routes with the prefix prepended
+    if _tech in ("python", "django"):
+        _include_re = _re.compile(
+            r'(?:path|re_path|url)\s*\(\s*r?[\'"]([^\'"]*)[\'"]'
+            r'\s*,\s*include\s*\(\s*[\'"]([^\'"]+)[\'"]', _re.IGNORECASE)
+        for _root, _dirs, _files in _os.walk(local_path):
+            _dirs[:] = [d for d in _dirs if d not in ("node_modules", ".git", "__pycache__", "vendor")]
+            for _fn in _files:
+                if _fn != "urls.py":
+                    continue
+                _fp = _os.path.join(_root, _fn)
+                try:
+                    with open(_fp, encoding="utf-8", errors="replace") as _fh:
+                        _content = _fh.read()
+                except Exception:
+                    continue
+                for _inc_m in _include_re.finditer(_content):
+                    _inc_prefix = _inc_m.group(1).rstrip("/")
+                    if not _inc_prefix.startswith("/"):
+                        _inc_prefix = "/" + _inc_prefix
+                    _module_path = _inc_m.group(2)  # e.g. "myapp.urls"
+                    # Convert module path to file path: "myapp.urls" → "myapp/urls.py"
+                    _sub_fp = _os.path.join(local_path,
+                                            _module_path.replace(".", _os.sep) + ".py")
+                    if not _os.path.isfile(_sub_fp):
+                        continue
+                    try:
+                        with open(_sub_fp, encoding="utf-8", errors="replace") as _sfh:
+                            _sub = _sfh.read()
+                    except Exception:
+                        continue
+                    _path_re = _re.compile(
+                        r'(?:path|re_path|url)\s*\(\s*r?[\'"]([^\'"]+)[\'"]', _re.IGNORECASE)
+                    for _sm in _path_re.finditer(_sub):
+                        _sub_path = _sm.group(1).lstrip("^").rstrip("$/?")
+                        if not _sub_path.startswith("/"):
+                            _sub_path = "/" + _sub_path
+                        _full_path = _inc_prefix + _sub_path
+                        _key = ("ANY", _full_path)
+                        if _key not in _seen:
+                            _seen.add(_key)
+                            _ln = _sub[:_sm.start()].count("\n") + 1
+                            _rel = _os.path.relpath(_sub_fp, local_path)
+                            results.append({"method": "ANY", "path": _full_path,
+                                           "file": _rel, "line": _ln})
+                            if len(results) >= max_routes:
+                                return results
 
     return results
 
