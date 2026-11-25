@@ -3214,11 +3214,11 @@ CWE_TO_VULN_CLASS: dict = {
     "CWE-287": "auth-bypass",
     "CWE-306": "auth-bypass",   # Missing Authentication for Critical Function
     "CWE-307": "auth-bypass",   # Improper Restriction of Authentication Attempts
-    "CWE-384": "auth-bypass",   # Session Fixation
+    "CWE-384": "session-fixation",  # Session Fixation (precise class)
     "CWE-294": "auth-bypass",   # Authentication Bypass by Capture-replay
+    "CWE-620": "auth-bypass",   # Unverified Password Change (account takeover)
     # A08 Software/Data Integrity
     "CWE-502": "deserialization",
-    "CWE-915": "prototype-pollution",
     "CWE-1321":"prototype-pollution",
     # Path traversal / LFI
     "CWE-22":  "path-traversal",
@@ -3250,13 +3250,19 @@ CWE_TO_VULN_CLASS: dict = {
     "CWE-366": "race-condition",
     "CWE-367": "race-condition",
     # Header injection / CRLF
-    "CWE-113": "header-injection",
-    "CWE-93":  "header-injection",
+    "CWE-113": "crlf-injection",   # HTTP Response Splitting (CRLF injection)
+    "CWE-93":  "crlf-injection",   # Improper Neutralization of CRLF Sequences
     # JWT / token issues
     "CWE-347": "jwt-bypass",
     # Business logic
     "CWE-840": "business-logic",
     "CWE-841": "business-logic",
+    # Mass assignment
+    "CWE-915": "mass-assignment",   # Improperly Controlled Modification of Dynamically-Determined Object Attributes
+    # Account takeover / 2FA
+    "CWE-640": "account-takeover",  # Weak Password Recovery Mechanism
+    "CWE-304": "2fa-bypass",        # Missing Critical Step in Authentication
+    "CWE-308": "2fa-bypass",        # Use of Single-factor Authentication
     # Denial of Service
     "CWE-400": "dos",
     "CWE-770": "dos",
@@ -3331,6 +3337,20 @@ _DESCRIPTION_KEYWORDS: List[tuple] = [
      "race-condition", 0.75),
     (("graphql", "introspection", "graphql injection", "graphql authorization"),
      "graphql-injection", 0.75),
+    (("mass assignment", "bulk assignment", "over-posting", "mass attribute",
+      "protected field", "privileged field"),
+     "mass-assignment", 0.80),
+    (("crlf injection", "http response splitting", "header injection", "carriage return"),
+     "crlf-injection", 0.80),
+    (("session fixation", "session hijack", "session riding", "token fixation"),
+     "session-fixation", 0.80),
+    (("account takeover", "account hijack", "unauthorized account",
+      "user account takeover", "admin account creation"),
+     "account-takeover", 0.75),
+    (("two-factor", "2fa bypass", "otp bypass", "mfa bypass", "totp bypass"),
+     "2fa-bypass", 0.80),
+    (("stored xss", "persistent xss", "stored cross-site"),
+     "stored-xss", 0.80),
     # RCE / code execution without a more specific class
     (("remote code execution", "arbitrary code execution", "code execution",
       "execute arbitrary", "execute code", "run arbitrary code"),
