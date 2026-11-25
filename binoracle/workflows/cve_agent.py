@@ -17608,6 +17608,18 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
         _adv_notes = getattr(info, "advisory_notes", None) or ""
         if _adv_notes:
             _llm_extra_ctx += f"Advisory notes:\n{_adv_notes[:600]}\n"
+        # Add related CVE context — if related CVEs in the same component have a clear
+        # class, the LLM can reason about whether this CVE follows the same pattern
+        _corr_data = getattr(inv, "_correlation", None) or {}
+        _related = _corr_data.get("related") or []
+        if _related:
+            _corr_lines = []
+            for _r in _related[:5]:
+                _rdesc = (_r.get("desc") or "")[:80]
+                if _rdesc:
+                    _corr_lines.append(f"  {_r.get('cve_id', '')} ({_r.get('relation', '')}): {_rdesc}")
+            if _corr_lines:
+                _llm_extra_ctx += "Related CVEs in the same component:\n" + "\n".join(_corr_lines) + "\n"
         notes = _llm_research(llm, inv.cve_id, inv.description,
                               extra_context=_llm_extra_ctx.strip())
         if notes:
