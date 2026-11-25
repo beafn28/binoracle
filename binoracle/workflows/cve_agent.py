@@ -13513,7 +13513,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     _apply_wpverify_result(inv, wr, es, llm)
             # Ruby on Rails: verificacion especializada con Devise session auth y CSRF.
             elif (not plugin_dir and fr.local_path and
-                  (any(w in (inv.language or "").lower() for w in ("ruby",))
+                  (any(w in (getattr(inv, "language", "") or "").lower() for w in ("ruby",))
                    or any(w in (notes.get("framework") or "").lower() for w in ("rails", "sinatra"))
                    or any(w in (notes.get("cms") or "").lower() for w in ("rails",)))
                   and inv.vuln_class in ("xss", "sqli", "sql-injection", "ssrf", "idor",
