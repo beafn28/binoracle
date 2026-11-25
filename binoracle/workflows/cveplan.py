@@ -179,6 +179,15 @@ def classify_cve(text: str) -> Optional[str]:
     # atajo: slugs web conocidos que no pasan por _CLASSES (cors, etc.)
     if t in WEB_CLASSES:
         return t
+    # LFI ANTES que _CLASSES: "including arbitrary files in PHP's execution context" llega
+    # como "leads to RCE" y seria clasificado como rce si lo dejamos pasar al loop normal.
+    # El mecanismo (file inclusion) importa mas que la consecuencia (rce) para el verificador.
+    _incl = "includ" in t or "inclus" in t  # includes/including/inclusion
+    if _incl and "file" in t and (
+            "file inclus" in t or
+            ("arbitrary" in t and ("context" in t or "php" in t or "execution" in t)) or
+            ("local" in t and ("path" in t or "php" in t))):
+        return "lfi"
     for cls, kws, _prim, _refs in _CLASSES:
         if any(k in t for k in kws):
             return cls
@@ -220,6 +229,13 @@ def classify_cve(text: str) -> Optional[str]:
         return "xss"
     if has("server-side", "request", "forgery") or re.search(r"\bssrf\b", t):
         return "ssrf"
+    # LFI check ANTES que RCE: "including arbitrary files in PHP's execution context" = LFI aunque
+    # lleve a RCE. El mecanismo es LFI; el verificador de LFI puede confirmar AMBAS cosas.
+    if has("local", "file", "inclus") or re.search(r"\blfi\b", t):
+        return "lfi"
+    if (has("includ", "arbitrary", "file") and
+            ("context" in t or "php" in t or "execution" in t)):
+        return "lfi"
     if has("remote", "code", "execution") or re.search(r"\brce\b", t):
         return "rce"
     if has("path", "traversal") or has("directory", "traversal"):
