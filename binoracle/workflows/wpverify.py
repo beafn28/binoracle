@@ -3888,10 +3888,16 @@ def verify_wordpress_path_traversal(
 
     path_param = path_param_hint or _pick_param(parameters, _PATH_HINTS)
     if not path_param:
-        # fallback: si hay parametros en la hipotesis, probar el primero -- cubre plugins LFI donde
-        # el nombre del param no esta en _PATH_HINTS (ej. sogrid, wp-umbrella, chartify/source)
+        # fallback: primer param que no sea WP infra (action/nonce/security/_wpnonce) — cubre
+        # plugins LFI cuyo param no está en _PATH_HINTS (ej. sogrid 'file', wp-umbrella 'path',
+        # chartify 'source'). Sin filtrar infra, 'action' sería elegido antes que 'source'.
+        _WP_INFRA_PARAMS_PT = frozenset({"action", "nonce", "security", "_wpnonce", "_nonce",
+                                         "wp_nonce", "ajax_nonce", "verify", "token"})
         _params_list = list(parameters.keys() if isinstance(parameters, dict) else (parameters or []))
-        if _params_list:
+        _non_infra = [p for p in _params_list if p.lower() not in _WP_INFRA_PARAMS_PT]
+        if _non_infra:
+            path_param = _non_infra[0]
+        elif _params_list:
             path_param = _params_list[0]
         else:
             res.detail = "no se identifico el parametro que lleva la ruta/fichero objetivo"
@@ -4337,10 +4343,16 @@ def verify_wordpress_lfi(
 
     path_param = path_param_hint or _pick_param(parameters, _PATH_HINTS)
     if not path_param:
-        # fallback: si hay parametros en la hipotesis, probar el primero -- cubre plugins LFI donde
-        # el nombre del param no esta en _PATH_HINTS (ej. sogrid, wp-umbrella, chartify/source)
+        # fallback: primer param que no sea WP infra (action/nonce/security/_wpnonce) — cubre
+        # plugins LFI cuyo param no está en _PATH_HINTS (ej. sogrid 'file', wp-umbrella 'path',
+        # chartify 'source'). Sin filtrar infra, 'action' sería elegido antes que 'source'.
+        _WP_INFRA_PARAMS_LFI = frozenset({"action", "nonce", "security", "_wpnonce", "_nonce",
+                                          "wp_nonce", "ajax_nonce", "verify", "token"})
         _params_list = list(parameters.keys() if isinstance(parameters, dict) else (parameters or []))
-        if _params_list:
+        _non_infra = [p for p in _params_list if p.lower() not in _WP_INFRA_PARAMS_LFI]
+        if _non_infra:
+            path_param = _non_infra[0]
+        elif _params_list:
             path_param = _params_list[0]
         else:
             res.detail = "no se identifico el parametro que lleva la ruta/fichero a incluir"
