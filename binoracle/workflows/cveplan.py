@@ -185,6 +185,21 @@ def classify_cve(text: str) -> Optional[str]:
     if ("file upload" in t or "arbitrary file" in t) and (
             "missing" in t or "unrestricted" in t or "insufficient" in t or "lack" in t):
         return "file-upload"
+    # STORED-XSS ANTES que _CLASSES: "stored xss" y "xss" estan ambos en _CLASSES["xss"] →
+    # "stored XSS via settings page" devolveria "xss" sin llegar a "stored-xss".
+    if ("stored" in t or "persistent" in t) and ("xss" in t or "cross-site scripting" in t):
+        return "stored-xss"
+    # PATH-TRAVERSAL ANTES que _CLASSES: descripciones que dicen "path traversal"/"traversal" pero
+    # luego mencionan "code execution" como consecuencia → _CLASSES["code-injection"] puede ganar.
+    # El mecanismo es path traversal; el verificador leera /etc/passwd, no inyectara codigo.
+    # EXCEPCION: CVEs compuestos con command-injection o RCE como vulnerabilidad primaria se
+    # dejan pasar al loop _CLASSES para que el mecanismo mas grave gane.
+    _no_command = not ("shell" in t or "subprocess" in t or "metachar" in t or
+                       "command injection" in t or "os command" in t)
+    if _no_command and ("path traversal" in t or "directory traversal" in t or
+            ("traversal" in t and ("file" in t or "read" in t or "pathname" in t))) and (
+            "read" in t or "access" in t or "file" in t):
+        return "path-traversal"
     # LFI ANTES que _CLASSES: "including arbitrary files in PHP's execution context" llega
     # como "leads to RCE" y seria clasificado como rce si lo dejamos pasar al loop normal.
     # El mecanismo (file inclusion) importa mas que la consecuencia (rce) para el verificador.
@@ -228,6 +243,7 @@ def classify_cve(text: str) -> Optional[str]:
         return "command-injection"
     # --- clases web/app (respaldo por co-ocurrencia; la redaccion varia mucho entre CVEs) ---
     if has("missing", "authorization") or has("broken", "access", "control") or \
+       has("missing", "capability") or has("capability", "check") or \
        (has("without", "verifying") and "permission" in t) or \
        (has("sin", "verificar") and ("permiso" in t or "autoriza" in t)):
         return "missing-authorization"
@@ -239,6 +255,8 @@ def classify_cve(text: str) -> Optional[str]:
         return "sqli"
     if has("cross-site", "scripting") or re.search(r"\bxss\b", t):
         return "xss"
+    if "cors" in t and ("misconfigur" in t or "bypass" in t or "origin" in t or "header" in t):
+        return "cors-misconfiguration"
     if has("server-side", "request", "forgery") or re.search(r"\bssrf\b", t):
         return "ssrf"
     # LFI check ANTES que RCE: "including arbitrary files in PHP's execution context" = LFI aunque
@@ -264,6 +282,15 @@ def classify_cve(text: str) -> Optional[str]:
         return "csrf"
     if has("open", "redirect"):
         return "open-redirect"
+    # --- arbitrary file read / write (ANTES de information-disclosure) ---
+    # Si una descripcion dice "arbitrary file read...which can contain sensitive information",
+    # has("sensitive","file") la clasifica como info-disclosure: incorrecto. El mecanismo
+    # (file read vía path traversal) es lo que importa para el verificador.
+    if (has("arbitrary", "file", "read") or has("arbitrary", "file", "download") or
+            (has("read", "arbitrary") and "file" in t)):
+        return "path-traversal"
+    if has("arbitrary", "file", "write") or has("arbitrary", "file", "upload"):
+        return "file-upload"
     # --- information-disclosure / data exposure ---
     if (has("sensitive", "information", "exposure") or has("sensitive", "data", "exposure") or
             has("information", "disclosure") or has("data", "exposure") or
@@ -277,12 +304,6 @@ def classify_cve(text: str) -> Optional[str]:
             has("privilege", "escalation") or has("improper", "access", "control") or
             has("insufficient", "authorization")):
         return "missing-authorization"
-    # --- arbitrary file read / write ---
-    if (has("arbitrary", "file", "read") or has("arbitrary", "file", "download") or
-            (has("read", "arbitrary") and "file" in t)):
-        return "path-traversal"
-    if has("arbitrary", "file", "write") or has("arbitrary", "file", "upload"):
-        return "file-upload"
     return None
 
 
