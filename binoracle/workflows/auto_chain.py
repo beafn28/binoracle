@@ -3101,6 +3101,41 @@ def run_full_chain(
                 step(f"  CVE class (tras auto-learn): {result.cve_class}")
     step(f"  CVE class: {result.cve_class}")
     result.add_step("classify", "ok", result.cve_class)
+
+    # Normalize vuln_class from LLM output to canonical short form used by
+    # verifiers, _BUILDERS, and blockers throughout the pipeline.
+    _VC_NORMALIZE = {
+        "sql-injection": "sqli", "sql injection": "sqli",
+        "remote-code-execution": "rce", "remote code execution": "rce",
+        "code-injection": "rce", "php-code-execution": "rce",
+        "arbitrary-code-execution": "rce",
+        "os-command-injection": "command-injection",
+        "command injection": "command-injection",
+        "cross-site-scripting": "xss", "cross site scripting": "xss",
+        "reflected-xss": "xss", "stored-xss": "xss", "dom-xss": "xss",
+        "server-side-request-forgery": "ssrf",
+        "local-file-inclusion": "path-traversal", "lfi": "path-traversal",
+        "directory-traversal": "path-traversal", "path traversal": "path-traversal",
+        "arbitrary-file-upload": "arbitrary-file-upload",  # keep canonical
+        "unrestricted-file-upload": "arbitrary-file-upload",
+        "file upload": "arbitrary-file-upload",
+        "broken-access-control": "missing-authorization",
+        "broken access control": "missing-authorization",
+        "insecure-direct-object-reference": "idor",
+        "authentication-bypass": "auth-bypass", "authentication bypass": "auth-bypass",
+        "xml-external-entity": "xxe", "xml external entity": "xxe",
+        "server-side-template-injection": "ssti",
+        "cross-site-request-forgery": "csrf",
+        "open redirect": "open-redirect",
+        "time-of-check-time-of-use": "toctou",
+        "race condition": "toctou", "race-condition": "toctou",
+        "insecure-deserialization": "deserialization",
+    }
+    _vc_raw = (llm_notes.get("vuln_class") or "").strip().lower()
+    if _vc_raw and _vc_raw in _VC_NORMALIZE:
+        llm_notes["vuln_class"] = _VC_NORMALIZE[_vc_raw]
+        step(f"  vuln_class normalizado: '{_vc_raw}' → '{llm_notes['vuln_class']}'")
+
     _save_checkpoint(result, llm_notes, "classify")
 
     # ── Stage 4: Patch diff ───────────────────────────────────────────────────
