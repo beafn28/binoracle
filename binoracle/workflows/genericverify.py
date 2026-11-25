@@ -3827,15 +3827,46 @@ def verify_generic_sqli_blind(
         base_params = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "1")
         orig_value = str(base_params.get(sqli_param) or "1")
 
+        # Detect if endpoint likely expects JSON body (not form-encoded).
+        # Heuristic: /api/ prefix, or Content-Type: application/json in custom_headers,
+        # or any param key containing 'json' or 'body'. First we probe with form-encoded;
+        # if that returns 400/415 we switch permanently to json= mode.
+        _use_json_body = bool(
+            (custom_headers or {}).get("Content-Type", "").startswith("application/json")
+            or endpoint_path.startswith("/api")
+            or any("json" in str(k).lower() for k in (base_params or {}))
+        )
+        _json_probed = False  # True once we've auto-detected JSON mode from a 400/415
+
         def timed_send(val, capture_body: bool = False) -> Optional[float]:
+            nonlocal _use_json_body, _json_probed
             payload = dict(base_params)
             payload[sqli_param] = val
             t0 = time.time()
             try:
-                resp = _http_request(m, base_url + endpoint_path, timeout=_SQLI_SLEEP_SECONDS + 15,
-                                 data=payload if m != "GET" else None,
-                                 params=payload if m == "GET" else None,
-                                 headers=custom_headers or None)
+                _hdrs = dict(custom_headers or {})
+                if _use_json_body and m != "GET":
+                    _hdrs.setdefault("Content-Type", "application/json")
+                    resp = _http_request(m, base_url + endpoint_path, timeout=_SQLI_SLEEP_SECONDS + 15,
+                                     json=payload if m != "GET" else None,
+                                     params=payload if m == "GET" else None,
+                                     headers=_hdrs or None)
+                else:
+                    resp = _http_request(m, base_url + endpoint_path, timeout=_SQLI_SLEEP_SECONDS + 15,
+                                     data=payload if m != "GET" else None,
+                                     params=payload if m == "GET" else None,
+                                     headers=_hdrs or None)
+                # Auto-detect JSON mode: if form-encoded returns 400/415, switch permanently
+                if (not _json_probed and not _use_json_body and m != "GET"
+                        and getattr(resp, "status_code", 200) in (400, 415)):
+                    _json_probed = True
+                    _use_json_body = True
+                    _hdrs2 = dict(_hdrs); _hdrs2.setdefault("Content-Type", "application/json")
+                    resp = _http_request(m, base_url + endpoint_path, timeout=_SQLI_SLEEP_SECONDS + 15,
+                                        json=payload,
+                                        headers=_hdrs2 or None)
+                    if getattr(resp, "status_code", 400) < 400:
+                        res.evidence["json_body_mode"] = True
             except Exception:
                 return None
             elapsed = time.time() - t0
@@ -3896,10 +3927,17 @@ def verify_generic_sqli_blind(
             def _bool_send(val: str) -> Optional[int]:
                 payload = dict(base_params); payload[sqli_param] = val
                 try:
-                    r = _http_request(m, base_url + endpoint_path, timeout=15,
-                                      data=payload if m != "GET" else None,
-                                      params=payload if m == "GET" else None,
-                                      headers=custom_headers or None)
+                    _bhdrs = dict(custom_headers or {})
+                    if _use_json_body and m != "GET":
+                        _bhdrs.setdefault("Content-Type", "application/json")
+                        r = _http_request(m, base_url + endpoint_path, timeout=15,
+                                          json=payload,
+                                          headers=_bhdrs or None)
+                    else:
+                        r = _http_request(m, base_url + endpoint_path, timeout=15,
+                                          data=payload if m != "GET" else None,
+                                          params=payload if m == "GET" else None,
+                                          headers=_bhdrs or None)
                     return len(getattr(r, "text", "") or "")
                 except Exception:
                     return None
@@ -7868,6 +7906,24 @@ def verify_generic_multistep(
                         step(f"  extracted {var_name}={ctx[var_name]!r:.50}")
                     else:
                         step(f"  [WARN] extract pattern for '{var_name}' not found in response")
+                elif pattern.startswith("json:"):
+                    # JSON path: "json:data.login_nonce" navigates nested dict
+                    try:
+                        import json as _jq
+                        _jobj = _jq.loads(body_text)
+                        for _jkey in pattern[5:].split("."):
+                            _jobj = _jobj[_jkey] if isinstance(_jobj, dict) else _jobj[int(_jkey)]
+                        ctx[var_name] = str(_jobj)
+                        step(f"  extracted json {var_name}={ctx[var_name]!r:.50}")
+                    except Exception as _je:
+                        step(f"  [WARN] json extract '{pattern}' failed: {_je!r:.50}")
+                elif pattern.startswith("header:"):
+                    _hval = resp.headers.get(pattern[7:].strip(), "")
+                    if _hval:
+                        ctx[var_name] = _hval
+                        step(f"  extracted header {var_name}={ctx[var_name]!r:.50}")
+                    else:
+                        step(f"  [WARN] header '{pattern[7:]}' not found in response")
                 else:
                     ctx[var_name] = pattern  # static value
 
