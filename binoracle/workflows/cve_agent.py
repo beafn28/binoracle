@@ -12989,8 +12989,9 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             # docker-compose.yml. Acepta source_dir aunque el LLM no haya dado endpoint: el
             # verificador escanea el codigo fuente para descubrir rutas (Rack::Static, Sinatra,
             # Flask) de forma autonoma (ver _scan_web_routes en genericverify.py).
-            elif (not plugin_dir and fr.local_path and inv.vuln_class == "path-traversal" and
-                  (notes.get("endpoint") or os.path.isdir(str(fr.local_path)))):
+            elif (not plugin_dir and inv.vuln_class == "path-traversal" and
+                  (fr.local_path or notes.get("dockerfile_body")) and
+                  (notes.get("endpoint") or (fr.local_path and os.path.isdir(str(fr.local_path))))):
                 from .genericverify import verify_generic_path_traversal, _pick_param
                 from .wpverify import _PATH_HINTS
                 import re as _re_pt
@@ -13023,7 +13024,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 path_p = _notes_param("path_param", notes, params, _pick_param, _PATH_HINTS)
                 # Pre-check: detectar capas de validación de ruta en el código antes de Docker
                 _pt_precheck = _static_vuln_precheck(
-                    fr.local_path, "", inv.vuln_class,
+                    fr.local_path or "", "", inv.vuln_class,
                     endpoint=notes.get("endpoint") or "",
                 )
                 if not _pt_precheck["ok"]:
@@ -13053,7 +13054,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                         fr = _fr_pt_older
                             except Exception:
                                 pass
-                _inject_custom_docker_lab(str(fr.local_path), notes, step)
+                _inject_custom_docker_lab(str(fr.local_path) if fr.local_path else "", notes, step)
                 step(("intentando verificacion DINAMICA GENERICA -- fichero canario, el objetivo "
                      "se construye desde su propio Dockerfile/compose..." if es else
                      "attempting GENERIC DYNAMIC verification -- canary file, the target is "
@@ -13067,7 +13068,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 # creó), léelo — evita que _scaffold_llm_lab_for_class lo sobreescriba con
                 # Node.js. Antes del fix del cache (40920f2), el _scaffold_cache enmascaraba
                 # este problema reutilizando un lab exitoso guardado; ahora hay que leerlo.
-                if not _pt_dockerfile:
+                if not _pt_dockerfile and fr.local_path:
                     _local_df_path = os.path.join(str(fr.local_path), "Dockerfile")
                     if os.path.exists(_local_df_path):
                         try:
@@ -13092,7 +13093,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 if not _pt_dockerfile and llm is not None:
                     # Para targets Python (Gradio, Flask, etc.): usar _scaffold_pip_lab que ya
                     # genera el Dockerfile correcto con el puerto y server_name adecuados.
-                    _pip_pkg, _pip_ver = _detect_pip_package_from_source(str(fr.local_path))
+                    _pip_pkg, _pip_ver = _detect_pip_package_from_source(str(fr.local_path) if fr.local_path else "")
                     _scf = None
                     if _pip_pkg:
                         import pathlib as _pathlib
@@ -13113,8 +13114,9 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                 }
                     if _scf is None:
                         _scf = _scaffold_llm_lab_for_class(
-                            llm, str(fr.local_path), notes, inv.cve_id, "path-traversal", step, es,
-                                patch_diff=inv.llm_notes.get("patch_diff_analysis"))
+                            llm, str(fr.local_path) if fr.local_path else "", notes, inv.cve_id,
+                            "path-traversal", step, es,
+                            patch_diff=inv.llm_notes.get("patch_diff_analysis"))
                     if _scf:
                         _pt_dockerfile   = _scf["dockerfile_body"]
                         _pt_extra_files  = _scf["extra_files"]
@@ -13127,7 +13129,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             params = _scf["parameters"]
                         _scf_pt = True
                 wr = verify_generic_path_traversal(
-                    fr.local_path, _pt_ep, notes.get("http_method") or "GET",
+                    str(fr.local_path) if fr.local_path else "", _pt_ep,
+                    notes.get("http_method") or "GET",
                     params, path_param_hint=path_p or "", on_step=step, budget_s=budget_s,
                     url_suffix=_pt_url_suffix, custom_headers=_pt_custom_hdrs,
                     query_suffix=_pt_query_suffix,
@@ -13159,7 +13162,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             params = _fb["parameters"]
                         _lab_cfg_pt = _fb
                         wr_fb = verify_generic_path_traversal(
-                            fr.local_path, _pt_ep, notes.get("http_method") or "GET",
+                            str(fr.local_path) if fr.local_path else "", _pt_ep,
+                            notes.get("http_method") or "GET",
                             params, path_param_hint=path_p or "", on_step=step,
                             budget_s=budget_s,
                             url_suffix=_pt_url_suffix, custom_headers=_pt_custom_hdrs,
@@ -13177,9 +13181,10 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 # WordPress) -- mismo bucle acotado que el SQLi de WordPress: el LLM lee el
                 # cuerpo real del primer intento y solo sugiere un reintento con una pista
                 # concreta en ESA evidencia, nunca a ciegas.
+                _pt_local_path_str = str(fr.local_path) if fr.local_path else ""
                 def _attempt_pt(ep, pr):
                     return verify_generic_path_traversal(
-                        fr.local_path, ep, notes.get("http_method") or "GET", params,
+                        _pt_local_path_str, ep, notes.get("http_method") or "GET", params,
                         path_param_hint=pr or "", on_step=step, budget_s=budget_s,
                         url_suffix=_pt_url_suffix, custom_headers=_pt_custom_hdrs,
                         query_suffix=_pt_query_suffix,
@@ -13198,7 +13203,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                          f"trying alternative endpoint {_ep_extra!r} (PoC used "
                          f"{_pt_ep!r})..."))
                     _wr_extra = verify_generic_path_traversal(
-                        fr.local_path, _ep_extra, notes.get("http_method") or "GET",
+                        _pt_local_path_str, _ep_extra, notes.get("http_method") or "GET",
                         params, path_param_hint=path_p or "", on_step=step, budget_s=budget_s,
                         url_suffix=_pt_url_suffix, custom_headers=_pt_custom_hdrs,
                         query_suffix=_pt_query_suffix,
@@ -13208,7 +13213,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 # Cachear el scaffold SOLO si quedo verificado de verdad (igual que
                 # jwt-bypass/nosql-injection) -- nunca un scaffold roto o sin probar.
                 if _scf_pt and wr.verified:
-                    _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path)),
+                    _scaffold_cache[(_detect_lab_tech_stack(_pt_local_path_str),
                                       "path-traversal")] = {
                         "dockerfile_body": _pt_dockerfile, "extra_files": _pt_extra_files,
                         "endpoint": _pt_ep, "confirm_string": notes.get("confirm_string") or "",
