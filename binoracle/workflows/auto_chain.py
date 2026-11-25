@@ -2763,9 +2763,12 @@ def run_full_chain(
             step("  LLM: no disponible (modo determinístico)")
 
     # ── F30: Ollama availability watchdog ─────────────────────────────────────
-    # Probe Ollama before starting; if unavailable, retry up to 3 times (60s)
+    # Probe Ollama before starting; if unavailable, retry up to 3 times (15s).
+    # Uses 15s (not 60s) because Ollama is local: if it's starting up, 15s is
+    # enough; if it's genuinely down, we fail fast rather than burning budget.
     if llm is None:
         _ollama_base = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+        _f30_wait_s = int(os.environ.get("BINORACLE_OLLAMA_RETRY_S", "15"))
         _ollama_retries = 0
         while _ollama_retries < 3:
             try:
@@ -2781,8 +2784,8 @@ def run_full_chain(
             except Exception:
                 pass
             _ollama_retries += 1
-            step(f"  [F30] Ollama no disponible — reintento {_ollama_retries}/3 en 60s…")
-            time.sleep(60)
+            step(f"  [F30] Ollama no disponible — reintento {_ollama_retries}/3 en {_f30_wait_s}s…")
+            time.sleep(_f30_wait_s)
         if llm is None:
             step("  [F30] Ollama no respondió tras 3 intentos — continuando sin LLM")
 
@@ -4645,12 +4648,28 @@ def process_never_attempted_cves(
     candidates.sort(key=lambda x: -x[0])
     step(f"process_never_attempted_cves: {len(candidates)} CVEs elegibles, procesando hasta {max_cves}")
 
+    # ── Init LLM once for the whole batch (avoids F30 watchdog 60s×3 per CVE) ──
+    _shared_config = None
+    _shared_llm = None
+    try:
+        from ..config import load_config as _lc
+        _shared_config = _lc()
+    except Exception:
+        _shared_config = {}
+    try:
+        from ..llm import make_backend as _mb
+        _shared_llm = _mb(_shared_config)
+        step(f"process_never_attempted_cves: LLM={getattr(_shared_llm, 'model', '?')}")
+    except Exception as _e:
+        step(f"process_never_attempted_cves: LLM no disponible ({_e}) — modo determinístico")
+
     results = []
     for _, cve_id in candidates[:max_cves]:
         step(f"\nprocess_never_attempted_cves: ejecutando {cve_id}...")
         try:
             r = run_full_chain(cve_id, lang=lang, budget_s=budget_s,
-                               on_step=step, save_report=True)
+                               on_step=step, save_report=True,
+                               config=_shared_config, llm=_shared_llm)
             results.append(r)
             # Persist the new verified/attempt status back to the batch report JSON
             _out_path = _os.path.join(reports_dir, f"{cve_id}.json")
