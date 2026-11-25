@@ -6932,6 +6932,18 @@ def verify_wordpress_sqli(
         # Log del cuerpo de control para diagnóstico en caso de fallo
         _ctrl_preview = (base_resp.text or "")[:120].replace('\n', ' ').strip()
         step(f"respuesta control ({base_resp.status_code}, {base_len}B): {_ctrl_preview}")
+        # Detectar respuesta de control vacia: indica que el endpoint no tiene datos y el
+        # diferencial boolean fallara. Registrar en evidence para que el analista sepa que
+        # necesita seed_sql, y continuar de todas formas (error-based/union pueden funcionar
+        # aunque la respuesta de control sea vacia).
+        _ctrl_text_stripped = (base_resp.text or "").strip()
+        _empty_resp = _ctrl_text_stripped in ("", "[]", "{}", "null", "false")
+        if _empty_resp or base_len < 8:
+            step("ADVERTENCIA: respuesta de control vacia o casi vacia — el diferencial boolean "
+                 "probablemente fallara; si el endpoint necesita datos en tablas custom, "
+                 "aniade un campo seed_sql al JSON del CVE con los INSERT necesarios")
+            res.evidence["control_vacio"] = True
+            res.evidence["control_vacio_body"] = _ctrl_text_stripped[:100]
         # Captura visual HTTP: peticion de control para el informe paso a paso
         step("capturando pantalla: peticion de control HTTP (sin inyeccion, respuesta base)...")
         _ctrl_url = boot.base_url + endpoint

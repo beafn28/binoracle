@@ -2906,15 +2906,18 @@ _SQLI_RETRY_SYS = (
     "los otros parametros disponibles (especialmente 'sorting', 'orderby', 'order_by', 'sort') "
     "ya que ORDER BY injection requiere un parametro distinto al WHERE. "
     "IMPORTANTE — si la respuesta de control es vacia ([] o {}) o muy corta (<30 caracteres), "
-    "el problema es que la DB del lab esta vacia: el endpoint necesita datos en la tabla del "
-    "plugin para devolver filas. En este caso, NO sugieras un endpoint distinto a ciegas; en su "
-    "lugar indica 'tiene_sugerencia: false' y en 'razon' explica que se necesita seed data "
-    "(el nombre de la tabla del plugin segun el codigo fuente, si lo conoces). "
+    "o si 'control_vacio' aparece en la evidencia, la DB del lab esta vacia: el endpoint "
+    "necesita datos en la tabla del plugin para devolver filas. En este caso, sugiere el campo "
+    "'seed_sql' con sentencias MySQL que creen la minima data necesaria para que el endpoint "
+    "devuelva al menos una fila: p.ej. INSERT en wp_posts con post_type correcto + wp_postmeta "
+    "con los meta_key/meta_value que el endpoint filtra. Incluye 'tiene_sugerencia: true' con "
+    "'seed_sql_sugerido' como lista de strings SQL. NO sugieras un endpoint distinto a ciegas. "
     "Si la evidencia NO da ninguna pista util, dilo honestamente. "
     + _WP_NONCE_SETUP_RETRY_HINT +
     "Responde SOLO con JSON: {\"tiene_sugerencia\": true/false, \"razon\": \"una frase, citando la "
     "pista concreta de la evidencia\", \"endpoint_alternativo\": \"...\" (opcional, solo si "
-    "tiene_sugerencia), \"parametro_alternativo\": \"...\" (opcional), "
+    "tiene_sugerencia y es distinto del actual), \"parametro_alternativo\": \"...\" (opcional), "
+    "\"seed_sql_sugerido\": [\"INSERT ...\"] (opcional, lista de SQL si control_vacio o no habia datos), "
     + _WP_NONCE_SETUP_RETRY_JSON_FIELDS + "}"
 )
 
@@ -4369,7 +4372,8 @@ def _llm_suggest_retry_from_evidence(llm, system_prompt: str, wr: Any,
            or data.get("pagina_extra_para_nonce") or data.get("pagina_setup_admin_requerida")
            or data.get("parametro_adicional_requerido")
            or data.get("argv_alternativo") or data.get("setup_alternativo")
-           or data.get("payload_index_alternativo") is not None):
+           or data.get("payload_index_alternativo") is not None
+           or data.get("seed_sql_sugerido")):
         return None
     return data
 
@@ -15203,6 +15207,15 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 def _on_sqli_suggestion(sug):
                     _apply_generic_wp_suggestion(sug, extra_nonce_pages,
                                                  extra_setup_trigger_paths, params)
+                    # Si el LLM sugiere seed_sql para resolver control vacio, anadirlo a notes
+                    # para que _attempt_sqli lo recoja en el siguiente intento.
+                    _sug_seed = sug.get("seed_sql_sugerido")
+                    if _sug_seed and isinstance(_sug_seed, list):
+                        notes["seed_sql"] = _sug_seed
+                        step((f"LLM sugiere seed_sql ({len(_sug_seed)} stmt) para poblar la DB "
+                              f"del lab — se aplicara en el proximo intento") if es else
+                             (f"LLM suggests seed_sql ({len(_sug_seed)} stmt) to populate the "
+                              f"lab DB — will be applied on next attempt"))
                     # Si el LLM no propone un endpoint distinto al actual Y hay
                     # endpoints alternativos del grep disponibles, probar el siguiente.
                     # Esto implementa "razonamiento de fallo": el motor entiende que
