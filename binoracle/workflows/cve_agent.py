@@ -11430,22 +11430,24 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             # Confirmado necesario en vivo: CVE-2023-6567 (LearnPress) -- el LLM devuelve
             # github.com/LearnPress/learnpress, fetch_source clona ok con kind="git",
             # nunca llega a wpverify y cae al lab genérico de Python/PostgreSQL.
-            if (fr.kind == "git"
-                    and "wordpress" in inv.description.lower()
-                    and "plugin" in inv.description.lower()):
+            _is_wp_desc = ("wordpress" in inv.description.lower()
+                           and "plugin" in inv.description.lower())
+            if _is_wp_desc and fr.kind in ("git", "drupal-module", "joomla-extension"):
                 from .websource import looks_like_wp_slug as _lwps
-                _url_seg = source.rstrip("/").split("/")[-1] if source and "://" in source else ""
-                if _url_seg and _lwps(_url_seg) and _url_seg != source:
-                    _fr_wp = fetch_source(_url_seg, version=version, on_step=step,
+                _url_seg = (source.rstrip("/").split("/")[-1]
+                            if source and ("://" in source or "/" in source) else source)
+                _slug_candidate = (_url_seg or source or "").strip().lower().split("/")[-1]
+                if _slug_candidate and _slug_candidate != source and _lwps(_slug_candidate):
+                    _fr_wp = fetch_source(_slug_candidate, version=version, on_step=step,
                                           cms_hint="wordpress",
                                           exclusive_upper_bound=version_exclusive)
                     if _fr_wp.ok and _fr_wp.kind == "wordpress-plugin":
-                        step((f"re-ruteado a WordPress.org/{_url_seg} (la URL de GitHub se "
-                              f"clono como 'git' pero el CVE es de un plugin de WordPress)") if es else
-                             (f"re-routed to WordPress.org/{_url_seg} (GitHub URL cloned as "
-                              f"'git' but CVE is a WordPress plugin CVE)"))
+                        step((f"re-ruteado a WordPress.org/{_slug_candidate} "
+                              f"(el CVE es de un plugin WP pero se descargo como {fr.kind})") if es else
+                             (f"re-routed to WordPress.org/{_slug_candidate} "
+                              f"(CVE is a WP plugin but was fetched as {fr.kind})"))
                         fr = _fr_wp
-                        source = _url_seg
+                        source = _slug_candidate
             step(f"codigo obtenido ({fr.kind}, version {fr.resolved_version or '?'})" if es else
                  f"source fetched ({fr.kind}, version {fr.resolved_version or '?'})")
             # Fix 2: patch-diff grounding — para plugins WP con SQLi/LFI/path-traversal,
