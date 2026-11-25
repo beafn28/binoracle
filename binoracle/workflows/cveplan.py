@@ -196,7 +196,9 @@ def classify_cve(text: str) -> Optional[str]:
     # dejan pasar al loop _CLASSES para que el mecanismo mas grave gane.
     _no_command = not ("shell" in t or "subprocess" in t or "metachar" in t or
                        "command injection" in t or "os command" in t)
-    if _no_command and ("path traversal" in t or "directory traversal" in t or
+    _no_ssti = not ("template" in t and ("inject" in t or "render" in t or "jinja" in t or
+                                          "twig" in t or "smarty" in t))
+    if _no_command and _no_ssti and ("path traversal" in t or "directory traversal" in t or
             ("traversal" in t and ("file" in t or "read" in t or "pathname" in t))) and (
             "read" in t or "access" in t or "file" in t):
         return "path-traversal"
