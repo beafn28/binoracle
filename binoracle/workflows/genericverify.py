@@ -4023,6 +4023,10 @@ def verify_generic_sqli_blind(
                     # Comment-terminated variants for MySQL/PostgreSQL
                     (f"{orig_value}' AND 1=1-- -", f"{orig_value}' AND 1=2-- -"),
                     (f"{orig_value} AND 1=1-- -", f"{orig_value} AND 1=2-- -"),
+                    # IN-clause injection: closes the in() paren before the boolean
+                    # e.g. value IN (orig) → value IN (1) OR 1=1-- -)
+                    (f"{orig_value}) OR 1=1-- -", f"{orig_value}) AND 1=2-- -"),
+                    (f"{orig_value}') OR 1=1-- -", f"{orig_value}') AND 1=2-- -"),
                 ]
                 for _true_p, _false_p in _bool_pairs:
                     _true_len = _bool_send(_true_p)
