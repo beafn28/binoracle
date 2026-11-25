@@ -1166,26 +1166,47 @@ def _static_vuln_precheck(local_path: str, plugin_dir: str, vuln_class: str,
     # --- Check 3: LFI/path-traversal — verificar que hay operacion de archivo en el plugin ---
     if vuln_class in ("lfi", "path-traversal"):
         import os as _os_pc
-        # Pattern A: direct call with user input as first arg
-        _UNSAFE_DIRECT = re.compile(
+        # PHP file operations
+        _UNSAFE_PHP = re.compile(
             r'(file_get_contents|readfile|fopen|fread|highlight_file|show_source'
             r'|stream_get_contents|file\s*\(|SplFileObject|include(_once)?|require(_once)?'
             r'|file_put_contents|move_uploaded_file|copy)\s*\(',
             re.IGNORECASE)
-        # Pattern B: user input assigned to variable (tainted source)
+        # Python/Node.js/Ruby/Go file operations
+        _UNSAFE_OTHER = re.compile(
+            r'open\s*\('                                # Python open(), Node fs.open()
+            r'|Path\s*\([^)]*\)\s*\.'                  # pathlib.Path(x).read_text()
+            r'|read_text\s*\(|read_bytes\s*\('         # Path.read_text/read_bytes
+            r'|aiofiles\.open\s*\('                    # aiofiles
+            r'|fs\.read|fs\.createReadStream'          # Node.js fs
+            r'|File\.read\s*\('                        # Ruby
+            r'|ioutil\.ReadFile\s*\('                  # Go
+            r'|os\.Open\s*\('                          # Go
+            r'|send_file\s*\(|send_from_directory\s*\('  # Flask
+            r'|FileResponse\s*\('                      # FastAPI/Django
+            r'|StaticFiles\s*\(',
+            re.IGNORECASE)
+        # User input sources (PHP superglobals + Python/Node request objects)
         _USER_INPUT_RE = re.compile(
-            r'\$_(?:GET|POST|REQUEST|COOKIE|FILES)\s*\[', re.IGNORECASE)
+            r'\$_(?:GET|POST|REQUEST|COOKIE|FILES)\s*\['  # PHP
+            r'|req\.(?:params|query|body)\b'              # Express
+            r'|request\.(?:GET|POST|FILES|args|data)\b'   # Django/Flask
+            r'|self\.get_argument\s*\('                   # Tornado
+            r'|r\.FormValue\s*\(',                        # Go
+            re.IGNORECASE)
         _found_file_op = False
         _found_user_input = False
+        _scanned_files = 0
         try:
             for _root, _, _files in _os_pc.walk(local_path):
                 for _f in _files:
-                    if not _f.endswith((".php", ".js", ".ts", ".py", ".rb")):
+                    if not _f.endswith((".php", ".js", ".ts", ".py", ".rb", ".go")):
                         continue
                     _fpath = _os_pc.path.join(_root, _f)
                     try:
                         _src = open(_fpath, encoding="utf-8", errors="ignore").read()
-                        if _UNSAFE_DIRECT.search(_src):
+                        _scanned_files += 1
+                        if _UNSAFE_PHP.search(_src) or _UNSAFE_OTHER.search(_src):
                             _found_file_op = True
                         if _USER_INPUT_RE.search(_src) or "req.params" in _src or "request.GET" in _src:
                             _found_user_input = True
@@ -1195,6 +1216,9 @@ def _static_vuln_precheck(local_path: str, plugin_dir: str, vuln_class: str,
                     break
         except Exception:
             pass
+        # Skip precheck if no source files were found (non-PHP/Python lang like C, Java, etc.)
+        if _scanned_files == 0:
+            return {"ok": True, "reason": "pre-check LFI omitido: sin ficheros fuente escaneables", "confidence": 0.0}
         # Only block if no file operations exist at all in the code
         if not _found_file_op:
             return {
