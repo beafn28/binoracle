@@ -14538,13 +14538,16 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             # (SLEEP/pg_sleep) -- sin saber el motor real, error-based/UNION-based (sintaxis de
             # MySQL en los verificadores CMS-especificos) no generalizan sin arriesgar falsos
             # positivos/negativos.
-            elif (not plugin_dir and fr.local_path and
+            elif (not plugin_dir and
+                  (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
                   inv.vuln_class in ("sqli", "sql-injection") and notes.get("endpoint")):
                 from .genericverify import verify_generic_sqli_blind, _pick_param
                 from .wpverify import _SQLI_HINTS
                 params = notes.get("parameters") or []
                 sqli_p = _notes_param("sqli_param", notes, params, _pick_param, _SQLI_HINTS)
-                _inject_custom_docker_lab(str(fr.local_path), notes, step)
+                _sqli_local_path_str = str(fr.local_path) if fr.local_path else ""
+                if fr.local_path:
+                    _inject_custom_docker_lab(_sqli_local_path_str, notes, step)
                 step(("intentando verificacion DINAMICA GENERICA -- ciega por tiempo (SLEEP/"
                      "pg_sleep), el objetivo se construye desde su propio Dockerfile/compose..."
                      if es else "attempting GENERIC DYNAMIC verification -- time-based blind "
@@ -14568,7 +14571,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _scaffolded = False
                 if not _sqli_df and llm is not None:
                     _scf = _scaffold_llm_lab(
-                        llm, str(fr.local_path), notes, inv.cve_id, step, es)
+                        llm, _sqli_local_path_str, notes, inv.cve_id, step, es)
                     if _scf:
                         _sqli_df      = _scf["dockerfile_body"]
                         _sqli_ef      = _scf["extra_files"]
@@ -14580,7 +14583,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         sqli_p      = _genlab_param
                         _scaffolded = True
                 wr = verify_generic_sqli_blind(
-                    fr.local_path, _genlab_ep, notes.get("http_method") or "GET",
+                    _sqli_local_path_str, _genlab_ep, notes.get("http_method") or "GET",
                     params, sqli_param_hint=_genlab_param, on_step=step, budget_s=budget_s,
                     sqli_identifier_table_hint=id_table_hint,
                     custom_headers=_sqli_custom_hdrs,
@@ -14613,7 +14616,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             params = _fb["parameters"]
                         _lab_cfg = _fb
                         wr_fb = verify_generic_sqli_blind(
-                            fr.local_path, _genlab_ep, notes.get("http_method") or "GET",
+                            _sqli_local_path_str, _genlab_ep, notes.get("http_method") or "GET",
                             params, sqli_param_hint=_genlab_param, on_step=step,
                             budget_s=budget_s,
                             sqli_identifier_table_hint=id_table_hint,
@@ -14636,7 +14639,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     _ep  = _genlab_ep    if _is_local_lab else ep
                     _pr  = _genlab_param if _is_local_lab else pr
                     return verify_generic_sqli_blind(
-                        fr.local_path, _ep, notes.get("http_method") or "GET", params,
+                        _sqli_local_path_str, _ep, notes.get("http_method") or "GET", params,
                         sqli_param_hint=_pr or "", on_step=step, budget_s=budget_s,
                         sqli_identifier_table_hint=id_table_hint,
                         custom_headers=_sqli_custom_hdrs,
