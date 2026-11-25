@@ -1313,6 +1313,21 @@ class ExploitReasoningEngine:
          "AUTH_GATE_FIRED", 0.88,
          "REST API auth guard fired — provide a valid auth token (cookie or Application Password)"),
 
+        # RESOURCE_NOT_FOUND — plugin-specific "wrong data" guards that gate on a valid object ID
+        (r"\b(?:wrong\s+(?:member\s+)?directory\s+data|invalid\s+directory|"
+         r"directory\s+not\s+found|no\s+(?:form|listing|directory)\s+(?:found|id)|"
+         r"invalid\s+form\s+id|form\s+does\s+not\s+exist)\b",
+         "RESOURCE_NOT_FOUND", 0.85,
+         "plugin requires a valid object ID (directory/form/listing) — seed the DB with a real "
+         "object of that type first, or use the ID of the seeded object in the attack request"),
+
+        # NONCE_MISMATCH — REST cookie check / X-WP-Nonce missing
+        (r"\b(?:rest_cookie_invalid_nonce|rest_cookie_no_token|"
+         r"cookie_invalid_nonce|x-wp-nonce)\b",
+         "NONCE_MISMATCH", 0.90,
+         "WP REST API CSRF token missing — add X-WP-Nonce header; "
+         "engine auto-generates this for /wp-json/ endpoints now"),
+
         # INJECTION_CONTEXT — PostgreSQL error signatures
         (r"\b(?:pg_query|psql\s+error|pdo.*pgsql|ERROR:\s+syntax\s+error\s+at\s+or\s+near|"
          r"unterminated\s+quoted\s+string|invalid\s+input\s+syntax\s+for\s+type)\b",
