@@ -11480,6 +11480,25 @@ def _lab_feedback_for_class(llm, fail_reason: str, lab_config: dict,
     server_code = next(iter(srv_files.values()), "") if srv_files else ""
     srv_file    = next(iter(srv_files.keys()), "server.js") if srv_files else "server.js"
 
+    # Deterministic pre-fix: apply known mechanical fixes for well-understood errors BEFORE
+    # calling the LLM. This avoids a full LLM round-trip for failures we can fix ourselves.
+    _det_server_fixed = _force_bind_all_interfaces(server_code)
+    _df_body = lab_config.get("dockerfile_body", "")
+    _det_df_fixed = _fix_dockerfile_debian_compat(_df_body)
+    # If the bind fix actually changed something AND the error is server_not_responding,
+    # return the fixed lab immediately without calling the LLM
+    _bind_was_wrong = (_det_server_fixed != server_code and "0.0.0.0" in _det_server_fixed
+                       and "0.0.0.0" not in server_code)
+    if _bind_was_wrong and _category in ("server_not_responding", "unknown"):
+        step((f"[deterministic-fix] bind incorrecto detectado en el codigo del servidor — "
+              f"corregido a 0.0.0.0 sin llamar al LLM") if es else
+             (f"[deterministic-fix] incorrect bind detected in server code — "
+              f"fixed to 0.0.0.0 without LLM call"))
+        _fixed_cfg = dict(lab_config)
+        _fixed_cfg["extra_files"] = {srv_file: _det_server_fixed}
+        _fixed_cfg["dockerfile_body"] = _det_df_fixed
+        return _fixed_cfg
+
     # Logs REALES del contenedor (docker logs, capturados en wr.logs cuando build/discover_http
     # fallan) -- la fuente de verdad real sobre por que el servidor no respondio. Sin esto, el
     # LLM solo ve `fail_reason`, que para el caso mas comun ("el objetivo arranco pero ningun
