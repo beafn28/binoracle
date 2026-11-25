@@ -6993,10 +6993,17 @@ def _hueco_code_analysis(inv: "Investigation", fr: Any, llm: Any, step: Any, es:
         if _sp and not notes.get("sqli_param"):
             inv.llm_notes["sqli_param"] = _sp
             changed.append(f"sqli_param={_sp}")
-        # ORDER BY injection flag — feeds into sqli verifier to use ORDER BY payloads
+        # ORDER BY injection flag — feeds into sqli verifier to use ORDER BY payloads.
+        # When injection_type=orderby the taint scanner found the actual HTTP param that
+        # feeds ORDER BY, so OVERRIDE any LLM-guessed sqli_param — the scanner evidence
+        # is more reliable than the LLM's guess (which often picks the first int param).
         if hint.get("sqli_via_orderby") is True or _inj_type == "orderby":
             inv.llm_notes["sqli_via_orderby"] = True
             changed.append("via_orderby=true")
+            if _sp and notes.get("sqli_param") != _sp:
+                inv.llm_notes["sqli_param"] = _sp
+                notes["sqli_param"] = _sp
+                changed.append(f"sqli_param_override={_sp}")
         _tech = (hint.get("sqli_technique") or "").strip()
         if _tech and not notes.get("sqli_technique"):
             inv.llm_notes["sqli_technique"] = _tech
