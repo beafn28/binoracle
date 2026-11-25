@@ -10189,3 +10189,119 @@ def verify_generic_missing_authorization(
     finally:
         step("desmontando el laboratorio (missing-authorization)...")
         lab.teardown()
+
+
+def verify_generic_user_enumeration(
+    source_dir: str,
+    endpoint: str,
+    http_method: str = "POST",
+    probe_param: str = "email",
+    confirm_string: str = "",
+    on_step: Optional[Callable[[str], None]] = None,
+    budget_s: float = 600.0,
+    dockerfile_body: str = "", extra_files: Optional[dict] = None,
+    setup_commands: Optional[List[str]] = None,
+) -> WpVerifyResult:
+    """Verifica User/Email Enumeration via diferencia de respuesta.
+
+    Estrategia:
+    1. Prueba probe_param con una cuenta que EXISTE (admin@example.com / admin).
+    2. Prueba probe_param con una cuenta que NO existe (noeexiste_xyz_binoracle@binoracle.test).
+    3. Si las respuestas difieren (cuerpo O status) → enumeration confirmed.
+    4. Si confirm_string está en la respuesta de cuenta existente pero NO en la de cuenta
+       no existente → verified=True.
+    """
+    import secrets as _sec
+
+    step = on_step or (lambda _m: None)
+    res = WpVerifyResult()
+    if not _docker_daemon_ok():
+        res.available = False
+        res.detail = "sin daemon Docker alcanzable"
+        res.limitations.append("verificacion dinamica NO intentada: sin daemon Docker")
+        return res
+
+    _KNOWN_USERS = ["admin@example.com", "admin", "test@test.com", "user@example.com"]
+    _NONEXIST_USER = f"binoracle_noexiste_{_sec.token_hex(4)}@binoracle.test"
+    _probe_param = probe_param or "email"
+
+    try:
+        from .wpverify import _DockerLab
+        lab = _DockerLab(source_dir, dockerfile_body or None,
+                         extra_files=extra_files or {},
+                         setup_commands=setup_commands or [], on_step=step)
+        with lab.running() as boot:
+            import requests as _rq
+
+            base = boot.base_url.rstrip("/")
+            ep = endpoint if endpoint.startswith("/") else "/" + endpoint
+            url = base + ep
+            m = http_method.upper()
+
+            def _probe(value: str) -> tuple:
+                try:
+                    kw: dict = {}
+                    if m == "POST":
+                        kw = {"data": {_probe_param: value}, "timeout": 10}
+                    else:
+                        kw = {"params": {_probe_param: value}, "timeout": 10}
+                    r = getattr(_rq, m.lower())(url, **kw)
+                    return r.status_code, r.text
+                except Exception as _ex:
+                    return -1, str(_ex)
+
+            # Probe existing accounts
+            existing_sc, existing_body = None, None
+            for user in _KNOWN_USERS:
+                sc, body = _probe(user)
+                if sc != -1:
+                    existing_sc, existing_body = sc, body
+                    step(f"user-enum: probe existente '{user}' → {sc} ({len(body)} bytes)")
+                    break
+
+            if existing_sc is None:
+                res.detail = "user-enumeration: no se pudo obtener respuesta para cuentas conocidas"
+                return res
+
+            # Probe non-existing account
+            nonexist_sc, nonexist_body = _probe(_NONEXIST_USER)
+            step(f"user-enum: probe no-existente '{_NONEXIST_USER}' → {nonexist_sc} ({len(nonexist_body)} bytes)")
+
+            res.evidence["existing_status"] = existing_sc
+            res.evidence["nonexist_status"] = nonexist_sc
+            res.evidence["existing_body_len"] = len(existing_body)
+            res.evidence["nonexist_body_len"] = len(nonexist_body)
+
+            # Check confirm_string in existing response
+            if confirm_string and confirm_string in existing_body:
+                if confirm_string not in nonexist_body:
+                    res.verified = True
+                    res.ok = True
+                    res.detail = (f"user-enumeration VERIFICADO: confirm_string "
+                                  f"'{confirm_string[:40]}' aparece para cuenta existente "
+                                  f"pero NO para cuenta inexistente")
+                    res.evidence["confirm_found"] = True
+                    return res
+
+            # Check status code difference
+            if existing_sc != nonexist_sc and existing_sc != -1 and nonexist_sc != -1:
+                res.ok = True
+                res.detail = (f"user-enumeration probable: status diferente "
+                              f"({existing_sc} para existente vs {nonexist_sc} para no-existente)")
+                res.evidence["status_difference"] = True
+                return res
+
+            # Check body length difference (>50 chars)
+            if abs(len(existing_body) - len(nonexist_body)) > 50:
+                res.ok = True
+                res.detail = (f"user-enumeration probable: longitud de respuesta diferente "
+                              f"({len(existing_body)} vs {len(nonexist_body)} bytes)")
+                res.evidence["body_length_difference"] = abs(len(existing_body) - len(nonexist_body))
+                return res
+
+            res.detail = "user-enumeration: respuestas identicas — no se pudo confirmar enumeracion"
+            return res
+
+    except Exception as e:
+        res.detail = f"error inesperado en verify_generic_user_enumeration: {e}"
+        return res
