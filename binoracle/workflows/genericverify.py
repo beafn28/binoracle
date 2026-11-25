@@ -3905,18 +3905,27 @@ def verify_generic_sqli_blind(
                     return None
 
             _ctrl_len = _bool_send(orig_value)
-            if _ctrl_len is not None and _ctrl_len > 10:
+            if _ctrl_len is not None and _ctrl_len > 5:
+                # Adaptive threshold: 5% of control response or minimum 8B for small responses.
+                _bool_threshold = max(8, int(_ctrl_len * 0.05))
                 _bool_pairs = [
                     (f"{orig_value} AND 1=1", f"{orig_value} AND 1=2"),
                     (f"{orig_value}' AND '1'='1", f"{orig_value}' AND '1'='2"),
+                    (f"{orig_value}\" AND \"1\"=\"1", f"{orig_value}\" AND \"1\"=\"2"),
                     (f"{orig_value} OR 1=1", f"{orig_value} OR 1=2"),
+                    (f"{orig_value}' OR '1'='1", f"{orig_value}' OR '1'='2"),
+                    # Numeric contexts where the injection has no leading quote
+                    (f"{orig_value}) AND (1=1", f"{orig_value}) AND (1=2"),
+                    # Comment-terminated variants for MySQL/PostgreSQL
+                    (f"{orig_value}' AND 1=1-- -", f"{orig_value}' AND 1=2-- -"),
+                    (f"{orig_value} AND 1=1-- -", f"{orig_value} AND 1=2-- -"),
                 ]
                 for _true_p, _false_p in _bool_pairs:
                     _true_len = _bool_send(_true_p)
                     _false_len = _bool_send(_false_p)
                     if (_true_len is not None and _false_len is not None
-                            and abs(_true_len - _false_len) > 20
-                            and abs(_true_len - _ctrl_len) < 50):
+                            and abs(_true_len - _false_len) >= _bool_threshold
+                            and abs(_true_len - _ctrl_len) < max(100, _ctrl_len // 2)):
                         res.verified = True
                         res.ok = True
                         res.confidence = "probable"
@@ -6705,43 +6714,71 @@ def verify_generic_cors_misconfig(
 
         # Candidates: LLM-provided endpoint + common fallbacks
         candidates = [endpoint] if endpoint else []
-        for ep in ["/api/", "/api/users", "/api/users?pageSize=1", "/"]:
+        for ep in ["/api/", "/api/users", "/api/users?pageSize=1", "/api/auth/local",
+                   "/api/content-manager/collection-types", "/"]:
             if ep not in candidates:
                 candidates.append(ep)
 
         tried = []
         found = False
         result_data: dict = {}
+        # Try multiple Origin values: random subdomain, null, trusted-subdomain bypass
+        _origin_candidates = [cors_token, "null", f"https://evil.{cors_token.split('//')[1]}"]
         for ep in candidates:
             if found:
                 break
             url = base_url + ep
-            try:
-                r = _http_request(m, url, timeout=15,
-                                  headers={"Origin": cors_token, **(custom_headers or {})})
-            except Exception as e:
-                tried.append({"endpoint": ep, "error": str(e)})
-                continue
-            resp_body = (getattr(r, "content", b"") or b"").decode("utf-8", errors="replace")
-            hdrs = {k.lower(): v for k, v in (getattr(r, "headers", {}) or {}).items()}
-            acao = hdrs.get("access-control-allow-origin", "")
-            acac = hdrs.get("access-control-allow-credentials", "").strip().lower()
-            reflected = cors_token in acao or acao.strip() == cors_token.strip()
-            credentials_true = acac == "true"
-            # confirm_string del lab scaffoldeado: señal secundaria de que el endpoint
-            # devuelve datos sensibles (la reflexion Origin es la prueba principal).
-            confirm_found = bool(confirm_string and confirm_string in resp_body)
-            tried.append({"endpoint": ep, "acao": acao, "acac": acac,
-                          "reflejado": reflected, "credentials": credentials_true,
-                          "confirm_found": confirm_found, "status": r.status_code})
-            step(f"  {ep} → ACAO: {acao!r}, ACAC: {acac!r}"
-                 + (f", confirm_string={confirm_found}" if confirm_string else ""))
-            if reflected:
-                found = True
-                result_data = {"endpoint": ep, "acao": acao, "acac": acac,
-                               "reflejado": reflected, "credentials": credentials_true,
-                               "confirm_found": confirm_found,
-                               "resp_body_preview": resp_body[:300]}
+            for _test_origin in _origin_candidates:
+                try:
+                    r = _http_request(m, url, timeout=15,
+                                      headers={"Origin": _test_origin, **(custom_headers or {})})
+                except Exception as e:
+                    tried.append({"endpoint": ep, "origin": _test_origin, "error": str(e)})
+                    continue
+                resp_body = (getattr(r, "content", b"") or b"").decode("utf-8", errors="replace")
+                hdrs = {k.lower(): v for k, v in (getattr(r, "headers", {}) or {}).items()}
+                acao = hdrs.get("access-control-allow-origin", "")
+                acac = hdrs.get("access-control-allow-credentials", "").strip().lower()
+                reflected = (_test_origin in acao or acao.strip() == _test_origin.strip()
+                             or (_test_origin == "null" and acao.lower() == "null"))
+                credentials_true = acac == "true"
+                confirm_found = bool(confirm_string and confirm_string in resp_body)
+                tried.append({"endpoint": ep, "origin": _test_origin, "acao": acao, "acac": acac,
+                              "reflejado": reflected, "credentials": credentials_true,
+                              "confirm_found": confirm_found, "status": r.status_code})
+                step(f"  {ep} [Origin={_test_origin!r}] → ACAO: {acao!r}, ACAC: {acac!r}")
+                if reflected:
+                    found = True
+                    result_data = {"endpoint": ep, "origin": _test_origin, "acao": acao, "acac": acac,
+                                   "reflejado": reflected, "credentials": credentials_true,
+                                   "confirm_found": confirm_found,
+                                   "resp_body_preview": resp_body[:300]}
+                    break
+            # Also try OPTIONS preflight — some CORS only triggers on preflight
+            if not found:
+                try:
+                    r_opt = _http_request("OPTIONS", url, timeout=15,
+                                          headers={"Origin": cors_token,
+                                                   "Access-Control-Request-Method": m,
+                                                   **(custom_headers or {})})
+                    hdrs_opt = {k.lower(): v for k, v in (getattr(r_opt, "headers", {}) or {}).items()}
+                    acao_opt = hdrs_opt.get("access-control-allow-origin", "")
+                    acac_opt = hdrs_opt.get("access-control-allow-credentials", "").strip().lower()
+                    if cors_token in acao_opt:
+                        found = True
+                        result_data = {"endpoint": ep, "origin": cors_token, "acao": acao_opt,
+                                       "acac": acac_opt, "reflejado": True,
+                                       "credentials": acac_opt == "true",
+                                       "confirm_found": False, "resp_body_preview": "",
+                                       "via_options_preflight": True}
+                        tried.append({"endpoint": ep, "method": "OPTIONS", "acao": acao_opt,
+                                     "acac": acac_opt, "reflejado": True})
+                        step(f"  {ep} [OPTIONS preflight] → ACAO: {acao_opt!r} — CORS reflection via preflight!")
+                except Exception:
+                    pass
+            if found:
+                break
+        # (loop-local try/except removed — now inline per-origin above)
 
         res.evidence["intentos"] = tried
         if found:
