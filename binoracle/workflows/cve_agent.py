@@ -13223,7 +13223,14 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 # Cuando el analista provee dockerfile_body, conoce el runtime: no asumir PHP.
                 _target_tech = (inv.tech or "").lower()
                 _analyst_has_dockerfile = bool(notes.get("dockerfile_body"))
-                _is_php_target = (not _analyst_has_dockerfile and
+                # Detectar tech desde la descripcion o fuente cuando inv.tech no esta set
+                _tech_clues = _target_tech or (inv.description or "").lower()
+                _NON_PHP_TECH = ("python", "node.js", "nodejs", "ruby", "go ", "golang",
+                                 "aiohttp", "flask", "django", "fastapi", "express",
+                                 "audiobookshelf", "etherpad", "rust", "elixir", "java ",
+                                 "spring", ".net", "tomcat")
+                _is_non_php = any(t in _tech_clues for t in _NON_PHP_TECH)
+                _is_php_target = (not _analyst_has_dockerfile and not _is_non_php and
                                   (not _target_tech or any(
                                       t in _target_tech for t in
                                       ("php", "wordpress", "drupal", "joomla", "laravel"))))
