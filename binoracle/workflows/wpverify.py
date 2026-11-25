@@ -6389,6 +6389,41 @@ def verify_wordpress_sqli(
         except Exception:
             pass
         _plugin_tables = _detect_plugin_tables(plugin_source_dir)
+        # Lazy-create tables: some plugins only run dbDelta() on the first HTTP request to
+        # their endpoint (not on activation). If we try to seed BEFORE the first real request,
+        # the tables don't exist yet. Strategy: if the initial control response is empty AND
+        # no plugin tables were found by static analysis, fire the endpoint once to trigger
+        # dbDelta, then re-scan MySQL for newly created tables.
+        if (not _plugin_tables and
+                (base_len <= 10 or _ctrl_body in ("[]", "null", "{}", "0", "false", "")
+                 or _ctrl_has_empty_data)):
+            try:
+                step("tablas no detectadas + respuesta vacia: disparando endpoint para activar "
+                     "creacion lazy de tablas (dbDelta on first request)...")
+                send(orig_value)  # trigger dbDelta side-effect
+            except Exception:
+                pass
+            # Re-scan MySQL for tables that now exist
+            if slug:
+                _slug_clean_lazy = re.sub(r'[^a-z0-9]', '', slug.lower())
+                _lazy_tables_raw = lab.exec_mysql(
+                    f"SELECT table_name FROM information_schema.tables "
+                    f"WHERE table_schema=DATABASE() AND table_name LIKE 'wp_%' "
+                    f"AND table_name NOT IN "
+                    f"('wp_posts','wp_postmeta','wp_terms','wp_term_taxonomy',"
+                    f"'wp_term_relationships','wp_options','wp_users','wp_usermeta',"
+                    f"'wp_comments','wp_commentmeta','wp_links') "
+                    f"ORDER BY table_name;",
+                    boot.db_pw) or ""
+                _lazy_tables = [
+                    t.strip().lstrip('wp_').strip()
+                    for t in _lazy_tables_raw.strip().split('\n')
+                    if t.strip() and not t.strip().startswith('table_name')
+                ]
+                if _lazy_tables:
+                    _plugin_tables = _lazy_tables
+                    step(f"tablas lazy-creadas detectadas post-request: {_lazy_tables[:5]}")
+
         _needs_seed = (base_len <= 10
                        or _ctrl_body in ("[]", "null", "{}", "0", "false", "")
                        or _ctrl_has_empty_data

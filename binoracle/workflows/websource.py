@@ -4766,15 +4766,17 @@ def find_web_routes(local_path: str, tech: str = "auto", max_routes: int = 40) -
                 _re.IGNORECASE),
         ]
 
-    elif _tech in ("python", "django", "flask", "fastapi"):
+    elif _tech in ("python", "django", "flask", "fastapi", "gradio"):
         _extensions = (".py",)
         _patterns = [
             # Flask: @app.route('/path', methods=['GET'])
             _re.compile(r'@\w+\.route\s*\(\s*[\'"]([^\'"]+)[\'"](?:[^)]*methods\s*=\s*\[([^\]]+)\])?', _re.IGNORECASE),
             # FastAPI: @app.get('/path'), @router.post('/path')
             _re.compile(r'@\w+\.(get|post|put|patch|delete)\s*\(\s*[\'"]([^\'"]+)[\'"]', _re.IGNORECASE),
-            # Django url/path: path('api/users/', view)
-            _re.compile(r'(?:path|re_path|url)\s*\(\s*r?[\'"]([^\'"]+)[\'"]', _re.IGNORECASE),
+            # Django url/path in urlpatterns list context
+            _re.compile(r'\burlpatterns\b[^=\n]*=.*?(?:path|re_path|url)\s*\(\s*r?[\'"]([^\'"]+)[\'"]', _re.IGNORECASE | _re.DOTALL),
+            # Gradio: gr.Interface / gr.Blocks with share=True or server_name
+            _re.compile(r'gr\.(?:Interface|Blocks|Route)\s*\(', _re.IGNORECASE),
         ]
 
     elif _tech in ("php", "laravel", "symfony"):
@@ -4876,6 +4878,15 @@ def find_web_routes(local_path: str, tech: str = "auto", max_routes: int = 40) -
                     # Normalize to start with /
                     if not _path.startswith("/"):
                         _path = "/" + _path
+                    # FastAPI/Starlette: extract APIRouter(prefix=...) from this file
+                    # and prepend it to routes found in this file so the effective path is correct
+                    if _tech in ("python", "fastapi"):
+                        _prefix_m = _re.search(
+                            r'APIRouter\s*\([^)]*prefix\s*=\s*[\'"]([^\'"]+)[\'"]', _content, _re.IGNORECASE)
+                        if _prefix_m:
+                            _pfx = _prefix_m.group(1).rstrip("/")
+                            if _pfx and not _path.startswith(_pfx):
+                                _path = _pfx + _path
                     _key = (_method, _path)
                     if _key in _seen:
                         continue
