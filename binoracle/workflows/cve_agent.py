@@ -2845,7 +2845,10 @@ class _PartialSignalAccumulator:
 _SQLI_RETRY_EVIDENCE_KEYS = {"endpoint_probado": "endpoint", "parametro_probado": "sqli_param",
                             "respuesta_control_recorte": "respuesta_control_recorte",
                             "diagnostico_scraping_nonce": "nonce_scraping_diagnostico",
-                            "parametros_disponibles": "parametros_disponibles"}
+                            "parametros_disponibles": "parametros_disponibles",
+                            "control_vacio": "control_vacio",
+                            "control_vacio_body": "control_vacio_body",
+                            "seed_sql_ejecutado": "seed_sql_ejecutado"}
 
 # bloqueos de INFRAESTRUCTURA (no de la tecnica en si) que puede encontrar CUALQUIER verificador
 # dinamico de WordPress, no solo SQLi -- un nonce/token sin resolver, o un plugin que no muestra

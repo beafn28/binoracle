@@ -3935,15 +3935,24 @@ def verify_generic_sqli_blind(
                     res.verified = True
                     res.ok = True
                     res.confidence = "confirmed"
-                    res.evidence.update({
+                    # Try to extract MySQL version from XPATH error: ~8.0.46 pattern
+                    _eb_ver_m = re.search(r'~(\d+\.\d+\.\d+)', _eb_body)
+                    _eb_ver = _eb_ver_m.group(1) if _eb_ver_m else None
+                    _eb_ev: dict = {
                         "tecnica": "error-based",
                         "variante_eb": _eb_key,
                         "payload_ganador": _eb_p,
                         "respuesta_cuerpo_recorte": _eb_body[:500],
-                    })
+                    }
+                    if _eb_ver:
+                        _eb_ev["mysql_version_extraida"] = _eb_ver
+                        step(f"VERIFICADO en ruta rapida error-based ({_eb_key}): MySQL {_eb_ver}")
+                    else:
+                        step(f"VERIFICADO en ruta rapida error-based ({_eb_key})!")
+                    res.evidence.update(_eb_ev)
                     res.detail = (f"SQLI ERROR-BASED confirmada (ruta rapida): "
-                                  f"'{sqli_param}={_eb_p!r}' devolvio error de motor SQL")
-                    step(f"VERIFICADO en ruta rapida error-based ({_eb_key})!")
+                                  f"'{sqli_param}={_eb_p!r}' devolvio error de motor SQL"
+                                  + (f" (MySQL {_eb_ver})" if _eb_ver else ""))
                     return res
             except Exception:
                 pass
