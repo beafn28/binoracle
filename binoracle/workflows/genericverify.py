@@ -7070,6 +7070,7 @@ def verify_generic_http_confirm(
     post_data: Optional[dict] = None,
     dockerfile_body: str = "", extra_files: Optional[dict] = None,
     setup_wait_extra_s: float = 0.0,
+    docker_image: str = "",
 ) -> WpVerifyResult:
     """Verificador generico de string de confirmacion en respuesta HTTP.
 
@@ -7113,6 +7114,18 @@ def verify_generic_http_confirm(
 
         m = (http_method or "GET").upper().strip() or "GET"
         hdrs = dict(custom_headers or {})
+
+        # Auto-auth: if no Authorization/Cookie header was supplied and we know the image,
+        # attempt a login using image-specific credentials from app_auth.login_to_app().
+        if docker_image and not any(k.lower() in ("authorization", "cookie") for k in hdrs):
+            try:
+                from binoracle.workflows.app_auth import login_to_app as _login_to_app
+                _auth_hdrs = _login_to_app(base_url, docker_image, on_step=step)
+                if _auth_hdrs:
+                    hdrs.update(_auth_hdrs)
+            except Exception as _ae:
+                step(f"app-auth: error al intentar login automatico — {_ae}")
+
         url = base_url.rstrip("/") + "/" + endpoint.lstrip("/")
         step(f"enviando {m} {endpoint} buscando confirm_string={confirm_string!r}...")
         try:

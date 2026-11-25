@@ -15745,7 +15745,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     _hc_local_path_str, _hc_ep, _hc_method,
                     confirm_string=_hc_confirm, patched_patterns=_hc_patched,
                     on_step=step, budget_s=budget_s, custom_headers=_hc_hdrs,
-                    dockerfile_body=_hc_df, extra_files=_hc_ef)
+                    dockerfile_body=_hc_df, extra_files=_hc_ef,
+                    docker_image=(notes.get("docker_image") or ""))
                 _apply_wpverify_result(inv, wr, es, llm)
             # mismo laboratorio efimero, para XSS/SSTI/XXE/open-redirect/file-upload/CSRF -- ver
             # _apply_wpverify_result() mas abajo, que vuelca el resultado en inv/blockers igual que
