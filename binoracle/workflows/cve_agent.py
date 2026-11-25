@@ -528,7 +528,13 @@ _RESEARCH_SYS = (
     "Para CVEs de GraphQL, usa vuln_class='graphql-bypass' y pon el endpoint real "
     "(p.ej. '/graphql', '/api/graphql', '/admin/api'). "
     "Para CVEs de data-leak por oracle booleano (WHERE clause injection), usa "
-    "vuln_class='boolean-oracle' y pon true_param/false_param en los parameters."
+    "vuln_class='boolean-oracle' y pon true_param/false_param en los parameters. "
+    "Para CVEs de REDOS / algorithmic-complexity: redos_param (nombre del parametro "
+    "que recibe el input que se evalua contra el regex vulnerable, p.ej. 'pattern', 'email', "
+    "'url', 'input'), redos_payload (cadena de entrada que causa backtracking catastrofico, "
+    "p.ej. 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!' para (a+)+ o "
+    "'aaaa@aaaa.aaaa.aaaa.aaaa.aaaa.aaaa.aaaa.aaaa.aaaa.aaaa.X' para email regex; "
+    "deja vacio si no conoces el patron exacto y el verificador usara un default)."
 )
 
 
