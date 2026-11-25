@@ -5994,13 +5994,24 @@ def verify_wordpress_sqli(
             _attack_sess.headers.update({"User-Agent": "Mozilla/5.0 binoracle-lab"})
         # X-WP-Nonce injection for WP REST API endpoints (/wp-json/): REST endpoints
         # check rest_cookie_check_errors which requires a valid X-WP-Nonce header.
-        # Generate via wp eval so it's always correct regardless of page scraping.
-        if (endpoint or "").startswith("/wp-json/") and lab is not None:
-            _r_rest_nonce = lab.wp_cli("eval", "echo wp_create_nonce('wp_rest');", timeout=10)
+        # For authenticated attacks: generate as the subscriber (sub_user) so the nonce
+        # is valid for that user's session. For anonymous attacks: skip (public REST routes
+        # don't require a nonce; nonce injection would only fail silently).
+        if (endpoint or "").startswith("/wp-json/") and lab is not None and not _anon_attack:
+            _sub_id_raw = lab.exec_mysql(
+                f"SELECT ID FROM wp_users WHERE user_login='{boot.sub_user}' LIMIT 1;",
+                boot.db_pw) or ""
+            _sub_id = _sub_id_raw.strip().split("\n")[-1].strip()
+            if _sub_id.isdigit():
+                _eval_nonce = (f"wp_set_current_user({_sub_id}); "
+                               f"echo wp_create_nonce('wp_rest');")
+            else:
+                _eval_nonce = "echo wp_create_nonce('wp_rest');"
+            _r_rest_nonce = lab.wp_cli("eval", _eval_nonce, timeout=10)
             _rest_nonce = (_r_rest_nonce.stdout or "").strip().split("\n")[-1].strip()
             if len(_rest_nonce) >= 8:
                 _attack_sess.headers["X-WP-Nonce"] = _rest_nonce
-                step(f"X-WP-Nonce generado para endpoint REST: {_rest_nonce[:10]}...")
+                step(f"X-WP-Nonce generado para endpoint REST (user={_sub_id}): {_rest_nonce[:10]}...")
             # For anonymous attacks the nonce MUST be for user_id=0: a subscriber nonce does
             # not validate for user 0. Page scraping (done by _auto_resolve_wp_blockers) may
             # have found a subscriber-session nonce — override it with one generated via wp eval
