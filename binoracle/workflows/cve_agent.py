@@ -11279,7 +11279,9 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
         if not _tech_as_hint and source and "/" not in source and "." not in source:
             _known_cms = {"ghost", "strapi", "payload", "craft", "craftcms", "wagtail",
                           "directus", "typo3", "contao", "statamic", "kirby", "modx",
-                          "daptin", "gqlgen", "fiber", "echo", "gin", "cockpit"}
+                          "daptin", "gqlgen", "fiber", "echo", "gin", "cockpit",
+                          "drupal", "joomla", "prestashop", "mattermost", "gitea",
+                          "nextcloud", "magento", "mediawiki", "xwiki", "pimcore"}
             if source.lower() in _known_cms:
                 _tech_as_hint = source.lower()
         _cms_pass = _explicit_cms or (_tech_as_hint if _tech_as_hint not in ("php", "unknown", "") else "")

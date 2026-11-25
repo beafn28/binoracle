@@ -1382,13 +1382,20 @@ def fetch_source(target: str, version: str = "", on_step: Optional[Callable[[str
     # the exact vulnerable version from the official GitHub releases before falling back to
     # a generic git clone (which would pull latest/patched code).
     _GITHUB_CMS_REPOS: dict = {
-        "ghost":    "TryGhost/Ghost",
-        "strapi":   "strapi/strapi",
-        "craft":    "craftcms/cms",
-        "directus": "directus/directus",
-        "wagtail":  "wagtail/wagtail",
-        "keystone": "keystonejs/keystone",
-        "payload":  "payloadcms/payload",
+        "ghost":       "TryGhost/Ghost",
+        "strapi":      "strapi/strapi",
+        "craft":       "craftcms/cms",
+        "directus":    "directus/directus",
+        "wagtail":     "wagtail/wagtail",
+        "keystone":    "keystonejs/keystone",
+        "payload":     "payloadcms/payload",
+        "drupal":      "drupal/drupal",
+        "joomla":      "joomla/joomla-cms",
+        "typo3":       "TYPO3/typo3",
+        "contao":      "contao/contao",
+        "mattermost":  "mattermost/mattermost",
+        "gitea":       "go-gitea/gitea",
+        "nextcloud":   "nextcloud/server",
     }
     if cms_hint in _GITHUB_CMS_REPOS and not target.startswith(("http://", "https://", "git://")):
         step = on_step or (lambda _m: None)

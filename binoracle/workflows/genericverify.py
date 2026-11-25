@@ -309,16 +309,35 @@ def _detect_cms_fingerprint(source_dir: str) -> Optional[str]:
                 return "keystone"
         except (OSError, ValueError, KeyError):
             pass
-    # Craft CMS: composer.json con craftcms/cms
+    # PHP CMS detection via composer.json
     composer_path = os.path.join(source_dir, "composer.json")
     if os.path.isfile(composer_path):
         try:
             with open(composer_path) as f:
                 comp = json.load(f)
-            if "craftcms/cms" in comp.get("require", {}):
+            req = comp.get("require", {})
+            if "craftcms/cms" in req:
                 return "craft"
+            if "drupal/core" in req or "drupal/core-recommended" in req:
+                return "drupal"
+            if "joomla/cms" in req or "joomla/framework" in req:
+                return "joomla"
+            if "typo3/cms-core" in req or "typo3/cms" in req:
+                return "typo3"
+            if "contao/core-bundle" in req:
+                return "contao"
+            if "prestashop/prestashop" in req:
+                return "prestashop"
         except (OSError, ValueError, KeyError):
             pass
+    # Drupal: web/core/lib/Drupal.php or modules/ folder without composer
+    if (os.path.isfile(os.path.join(source_dir, "core", "lib", "Drupal.php")) or
+            os.path.isfile(os.path.join(source_dir, "web", "core", "lib", "Drupal.php"))):
+        return "drupal"
+    # Joomla: includes/defines.php or libraries/joomla
+    if (os.path.isfile(os.path.join(source_dir, "includes", "defines.php")) and
+            os.path.isdir(os.path.join(source_dir, "libraries", "joomla"))):
+        return "joomla"
     # Wagtail / Django CMS: requirements.txt con wagtail o django-cms
     req_path = os.path.join(source_dir, "requirements.txt")
     if os.path.isfile(req_path):
@@ -544,6 +563,78 @@ def _cms_dockerfile_lines(cms: str, source_dir: str,
                   "RUN npm install || npm install --legacy-peer-deps || true",
                   'CMD ["sh", "-c", "npm run dev || npm start || npx keystone dev"]'])
         return ("node:18-alpine", 3000, lines)
+
+    if cms == "drupal":
+        # Drupal 10/11 — official image (PHP 8.2 + Apache + all extensions)
+        # MariaDB bootstrapped inside a single container for lab isolation.
+        _base = _pin_cms_image("drupal:10-apache", pkg_version)
+        lines = (["WORKDIR /var/www/html", "COPY . ."] + proxy +
+                 ["RUN apt-get update -qq && apt-get install -y --no-install-recommends "
+                  "mariadb-server unzip curl && rm -rf /var/lib/apt/lists/*",
+                  # Ensure composer/drush
+                  "RUN which composer || (curl -sS https://getcomposer.org/installer | "
+                  "php -- --install-dir=/usr/local/bin --filename=composer)",
+                  "RUN composer require drush/drush --no-interaction 2>/dev/null || true",
+                  # Bootstrap MariaDB
+                  "RUN mysqld_safe --skip-networking & sleep 4 && "
+                  "mysql -u root -e \"CREATE DATABASE IF NOT EXISTS drupal; "
+                  "GRANT ALL ON drupal.* TO 'drupal'@'localhost' IDENTIFIED BY 'drupalpass';\" && "
+                  "mysqladmin -u root shutdown",
+                  # Minimal settings
+                  "RUN cp sites/default/default.settings.php sites/default/settings.php 2>/dev/null || true",
+                  "RUN chmod 777 sites/default sites/default/settings.php 2>/dev/null || true",
+                  "ENV DRUPAL_DB_URL=mysql://drupal:drupalpass@127.0.0.1/drupal",
+                  'CMD ["sh", "-c", "mysqld_safe --skip-networking=false & sleep 5 && '
+                  'vendor/bin/drush si standard --yes '
+                  '--db-url=$DRUPAL_DB_URL --account-pass=admin 2>/dev/null | tail -3; '
+                  'apache2-foreground"]'])
+        return (_base, 80, lines)
+
+    if cms == "joomla":
+        # Joomla 4/5 — single-container with MariaDB inside
+        _base = _pin_cms_image("php:8.2-apache", pkg_version)
+        lines = (["WORKDIR /var/www/html", "COPY . ."] + proxy +
+                 ["RUN apt-get update -qq && apt-get install -y --no-install-recommends "
+                  "mariadb-server libpng-dev libzip-dev unzip curl libonig-dev "
+                  "libxml2-dev && rm -rf /var/lib/apt/lists/*",
+                  "RUN docker-php-ext-install pdo pdo_mysql zip mbstring xml bcmath",
+                  "RUN curl -sS https://getcomposer.org/installer | php -- "
+                  "--install-dir=/usr/local/bin --filename=composer",
+                  "RUN composer install --no-interaction --prefer-dist 2>/dev/null || true",
+                  "RUN mysqld_safe --skip-networking & sleep 4 && "
+                  "mysql -u root -e \"CREATE DATABASE IF NOT EXISTS joomla; "
+                  "GRANT ALL ON joomla.* TO 'joomla'@'localhost' IDENTIFIED BY 'joomlapass';\" && "
+                  "mysqladmin -u root shutdown",
+                  # Joomla CLI install
+                  "RUN chmod -R 755 /var/www/html && chown -R www-data:www-data /var/www/html",
+                  "ENV JOOMLA_DB_HOST=127.0.0.1 JOOMLA_DB_NAME=joomla "
+                  "JOOMLA_DB_USER=joomla JOOMLA_DB_PASS=joomlapass",
+                  'CMD ["sh", "-c", "mysqld_safe --skip-networking=false & sleep 5 && '
+                  'php installation/joomla.php install --no-interaction '
+                  '--db-type=mysql --db-host=127.0.0.1 --db-name=joomla '
+                  '--db-user=joomla --db-pass=joomlapass --admin-user=admin '
+                  '--admin-pass=admin --admin-email=admin@localhost 2>/dev/null; '
+                  'apache2-foreground"]'])
+        return (_base, 80, lines)
+
+    if cms in ("typo3", "contao", "prestashop"):
+        # Generic PHP CMS fallback with MariaDB
+        _base = "php:8.2-apache"
+        lines = (["WORKDIR /var/www/html", "COPY . ."] + proxy +
+                 ["RUN apt-get update -qq && apt-get install -y --no-install-recommends "
+                  "mariadb-server libpng-dev libzip-dev unzip curl libonig-dev "
+                  "libxml2-dev libgd-dev && rm -rf /var/lib/apt/lists/*",
+                  "RUN docker-php-ext-install pdo pdo_mysql zip gd mbstring xml bcmath",
+                  "RUN curl -sS https://getcomposer.org/installer | php -- "
+                  "--install-dir=/usr/local/bin --filename=composer",
+                  "RUN composer install --no-interaction --prefer-dist 2>/dev/null || true",
+                  "RUN mysqld_safe --skip-networking & sleep 4 && "
+                  "mysql -u root -e \"CREATE DATABASE IF NOT EXISTS app; "
+                  "GRANT ALL ON app.* TO 'app'@'localhost' IDENTIFIED BY 'apppass';\" && "
+                  "mysqladmin -u root shutdown",
+                  'CMD ["sh", "-c", "mysqld_safe --skip-networking=false & sleep 5 && '
+                  'apache2-foreground"]'])
+        return (_base, 80, lines)
 
     return None
 
@@ -1226,11 +1317,17 @@ class _GenericLab:
     # HTTP antes de haber terminado su inicialización (migraciones, primer arranque) lo que
     # genera falsos positivos en discover_http — las peticiones llegan a un app a medio boot.
     _CMS_READY_SIGNALS: dict = {
-        "ghost":   ["Ghost is running in development", "Your site is accessible"],
-        "strapi":  ["Project is fully loaded", "Project started"],
-        "payload": ["Listening on port", "Server started"],
-        "wagtail": ["Starting development server", "Quit the server"],
-        "djangocms": ["Starting development server", "Quit the server"],
+        "ghost":      ["Ghost is running in development", "Your site is accessible"],
+        "strapi":     ["Project is fully loaded", "Project started"],
+        "payload":    ["Listening on port", "Server started"],
+        "wagtail":    ["Starting development server", "Quit the server"],
+        "djangocms":  ["Starting development server", "Quit the server"],
+        "drupal":     ["apache2-foreground", "AH00558: apache2"],
+        "joomla":     ["apache2-foreground", "AH00558: apache2"],
+        "typo3":      ["apache2-foreground", "AH00558: apache2"],
+        "contao":     ["apache2-foreground", "AH00558: apache2"],
+        "prestashop": ["apache2-foreground", "AH00558: apache2"],
+        "craft":      ["apache2-foreground", "AH00558: apache2"],
     }
 
     def discover_http(self, tries: int = 60, delay: float = 3.0,
@@ -1253,8 +1350,9 @@ class _GenericLab:
         """
         import urllib.error
         import urllib.request
-        # CMSs con arranque largo: 90 tries × 3s = 4.5 min máximo
-        heavy_cms = {"ghost", "strapi", "payload"}
+        # CMSs con arranque largo (bootstrap DB incluido): 90 tries × 3s = 4.5 min máximo
+        heavy_cms = {"ghost", "strapi", "payload", "drupal", "joomla", "craft",
+                     "typo3", "contao", "prestashop"}
         if cms and cms.lower() in heavy_cms and tries < 90:
             tries = 90
         ready_signals = self._CMS_READY_SIGNALS.get((cms or "").lower(), [])
