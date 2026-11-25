@@ -3078,11 +3078,24 @@ def run_full_chain(
             _m_wpadmin = _re_26.search(r'(/wp-admin/[a-zA-Z0-9_/.-]+\.php)', _nvd_desc, _re_26.I)
             # generic /api/v1/... REST path
             _m_api = _re_26.search(r'(/api(?:/v\d+)?/[a-zA-Z0-9_/-]{3,})', _nvd_desc)
+            # WP plugin PHP files: mention of "plugin_name/file.php" or "file.php" with leading slash
+            _m_wpphp = _re_26.search(
+                r'\b((?:wp-content/plugins/[a-zA-Z0-9_-]+/[a-zA-Z0-9_/-]+\.php'
+                r'|/?[a-zA-Z0-9_-]+_(?:downloader|handler|upload|download|export|import|ajax)'
+                r'(?:_[a-zA-Z0-9_]+)?\.php))',
+                _nvd_desc, _re_26.I)
+            # explicit .php filename mentioned like "via foo_bar.php"
+            _m_viaphp = _re_26.search(r'\bvia\s+([a-zA-Z0-9_-]+\.php)', _nvd_desc, _re_26.I)
             _ep_from_desc = None
             if _m_wpjson:
                 _ep_from_desc = _m_wpjson.group(1)
             elif _m_wpadmin:
                 _ep_from_desc = _m_wpadmin.group(1)
+            elif _m_wpphp:
+                _raw = _m_wpphp.group(1)
+                _ep_from_desc = _raw if _raw.startswith("/") else f"/{_raw}"
+            elif _m_viaphp:
+                _ep_from_desc = f"/{_m_viaphp.group(1)}"
             elif _m_ajax:
                 _ep_from_desc = "admin-ajax.php"
             elif _m_api:
