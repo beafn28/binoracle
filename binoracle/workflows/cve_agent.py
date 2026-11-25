@@ -7162,23 +7162,48 @@ def _hueco_code_analysis(inv: "Investigation", fr: Any, llm: Any, step: Any, es:
             inv.llm_notes["alt_endpoints"] = [
                 {"endpoint": x.file, "parameters": [x.param]} for x in sinks[1:5]]
 
+    _hueco_t0 = time.time()
+
     def _llm_generic(sys_prompt: str, sink_label: str,
                      snippet: str, extra_ctx: str = "") -> Optional[dict]:
-        """Call LLM with generic HUECO prompt and return parsed JSON or None."""
+        """Call LLM with generic HUECO prompt and return parsed JSON or None.
+        Caps snippet at 3000 chars and enforces a per-call wall time guard of 90s
+        to avoid consuming the full verification budget on large-codebase analysis."""
+        # Snippet size cap: smaller = faster inference, still enough context
+        _snip = snippet[:3000]
         try:
-            raw = llm.chat([
-                Message("system", sys_prompt),
-                Message("user", (
-                    f"CVE: {inv.cve_id}\n"
-                    f"Tecnologia detectada: {tech}\n"
-                    f"Descripcion NVD: {(inv.description or '')[:300]}\n\n"
-                    f"Sumidero detectado por escaner: {sink_label}\n"
-                    f"{extra_ctx}\n\n"
-                    f"=== CODIGO REAL ===\n```\n{snippet[:4000]}\n```\n\n"
-                    f"Extrae datos exactos del exploit en JSON."
-                )),
-            ], json_mode=True)
-            return json.loads(raw)
+            import threading as _threading
+            _result: list = [None]
+            _exc: list = [None]
+
+            def _call():
+                try:
+                    raw = llm.chat([
+                        Message("system", sys_prompt),
+                        Message("user", (
+                            f"CVE: {inv.cve_id}\n"
+                            f"Tecnologia detectada: {tech}\n"
+                            f"Descripcion NVD: {(inv.description or '')[:300]}\n\n"
+                            f"Sumidero detectado por escaner: {sink_label}\n"
+                            f"{extra_ctx}\n\n"
+                            f"=== CODIGO REAL ===\n```\n{_snip}\n```\n\n"
+                            f"Extrae datos exactos del exploit en JSON."
+                        )),
+                    ], json_mode=True)
+                    _result[0] = json.loads(raw)
+                except Exception as _e:
+                    _exc[0] = _e
+
+            _t = _threading.Thread(target=_call, daemon=True)
+            _t.start()
+            _t.join(timeout=90)  # 90s cap per HUECO LLM call
+            if _t.is_alive():
+                step(f"[HUECO] LLM call exceeded 90s timeout — skipping analysis to preserve budget")
+                return None
+            if _exc[0] is not None:
+                step(f"[HUECO] LLM {vc} analysis error: {_exc[0]}")
+                return None
+            return _result[0]
         except Exception as _e:
             step(f"[HUECO] LLM {vc} analysis error: {_e}")
             return None

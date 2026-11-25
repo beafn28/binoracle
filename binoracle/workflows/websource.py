@@ -1908,10 +1908,26 @@ _BLOCKING_NEARBY_RE = re.compile(r"\breturn\s+false\b|\bexit\s*\(|\bdie\s*\(|\bw
 _KNOWN_GLOBAL_FN_TO_SLUG: dict = {
     "WC": "woocommerce",
     "WooCommerce": "woocommerce",
+    "wc_get_product": "woocommerce",
+    "wc_get_order": "woocommerce",
+    "wc_get_orders": "woocommerce",
+    "WC_Order": "woocommerce",
+    "WC_Product": "woocommerce",
     "EDD": "easy-digital-downloads",
+    "edd_get_payment": "easy-digital-downloads",
     "GFFormsModel": "gravityforms",
+    "GFAPI": "gravityforms",
     "bbp_get_version": "bbpress",
     "bp_core_install": "buddypress",
+    "Elementor": "elementor",
+    "elementor_load_plugin_textdomain": "elementor",
+    "TUTOR_VERSION": "tutor-lms",
+    "LearnPress": "learnpress",
+    "LLMS": "lifterlms",
+    "MemberPress": "memberpress",
+    "RCP_Member": "restrict-content-pro",
+    "acf_add_local_field_group": "advanced-custom-fields",
+    "get_field": "advanced-custom-fields",
 }
 _COMPANION_FUNCTION_RE = re.compile(
     r"function_exists\s*\(\s*['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]")
@@ -1993,7 +2009,7 @@ def detect_required_companion_plugins(local_path: str, plugin_dir: str) -> List[
     # de return/exit dentro de las primeras lineas -- comprobacion bloqueante real.
     _fn_block_re = re.compile(
         r"!\s*function_exists\s*\(\s*['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]"
-        r"[^)]*\).*?\{[^}]*?\breturn\b", re.DOTALL)
+        r"[^)]*\).*?\{[^}]*?\b(?:return|die|exit|wp_die)\b", re.DOTALL)
     for m in _fn_block_re.finditer(text):
         fn_name = m.group(1)
         mapped = _KNOWN_GLOBAL_FN_TO_SLUG.get(fn_name)
