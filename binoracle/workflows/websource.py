@@ -4671,6 +4671,109 @@ def fetch_wp_plugin_patch_diff(slug: str, vuln_version: str, fixed_version: str,
     return result
 
 
+def fetch_github_patch_diff(github_url: str, vuln_version: str, fixed_version: str,
+                             timeout: int = 20) -> dict:
+    """Descarga el diff unificado entre la versión vulnerable y la parcheada de un proyecto
+    en GitHub, usando el endpoint público .diff del comparador de GitHub.
+
+    Soporta cualquier lenguaje (PHP, Python, JS, Go, Java, Rust…) y detecta el tipo de fix
+    por los patrones más frecuentes en parches de seguridad.
+
+    Devuelve el mismo esquema que fetch_wp_plugin_patch_diff para ser intercambiable:
+      ok: bool
+      diff_url: str
+      changed_files: [str]
+      vuln_functions: [str]
+      fix_type: str
+      raw_diff_snippet: str
+    """
+    import urllib.request as _ur
+    import urllib.error as _ue
+    import re as _re
+
+    result: dict = {
+        "ok": False,
+        "diff_url": "",
+        "changed_files": [],
+        "vuln_functions": [],
+        "fix_type": "unknown",
+        "raw_diff_snippet": "",
+    }
+
+    if not github_url or not vuln_version or not fixed_version:
+        return result
+    if vuln_version == fixed_version:
+        return result
+
+    # Normalize GitHub URL → owner/repo
+    _m = _re.search(r"github\.com/([^/]+/[^/.\s]+)", github_url.rstrip("/"))
+    if not _m:
+        return result
+    repo_path = _m.group(1)
+
+    # Try both v{ver} and bare {ver} tag formats
+    for _vfmt in (f"v{vuln_version}", vuln_version):
+        for _ffmt in (f"v{fixed_version}", fixed_version):
+            diff_url = f"https://github.com/{repo_path}/compare/{_vfmt}...{_ffmt}.diff"
+            result["diff_url"] = diff_url
+            try:
+                req = _ur.Request(diff_url, headers={"User-Agent": "binoracle/1.0"})
+                with _ur.urlopen(req, timeout=timeout) as resp:
+                    if resp.status != 200:
+                        continue
+                    raw = resp.read(300_000).decode("utf-8", errors="replace")
+                    if raw.strip() and len(raw) >= 50:
+                        result["raw_diff_snippet"] = raw[:2000]
+                        result["ok"] = True
+                        # Extract changed files
+                        changed_files = []
+                        for _fm in _re.finditer(
+                                r'^(?:\+\+\+|---)\s+(?:[ab]/)?(.+?)(?:\s|$)', raw, _re.MULTILINE):
+                            _f = _fm.group(1).strip()
+                            if _f not in changed_files and _f not in ("/dev/null", "b/"):
+                                changed_files.append(_f)
+                        result["changed_files"] = changed_files[:20]
+
+                        # Detect fix type from added lines
+                        added = " ".join(
+                            ln[1:] for ln in raw.splitlines()
+                            if ln.startswith("+") and not ln.startswith("+++")
+                        )
+                        # PHP fixes
+                        if _re.search(r'\$wpdb\s*->\s*prepare\s*\(', added, _re.I):
+                            result["fix_type"] = "prepare"
+                        elif _re.search(r'sanitize_\w+\s*\(|esc_\w+\s*\(', added, _re.I):
+                            result["fix_type"] = "sanitize"
+                        elif _re.search(r'\b(?:intval|absint)\s*\(', added, _re.I):
+                            result["fix_type"] = "intval"
+                        # Python fixes
+                        elif _re.search(r'validate\s*\(|escape\s*\(|sanitize\s*\(', added, _re.I):
+                            result["fix_type"] = "sanitize"
+                        elif _re.search(r'is_safe_url|safe_redirect|validate_redirect', added, _re.I):
+                            result["fix_type"] = "url-validation"
+                        elif _re.search(r'os\.path\.realpath|abspath|normpath', added, _re.I):
+                            result["fix_type"] = "path-normalization"
+                        elif _re.search(r'permission_classes|IsAuthenticated|require_auth', added, _re.I):
+                            result["fix_type"] = "auth-check"
+                        # Generic: added authorization/permission check
+                        elif _re.search(r'check_permission|authorize|is_admin|hasPermission', added, _re.I):
+                            result["fix_type"] = "auth-check"
+
+                        # Extract function names from removed lines containing vulnerability
+                        removed = [ln[1:] for ln in raw.splitlines() if ln.startswith("-") and not ln.startswith("---")]
+                        vuln_fns = []
+                        for ln in removed:
+                            _fn = _re.search(r'(?:def |function |func )\s*(\w+)\s*\(', ln)
+                            if _fn and _fn.group(1) not in vuln_fns:
+                                vuln_fns.append(_fn.group(1))
+                        result["vuln_functions"] = vuln_fns[:10]
+                        return result
+            except (_ue.URLError, OSError):
+                continue
+
+    return result
+
+
 def fetch_wp_rest_routes(base_url: str, session=None, plugin_slug: str = "") -> list:
     """
     Hit /wp-json/ and return routes likely belonging to plugin_slug.

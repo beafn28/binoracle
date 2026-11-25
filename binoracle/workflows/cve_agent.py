@@ -21,6 +21,7 @@ import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field, fields
+from pathlib import Path
 from typing import Any, Callable, List, Optional
 
 _B64_PNG_PREFIX = "data:image/png;base64,"
@@ -10676,7 +10677,70 @@ _SCAFFOLD_SYS_FOR_CLASS = {
 # Cache de scaffolds verificados: (tech, vuln_class) → lab_config dict.
 # Permite reutilizar el Dockerfile/server_code de un lab que funcionó antes
 # como punto de partida para CVEs del mismo stack y clase.
-_scaffold_cache: dict = {}
+class _ScaffoldCache:
+    """Persistent scaffold cache: winning Dockerfile+payload combos survive process restarts.
+    Stored in ~/.binoracle/scaffold_cache.db keyed by (tech_stack, vuln_class).
+    Falls back to in-memory silently on any DB error.
+    """
+    _DB_PATH = Path.home() / ".binoracle" / "scaffold_cache.db"
+
+    def __init__(self) -> None:
+        self._mem: dict = {}
+        self._loaded = False
+
+    def _ensure_loaded(self) -> None:
+        if self._loaded:
+            return
+        self._loaded = True
+        try:
+            self._DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+            import sqlite3 as _sqlite3
+            conn = _sqlite3.connect(str(self._DB_PATH))
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS scaffold "
+                "(tech TEXT, vuln_class TEXT, data_json TEXT, "
+                " PRIMARY KEY(tech, vuln_class))"
+            )
+            conn.commit()
+            for _tech, _vc, _dj in conn.execute(
+                    "SELECT tech, vuln_class, data_json FROM scaffold"):
+                try:
+                    self._mem[(_tech, _vc)] = json.loads(_dj)
+                except Exception:
+                    pass
+            conn.close()
+        except Exception:
+            pass
+
+    def get(self, key: tuple, default=None):
+        self._ensure_loaded()
+        return self._mem.get(key, default)
+
+    def __getitem__(self, key: tuple):
+        self._ensure_loaded()
+        return self._mem[key]
+
+    def __setitem__(self, key: tuple, value: dict) -> None:
+        self._ensure_loaded()
+        self._mem[key] = value
+        try:
+            import sqlite3 as _sqlite3
+            conn = _sqlite3.connect(str(self._DB_PATH))
+            conn.execute(
+                "INSERT OR REPLACE INTO scaffold(tech, vuln_class, data_json) VALUES (?,?,?)",
+                (key[0], key[1], json.dumps(value))
+            )
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
+
+    def __contains__(self, key: tuple) -> bool:
+        self._ensure_loaded()
+        return key in self._mem
+
+
+_scaffold_cache: _ScaffoldCache = _ScaffoldCache()
 
 
 _BIND_HOST_FIX_PATTERNS = [
@@ -11543,23 +11607,21 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             # descargar el diff entre versión vulnerable y parchada de plugins.trac.wordpress.org
             # para confirmar qué funciones PHP cambiaron y qué tipo de fix se aplicó.
             # Solo cuando tenemos plugin WP con versión resuelta y versión afectada conocida.
-            if (fr.kind == "wordpress-plugin" and fr.resolved_version
-                    and inv.vuln_class in ("sqli", "sql-injection", "lfi", "path-traversal")):
-                _vuln_ver_pd = notes.get("affected_version") or notes.get("vuln_version") or ""
-                _fixed_ver_pd = fr.resolved_version or ""
+            _pd_vuln_ver = notes.get("affected_version") or notes.get("vuln_version") or ""
+            _pd_fixed_ver = (fr.resolved_version or notes.get("fixed_version") or "")
+            _pd_vnum = re.search(r'(\d+\.\d+[\.\d]*)', _pd_vuln_ver or "")
+            _pd_vuln_clean = _pd_vnum.group(1) if _pd_vnum else ""
+            if (fr.kind == "wordpress-plugin" and fr.resolved_version and _pd_vuln_clean
+                    and _pd_vuln_clean != _pd_fixed_ver):
                 _slug_pd = (fr.plugin_dir or fr.source or source or "").strip().lower()
-                # affected_version puede ser "≤2.9.5" o "< 3.0" — extraer el número
-                import re as _re_pd
-                _vnum = _re_pd.search(r'(\d+\.\d+[\.\d]*)', _vuln_ver_pd or "")
-                _vuln_ver_clean = _vnum.group(1) if _vnum else ""
-                if _slug_pd and _vuln_ver_clean and _fixed_ver_pd and _vuln_ver_clean != _fixed_ver_pd:
+                if _slug_pd:
                     try:
                         from .websource import fetch_wp_plugin_patch_diff as _fetch_pd
                         step((f"descargando patch diff {_slug_pd} "
-                              f"{_vuln_ver_clean}→{_fixed_ver_pd}...") if es else
+                              f"{_pd_vuln_clean}→{_pd_fixed_ver}...") if es else
                              (f"fetching patch diff {_slug_pd} "
-                              f"{_vuln_ver_clean}→{_fixed_ver_pd}..."))
-                        _pd = _fetch_pd(_slug_pd, _vuln_ver_clean, _fixed_ver_pd)
+                              f"{_pd_vuln_clean}→{_pd_fixed_ver}..."))
+                        _pd = _fetch_pd(_slug_pd, _pd_vuln_clean, _pd_fixed_ver)
                         if _pd.get("ok"):
                             inv.llm_notes["patch_diff_analysis"] = _pd
                             step((f"patch-diff: fix_type={_pd['fix_type']} "
@@ -11570,6 +11632,26 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                   f"files={_pd['changed_files'][:3]}"))
                     except Exception:
                         pass
+            elif (fr.kind == "git" and "github.com" in (fr.source or "").lower()
+                    and _pd_vuln_clean and _pd_fixed_ver and _pd_vuln_clean != _pd_fixed_ver):
+                try:
+                    from .websource import fetch_github_patch_diff as _fetch_gh_pd
+                    _gh_url = fr.source or ""
+                    step((f"descargando patch diff GitHub {_gh_url} "
+                          f"{_pd_vuln_clean}→{_pd_fixed_ver}...") if es else
+                         (f"fetching GitHub patch diff {_gh_url} "
+                          f"{_pd_vuln_clean}→{_pd_fixed_ver}..."))
+                    _pd = _fetch_gh_pd(_gh_url, _pd_vuln_clean, _pd_fixed_ver)
+                    if _pd.get("ok"):
+                        inv.llm_notes["patch_diff_analysis"] = _pd
+                        step((f"patch-diff GitHub: fix_type={_pd['fix_type']} "
+                              f"vuln_functions={_pd['vuln_functions']} "
+                              f"archivos={_pd['changed_files'][:3]}") if es else
+                             (f"GitHub patch-diff: fix_type={_pd['fix_type']} "
+                              f"vuln_functions={_pd['vuln_functions']} "
+                              f"files={_pd['changed_files'][:3]}"))
+                except Exception:
+                    pass
             # Recopilar inteligencia CVE multi-fuente (NVD + Wordfence + Patchstack + GitHub)
             # en paralelo antes de sintetizar el exploit. No bloquea si alguna fuente falla.
             # La intel enriquece los notes (param/endpoint) Y se pasa al synthesizer mas abajo.
@@ -13349,7 +13431,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             # docker-compose.yml -- DELIBERADAMENTE mas debil que el IDOR de WordPress/Drupal/
             # Joomla (no hay sesion autenticada generica posible sin conocer el stack): nunca
             # marca `verified`, solo deja constancia de una diferencia real observada sin login.
-            elif (not plugin_dir and fr.local_path and
+            elif (not plugin_dir and
+                  (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
                   inv.vuln_class == "idor" and notes.get("endpoint")):
                 from .genericverify import verify_generic_idor, _pick_param
                 from .wpverify import _ID_HINTS
@@ -14777,7 +14860,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             # "cualquier entorno": fallback generico de SSRF (ver genericverify.py) para cuando el
             # codigo descargado no es un CMS reconocido pero trae su propio Dockerfile/
             # docker-compose.yml.
-            elif (not plugin_dir and fr.local_path and
+            elif (not plugin_dir and
+                  (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
                   inv.vuln_class == "ssrf" and notes.get("endpoint")):
                 from .genericverify import verify_generic_ssrf, _pick_param
                 from .wpverify import _URL_HINTS
@@ -14900,7 +14984,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             # los bloques anteriores (evita repetir el mismo volcado 6 veces mas). Cada clase trae
             # su propio par Drupal/WordPress, mismo patron 'is_drupal'/'not is_drupal'.
             elif (is_drupal and fr.kind in ("drupal-module", "local-zip", "zip-url") and plugin_dir
-                  and inv.vuln_class == "xss" and notes.get("endpoint")):
+                  and inv.vuln_class in ("xss", "stored-xss") and notes.get("endpoint")):
                 from .drupalverify import verify_drupal_xss, _pick_param
                 from .wpverify import _XSS_HINTS
                 params = notes.get("parameters") or []
@@ -14922,7 +15006,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     technique_label="XSS Drupal")
                 _apply_wpverify_result(inv, wr, es, llm)
             elif (not is_drupal and not is_joomla and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
-                  and inv.vuln_class == "xss"
+                  and inv.vuln_class in ("xss", "stored-xss")
                   and "elementor" in (companion_plugins or [])
                   and not notes.get("endpoint")):
                 # XSS via Elementor widget: el plugin actúa como addon de Elementor.
@@ -14941,7 +15025,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     vuln_max_version=notes.get("affected_version", ""))
                 _apply_wpverify_result(inv, wr, es, llm)
             elif (not is_drupal and not is_joomla and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
-                  and inv.vuln_class == "xss" and notes.get("endpoint")):
+                  and inv.vuln_class in ("xss", "stored-xss") and notes.get("endpoint")):
                 from .wpverify import verify_wordpress_xss, _pick_param, _XSS_HINTS
                 # XSS hook: escaner deterministico para encontrar el par injection→view.
                 # Se activa cuando (a) el LLM no incluye stored_xss_view_path, O (b) el LLM
@@ -15075,8 +15159,9 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         technique_label="XSS WordPress", on_suggestion=_on_xss_wp_suggestion))
                 _apply_wpverify_result(inv, wr, es, llm)
             # "cualquier entorno": fallback generico de XSS (ver genericverify.py).
-            elif (not plugin_dir and fr.local_path and
-                  inv.vuln_class == "xss" and notes.get("endpoint")):
+            elif (not plugin_dir and
+                  (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
+                  inv.vuln_class in ("xss", "stored-xss") and notes.get("endpoint")):
                 from .genericverify import verify_generic_xss, _pick_param
                 from .wpverify import _XSS_HINTS
                 params = notes.get("parameters") or []
@@ -15155,7 +15240,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     }
                 _apply_wpverify_result(inv, wr, es, llm)
             elif (is_drupal and fr.kind in ("drupal-module", "local-zip", "zip-url") and plugin_dir
-                  and inv.vuln_class == "ssti" and notes.get("endpoint")):
+                  and inv.vuln_class in ("ssti", "code-injection", "format-string") and notes.get("endpoint")):
                 from .drupalverify import verify_drupal_ssti, _pick_param
                 from .wpverify import _XSS_HINTS
                 params = notes.get("parameters") or []
@@ -15177,7 +15262,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     technique_label="SSTI Drupal")
                 _apply_wpverify_result(inv, wr, es, llm)
             elif (not is_drupal and not is_joomla and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
-                  and inv.vuln_class == "ssti" and notes.get("endpoint")):
+                  and inv.vuln_class in ("ssti", "code-injection", "format-string") and notes.get("endpoint")):
                 from .wpverify import verify_wordpress_ssti, _pick_param, _XSS_HINTS
                 params = notes.get("parameters") or []
                 ssti_p = _notes_param("ssti_param", notes, params, _pick_param, _XSS_HINTS)
@@ -15213,7 +15298,9 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             # La condicion acepta source_dir aunque el LLM no haya dado endpoint: el verificador
             # escanea el codigo fuente para descubrir rutas Flask/Sinatra de forma autonoma
             # (ver _scan_web_routes en genericverify.py).
-            elif (not plugin_dir and fr.local_path and inv.vuln_class == "ssti" and
+            elif (not plugin_dir and
+                  (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
+                  inv.vuln_class in ("ssti", "code-injection", "format-string") and
                   (notes.get("endpoint") or os.path.isdir(str(fr.local_path)))):
                 from .genericverify import verify_generic_ssti, _pick_param
                 from .wpverify import _XSS_HINTS
@@ -15301,7 +15388,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     }
                 _apply_wpverify_result(inv, wr, es, llm)
             # PHP Object Injection (unserialize() of user-controlled input)
-            elif (not plugin_dir and fr.local_path and
+            elif (not plugin_dir and
+                  (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
                   inv.vuln_class in ("php-object-injection", "php-deserialization",
                                      "phar-deserialization", "object-injection",
                                      "insecure-deserialization")):
@@ -15415,7 +15503,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _apply_wpverify_result(inv, wr, es, llm)
             # "cualquier entorno": fallback generico de XXE (ver genericverify.py) para cuando el
             # codigo descargado no es un CMS reconocido pero trae su propio Dockerfile/compose.
-            elif (not plugin_dir and fr.local_path and
+            elif (not plugin_dir and
+                  (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
                   inv.vuln_class == "xxe" and notes.get("endpoint")):
                 from .genericverify import verify_generic_xxe, _pick_param
                 from .wpverify import _XML_HINTS
@@ -15784,7 +15873,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             # cuando el codigo descargado no es un CMS reconocido pero trae su propio Dockerfile/
             # docker-compose.yml -- confirma el ALMACENAMIENTO real (grep dentro del contenedor),
             # nunca la ejecucion (eso exigiria conocer la URL publica real, especifica del stack).
-            elif (not plugin_dir and fr.local_path and
+            elif (not plugin_dir and
+                  (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
                   inv.vuln_class in ("file-upload", "arbitrary-file-upload") and notes.get("endpoint")):
                 from .genericverify import verify_generic_file_upload, _pick_param
                 from .wpverify import _FILE_UPLOAD_HINTS
@@ -16008,7 +16098,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         on_suggestion=_on_des_suggestion))
                 _apply_wpverify_result(inv, wr, es, llm)
             # GraphQL auth-bypass: endpoint GraphQL expuesto sin autenticacion (Craft CMS, Ghost, etc.)
-            elif (not plugin_dir and fr.local_path and
+            elif (not plugin_dir and
+                  (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
                   inv.vuln_class in ("graphql-bypass", "graphql-injection", "graphql-auth",
                                      "graphql-authorization", "graphql")):
                 from .genericverify import verify_generic_graphql_bypass
@@ -16084,7 +16175,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     }
                 _apply_wpverify_result(inv, wr, es, llm)
             # Prototype pollution (Node.js deepMerge vulnerable → contaminacion de Object.prototype)
-            elif (not plugin_dir and fr.local_path and
+            elif (not plugin_dir and
+                  (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
                   inv.vuln_class in ("prototype-pollution", "property-injection") and
                   notes.get("endpoint")):
                 from .genericverify import verify_generic_prototype_pollution
@@ -16151,7 +16243,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     }
                 _apply_wpverify_result(inv, wr, es, llm)
             # Boolean oracle / data-leak: diferencia TRUE/FALSE en respuesta filtra datos privados
-            elif (not plugin_dir and fr.local_path and
+            elif (not plugin_dir and
+                  (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
                   inv.vuln_class in ("boolean-oracle", "boolean-injection", "data-leak",
                                      "filter-bypass") and notes.get("endpoint")):
                 from .genericverify import verify_generic_boolean_oracle
@@ -16366,7 +16459,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path)), "jwt-bypass")] = _lab_cfg_jwt
                 _apply_wpverify_result(inv, wr, es, llm)
             # NoSQL injection (MongoDB $ne/$gt operator)
-            elif (not plugin_dir and fr.local_path and
+            elif (not plugin_dir and
+                  (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
                   inv.vuln_class in ("nosql-injection", "nosql", "mongodb-injection",
                                      "nosqli", "mongo-injection", "nosql-auth-bypass")):
                 from .genericverify import verify_generic_nosql_injection
@@ -16420,7 +16514,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path)), "nosql-injection")] = _lab_cfg_nosql
                 _apply_wpverify_result(inv, wr, es, llm)
             # OAuth bypass / OIDC state confusion
-            elif (not plugin_dir and fr.local_path and
+            elif (not plugin_dir and
+                  (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
                   inv.vuln_class in ("oauth-bypass", "oauth", "oidc", "oauth2-bypass",
                                      "oauth-state-confusion", "oauth-token-forgery")):
                 from .genericverify import verify_generic_confirm_string
@@ -16476,7 +16571,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                          "oauth-bypass: confirm_string of authenticated state "
                                          "needed to verify"))
             # Deserialization genérico (node-serialize IIFE / Python pickle)
-            elif (not plugin_dir and fr.local_path and
+            elif (not plugin_dir and
+                  (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
                   inv.vuln_class in ("deserialization", "insecure-deserialization",
                                      "unsafe-deserialization", "object-injection",
                                      "pickle", "yaml-deserialization")):
@@ -16533,7 +16629,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                          "deserialization: confirm_string or RCE endpoint needed "
                                          "to verify — supply in CVE JSON"))
             # Race condition / TOCTOU
-            elif (not plugin_dir and fr.local_path and
+            elif (not plugin_dir and
+                  (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
                   inv.vuln_class in ("race-condition", "toctou", "race",
                                      "time-of-check-time-of-use", "concurrent-request")):
                 from .genericverify import verify_generic_confirm_string
@@ -16589,7 +16686,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                          "race-condition: confirm_string of exploited state "
                                          "needed to verify"))
             # Path confusion / middleware bypass (req.url vs req.path)
-            elif (not plugin_dir and fr.local_path and
+            elif (not plugin_dir and
+                  (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
                   inv.vuln_class in ("path-confusion", "middleware-bypass",
                                      "semicolon-bypass", "path-parameter-bypass",
                                      "path-override")):
@@ -16646,7 +16744,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path)), "path-confusion")] = _lab_cfg_pconf
                 _apply_wpverify_result(inv, wr, es, llm)
             # Business logic (invariant violations, negative transfer, coupon abuse)
-            elif (not plugin_dir and fr.local_path and
+            elif (not plugin_dir and
+                  (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
                   inv.vuln_class in ("business-logic", "logic-flaw", "logic-bypass",
                                      "insufficient-validation", "workflow-bypass",
                                      "quota-bypass")):
@@ -16703,7 +16802,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                          "business-logic: confirm_string of exploited state "
                                          "needed to verify"))
             # CSRF: peticion cross-origin sin token
-            elif (not plugin_dir and fr.local_path and
+            elif (not plugin_dir and
+                  (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
                   inv.vuln_class in ("csrf", "cross-site-request-forgery", "xsrf")):
                 from .genericverify import verify_generic_csrf
                 _csrf_ep     = notes.get("endpoint") or "/api/action"
@@ -16757,7 +16857,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path)), "csrf")] = _lab_cfg_csrf
                 _apply_wpverify_result(inv, wr, es, llm)
             # CRLF injection / HTTP response splitting
-            elif (not plugin_dir and fr.local_path and
+            elif (not plugin_dir and
+                  (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
                   inv.vuln_class in ("crlf-injection", "crlf", "http-response-splitting",
                                      "response-splitting")):
                 from .genericverify import verify_generic_crlf_injection
@@ -16808,7 +16909,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path)), "crlf-injection")] = _lab_cfg_crlf
                 _apply_wpverify_result(inv, wr, es, llm)
             # Multi-step chain (2FA bypass, token-based flows)
-            elif (not plugin_dir and fr.local_path and
+            elif (not plugin_dir and
+                  (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
                   inv.vuln_class in ("2fa-bypass", "two-factor-bypass", "auth-chain",
                                      "multistep", "authentication-bypass")):
                 from .genericverify import verify_generic_multistep
@@ -16867,7 +16969,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path)), "2fa-bypass")] = _lab_cfg_ms
                 _apply_wpverify_result(inv, wr, es, llm)
             # Mass assignment (privileged field injection in registration / profile update)
-            elif (not plugin_dir and fr.local_path and
+            elif (not plugin_dir and
+                  (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
                   inv.vuln_class in ("mass-assignment", "mass_assignment",
                                      "bulk-assignment", "privilege-escalation-mass-assign")):
                 from .genericverify import verify_generic_mass_assignment
