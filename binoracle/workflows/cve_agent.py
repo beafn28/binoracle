@@ -13223,7 +13223,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             # Busca file_get_contents/readfile con input del usuario via AJAX.
             if (not is_drupal and not is_joomla
                     and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
-                    and inv.vuln_class == "lfi" and not notes.get("endpoint") and fr.local_path):
+                    and inv.vuln_class in ("lfi", "path-traversal", "directory-traversal")
+                    and not notes.get("endpoint") and fr.local_path):
                 from .websource import find_all_ajax_actions, find_ajax_action_for_param
                 _LFI_PATH_CANDIDATES = ["file", "path", "source", "template", "url",
                                         "filename", "filepath", "dir", "include", "page"]
@@ -13250,7 +13251,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             # wp-config.php) y escalada a RCE via log poisoning (ver verify_wordpress_lfi).
             elif (not is_drupal and not is_joomla
                   and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
-                  and inv.vuln_class == "lfi" and notes.get("endpoint")):
+                  and inv.vuln_class in ("lfi", "path-traversal", "directory-traversal")
+                  and notes.get("endpoint")):
                 from .wpverify import verify_wordpress_lfi, _pick_param, _PATH_HINTS
                 params = notes.get("parameters") or []
                 path_p = _notes_param("path_param", notes, params, _pick_param, _PATH_HINTS)
