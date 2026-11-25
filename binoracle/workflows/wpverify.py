@@ -7320,10 +7320,17 @@ def verify_wordpress_sqli(
             # Se usa max(0.5, 5% del base) para ser sensible incluso a diferencias de 1 byte.
             threshold = max(0.5, 0.05 * base_len) if base_len < 100 else max(20, 0.05 * base_len)
             differs = (rt.status_code != rf.status_code) or (abs(lt - lf) > threshold)
-            matches_base = abs(lt - base_len) <= threshold
+            # Anclar al baseline: al menos UNO de los dos debe ser cercano al control.
+            # Para pares AND: TRUE ≈ control, FALSE < control.
+            # Para pares OR: FALSE ≈ control, TRUE >> control (devuelve todos los rows).
+            # Solo verificar TRUE ≈ control filtraba validamente pares OR con tablas llenas.
+            true_near_base = abs(lt - base_len) <= threshold
+            false_near_base = abs(lf - base_len) <= threshold
+            matches_base = true_near_base or false_near_base
             bool_tried.append({"true": true_p, "false": false_p, "status_true": rt.status_code,
                                "status_false": rf.status_code, "len_true": lt, "len_false": lf,
-                               "difiere": differs, "true_coincide_con_base": matches_base,
+                               "difiere": differs, "true_coincide_con_base": true_near_base,
+                               "false_coincide_con_base": false_near_base,
                                "respuesta_true_recorte": (rt.text or "")[:300]})
             if differs and matches_base:
                 consistent_diffs += 1

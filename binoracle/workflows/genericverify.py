@@ -4031,9 +4031,17 @@ def verify_generic_sqli_blind(
                 for _true_p, _false_p in _bool_pairs:
                     _true_len = _bool_send(_true_p)
                     _false_len = _bool_send(_false_p)
+                    # Accept pair if:
+                    # 1. Differential is large enough (TRUE and FALSE diverge)
+                    # 2. At least ONE of them is close to the baseline (anchors to real behavior):
+                    #    - AND pairs: TRUE ≈ control, FALSE < control
+                    #    - OR  pairs: FALSE ≈ control, TRUE > control (all rows returned)
+                    _base_tol = max(100, _ctrl_len // 2)
+                    _true_near_base = abs(_true_len - _ctrl_len) < _base_tol if _true_len is not None else False
+                    _false_near_base = abs(_false_len - _ctrl_len) < _base_tol if _false_len is not None else False
                     if (_true_len is not None and _false_len is not None
                             and abs(_true_len - _false_len) >= _bool_threshold
-                            and abs(_true_len - _ctrl_len) < max(100, _ctrl_len // 2)):
+                            and (_true_near_base or _false_near_base)):
                         res.verified = True
                         res.ok = True
                         res.confidence = "probable"
