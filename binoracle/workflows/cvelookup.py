@@ -79,6 +79,40 @@ def _classify_ref(url: str) -> ExploitRef:
     return ExploitRef(url=url, source="otro")
 
 
+_PROLIFIC_POC_OWNERS = [
+    "RandomRobbieBF",   # prolific WP CVE PoC author — not always indexed by nomi-sec
+    "d0rb",             # another frequent WP PoC contributor
+]
+
+
+def check_well_known_poc_repos(cve_id: str, timeout: float = 5.0) -> List[ExploitRef]:
+    """Checks well-known CVE PoC contributor repos directly on GitHub.
+
+    nomi-sec/PoC-in-GitHub only indexes community-submitted entries.
+    Prolific PoC authors sometimes publish repos that nomi-sec hasn't
+    indexed yet.  This function probes each known owner via a HEAD
+    request (no auth needed for public repos).
+    """
+    cid = (cve_id or "").upper().strip()
+    if not re.fullmatch(r"CVE-\d{4}-\d{4,}", cid):
+        return []
+    refs = []
+    for owner in _PROLIFIC_POC_OWNERS:
+        url = f"https://github.com/{owner}/{cid}"
+        try:
+            req = urllib.request.Request(
+                url,
+                headers={"User-Agent": "binoracle/1.0"},
+                method="HEAD",
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                if r.status == 200:
+                    refs.append(ExploitRef(url=url, source="github"))
+        except Exception:
+            pass
+    return refs
+
+
 def search_github_poc(cve_id: str, timeout: float = 6.0) -> List[ExploitRef]:
     """Consulta la base curada de PoCs en GitHub (nomi-sec/PoC-in-GitHub) para la CVE. Devuelve las
     referencias de repos con PoC (vacio si no hay o sin internet). Es una senal directa de exploit
@@ -306,12 +340,10 @@ def fetch_cve(cve_id: str, timeout: float = 20.0, enrich: bool = True) -> CVEInf
         # Intento fallback: buscar PoC en GitHub/nomi-sec aunque NVD no tenga la CVE aún.
         # Cubre CVEs recientes (< 7 días) que tienen PoC público pero NVD aún no los indexó.
         if enrich:
-            for r in search_github_poc(cid):
-                if r.url:
-                    info.exploit_refs.append(r)
-                    info.has_public_exploit = True
-            for r in search_searchsploit(cid):
-                if r.url:
+            seen_fb: set = set()
+            for r in search_github_poc(cid) + check_well_known_poc_repos(cid) + search_searchsploit(cid):
+                if r.url and r.url not in seen_fb:
+                    seen_fb.add(r.url)
                     info.exploit_refs.append(r)
                     info.has_public_exploit = True
             if info.has_public_exploit:
@@ -352,7 +384,7 @@ def fetch_cve(cve_id: str, timeout: float = 20.0, enrich: bool = True) -> CVEInf
     # (2) crawling complementario: PoCs en GitHub (nomi-sec) + Exploit-DB (searchsploit si esta)
     if enrich:
         seen = {r.url for r in info.exploit_refs}
-        for r in (search_github_poc(cid) + search_searchsploit(cid)):
+        for r in (search_github_poc(cid) + check_well_known_poc_repos(cid) + search_searchsploit(cid)):
             if r.url and r.url not in seen:
                 seen.add(r.url)
                 info.exploit_refs.append(r)
