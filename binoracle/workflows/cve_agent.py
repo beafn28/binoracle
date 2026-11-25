@@ -11250,6 +11250,16 @@ def _scaffold_llm_lab_for_class(llm, source_dir: str, notes: dict, cve_id: str,
             tech = "php"
         # Otherwise keep nodejs as default
 
+    # Scan routes from non-WP source code — gives LLM concrete endpoint candidates
+    # so it doesn't have to guess (which causes 404 errors in the feedback loop)
+    _known_routes: list = []
+    if source_dir and not any(x in (tech or "") for x in ("php", "wordpress")):
+        try:
+            from .websource import find_web_routes as _find_web_routes
+            _known_routes = _find_web_routes(source_dir, tech=tech, max_routes=20)
+        except Exception:
+            pass
+
     prompt = (
         f"CVE: {cve_id}\nClase de vulnerabilidad: {vuln_class}\nStack: {tech}\n"
         f"Endpoint conocido: {endpoint}\nconfirm_string: {confirm}\n"
@@ -11258,6 +11268,16 @@ def _scaffold_llm_lab_for_class(llm, source_dir: str, notes: dict, cve_id: str,
         prompt += f"Version vulnerable: {_affected_ver}\n"
     if _target_binary:
         prompt += f"Componente/binario afectado: {_target_binary}\n"
+    if _known_routes:
+        # Only include routes that look like API/app paths (not static assets)
+        _api_routes = [r for r in _known_routes
+                       if not any(x in r["path"] for x in (".css", ".js", ".png", ".ico", "/static"))][:12]
+        if _api_routes:
+            _route_lines = "\n".join(
+                f"  {r['method']} {r['path']}  ({r['file']}:{r['line']})"
+                for r in _api_routes)
+            prompt += (f"\nRUTAS REALES EN EL CODIGO FUENTE (usa una de estas como endpoint):\n"
+                       f"{_route_lines}\n")
     if snippet:
         prompt += f"\nCodigo vulnerable (replica este patron):\n```\n{snippet[:2500]}\n```\n"
     else:

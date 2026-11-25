@@ -4573,6 +4573,158 @@ def find_file_upload_handlers(local_path: str) -> list:
     return results
 
 
+# ── Generic route scanner (non-WP frameworks) ─────────────────────────────────
+
+def find_web_routes(local_path: str, tech: str = "auto", max_routes: int = 40) -> list:
+    """Scan source tree for HTTP route declarations across major web frameworks.
+
+    Supports Express/Fastify/Koa (JS), Flask/Django/FastAPI (Python),
+    Laravel (PHP), Rails (Ruby). Returns a list of dicts:
+      { "method": "GET"|"POST"|..., "path": "/api/...", "file": "...", "line": N }
+
+    This feeds the LLM as "known routes" so it can propose a correct endpoint
+    instead of guessing — reducing 404 errors in the feedback loop.
+    """
+    import os as _os
+    import re as _re
+
+    if not local_path or not _os.path.isdir(local_path):
+        return []
+
+    _tech = (tech or "auto").lower()
+    results: list = []
+
+    # Heuristic tech detection from file extensions if "auto"
+    if _tech == "auto":
+        _exts: dict = {}
+        for _root, _dirs, _files in _os.walk(local_path):
+            _dirs[:] = [d for d in _dirs if d not in ("node_modules", ".git", "__pycache__", "vendor")]
+            for _fn in _files:
+                _ext = _fn.rsplit(".", 1)[-1].lower() if "." in _fn else ""
+                _exts[_ext] = _exts.get(_ext, 0) + 1
+        if _exts.get("py", 0) > _exts.get("js", 0):
+            _tech = "python"
+        elif _exts.get("php", 0) > 0:
+            _tech = "php"
+        elif _exts.get("rb", 0) > 0:
+            _tech = "ruby"
+        else:
+            _tech = "nodejs"
+
+    # Route patterns by tech
+    _patterns: list = []
+    _extensions: list = []
+
+    if _tech in ("nodejs", "js", "javascript", "typescript", "express", "fastify", "koa"):
+        _extensions = (".js", ".ts", ".mjs", ".cjs")
+        _patterns = [
+            # Express / Fastify / Koa: app/router/server.get('/path', ...)
+            _re.compile(
+                r'(?:app|router|server|fastify|koa)\s*\.\s*(get|post|put|patch|delete|all)\s*\(\s*[\'"`]([^\'"`]+)[\'"`]',
+                _re.IGNORECASE),
+            # Express Router.route('/path').get(...)
+            _re.compile(
+                r'route\s*\(\s*[\'"`]([^\'"`]+)[\'"`]\s*\)\s*\.\s*(get|post|put|patch|delete)',
+                _re.IGNORECASE),
+        ]
+
+    elif _tech in ("python", "django", "flask", "fastapi"):
+        _extensions = (".py",)
+        _patterns = [
+            # Flask: @app.route('/path', methods=['GET'])
+            _re.compile(r'@\w+\.route\s*\(\s*[\'"]([^\'"]+)[\'"](?:[^)]*methods\s*=\s*\[([^\]]+)\])?', _re.IGNORECASE),
+            # FastAPI: @app.get('/path'), @router.post('/path')
+            _re.compile(r'@\w+\.(get|post|put|patch|delete)\s*\(\s*[\'"]([^\'"]+)[\'"]', _re.IGNORECASE),
+            # Django url/path: path('api/users/', view)
+            _re.compile(r'(?:path|re_path|url)\s*\(\s*r?[\'"]([^\'"]+)[\'"]', _re.IGNORECASE),
+        ]
+
+    elif _tech in ("php", "laravel", "symfony"):
+        _extensions = (".php",)
+        _patterns = [
+            # Laravel: Route::get('/path', ...)
+            _re.compile(r'Route\s*::\s*(get|post|put|patch|delete|any)\s*\(\s*[\'"]([^\'"]+)[\'"]', _re.IGNORECASE),
+            # Symfony annotations: @Route("/path", methods={"GET"})
+            _re.compile(r'@Route\s*\(\s*[\'"]([^\'"]+)[\'"]', _re.IGNORECASE),
+        ]
+
+    elif _tech in ("ruby", "rails"):
+        _extensions = (".rb",)
+        _patterns = [
+            # Rails routes.rb: get '/path', to: 'controller#action'
+            _re.compile(r'^\s*(get|post|put|patch|delete|resources?)\s+[\'"]([^\'"]+)[\'"]', _re.IGNORECASE | _re.MULTILINE),
+        ]
+
+    if not _patterns:
+        return []
+
+    _seen: set = set()
+    for _root, _dirs, _files in _os.walk(local_path):
+        _dirs[:] = [d for d in _dirs if d not in ("node_modules", ".git", "__pycache__", "vendor", "dist", "build")]
+        for _fname in _files:
+            if not _fname.endswith(_extensions):
+                continue
+            _fpath = _os.path.join(_root, _fname)
+            _rel = _os.path.relpath(_fpath, local_path)
+            try:
+                with open(_fpath, "r", encoding="utf-8", errors="replace") as _fh:
+                    _content = _fh.read(100_000)
+            except OSError:
+                continue
+            for _pat in _patterns:
+                for _m in _pat.finditer(_content):
+                    # Different patterns have different group indices
+                    _groups = _m.groups()
+                    _method = "ANY"
+                    _path = ""
+                    _HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "ALL", "ANY", "HEAD", "OPTIONS"}
+
+                    def _clean_method(s: str) -> str:
+                        # Strip quotes and take first method if comma-separated
+                        s = s.strip().strip("'\"").split(",")[0].strip().upper()
+                        return s if s in _HTTP_METHODS else "ANY"
+
+                    if len(_groups) == 2:
+                        g0 = (_groups[0] or "").strip()
+                        g1 = (_groups[1] or "").strip()
+                        g0_up = g0.strip("'\"").upper()
+                        g1_up = g1.strip("'\"").split(",")[0].strip().upper()
+                        # Express: (method, path) where group[0] is a method verb
+                        if g0_up in _HTTP_METHODS and g0_up not in ("ANY", "ALL"):
+                            _method = g0_up
+                            _path = g1
+                        # Flask route: (path, methods_list)
+                        elif g1_up in _HTTP_METHODS:
+                            _method = g1_up
+                            _path = g0
+                        # FastAPI: (method, path) where group 1 has the actual path
+                        elif g0_up in _HTTP_METHODS:
+                            _method = g0_up
+                            _path = g1
+                        else:
+                            _path = g0
+                    elif len(_groups) == 1:
+                        _path = (_groups[0] or "").strip()
+
+                    _path = _path.strip()
+                    if not _path or len(_path) > 200:
+                        continue
+                    # Normalize to start with /
+                    if not _path.startswith("/"):
+                        _path = "/" + _path
+                    _key = (_method, _path)
+                    if _key in _seen:
+                        continue
+                    _seen.add(_key)
+                    # Compute line number
+                    _line = _content[:_m.start()].count("\n") + 1
+                    results.append({"method": _method, "path": _path, "file": _rel, "line": _line})
+                    if len(results) >= max_routes:
+                        return results
+
+    return results
+
+
 # ── Fix 2: Patch-diff grounding ───────────────────────────────────────────────
 
 def _infer_fix_type_and_class(added_lines: str, lang: str = "generic") -> tuple:
