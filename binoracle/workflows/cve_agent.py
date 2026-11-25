@@ -2898,6 +2898,11 @@ _SQLI_RETRY_SYS = (
     "endpoint acepta: si el parametro_probado no produce diferencial, considera sugerir uno de "
     "los otros parametros disponibles (especialmente 'sorting', 'orderby', 'order_by', 'sort') "
     "ya que ORDER BY injection requiere un parametro distinto al WHERE. "
+    "IMPORTANTE — si la respuesta de control es vacia ([] o {}) o muy corta (<30 caracteres), "
+    "el problema es que la DB del lab esta vacia: el endpoint necesita datos en la tabla del "
+    "plugin para devolver filas. En este caso, NO sugieras un endpoint distinto a ciegas; en su "
+    "lugar indica 'tiene_sugerencia: false' y en 'razon' explica que se necesita seed data "
+    "(el nombre de la tabla del plugin segun el codigo fuente, si lo conoces). "
     "Si la evidencia NO da ninguna pista util, dilo honestamente. "
     + _WP_NONCE_SETUP_RETRY_HINT +
     "Responde SOLO con JSON: {\"tiene_sugerencia\": true/false, \"razon\": \"una frase, citando la "
