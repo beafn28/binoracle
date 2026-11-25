@@ -2747,6 +2747,12 @@ def verify_generic_path_traversal(
             sample = next((t.get("respuesta_cuerpo_recorte") for t in tried_all
                           if t.get("respuesta_cuerpo_recorte")), "")
             res.evidence["respuesta_muestra_primer_intento"] = sample
+            # Expose a compact summary of endpoints+status_codes tried so the LLM retry
+            # can avoid suggesting what was already attempted and reason about what wasn't.
+            res.evidence["endpoints_probados"] = list({
+                (t.get("endpoint", "") or "") + " → " + str(t.get("status", t.get("status_code_respuesta", "")))
+                for t in tried_all if t.get("endpoint") or t.get("status") or t.get("status_code_respuesta")
+            })[:20]
             res.detail = (f"se probaron {len(tried_all)} variantes de ruta en {len(candidates)} "
                           f"candidato(s) y ninguna devolvio el secreto plantado -- el traversal "
                           f"no se confirmo (puede necesitar otra profundidad/codificacion, o el "
