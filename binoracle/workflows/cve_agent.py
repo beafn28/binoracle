@@ -15617,10 +15617,14 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         _fu_best = _fu_hits[0]
                         _fu_action = _fu_best.get("action", "")
                         if _fu_action:
-                            _fu_ep = f"/wp-admin/admin-ajax.php?action={_fu_action}"
-                            step((f"[file-upload] endpoint detectado via AJAX scanner: {_fu_ep} "
+                            # REST API entries have is_rest=True and store full path in 'action'
+                            if _fu_best.get("is_rest"):
+                                _fu_ep = _fu_best.get("rest_endpoint", _fu_action)
+                            else:
+                                _fu_ep = f"/wp-admin/admin-ajax.php?action={_fu_action}"
+                            step((f"[file-upload] endpoint detectado via scanner: {_fu_ep} "
                                   f"(nopriv={_fu_best.get('nopriv', False)})") if es else
-                                 (f"[file-upload] endpoint detected via AJAX scanner: {_fu_ep} "
+                                 (f"[file-upload] endpoint detected via scanner: {_fu_ep} "
                                   f"(nopriv={_fu_best.get('nopriv', False)})"))
                             _fu_param = _fu_best.get("file_param", "") or "file"
                             notes = {**notes, "endpoint": _fu_ep, "http_method": "POST",
@@ -15629,7 +15633,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                                   "file_param": _fu_param})
                             # Registrar endpoints alternativos
                             _fu_alts = [
-                                {"endpoint": f"/wp-admin/admin-ajax.php?action={h['action']}", "parameters": []}
+                                {"endpoint": (h.get("rest_endpoint") or
+                                              f"/wp-admin/admin-ajax.php?action={h['action']}"), "parameters": []}
                                 for h in _fu_hits[1:5] if h.get("action")
                             ]
                             if _fu_alts and not notes.get("alt_endpoints"):

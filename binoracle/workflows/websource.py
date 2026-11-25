@@ -4527,6 +4527,49 @@ def find_file_upload_handlers(local_path: str) -> list:
     results = [h for h in handlers.values() if h["has_upload"]]
     # Sort: nopriv+no-auth first (most exploitable), then nopriv, then with auth
     results.sort(key=lambda h: (not h["nopriv"], h["has_auth"]))
+
+    # Also scan for REST API endpoints that handle file uploads
+    # register_rest_route('namespace/v1', '/route', array('callback' => 'fn', 'permission_callback' => ...))
+    _REST_REG = re.compile(
+        r"""register_rest_route\s*\(\s*['"]([^'"]+)['"]\s*,\s*['"]([^'"]+)['"]\s*,\s*"""
+        r"""(?:array\s*\(|(?:\[))[^)]{0,200}['"]callback['"]\s*=>\s*"""
+        r"""(?:array\s*\([^)]{0,80}['\"]([\w\\:]+)['\"]|['\"]([\w\\:]+)['\"])""",
+        re.S)
+    _PERM_PUBLIC = re.compile(
+        r"""permission_callback['\"]\s*=>\s*['"]__return_true['"]""", re.I)
+
+    for fpath, text in all_texts.items():
+        if not (_FILES_USE.search(text) or _UPLOAD_FNS.search(text)):
+            continue
+        for m in _REST_REG.finditer(text):
+            namespace = m.group(1).rstrip("/")
+            route = m.group(2).lstrip("/")
+            callback = m.group(3) or m.group(4) or ""
+            endpoint = f"/wp-json/{namespace}/{route}"
+            # Check if the callback function actually handles file uploads
+            body = _fn_body(text, callback) if callback else ""
+            scope = body if body else text
+            if _FILES_USE.search(scope) or _UPLOAD_FNS.search(scope):
+                # Determine if authentication is required
+                nopriv = bool(_PERM_PUBLIC.search(text[max(0, m.start()-100):m.end()+500]))
+                has_auth = not nopriv
+                file_param = ""
+                km = _FILES_KEY.search(scope)
+                if km:
+                    file_param = km.group(1)
+                results.append({
+                    "action": endpoint,
+                    "handler_fn": callback,
+                    "file": fpath,
+                    "line": text[:m.start()].count("\n") + 1,
+                    "nopriv": nopriv,
+                    "has_upload": True,
+                    "has_auth": has_auth,
+                    "file_param": file_param,
+                    "is_rest": True,
+                    "rest_endpoint": endpoint,
+                })
+
     return results
 
 
