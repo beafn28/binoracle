@@ -2265,6 +2265,21 @@ def cmd_investigate_never_attempted(args, config):
     print(f"\nTotal: {len(results)} CVEs procesados, {verified} verificados")
 
 
+def cmd_reanalyze_failed(args, config):
+    """Re-analyze CVEs that were attempted but failed — feeds real HTTP evidence to the LLM."""
+    from .workflows.auto_chain import reanalyze_failed_cves
+    max_cves  = int(getattr(args, "max_cves", 5) or 5)
+    min_cvss  = float(getattr(args, "min_cvss", 7.0) or 7.0)
+    budget_s  = float(getattr(args, "budget", 400) or 400)
+    lang      = getattr(args, "lang", "es") or "es"
+    reports   = getattr(args, "reports_dir", "binoracle_batch_reports") or "binoracle_batch_reports"
+    results   = reanalyze_failed_cves(
+        max_cves=max_cves, min_cvss=min_cvss, lang=lang,
+        budget_s=budget_s, reports_dir=reports, on_step=print)
+    verified = sum(1 for r in results if r.verified)
+    print(f"\nTotal: {len(results)} CVEs reanalizado, {verified} verificados")
+
+
 def cmd_nvd_watch(args, config):
     """Fully autonomous mode: polls NVD API for new high-severity CVEs and investigates each."""
     import time as _time
@@ -3247,6 +3262,21 @@ def build_parser() -> argparse.ArgumentParser:
     ina.add_argument("--reports-dir", default="binoracle_batch_reports",
                      help="directory containing the batch JSON reports (default binoracle_batch_reports)")
     ina.set_defaults(func=cmd_investigate_never_attempted)
+
+    raf = sub.add_parser("re-analyze-failed",
+                         help="re-analyze CVEs that were attempted but failed — "
+                              "feeds real HTTP evidence to the LLM to repair the hypothesis "
+                              "and re-runs the verifier with the corrected parameters")
+    raf.add_argument("--max-cves", type=int, default=5,
+                     help="maximum CVEs to process in one run (default 5)")
+    raf.add_argument("--min-cvss", type=float, default=7.0,
+                     help="minimum CVSS score to consider (default 7.0)")
+    raf.add_argument("--budget", type=float, default=400,
+                     help="verification budget in seconds per CVE (default 400)")
+    raf.add_argument("--lang", choices=["es", "en"], default="es")
+    raf.add_argument("--reports-dir", default="binoracle_batch_reports",
+                     help="directory containing the batch JSON reports (default binoracle_batch_reports)")
+    raf.set_defaults(func=cmd_reanalyze_failed)
 
     nvdw = sub.add_parser("nvd-watch", help="poll NVD API for new high-severity web CVEs and "
                                             "auto-investigate each — fully autonomous mode: "

@@ -4658,6 +4658,224 @@ def process_never_attempted_cves(
     return results
 
 
+def _build_repair_prompt(
+    cve_id: str, description: str, llm_notes: dict, attempt_evidence: dict
+) -> tuple:
+    """Return (system_prompt, user_message) that ask the LLM to fix a failed hypothesis.
+
+    Diagnoses the dominant failure signal from attempt_evidence so the LLM
+    knows exactly which fields to correct instead of rewriting everything.
+    """
+    ae_str = str(attempt_evidence)
+
+    # Collect all HTTP status codes seen during the attempt
+    statuses: list = []
+    for _k in ("status", "precheck_endpoint_status"):
+        _v = attempt_evidence.get(_k)
+        if _v:
+            try:
+                statuses.append(int(_v))
+            except (TypeError, ValueError):
+                pass
+    for _item in attempt_evidence.get("intentos", []):
+        if isinstance(_item, dict):
+            try:
+                statuses.append(int(_item["status"]))
+            except (KeyError, TypeError, ValueError):
+                pass
+
+    dominant = statuses[0] if statuses else 0
+
+    hints: list = []
+    if dominant == 404:
+        hints.append("HTTP 404: endpoint no existe — corrige 'endpoint'")
+    elif dominant == 400:
+        hints.append("HTTP 400: parámetros incorrectos — corrige 'parameters' o el formato")
+    elif dominant in (401, 403):
+        hints.append(f"HTTP {dominant}: acceso denegado — considera auth_required=true")
+    elif dominant == 301:
+        hints.append("HTTP 301: redirect — prueba un endpoint alternativo")
+    elif dominant == 200:
+        snippets = [
+            str(_i.get("respuesta_recorte") or _i.get("respuesta") or "")[:100]
+            for _i in attempt_evidence.get("intentos", [])
+            if isinstance(_i, dict)
+        ]
+        if snippets and any(s.strip() in ("0", "-1", "") for s in snippets):
+            hints.append(
+                "HTTP 200 body '0'/'-1': acción WP rechazada — corrige 'action' "
+                "en parameters o añade nonce"
+            )
+        elif "marker_presente" in ae_str and "'marker_presente': False" in ae_str:
+            hints.append(
+                "HTTP 200 pero marcador ausente: payload o confirm_string incorrectos — "
+                "corrige 'confirm_string' o el payload de inyección"
+            )
+    if not hints:
+        hints.append("Revisa la evidencia y corrige los campos que sean claramente incorrectos")
+
+    sys_prompt = (
+        "Eres un investigador de explotacion para objetivos autorizados (pentest/research). "
+        "Se te da una hipotesis fallida de un CVE con la evidencia HTTP real del laboratorio. "
+        "Tarea: corregir SOLO los campos incorrectos basandote en la evidencia. "
+        "No cambies el vector de ataque base ni inventes nuevas vulnerabilidades. "
+        "Responde UNICAMENTE con JSON valido que contenga los campos a corregir. "
+        "Campos permitidos: endpoint, http_method, parameters, path_param, sqli_param, "
+        "confirm_string, auth_required, bypass_header, bypass_value, custom_headers, "
+        "sqli_technique, sqli_via_orderby, file_param, ssrf_param, setup_cmds. "
+        "Si un campo esta correcto, no lo incluyas."
+    )
+
+    user_msg = (
+        f"CVE: {cve_id}\n"
+        f"Descripcion: {description}\n\n"
+        "Hipotesis actual:\n"
+        f"- endpoint: {llm_notes.get('endpoint')}\n"
+        f"- http_method: {llm_notes.get('http_method')}\n"
+        f"- parameters: {llm_notes.get('parameters')}\n"
+        f"- path_param: {llm_notes.get('path_param')}\n"
+        f"- sqli_param: {llm_notes.get('sqli_param')}\n"
+        f"- confirm_string: {llm_notes.get('confirm_string')}\n"
+        f"- vuln_class: {llm_notes.get('vuln_class')}\n\n"
+        f"Evidencia de fallo (HTTP real):\n{ae_str[:700]}\n\n"
+        "Diagnostico:\n"
+        + "\n".join(f"- {h}" for h in hints)
+        + "\n\nJSON con solo los campos a corregir:"
+    )
+
+    return sys_prompt, user_msg
+
+
+_REPAIR_SAFE_KEYS = frozenset({
+    "endpoint", "http_method", "parameters", "path_param", "sqli_param",
+    "confirm_string", "auth_required", "bypass_header", "bypass_value",
+    "custom_headers", "sqli_technique", "sqli_via_orderby", "file_param",
+    "ssrf_param", "setup_cmds",
+})
+
+
+def reanalyze_failed_cves(
+    max_cves: int = 5,
+    min_cvss: float = 7.0,
+    lang: str = "es",
+    budget_s: float = 400.0,
+    reports_dir: str = "binoracle_batch_reports",
+    on_step=None,
+) -> List["ChainResult"]:
+    """Re-analyze CVEs that were attempted but failed by using real HTTP evidence.
+
+    For each failed CVE, calls the LLM with the actual attempt_evidence (HTTP
+    status codes, response bodies, tried payloads) to get corrected llm_notes
+    fields.  Writes corrections back to the batch JSON, clears stale evidence,
+    then re-runs run_full_chain so the verifier tests the corrected approach.
+    """
+    import json as _j, os as _os
+    step = on_step or print
+
+    # Init LLM once — reused across all CVEs to avoid repeated backend setup
+    llm = None
+    try:
+        from ..config import load_config as _lc
+        from ..llm import make_backend as _mb
+        llm = _mb(_lc())
+        if not (llm and getattr(llm, "available", lambda: False)()):
+            step("reanalyze_failed_cves: LLM no disponible — sin reparacion LLM")
+            llm = None
+    except Exception as _le:
+        step(f"reanalyze_failed_cves: LLM setup error — {_le}")
+
+    candidates = []
+    for fname in sorted(_os.listdir(reports_dir)):
+        if not fname.endswith(".json"):
+            continue
+        fpath = _os.path.join(reports_dir, fname)
+        try:
+            with open(fpath, encoding="utf-8") as fh:
+                d = _j.load(fh)
+        except Exception:
+            continue
+        if d.get("verified") or not d.get("attempt_evidence"):
+            continue
+        cvss = d.get("cvss_score") or 0.0
+        if float(cvss) < min_cvss:
+            continue
+        candidates.append((float(cvss), d.get("cve_id", fname.replace(".json", "")), fpath))
+
+    candidates.sort(key=lambda x: -x[0])
+    step(
+        f"reanalyze_failed_cves: {len(candidates)} CVEs fallidos elegibles, "
+        f"procesando hasta {max_cves}"
+    )
+
+    results = []
+    for _, cve_id, fpath in candidates[:max_cves]:
+        step(f"\nreanalyze_failed_cves: reparando {cve_id}...")
+        try:
+            with open(fpath, encoding="utf-8") as fh:
+                d = _j.load(fh)
+
+            llm_notes = d.get("llm_notes") or {}
+            attempt_evidence = d.get("attempt_evidence") or {}
+            description = d.get("description", "")
+
+            corrected: dict = {}
+            if llm is not None:
+                try:
+                    from ..llm.base import Message as _Msg
+                    sys_p, usr_p = _build_repair_prompt(
+                        cve_id, description, llm_notes, attempt_evidence
+                    )
+                    step(f"  {cve_id}: LLM reparando hipotesis…")
+                    raw = llm.chat(
+                        [_Msg("system", sys_p), _Msg("user", usr_p)],
+                        json_mode=True,
+                    )
+                    import json as _jj
+                    _parsed = _jj.loads(raw)
+                    if isinstance(_parsed, dict):
+                        corrected = {k: v for k, v in _parsed.items()
+                                     if k in _REPAIR_SAFE_KEYS}
+                    if corrected:
+                        step(f"  {cve_id}: LLM corrige {list(corrected.keys())}")
+                except Exception as _llm_e:
+                    step(f"  {cve_id}: LLM repair error — {_llm_e}")
+
+            # Apply corrections + clear stale evidence so verifier runs fresh
+            if corrected:
+                llm_notes.update(corrected)
+                d["llm_notes"] = llm_notes
+            d["attempt_evidence"] = {}
+            d.pop("dynamic_verify", None)
+            with open(fpath, "w", encoding="utf-8") as fh:
+                _j.dump(d, fh, indent=2, ensure_ascii=False, default=str)
+            step(f"  {cve_id}: JSON actualizado; relanzando chain...")
+
+            r = run_full_chain(
+                cve_id, lang=lang, budget_s=budget_s,
+                on_step=step, save_report=True,
+                hints=corrected if corrected else None,
+            )
+            results.append(r)
+
+            # Persist new run results back to the batch JSON
+            try:
+                with open(fpath, encoding="utf-8") as fh:
+                    _ex = _j.load(fh)
+                _ex["verified"] = r.verified
+                _ex["engine_confidence"] = r.engine_confidence
+                if r.evidence:
+                    _ex["attempt_evidence"] = r.evidence
+                with open(fpath, "w", encoding="utf-8") as fh:
+                    _j.dump(_ex, fh, indent=2, ensure_ascii=False, default=str)
+            except Exception as _se:
+                step(f"  {cve_id}: advertencia al persistir resultado — {_se}")
+
+            step(f"  {cve_id}: {'✓ VERIFICADO' if r.verified else '? completado'}")
+        except Exception as exc:
+            step(f"  {cve_id}: error — {exc}")
+    return results
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 def chain_cli(argv=None):
