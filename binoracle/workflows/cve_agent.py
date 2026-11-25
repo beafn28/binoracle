@@ -13452,7 +13452,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             # Multi-step request chain: when the LLM provides a 'request_chain' list
             # (or the CVE is stored-XSS / CSRF / privilege-escalation that needs
             # create→view or login→elevate→verify patterns), use run_request_chain().
-            elif (not plugin_dir and fr.local_path and
+            elif (not plugin_dir and
+                  (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
                   notes.get("request_chain") and
                   isinstance(notes.get("request_chain"), list)):
                 from .genericverify import run_request_chain
@@ -16246,7 +16247,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             elif (not plugin_dir and
                   (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
                   inv.vuln_class in ("boolean-oracle", "boolean-injection", "data-leak",
-                                     "filter-bypass") and notes.get("endpoint")):
+                                     "filter-bypass", "information-disclosure",
+                                     "sensitive-info-exposure") and notes.get("endpoint")):
                 from .genericverify import verify_generic_boolean_oracle
                 bool_ep = notes.get("endpoint") or "/"
                 bool_method = notes.get("http_method") or "GET"
