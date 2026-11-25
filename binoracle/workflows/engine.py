@@ -1465,6 +1465,30 @@ class ExploitReasoningEngine:
          "Python/Pydantic validation error — the field expects a different type; "
          "send the value as the correct Python/JSON type (int, str, bool, list)"),
 
+        # INJECTION_CONTEXT — Django Q connector injection — when _connector takes a SQL fragment
+        # Django uses _connector as the join operator between Q objects; a crafted value like
+        # 'OR 1=1-- -' is inserted verbatim into the SQL WHERE clause in vulnerable versions.
+        (r'\b(?:_connector.*(?:OR|AND).*[0-9=]|'
+         r'django.*q.*connector|connector.*(?:OR|AND)\s+[0-9])\b',
+         "INJECTION_CONTEXT", 0.65,
+         "Django Q connector injection pattern detected — the _connector value may be "
+         "inserted into SQL; try _connector='OR 1=1-- -' to expand results to all rows"),
+
+        # INJECTION_CONTEXT — Django ORM/Python database errors from SQL injection
+        (r'\b(?:django\.db\.utils\.(Operational|Programming|DataError)Error|'
+         r'ProgrammingError.*syntax\s+error|OperationalError.*no\s+such\s+(?:table|column)|'
+         r'IntegrityError.*constraint|psycopg2\.errors|sqlite3\.(OperationalError|ProgrammingError))\b',
+         "INJECTION_CONTEXT", 0.80,
+         "Django DB error from injection — check the error class: OperationalError=SQL syntax issue, "
+         "ProgrammingError=invalid query structure, DataError=value out of range"),
+
+        # RESOURCE_NOT_FOUND — Django ORM DoesNotExist / no matching rows
+        (r'\b(?:matching\s+query\s+does\s+not\s+exist|DoesNotExist|'
+         r'Model.*matching.*does\s+not\s+exist|get.*returned\s+no\s+object)\b',
+         "RESOURCE_NOT_FOUND", 0.75,
+         "Django ORM DoesNotExist — the resource ID doesn't match any DB record; "
+         "seed the DB with a matching object or use a different ID"),
+
         # MISSING_TABLE — MySQL 'table doesn't exist' in response body (empty DB, plugin not activated)
         # Signals that the endpoint hit a custom plugin table that hasn't been created yet.
         # Fix: add CREATE TABLE + INSERT to seed_sql in the CVE JSON.
@@ -1491,6 +1515,9 @@ class ExploitReasoningEngine:
               "404 Not Found — endpoint or resource does not exist; verify URL path and ID"),
         429: ("AUTH_GATE_FIRED", 0.65,
               "429 Too Many Requests — rate-limited; slow down or rotate session"),
+        422: ("WRONG_PARAM_TYPE", 0.80,
+              "422 Unprocessable Entity — FastAPI/DRF validation error; "
+              "check request body schema and field types"),
         500: ("INJECTION_CONTEXT", 0.60, "500 error — possible injection syntax error; "
               "check debug output for SQL trace"),
     }
