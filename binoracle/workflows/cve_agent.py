@@ -11275,15 +11275,36 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _tech_as_hint = "ruby"
             elif any(w in _desc_lower + _src_lower for w in ("golang", " go ", "go/", "gin-gonic", "echo framework", "fiber framework")):
                 _tech_as_hint = "go"
-        # Si source_url ES el nombre exacto del CMS (sin slashes), también detectarlo
-        if not _tech_as_hint and source and "/" not in source and "." not in source:
+        # Si source_url ES el nombre exacto del CMS (sin slashes), también detectarlo.
+        # También normaliza nombres multi-palabra ("Apache Tomcat" → "tomcat",
+        # "Spring Boot" → "springboot") para que casen con _GITHUB_CMS_REPOS.
+        if not _tech_as_hint and source and "." not in source:
             _known_cms = {"ghost", "strapi", "payload", "craft", "craftcms", "wagtail",
                           "directus", "typo3", "contao", "statamic", "kirby", "modx",
                           "daptin", "gqlgen", "fiber", "echo", "gin", "cockpit",
                           "drupal", "joomla", "prestashop", "mattermost", "gitea",
-                          "nextcloud", "magento", "mediawiki", "xwiki", "pimcore"}
-            if source.lower() in _known_cms:
-                _tech_as_hint = source.lower()
+                          "nextcloud", "magento", "mediawiki", "xwiki", "pimcore",
+                          "tomcat", "jenkins", "spring", "struts", "log4j", "shiro",
+                          "activemq", "springboot", "springsecurity", "rails", "flask",
+                          "django", "fastapi", "symfony", "laravel", "traefik",
+                          "harbor", "grafana", "gitlab", "discourse"}
+            _src_lc = source.lower().replace("-", "").replace("_", "").replace(" ", "")
+            # direct match
+            if _src_lc in _known_cms:
+                _tech_as_hint = _src_lc
+            elif "/" not in source:
+                # Try last word (for "Apache Tomcat" → "tomcat")
+                _last_word = source.lower().split()[-1] if " " in source else ""
+                if _last_word in _known_cms:
+                    _tech_as_hint = _last_word
+                # "Apache XYZ" → remove "apache " prefix
+                _no_prefix = _src_lc
+                for _pfx in ("apache", "spring", "jboss", "adobe"):
+                    if _no_prefix.startswith(_pfx) and len(_no_prefix) > len(_pfx):
+                        _cand = _no_prefix[len(_pfx):]
+                        if _cand in _known_cms:
+                            _tech_as_hint = _cand
+                            break
         _cms_pass = _explicit_cms or (_tech_as_hint if _tech_as_hint not in ("php", "unknown", "") else "")
         fr = fetch_source(source, version=version, on_step=step,
                          cms_hint=_cms_pass,
