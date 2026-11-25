@@ -6536,6 +6536,37 @@ def verify_wordpress_sqli(
                                         pass
                             except Exception as _cpt_exc:
                                 step(f"[WARN] CPT seed fallo: {_cpt_exc!r:.80}")
+                        # Autodetect real orig_value from DB: si la respuesta sigue vacia y orig_value
+                        # es el default "1" o "", probablemente el sqli_param es un ID que no existe
+                        # en la DB con ese valor. Consultar MySQL para obtener el ID real de la primera
+                        # fila sembrada en la tabla mas relevante — y actualizar orig_value + base_params
+                        # para que los payloads booleanos sean contra un registro existente.
+                        if (base_len <= 10 and orig_value in ("", "1")
+                                and any(h in sqli_param.lower()
+                                        for h in ("id", "num", "code", "ref", "key"))):
+                            _id_tables = _plugin_tables[:3] if _plugin_tables else []
+                            _id_found = False
+                            for _id_tbl in _id_tables:
+                                try:
+                                    _id_raw = lab.exec_mysql(
+                                        f"SELECT id FROM wp_{_id_tbl} ORDER BY id LIMIT 1;",
+                                        boot.db_pw) or ""
+                                    _id_val = _id_raw.strip().split('\n')[-1].strip()
+                                    if _id_val.isdigit() and _id_val != "0":
+                                        orig_value = _id_val
+                                        base_params[sqli_param] = orig_value
+                                        base_resp = send(orig_value)
+                                        base_len = len(base_resp.text or "")
+                                        _ctrl_body = (base_resp.text or "").strip()
+                                        step(f"orig_value actualizado a ID real desde DB "
+                                             f"(wp_{_id_tbl}.id={orig_value}): "
+                                             f"{base_len}B -- "
+                                             f"{'diferencial posible' if base_len > 10 else 'sigue vacia'}")
+                                        _id_found = True
+                                        break
+                                except Exception:
+                                    continue
+
                         # Si el seed inflO la respuesta mas de 20x respecto al baseline pre-seed pequeno,
                         # la fila seeded esta disparando codigo adicional que crashea el plugin
                         # (p.ej. WooCommerce, payment gateway no instalado): la injection no podria
