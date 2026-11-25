@@ -4575,6 +4575,113 @@ def find_file_upload_handlers(local_path: str) -> list:
 
 # ── Fix 2: Patch-diff grounding ───────────────────────────────────────────────
 
+def _infer_fix_type_and_class(added_lines: str, lang: str = "generic") -> tuple:
+    """Infer (fix_type, vuln_class_hint) from the added lines of a security patch.
+
+    Reads what the developer ADDED (the fix) and reasons backward to what class
+    of vulnerability was being fixed. This is the most reliable signal available
+    — no keyword tables on descriptions, just the actual remediation code.
+
+    Returns (fix_type: str, vuln_class_hint: str). vuln_class_hint is "" when
+    the patch doesn't match any known remediation pattern.
+    """
+    import re as _re
+
+    a = added_lines
+    I = _re.IGNORECASE
+
+    # SQL injection — prepared statements, escaping
+    if _re.search(r'\$wpdb\s*->\s*prepare\s*\(', a, I):
+        return "prepare", "sqli"
+    if _re.search(r'esc_sql\s*\(', a, I):
+        return "sanitize", "sqli"
+    if _re.search(r'\b(?:intval|absint)\s*\(', a, I):
+        return "intval", "sqli"
+    if _re.search(r'(?:stmt|pdo|prepared)\s*[->=]*\s*(?:prepare|bind_param|execute)\s*\(', a, I):
+        return "prepare", "sqli"
+    if _re.search(r'parameterized|placeholder|\?.*execute|%s.*cursor\.execute', a, I):
+        return "prepare", "sqli"
+
+    # XSS — output escaping
+    if _re.search(r'esc_html\s*\(|esc_attr\s*\(|esc_url\s*\(|wp_kses\s*\(', a, I):
+        return "xss-escape", "xss"
+    if _re.search(r'htmlspecialchars\s*\(|htmlentities\s*\(', a, I):
+        return "xss-escape", "xss"
+    if _re.search(r'DOMPurify\.sanitize|\.textContent\s*=|createTextNode', a, I):
+        return "xss-escape", "stored-xss"
+    if _re.search(r'Content-Security-Policy|X-XSS-Protection', a, I):
+        return "csp-header", "xss"
+
+    # Path traversal / LFI
+    if _re.search(r'realpath\s*\(|WP_PLUGIN_DIR|wp_normalize_path', a, I):
+        return "path-normalization", "path-traversal"
+    if _re.search(r'os\.path\.realpath|os\.path\.abspath|os\.path\.normpath', a, I):
+        return "path-normalization", "path-traversal"
+    if _re.search(r'basename\s*\(|\.\..*strip|remove_traversal|prevent.*traversal', a, I):
+        return "path-normalization", "path-traversal"
+
+    # Command injection — shell escaping
+    if _re.search(r'escapeshellarg\s*\(|escapeshellcmd\s*\(', a, I):
+        return "shell-escape", "command-injection"
+    if _re.search(r'shlex\.quote|subprocess\.run.*shell=False|Popen.*shell=False', a, I):
+        return "shell-escape", "command-injection"
+
+    # SSRF — URL validation
+    if _re.search(r'is_safe_url|safe_redirect|validate_redirect|wp_allowed_protocols', a, I):
+        return "url-validation", "ssrf"
+    if _re.search(r'filter_var.*FILTER_VALIDATE_URL|parse_url.*host|SSRF', a, I):
+        return "url-validation", "ssrf"
+
+    # Missing auth / CSRF / privilege check
+    if _re.search(r'wp_verify_nonce\s*\(|check_admin_referer\s*\(|wp_nonce_field\s*\(', a, I):
+        return "nonce-check", "csrf"
+    if _re.search(r'current_user_can\s*\(|user_can\s*\(|check_ajax_referer\s*\(', a, I):
+        return "auth-check", "missing-authorization"
+    if _re.search(r'permission_classes|IsAuthenticated|require_auth|@login_required', a, I):
+        return "auth-check", "missing-authorization"
+    if _re.search(r'check_permission|authorize|hasPermission|require_once.*auth', a, I):
+        return "auth-check", "missing-authorization"
+    if _re.search(r'verify_nonce|csrf_token|CSRF', a, I):
+        return "csrf-token", "csrf"
+
+    # File upload
+    if _re.search(r'wp_check_filetype\s*\(|check_filetype|mime_content_type\s*\(', a, I):
+        return "filetype-check", "file-upload"
+    if _re.search(r'allowed_file_types|ALLOWED_EXTENSIONS|mimetype.*whitelist', a, I):
+        return "filetype-check", "file-upload"
+
+    # Deserialization
+    if _re.search(r'json_decode\s*\(|JSON\.parse\s*\(', a, I):
+        # Replacing unserialize with json_decode is the canonical PHP deserialization fix
+        return "json-decode", "deserialization"
+    if _re.search(r'pickle\.loads|unserialize\s*\(', a, I):
+        # These patterns in REMOVED lines signal deserialization, but here we check added —
+        # skip false positive; handled by removed-line analysis elsewhere
+        pass
+
+    # XXE
+    if _re.search(r'libxml_disable_entity_loader|LIBXML_NOENT|FEATURE_EXTERNAL_GENERAL_ENTITIES', a, I):
+        return "entity-disable", "xxe"
+
+    # Open redirect
+    if _re.search(r'wp_safe_redirect\s*\(|allowed_redirect_hosts\s*\(', a, I):
+        return "safe-redirect", "open-redirect"
+
+    # Prototype pollution (JS)
+    if _re.search(r'Object\.create\s*\(\s*null|hasOwnProperty|__proto__.*delete', a, I):
+        return "proto-guard", "prototype-pollution"
+
+    # SSTI
+    if _re.search(r'autoescape|Environment.*autoescape|mark_safe.*removed|safe_string', a, I):
+        return "template-autoescape", "ssti"
+
+    # Sanitize generic (last resort — no strong class signal)
+    if _re.search(r'sanitize_\w+\s*\(', a, I):
+        return "sanitize", ""
+
+    return "unknown", ""
+
+
 def fetch_wp_plugin_patch_diff(slug: str, vuln_version: str, fixed_version: str,
                                timeout: int = 20) -> dict:
     """Descarga el diff unificado entre versión vulnerable y parchada de un plugin
@@ -4599,6 +4706,7 @@ def fetch_wp_plugin_patch_diff(slug: str, vuln_version: str, fixed_version: str,
         "changed_files": [],
         "vuln_functions": [],
         "fix_type": "unknown",
+        "vuln_class_hint": "",
         "raw_diff_snippet": "",
     }
 
@@ -4642,14 +4750,9 @@ def fetch_wp_plugin_patch_diff(slug: str, vuln_version: str, fixed_version: str,
 
     # Detectar tipo de fix en líneas "+" (código añadido)
     added = " ".join(ln[1:] for ln in raw.splitlines() if ln.startswith("+") and not ln.startswith("+++"))
-    if _re.search(r'\$wpdb\s*->\s*prepare\s*\(', added, _re.IGNORECASE):
-        result["fix_type"] = "prepare"
-    elif _re.search(r'sanitize_\w+\s*\(', added, _re.IGNORECASE):
-        result["fix_type"] = "sanitize"
-    elif _re.search(r'\b(?:intval|absint)\s*\(', added, _re.IGNORECASE):
-        result["fix_type"] = "intval"
-    elif _re.search(r'esc_sql\s*\(', added, _re.IGNORECASE):
-        result["fix_type"] = "sanitize"
+    _ft, _vch = _infer_fix_type_and_class(added, lang="php")
+    result["fix_type"] = _ft
+    result["vuln_class_hint"] = _vch
 
     # Extraer funciones PHP vulnerables: buscar en líneas "-" (eliminadas) que tenían
     # $wpdb->query/get_results con concatenación de string directa (sin prepare)
@@ -4697,6 +4800,7 @@ def fetch_github_patch_diff(github_url: str, vuln_version: str, fixed_version: s
         "changed_files": [],
         "vuln_functions": [],
         "fix_type": "unknown",
+        "vuln_class_hint": "",
         "raw_diff_snippet": "",
     }
 
@@ -4739,25 +4843,9 @@ def fetch_github_patch_diff(github_url: str, vuln_version: str, fixed_version: s
                             ln[1:] for ln in raw.splitlines()
                             if ln.startswith("+") and not ln.startswith("+++")
                         )
-                        # PHP fixes
-                        if _re.search(r'\$wpdb\s*->\s*prepare\s*\(', added, _re.I):
-                            result["fix_type"] = "prepare"
-                        elif _re.search(r'sanitize_\w+\s*\(|esc_\w+\s*\(', added, _re.I):
-                            result["fix_type"] = "sanitize"
-                        elif _re.search(r'\b(?:intval|absint)\s*\(', added, _re.I):
-                            result["fix_type"] = "intval"
-                        # Python fixes
-                        elif _re.search(r'validate\s*\(|escape\s*\(|sanitize\s*\(', added, _re.I):
-                            result["fix_type"] = "sanitize"
-                        elif _re.search(r'is_safe_url|safe_redirect|validate_redirect', added, _re.I):
-                            result["fix_type"] = "url-validation"
-                        elif _re.search(r'os\.path\.realpath|abspath|normpath', added, _re.I):
-                            result["fix_type"] = "path-normalization"
-                        elif _re.search(r'permission_classes|IsAuthenticated|require_auth', added, _re.I):
-                            result["fix_type"] = "auth-check"
-                        # Generic: added authorization/permission check
-                        elif _re.search(r'check_permission|authorize|is_admin|hasPermission', added, _re.I):
-                            result["fix_type"] = "auth-check"
+                        _ft, _vch = _infer_fix_type_and_class(added, lang="generic")
+                        result["fix_type"] = _ft
+                        result["vuln_class_hint"] = _vch
 
                         # Extract function names from removed lines containing vulnerability
                         removed = [ln[1:] for ln in raw.splitlines() if ln.startswith("-") and not ln.startswith("---")]

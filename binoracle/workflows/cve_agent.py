@@ -11926,6 +11926,40 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         source = _slug_candidate
             step(f"codigo obtenido ({fr.kind}, version {fr.resolved_version or '?'})" if es else
                  f"source fetched ({fr.kind}, version {fr.resolved_version or '?'})")
+
+            def _apply_patch_class_hint(_inv, _hint: str, _step, _es: bool) -> None:
+                """Use the patch vuln_class_hint to confirm or override inv.vuln_class.
+
+                The patch fix pattern is the strongest signal available — the developer
+                added esc_html() → they were fixing XSS, not SQLi. Override the LLM
+                hypothesis only when the current class is vague or empty; confirm it when
+                they already match. Never override a specific class with an empty hint.
+                """
+                if not _hint:
+                    return
+                from .cveplan import classify_cve as _classify
+                _vague = {"rce", "remote-code-execution", "privilege-escalation",
+                          "unknown", "", None}
+                _curr = _inv.vuln_class or ""
+                if _curr in _vague:
+                    _inv.vuln_class = _hint
+                    _step((f"[patch-diff] clase indefinida '{_curr}' → "
+                           f"clase confirmada por el patch: {_hint}") if _es else
+                          (f"[patch-diff] vague class '{_curr}' → "
+                           f"class confirmed by the fix: {_hint}"))
+                elif _curr != _hint and _hint:
+                    # Classify both to their canonical form before comparing
+                    _canonical_curr = _classify(_curr) or _curr
+                    _canonical_hint = _classify(_hint) or _hint
+                    if _canonical_curr != _canonical_hint:
+                        _step((f"[patch-diff] CONFLICTO: clase LLM={_curr}, "
+                               f"clase del patch={_hint} — manteniendo clase del patch "
+                               f"(el fix es evidencia directa)") if _es else
+                              (f"[patch-diff] CONFLICT: LLM class={_curr}, "
+                               f"patch class={_hint} — using patch class "
+                               f"(fix code is direct evidence)"))
+                        _inv.vuln_class = _hint
+
             # Fix 2: patch-diff grounding — para plugins WP con SQLi/LFI/path-traversal,
             # descargar el diff entre versión vulnerable y parchada de plugins.trac.wordpress.org
             # para confirmar qué funciones PHP cambiaron y qué tipo de fix se aplicó.
@@ -11947,12 +11981,16 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         _pd = _fetch_pd(_slug_pd, _pd_vuln_clean, _pd_fixed_ver)
                         if _pd.get("ok"):
                             inv.llm_notes["patch_diff_analysis"] = _pd
+                            _vch = _pd.get("vuln_class_hint") or ""
                             step((f"patch-diff: fix_type={_pd['fix_type']} "
+                                  f"vuln_class_hint={_vch or '—'} "
                                   f"vuln_functions={_pd['vuln_functions']} "
                                   f"archivos={_pd['changed_files'][:3]}") if es else
                                  (f"patch-diff: fix_type={_pd['fix_type']} "
+                                  f"vuln_class_hint={_vch or '—'} "
                                   f"vuln_functions={_pd['vuln_functions']} "
                                   f"files={_pd['changed_files'][:3]}"))
+                            _apply_patch_class_hint(inv, _vch, step, es)
                     except Exception:
                         pass
             elif (fr.kind == "git" and "github.com" in (fr.source or "").lower()
@@ -11967,12 +12005,16 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     _pd = _fetch_gh_pd(_gh_url, _pd_vuln_clean, _pd_fixed_ver)
                     if _pd.get("ok"):
                         inv.llm_notes["patch_diff_analysis"] = _pd
+                        _vch = _pd.get("vuln_class_hint") or ""
                         step((f"patch-diff GitHub: fix_type={_pd['fix_type']} "
+                              f"vuln_class_hint={_vch or '—'} "
                               f"vuln_functions={_pd['vuln_functions']} "
                               f"archivos={_pd['changed_files'][:3]}") if es else
                              (f"GitHub patch-diff: fix_type={_pd['fix_type']} "
+                              f"vuln_class_hint={_vch or '—'} "
                               f"vuln_functions={_pd['vuln_functions']} "
                               f"files={_pd['changed_files'][:3]}"))
+                        _apply_patch_class_hint(inv, _vch, step, es)
                 except Exception:
                     pass
             # Recopilar inteligencia CVE multi-fuente (NVD + Wordfence + Patchstack + GitHub)
