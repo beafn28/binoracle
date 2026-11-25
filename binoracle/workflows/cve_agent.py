@@ -10468,11 +10468,42 @@ def _detect_lab_tech_stack(source_dir: str) -> str:
 
 
 def _read_vuln_snippet(source_dir: str, notes: dict) -> str:
-    """Lee el fragmento de codigo vulnerable real del repositorio para darselo al LLM."""
+    """Lee el fragmento de codigo vulnerable real del repositorio para darselo al LLM.
+
+    Estrategia de busqueda (en orden de confianza):
+    1. vuln_file explícito en notes → leer ese fichero directamente
+    2. vulnerable_functions en notes → grep por nombre de funcion
+    3. Patrones de codigo por clase de vulnerabilidad → encontrar el codigo vulnerable especifico
+    """
     import pathlib as _pathlib
     import subprocess as _sp
     p = _pathlib.Path(str(source_dir))
+    if not p.exists():
+        return ""
 
+    _GREP_EXTS = ("--include=*.js", "--include=*.ts", "--include=*.py",
+                  "--include=*.go", "--include=*.rb", "--include=*.php",
+                  "--include=*.java", "--include=*.kt")
+
+    def _grep_and_extract(pattern: str, root: str = str(p)) -> str:
+        try:
+            r = _sp.run(["grep", "-rl", pattern, root] + list(_GREP_EXTS),
+                        capture_output=True, text=True, timeout=10)
+            for fp in (r.stdout or "").strip().split("\n")[:2]:
+                if fp and _pathlib.Path(fp).exists():
+                    try:
+                        content = _pathlib.Path(fp).read_text(encoding="utf-8", errors="replace")
+                        idx = content.find(pattern)
+                        if idx >= 0:
+                            start, end = max(0, idx - 300), min(len(content), idx + 700)
+                            return f"# {fp}\n...\n{content[start:end]}\n..."
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        return ""
+
+    # 1. vuln_file explícito
     vuln_file = (notes.get("vuln_file") or "").strip()
     if vuln_file:
         candidates = [p / vuln_file] + list(p.glob(f"**/{vuln_file.split('/')[-1]}"))
@@ -10483,25 +10514,60 @@ def _read_vuln_snippet(source_dir: str, notes: dict) -> str:
                 except Exception:
                     pass
 
-    for pat in ("sql =", "sql=", "rawQuery", ".query(", "db.exec",
-                "SELECT * FROM", "execute("):
-        try:
-            r = _sp.run(
-                ["grep", "-rl", pat, str(p), "--include=*.js", "--include=*.ts",
-                 "--include=*.py", "--include=*.go", "--include=*.rb"],
-                capture_output=True, text=True, timeout=10)
-            for fp in (r.stdout or "").strip().split("\n")[:2]:
-                if fp and _pathlib.Path(fp).exists():
-                    try:
-                        content = _pathlib.Path(fp).read_text(encoding="utf-8", errors="replace")
-                        idx = content.find(pat)
-                        if idx >= 0:
-                            start, end = max(0, idx - 300), min(len(content), idx + 600)
-                            return f"# {fp}\n...\n{content[start:end]}\n..."
-                    except Exception:
-                        pass
-        except Exception:
-            pass
+    # 2. vulnerable_functions → grep por nombre exacto
+    vuln_fns = notes.get("vulnerable_functions") or []
+    if isinstance(vuln_fns, list):
+        for fn in vuln_fns[:3]:
+            fn_name = (fn or "").strip().split("(")[0].split(".")[-1]
+            if fn_name and len(fn_name) > 3:
+                result = _grep_and_extract(fn_name)
+                if result:
+                    return result
+
+    # 3. Patrones por clase de vulnerabilidad (razonamiento desde el tipo de bug)
+    vuln_class = (notes.get("vuln_class") or "").lower()
+    class_patterns = {
+        "sqli":              ["sql =", "sql=", "rawQuery", ".query(", "db.exec", "SELECT * FROM", "execute("],
+        "sql-injection":     ["sql =", "rawQuery", ".query(", "execute("],
+        "ssrf":              ["requests.get", "fetch(", "urllib.request", "http.get", "axios.get", "curl_exec"],
+        "path-traversal":    ["path.join(", "open(", "readFile(", "sendFile(", "fs.read"],
+        "lfi":               ["include(", "require(", "include_once", "file_get_contents"],
+        "ssti":              ["render_template_string", "nunjucks.renderString", "env.renderString", "Template("],
+        "command-injection": ["exec(", "spawn(", "system(", "popen(", "subprocess.run", "shell_exec"],
+        "xxe":               ["XMLParser", "xml2js.parseString", "etree.fromstring", "simplexml_load"],
+        "xss":               ["innerHTML", "document.write", "res.send(req.", "echo $", "print(request."],
+        "stored-xss":        ["innerHTML", "document.write", "res.send(", "echo $"],
+        "file-upload":       ["move_uploaded_file", "saveFile", "upload(", "multipart", ".save(", "request.files"],
+        "deserialization":   ["pickle.loads", "unserialize(", "ObjectInputStream", "yaml.load(", "Marshal.load"],
+        "prototype-pollution": ["__proto__", "Object.assign", "merge(", "extend(", "deepMerge"],
+        "nosql-injection":   ["$where", "find({", "findOne({", ".aggregate(", "db.collection"],
+        "jwt-bypass":        ["jwt.verify", "jsonwebtoken", "jwt.decode", "sign(", "verify("],
+        "csrf":              ["csrfToken", "nonce", "csrf_token", "verify_csrf"],
+        "cors-misconfiguration": ["Access-Control-Allow-Origin", "ACAO", "cors(", "origin:"],
+        "open-redirect":     ["redirect(", "res.redirect(", "header('Location", "location.href"],
+        "missing-authorization": ["check_permission", "can?(", "authorize!", "isAdmin", "hasRole",
+                                   "user_can", "current_user_can"],
+        "idor":              ["params[:id]", "req.params.id", "request.args.get('id')", "$_GET['id']"],
+        "race-condition":    ["time.sleep", "setTimeout", "await", "mutex", "lock(", "synchronized"],
+        "crlf-injection":    ["setHeader(", "res.header(", "header(", "Set-Cookie"],
+        "mass-assignment":   ["update(params", "assign(", "attributes=", "update_attributes", "mass_assign"],
+        "2fa-bypass":        ["totp", "otp", "verify_token", "authenticate(", "mfa", "2fa"],
+    }
+    patterns = class_patterns.get(vuln_class, [])
+    for pat in patterns:
+        result = _grep_and_extract(pat)
+        if result:
+            return result
+
+    # 4. Generic fallback for any unknown class — search for the endpoint
+    endpoint = (notes.get("endpoint") or "").strip().lstrip("/")
+    if endpoint and not endpoint.startswith("wp-admin"):
+        ep_name = endpoint.split("/")[-1].split("?")[0]
+        if ep_name:
+            result = _grep_and_extract(ep_name)
+            if result:
+                return result
+
     return ""
 
 
