@@ -316,6 +316,10 @@ def classify_cve(text: str) -> Optional[str]:
     if has("arbitrary", "file", "write") or has("arbitrary", "file", "upload"):
         return "file-upload"
     # --- information-disclosure / data exposure ---
+    # Cache-proxy leaking session cookies entre usuarios = information-disclosure.
+    if (has("session", "cookie") and ("proxy" in t or "cache" in t)) or \
+            (has("cache", "poison") or has("web", "cache", "deception")):
+        return "information-disclosure"
     if (has("sensitive", "information", "exposure") or has("sensitive", "data", "exposure") or
             has("information", "disclosure") or has("data", "exposure") or
             has("hardcoded", "api", "key") or has("hardcoded", "credential") or
