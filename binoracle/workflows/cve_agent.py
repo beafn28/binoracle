@@ -13228,12 +13228,20 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _NON_PHP_TECH = ("python", "node.js", "nodejs", "ruby", "go ", "golang",
                                  "aiohttp", "flask", "django", "fastapi", "express",
                                  "audiobookshelf", "etherpad", "rust", "elixir", "java ",
-                                 "spring", ".net", "tomcat")
+                                 "spring", ".net", "tomcat",
+                                 # servidores web que NO ejecutan PHP salvo configuracion explícita
+                                 "apache http", "httpd", "nginx", "caddy", "lighttpd", "rack ",
+                                 "rack::", "sinatra", "rails", "rack-static")
                 _is_non_php = any(t in _tech_clues for t in _NON_PHP_TECH)
+                # LFI-to-RCE via log poisoning solo tiene sentido en stacks PHP: exige que el
+                # servidor incluya el log como PHP (require/include). Stacks desconocidos (tech
+                # vacio, "library", "plugin") NO deben asumir PHP: en ese caso solo el contenido
+                # del lab lo sabe. Requerir evidencia POSITIVA de PHP para activar el intento.
+                _PHP_TECH = ("php", "wordpress", "drupal", "joomla", "laravel", "magento",
+                             "craftcms", "craft cms", "typo3", "prestashop", "opencart", "cakephp",
+                             "symfony", "codeigniter", "slim framework")
                 _is_php_target = (not _analyst_has_dockerfile and not _is_non_php and
-                                  (not _target_tech or any(
-                                      t in _target_tech for t in
-                                      ("php", "wordpress", "drupal", "joomla", "laravel"))))
+                                  any(t in _tech_clues for t in _PHP_TECH))
                 if wr.available and _is_php_target:
                     from .genericverify import verify_generic_lfi_rce
                     step(("probando escalada LFI-a-RCE -- envenenamiento del log de acceso "
