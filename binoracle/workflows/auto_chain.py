@@ -3092,6 +3092,31 @@ def run_full_chain(
                 step(f"  [2.6] endpoint extraído de descripción NVD: {_ep_from_desc}")
                 result.add_step("endpoint_extract", "ok", _ep_from_desc)
 
+    # ── Stage 2.7: WP plugin REST endpoint inference ─────────────────────────
+    # When no endpoint still: infer /wp-json/<slug>/v1 from the plugin source slug
+    # and common REST path patterns. Free heuristic — a later 404 just means no match.
+    if not binary and not llm_notes.get("endpoint"):
+        _slug_27 = ""
+        _src_27 = (llm_notes.get("source") or "").strip().lower()
+        # source is often the WP.org slug (e.g. "advanced-file-manager")
+        if _src_27 and "/" not in _src_27 and "." not in _src_27:
+            _slug_27 = _src_27.replace("_", "-")
+        elif "/" in _src_27:
+            # github URL — take last path segment as slug
+            _slug_27 = _src_27.rstrip("/").split("/")[-1].replace("_", "-")
+        if _slug_27:
+            # Common REST namespaces: plugin-slug/v1 or plugin-slug/v2
+            _ns_27 = _slug_27.replace("-", "_")  # WP uses underscores in namespaces too
+            _inferred_ep = f"/wp-json/{_slug_27}/v1"
+            llm_notes.setdefault("endpoint_candidates", [])
+            if isinstance(llm_notes["endpoint_candidates"], list):
+                llm_notes["endpoint_candidates"] += [
+                    f"/wp-json/{_slug_27}/v1",
+                    f"/wp-json/{_ns_27}/v1",
+                    f"/wp-json/{_slug_27}/v2",
+                ]
+            step(f"  [2.7] endpoint REST WP inferido del slug '{_slug_27}': {_inferred_ep}")
+
     # ── Stage 3: Classify ─────────────────────────────────────────────────────
     _banner(step, "[3/8] CLASSIFY")
     if binary:
