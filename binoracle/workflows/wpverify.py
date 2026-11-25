@@ -5497,6 +5497,21 @@ def _seed_plugin_tables(lab: "_Lab", db_pw: str, tables: list, step,
                             f"UPDATE {_ft} SET {_fk}={_post_id} "
                             f"WHERE ({_fk}=0 OR {_fk} IS NULL);",
                             db_pw)
+                # For order-related FK columns (order_id, parent_order_id), overwrite
+                # ALL rows to point to the actual order-type post ID.
+                # Needed because the DESCRIBE-based INSERT uses placeholder value=1,
+                # but the stm-orders post auto-increment ID may differ.
+                _ORDER_FK_COLS = ("order_id", "parent_order_id", "wc_order_id")
+                for _spost_id2, _spost_type2 in _seeded_post_ids:
+                    if any(_h in _spost_type2.lower() for _h in _ORDER_CPT_HINTS):
+                        for _tbl_name in tables[:8]:
+                            _ft = f"wp_{_tbl_name}"
+                            for _ofk in _ORDER_FK_COLS:
+                                lab.exec_mysql(
+                                    f"UPDATE {_ft} SET {_ofk}={_spost_id2};",
+                                    db_pw)
+                        step(f"seed order_id FK: tablas plugin → {_spost_type2} ID={_spost_id2}")
+                        break
 
     return seeded
 
