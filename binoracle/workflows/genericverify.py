@@ -169,6 +169,36 @@ def _build_stack_signals() -> tuple:
           'ENV ASPNETCORE_URLS=http://0.0.0.0:8080',
           'CMD ["sh", "-c", '
           '"dotnet /app/out/*.dll || dotnet run --project ."]']),
+        # Bun: detected by bun.lockb (Bun's lockfile). Uses oven/bun docker image.
+        ("bun.lockb", "oven/bun:1-alpine", 3000,
+         ["WORKDIR /app", "COPY . .",
+          "RUN bun install || true",
+          'CMD ["sh", "-c", "bun start || bun run index.ts || bun run src/index.ts || bun run app.ts"]']),
+        # Deno: detected by deno.json (Deno config file). Uses denoland/deno image.
+        ("deno.json", "denoland/deno:alpine", 8000,
+         ["WORKDIR /app", "COPY . .",
+          'CMD ["sh", "-c", '
+          '"deno task start || deno run --allow-all main.ts || deno run --allow-all app.ts || deno run --allow-all src/main.ts"]']),
+        # Java/Maven: detected by pom.xml. Uses openjdk; builds uber-jar.
+        ("pom.xml", "maven:3.9-eclipse-temurin-21-alpine", 8080,
+         ["WORKDIR /app",
+          "COPY . .",
+          "RUN mvn package -DskipTests -q || true",
+          'ENV SERVER_PORT=8080',
+          'CMD ["sh", "-c", "java -jar target/*.jar || mvn spring-boot:run"]']),
+        # Java/Gradle: detected by build.gradle.kts (Kotlin DSL) or build.gradle (Groovy DSL).
+        ("build.gradle.kts", "gradle:8-jdk21-alpine", 8080,
+         ["WORKDIR /app",
+          "COPY . .",
+          "RUN gradle bootJar -x test -q || gradle shadowJar -x test -q || gradle assemble -x test -q || true",
+          'ENV SERVER_PORT=8080',
+          'CMD ["sh", "-c", "java -jar build/libs/*.jar || gradle bootRun"]']),
+        ("build.gradle", "gradle:8-jdk21-alpine", 8080,
+         ["WORKDIR /app",
+          "COPY . .",
+          "RUN gradle bootJar -x test -q || gradle shadowJar -x test -q || gradle assemble -x test -q || true",
+          'ENV SERVER_PORT=8080',
+          'CMD ["sh", "-c", "java -jar build/libs/*.jar || gradle bootRun"]']),
     )
 
 
