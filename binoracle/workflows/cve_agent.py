@@ -5535,7 +5535,9 @@ def _synthesize_exploit_from_intel(
                  "arbitrary-file-write"):
         _vc_normalized = "file-upload"
     elif _vc in ("missing-authorization", "broken-access-control", "idor",
-                 "insecure-direct-object-reference", "unauthorized-access"):
+                 "insecure-direct-object-reference", "unauthorized-access",
+                 "information-disclosure", "sensitive-info-exposure", "data-exposure",
+                 "unauthorized-read", "sensitive-data-exposure"):
         _vc_normalized = "idor"
     elif _vc in ("privilege-escalation", "privesc", "broken-auth",
                  "role-escalation", "account-takeover"):
@@ -6216,7 +6218,8 @@ def _prescan_source_for_llm_context(source_dir: str, vuln_class: str,
             sinks = find_path_traversal_sinks(source_dir, tech)[:8]
         elif _vc in ("xss",):
             sinks = find_xss_sinks_generic(source_dir, tech)[:8]
-        elif _vc in ("auth-bypass", "missing-authorization", "idor", "graphql-bypass"):
+        elif _vc in ("auth-bypass", "missing-authorization", "idor", "graphql-bypass",
+                     "information-disclosure", "sensitive-info-exposure", "data-exposure"):
             sinks = find_auth_bypass_generic(source_dir, tech)[:8]
         elif _vc in ("ssrf",):
             sinks = find_ssrf_sinks(source_dir, tech)[:8]
@@ -6741,8 +6744,9 @@ def _hueco_code_analysis(inv: "Investigation", fr: Any, llm: Any, step: Any, es:
         if xss.get("view_path"):
             inv.llm_notes["xss_view_path"] = xss["view_path"]
 
-    # ------------------------------------------------------------------ Missing-auth / IDOR / auth-bypass
-    elif vc in ("missing-authorization", "idor", "auth-bypass") and not notes.get("endpoint"):
+    # ------------------------------------------------------------------ Missing-auth / IDOR / auth-bypass / info-disclosure
+    elif vc in ("missing-authorization", "idor", "auth-bypass",
+                "information-disclosure", "sensitive-info-exposure") and not notes.get("endpoint"):
         # Structural scanner: find AJAX handlers sorted by number of auth issues
         # (no nonce, no capability, nopriv, unsanitized sensitive input).
         auth_hits = find_missing_auth_handlers(lpath)
@@ -7049,7 +7053,8 @@ def _hueco_code_analysis(inv: "Investigation", fr: Any, llm: Any, step: Any, es:
                           f"payload={hint.get('payload','?')[:40]}"))
 
     # ------------------------------------------------------------------ Auth bypass (non-PHP)
-    elif vc in ("missing-authorization", "idor", "auth-bypass") and tech != "php" and not notes.get("endpoint"):
+    elif vc in ("missing-authorization", "idor", "auth-bypass",
+                "information-disclosure", "sensitive-info-exposure") and tech != "php" and not notes.get("endpoint"):
         auth_hits = find_auth_bypass_generic(lpath, tech)
         if auth_hits:
             _hit = auth_hits[0]
