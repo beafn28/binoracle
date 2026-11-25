@@ -6364,13 +6364,28 @@ def verify_wordpress_sqli(
         try:
             import json as _json_seed
             _ctrl_parsed = _json_seed.loads(_ctrl_body)
-            if isinstance(_ctrl_parsed, dict):
-                for _k, _v in _ctrl_parsed.items():
-                    if isinstance(_v, (list, dict)) and len(_v) == 0:
-                        _ctrl_has_empty_data = True
-                        break
-            elif isinstance(_ctrl_parsed, list) and len(_ctrl_parsed) == 0:
-                _ctrl_has_empty_data = True
+
+            def _has_empty_collection(obj, depth=0):
+                """Recursively check if the JSON structure contains any empty list/dict."""
+                if depth > 4:
+                    return False
+                if isinstance(obj, list):
+                    return len(obj) == 0 or (len(obj) > 0 and all(
+                        _has_empty_collection(x, depth + 1) for x in obj[:3]))
+                if isinstance(obj, dict):
+                    if len(obj) == 0:
+                        return True
+                    for v in obj.values():
+                        if isinstance(v, (list, dict)) and _has_empty_collection(v, depth + 1):
+                            return True
+                    # Numeric zero/false for data/count/total/items keys → semantically empty
+                    for key in ("data", "items", "results", "rows", "records",
+                                "count", "total", "num", "hits"):
+                        if key in obj and obj[key] in (0, False, None, [], {}):
+                            return True
+                return False
+
+            _ctrl_has_empty_data = _has_empty_collection(_ctrl_parsed)
         except Exception:
             pass
         _plugin_tables = _detect_plugin_tables(plugin_source_dir)
