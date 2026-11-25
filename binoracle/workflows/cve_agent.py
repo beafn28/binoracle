@@ -11141,7 +11141,8 @@ def _infer_progress_level(detail: str) -> str:
 
 
 def _feedback_loop(llm, verifier_fn, initial_wr, lab_cfg: dict,
-                   step, es: bool, max_rounds: int = 4) -> tuple:
+                   step, es: bool, max_rounds: int = 4,
+                   vuln_class: str = "", cve_description: str = "") -> tuple:
     """Loop de feedback adaptativo: continúa mientras haya progreso real.
 
     - Si el error cambia de categoría entre iteraciones → hay progreso → sigue.
@@ -11157,7 +11158,9 @@ def _feedback_loop(llm, verifier_fn, initial_wr, lab_cfg: dict,
 
     for _i in range(max_rounds):
         _fb = _lab_feedback_for_class(llm, getattr(wr, 'detail', '') or "", cfg, step, es,
-                                     logs=getattr(wr, 'logs', None))
+                                     logs=getattr(wr, 'logs', None),
+                                     vuln_class=vuln_class,
+                                     cve_description=cve_description)
         if not _fb:
             break
         cfg = _fb
@@ -11178,11 +11181,15 @@ def _feedback_loop(llm, verifier_fn, initial_wr, lab_cfg: dict,
 
 
 def _lab_feedback_for_class(llm, fail_reason: str, lab_config: dict,
-                             step, es: bool, logs: Optional[list] = None) -> Optional[dict]:
+                             step, es: bool, logs: Optional[list] = None,
+                             vuln_class: str = "",
+                             cve_description: str = "") -> Optional[dict]:
     """Genera una version corregida del lab usando el prompt de feedback generico.
 
     Incluye clasificacion estructurada del error antes de pedir el fix al LLM,
     para que el prompt de feedback sea mas especifico y dirigido.
+    vuln_class / cve_description: contexto del CVE para que el LLM razone QUE
+    debe probar el lab, no solo como arreglarlo tecnicamente.
     """
     if llm is None or not lab_config:
         return None
@@ -11215,7 +11222,17 @@ def _lab_feedback_for_class(llm, fail_reason: str, lab_config: dict,
     if logs:
         _logs_excerpt = ("\n".join(str(_l) for _l in logs))[-2500:]
 
+    # Contexto del CVE para que el LLM razone sobre el OBJETIVO del lab
+    _ctx_prefix = ""
+    if vuln_class or cve_description:
+        _ctx_prefix = (
+            f"OBJETIVO DEL LAB: verificar una vulnerabilidad {vuln_class or '(web/app)'}\n"
+            + (f"DESCRIPCION CVE: {cve_description[:400]}\n" if cve_description else "")
+            + "El lab debe exponer el patron vulnerable especifico, no un servidor generico.\n\n"
+        )
+
     user_prompt = (
+        _ctx_prefix +
         f"Error observado:\n{fail_reason[:800]}\n\n"
         f"Categoria del error (clasificacion automatica): stage={_stage}, "
         f"category={_category}\n"
@@ -13305,7 +13322,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     for _fb_i in range(4):
                         _fb = _lab_feedback_for_class(
                             llm, getattr(wr, 'detail', '') or "", _lab_cfg_pt, step, es,
-                            logs=getattr(wr, 'logs', None))
+                            logs=getattr(wr, 'logs', None),
+                            vuln_class=inv.vuln_class, cve_description=inv.description)
                         if not _fb:
                             break
                         _pt_dockerfile   = _fb["dockerfile_body"]
@@ -13641,7 +13659,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     for _fb_i in range(4):
                         _fb = _lab_feedback_for_class(
                             llm, getattr(wr, 'detail', '') or "", _lab_cfg_auth, step, es,
-                            logs=getattr(wr, 'logs', None))
+                            logs=getattr(wr, 'logs', None),
+                            vuln_class=inv.vuln_class, cve_description=inv.description)
                         if not _fb:
                             break
                         _auth_dockerfile  = _fb["dockerfile_body"]
@@ -15500,7 +15519,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             dockerfile_body=cfg["dockerfile_body"],
                             extra_files=cfg.get("extra_files"))
                     wr, _lab_cfg_poi, _prog = _feedback_loop(
-                        llm, _poi_verifier, wr, _lab_cfg_poi, step, es)
+                        llm, _poi_verifier, wr, _lab_cfg_poi, step, es,
+                        vuln_class=inv.vuln_class, cve_description=inv.description)
                     if not wr.verified:
                         _escalate_to_analyst(inv, getattr(wr, 'detail', '') or "",
                                              _lab_cfg_poi, es, progress_level=_prog)
@@ -16513,7 +16533,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             dockerfile_body=cfg["dockerfile_body"],
                             extra_files=cfg.get("extra_files"))
                     wr, _lab_cfg_jwt, _prog = _feedback_loop(
-                        llm, _jwt_verifier, wr, _lab_cfg_jwt, step, es)
+                        llm, _jwt_verifier, wr, _lab_cfg_jwt, step, es,
+                        vuln_class=inv.vuln_class, cve_description=inv.description)
                     if not wr.verified:
                         _escalate_to_analyst(inv, getattr(wr, 'detail', '') or "",
                                              _lab_cfg_jwt, es, progress_level=_prog)
@@ -16568,7 +16589,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             dockerfile_body=cfg["dockerfile_body"],
                             extra_files=cfg.get("extra_files"))
                     wr, _lab_cfg_nosql, _prog = _feedback_loop(
-                        llm, _nosql_verifier, wr, _lab_cfg_nosql, step, es)
+                        llm, _nosql_verifier, wr, _lab_cfg_nosql, step, es,
+                        vuln_class=inv.vuln_class, cve_description=inv.description)
                     if not wr.verified:
                         _escalate_to_analyst(inv, getattr(wr, 'detail', '') or "",
                                              _lab_cfg_nosql, es, progress_level=_prog)
@@ -16620,7 +16642,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                 dockerfile_body=cfg["dockerfile_body"],
                                 extra_files=cfg.get("extra_files"))
                         wr, _lab_cfg_oauth, _prog = _feedback_loop(
-                            llm, _oauth_verifier, wr, _lab_cfg_oauth, step, es)
+                            llm, _oauth_verifier, wr, _lab_cfg_oauth, step, es,
+                            vuln_class=inv.vuln_class, cve_description=inv.description)
                         if not wr.verified:
                             _escalate_to_analyst(inv, getattr(wr, 'detail', '') or "",
                                                  _lab_cfg_oauth, es, progress_level=_prog)
@@ -16678,7 +16701,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                 dockerfile_body=cfg["dockerfile_body"],
                                 extra_files=cfg.get("extra_files"))
                         wr, _lab_cfg_dser, _prog = _feedback_loop(
-                            llm, _dser_verifier, wr, _lab_cfg_dser, step, es)
+                            llm, _dser_verifier, wr, _lab_cfg_dser, step, es,
+                            vuln_class=inv.vuln_class, cve_description=inv.description)
                         if not wr.verified:
                             _escalate_to_analyst(inv, getattr(wr, 'detail', '') or "",
                                                  _lab_cfg_dser, es, progress_level=_prog)
@@ -16735,7 +16759,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                 dockerfile_body=cfg["dockerfile_body"],
                                 extra_files=cfg.get("extra_files"))
                         wr, _lab_cfg_race, _prog = _feedback_loop(
-                            llm, _race_verifier, wr, _lab_cfg_race, step, es)
+                            llm, _race_verifier, wr, _lab_cfg_race, step, es,
+                            vuln_class=inv.vuln_class, cve_description=inv.description)
                         if not wr.verified:
                             _escalate_to_analyst(inv, getattr(wr, 'detail', '') or "",
                                                  _lab_cfg_race, es, progress_level=_prog)
@@ -16798,7 +16823,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             dockerfile_body=cfg["dockerfile_body"],
                             extra_files=cfg.get("extra_files"))
                     wr, _lab_cfg_pconf, _prog = _feedback_loop(
-                        llm, _pconf_verifier, wr, _lab_cfg_pconf, step, es)
+                        llm, _pconf_verifier, wr, _lab_cfg_pconf, step, es,
+                        vuln_class=inv.vuln_class, cve_description=inv.description)
                     if not wr.verified:
                         _escalate_to_analyst(inv, getattr(wr, 'detail', '') or "",
                                              _lab_cfg_pconf, es, progress_level=_prog)
@@ -16851,7 +16877,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                 dockerfile_body=cfg["dockerfile_body"],
                                 extra_files=cfg.get("extra_files"))
                         wr, _lab_cfg_biz, _prog = _feedback_loop(
-                            llm, _biz_verifier, wr, _lab_cfg_biz, step, es)
+                            llm, _biz_verifier, wr, _lab_cfg_biz, step, es,
+                            vuln_class=inv.vuln_class, cve_description=inv.description)
                         if not wr.verified:
                             _escalate_to_analyst(inv, getattr(wr, 'detail', '') or "",
                                                  _lab_cfg_biz, es, progress_level=_prog)
@@ -16911,7 +16938,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             dockerfile_body=cfg["dockerfile_body"],
                             extra_files=cfg.get("extra_files"))
                     wr, _lab_cfg_csrf, _prog = _feedback_loop(
-                        llm, _csrf_verifier, wr, _lab_cfg_csrf, step, es)
+                        llm, _csrf_verifier, wr, _lab_cfg_csrf, step, es,
+                        vuln_class=inv.vuln_class, cve_description=inv.description)
                     if not wr.verified:
                         _escalate_to_analyst(inv, getattr(wr, 'detail', '') or "",
                                              _lab_cfg_csrf, es, progress_level=_prog)
@@ -16963,7 +16991,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             dockerfile_body=cfg["dockerfile_body"],
                             extra_files=cfg.get("extra_files"))
                     wr, _lab_cfg_crlf, _prog = _feedback_loop(
-                        llm, _crlf_verifier, wr, _lab_cfg_crlf, step, es)
+                        llm, _crlf_verifier, wr, _lab_cfg_crlf, step, es,
+                        vuln_class=inv.vuln_class, cve_description=inv.description)
                     if not wr.verified:
                         _escalate_to_analyst(inv, getattr(wr, 'detail', '') or "",
                                              _lab_cfg_crlf, es, progress_level=_prog)
@@ -17026,7 +17055,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             dockerfile_body=cfg["dockerfile_body"],
                             extra_files=cfg.get("extra_files"))
                     wr, _lab_cfg_ms, _prog = _feedback_loop(
-                        llm, _ms_verifier, wr, _lab_cfg_ms, step, es)
+                        llm, _ms_verifier, wr, _lab_cfg_ms, step, es,
+                        vuln_class=inv.vuln_class, cve_description=inv.description)
                     if not wr.verified:
                         _escalate_to_analyst(inv, getattr(wr, 'detail', '') or "",
                                              _lab_cfg_ms, es, progress_level=_prog)
@@ -17083,7 +17113,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             dockerfile_body=cfg["dockerfile_body"],
                             extra_files=cfg.get("extra_files"))
                     wr, _lab_cfg_ma, _prog = _feedback_loop(
-                        llm, _ma_verifier, wr, _lab_cfg_ma, step, es)
+                        llm, _ma_verifier, wr, _lab_cfg_ma, step, es,
+                        vuln_class=inv.vuln_class, cve_description=inv.description)
                     if not wr.verified:
                         _escalate_to_analyst(inv, getattr(wr, 'detail', '') or "",
                                              _lab_cfg_ma, es, progress_level=_prog)
