@@ -17638,7 +17638,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                   (inv.vuln_class in ("2fa-bypass", "two-factor-bypass", "auth-chain",
                                       "multistep", "authentication-bypass") or
                    (inv.vuln_class in ("session-fixation", "session-hijacking",
-                                       "account-takeover", "password-reset-bypass")
+                                       "account-takeover", "password-reset-bypass",
+                                       "auth-bypass")
                     and notes.get("steps")))):
                 from .genericverify import verify_generic_multistep
                 _ms_cs      = notes.get("confirm_string") or ""

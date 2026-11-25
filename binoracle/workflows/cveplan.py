@@ -225,6 +225,12 @@ def classify_cve(text: str) -> Optional[str]:
     # JWT-BYPASS ANTES que _CLASSES: "authentication bypass via JWT" → _CLASSES["auth-bypass"] gana.
     if "jwt" in t and ("bypass" in t or "none" in t or "algorithm" in t or "secret" in t or "forge" in t):
         return "jwt-bypass"
+    # 2FA-BYPASS ANTES que _CLASSES["auth-bypass"]: "2FA/MFA/OTP bypass" → auth-bypass; pero el
+    # verificador multistep requiere la clase especifica para activarse.
+    if (("2fa" in t or "two-factor" in t or "two factor" in t or "mfa" in t
+         or "otp" in t or "totp" in t or "one-time password" in t)
+            and ("bypass" in t or "circumvent" in t or "skip" in t)):
+        return "2fa-bypass"
     # NOSQL-INJECTION ANTES que _CLASSES: "NoSQL injection...authentication bypass" → auth-bypass.
     # EXCEPCION: "SQL injection...nosql operator" es sqli, no nosql. "nosql injection" contiene
     # "sql injection" como substring, asi que usamos \bsql\b para detectar SQL independiente.
