@@ -17596,7 +17596,20 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
     if llm_on and inv.description:
         step("el LLM analiza la vulnerabilidad y propone un plan..." if es else
              "the LLM analyzes the vulnerability and proposes a plan...")
-        notes = _llm_research(llm, inv.cve_id, inv.description)
+        # Build extra_context from structured CVE intel — CWE IDs and CVSS help the LLM
+        # reason about the mechanism class (e.g. CWE-89 → sqli, CWE-22 → path-traversal).
+        _llm_extra_ctx = ""
+        _cwe_ctx = getattr(info, "cwe_ids", None) or []
+        if _cwe_ctx:
+            _llm_extra_ctx += f"CWE IDs from NVD: {', '.join(str(c) for c in _cwe_ctx)}\n"
+        _cvss_v = getattr(info, "cvss_vector", None) or ""
+        if _cvss_v:
+            _llm_extra_ctx += f"CVSS vector: {_cvss_v}\n"
+        _adv_notes = getattr(info, "advisory_notes", None) or ""
+        if _adv_notes:
+            _llm_extra_ctx += f"Advisory notes:\n{_adv_notes[:600]}\n"
+        notes = _llm_research(llm, inv.cve_id, inv.description,
+                              extra_context=_llm_extra_ctx.strip())
         if notes:
             inv.llm_notes = notes
             step((f"hipotesis del LLM: clase={notes.get('vuln_class','?')}, "
