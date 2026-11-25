@@ -3881,6 +3881,25 @@ _LAB_SCAFFOLD_SQLI_SYS = (
     "\"http_method\": \"GET\", \"confirm_string\": \"CONFIRM_STRING\", \"server_port\": 3000}"
 )
 
+_LAB_SCAFFOLD_REDOS_SYS = (
+    "Eres un experto en seguridad. Genera un servidor Node.js MINIMO para verificar ReDoS. "
+    "El servidor tiene un endpoint que acepta un parametro de entrada, lo evalua contra un "
+    "regex vulnerable (con backtracking catastrofico), y devuelve el resultado. "
+    "CRITICO bind: app.listen(3000, '0.0.0.0'). "
+    "CRITICO Dockerfile: usa RUN npm init -y && npm install express (NO hagas COPY package.json). "
+    "REGLAS CRITICAS:\n"
+    "1. El endpoint recibe el parametro 'input' (u otro segun el CVE) via GET o POST.\n"
+    "2. Aplica el regex VULNERABLE sobre ese input (sin validar ni limitar la longitud).\n"
+    "3. Devuelve {matched: true/false, length: input.length}.\n"
+    "4. El regex DEBE ser catastrofico: p.ej. /^(a+)+$/ o /^([a-zA-Z]+)*$/ o el patron real del CVE.\n"
+    "5. NO uses timeout ni limites — el lab debe permitir que el bucle de backtracking bloquee Node.\n"
+    "6. EXPOSE 3000, CMD ['node','server.js'].\n"
+    "Responde SOLO con JSON sin markdown: "
+    "{\"server_code\": \"...\", \"dockerfile\": \"...\", "
+    "\"endpoint\": \"/api/check\", \"inject_param\": \"input\", "
+    "\"http_method\": \"POST\", \"server_port\": 3000}"
+)
+
 _LAB_SCAFFOLD_MULTISTEP_SYS = (
     "Eres un experto en seguridad. Genera un servidor Node.js para un lab de multi-step auth bypass. "
     "CRITICO bind: app.listen(3000, '0.0.0.0'). "
@@ -10926,6 +10945,12 @@ _SCAFFOLD_SYS_FOR_CLASS = {
     "token-fixation":              "_LAB_SCAFFOLD_MULTISTEP_SYS",
     "account-takeover":            "_LAB_SCAFFOLD_MULTISTEP_SYS",
     "password-reset-bypass":       "_LAB_SCAFFOLD_MULTISTEP_SYS",
+    # ReDoS / algorithmic complexity
+    "redos":                             "_LAB_SCAFFOLD_REDOS_SYS",
+    "regex-dos":                         "_LAB_SCAFFOLD_REDOS_SYS",
+    "algorithmic-complexity":            "_LAB_SCAFFOLD_REDOS_SYS",
+    "regular-expression-denial-of-service": "_LAB_SCAFFOLD_REDOS_SYS",
+    "catastrophic-backtracking":         "_LAB_SCAFFOLD_REDOS_SYS",
 }
 
 # Cache de scaffolds verificados: (tech, vuln_class) → lab_config dict.
@@ -11168,6 +11193,7 @@ def _scaffold_llm_lab_for_class(llm, source_dir: str, notes: dict, cve_id: str,
         "_LAB_SCAFFOLD_MULTISTEP_SYS":           _LAB_SCAFFOLD_MULTISTEP_SYS,
         "_LAB_SCAFFOLD_SQLI_SYS":                _LAB_SCAFFOLD_SQLI_SYS,
         "_LAB_SCAFFOLD_MASS_ASSIGNMENT_SYS":     _LAB_SCAFFOLD_MASS_ASSIGNMENT_SYS,
+        "_LAB_SCAFFOLD_REDOS_SYS":               _LAB_SCAFFOLD_REDOS_SYS,
     }
     sys_key = _SCAFFOLD_SYS_FOR_CLASS.get(vuln_class)
     if sys_key is None and vuln_class:
@@ -11219,6 +11245,8 @@ def _scaffold_llm_lab_for_class(llm, source_dir: str, notes: dict, cve_id: str,
             sys_key = "_LAB_SCAFFOLD_MISSING_AUTH_SYS"
         elif any(x in _vc for x in ("boolean", "data-leak", "info", "exposure")):
             sys_key = "_LAB_SCAFFOLD_BOOLEAN_ORACLE_SYS"
+        elif any(x in _vc for x in ("redos", "regex-dos", "algorithmic", "backtrack", "catastrophic")):
+            sys_key = "_LAB_SCAFFOLD_REDOS_SYS"
     sys_prompt = _SYS_MAP.get(sys_key) if sys_key else None
     if sys_prompt is None or llm is None:
         return None
