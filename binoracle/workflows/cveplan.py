@@ -236,6 +236,25 @@ def classify_cve(text: str) -> Optional[str]:
         return "csrf"
     if has("open", "redirect"):
         return "open-redirect"
+    # --- information-disclosure / data exposure ---
+    if (has("sensitive", "information", "exposure") or has("sensitive", "data", "exposure") or
+            has("information", "disclosure") or has("data", "exposure") or
+            has("hardcoded", "api", "key") or has("hardcoded", "credential") or
+            has("api", "key", "exposed") or has("credentials", "exposed") or
+            has("sensitive", "file") or has("info", "leak")):
+        return "information-disclosure"
+    # --- unauthorized access / privilege escalation ---
+    if (has("unauthorized", "access") or has("unauthorized", "modification") or
+            has("unauthorized", "read") or has("unauthorized", "file") or
+            has("privilege", "escalation") or has("improper", "access", "control") or
+            has("insufficient", "authorization")):
+        return "missing-authorization"
+    # --- arbitrary file read / write ---
+    if (has("arbitrary", "file", "read") or has("arbitrary", "file", "download") or
+            (has("read", "arbitrary") and "file" in t)):
+        return "path-traversal"
+    if has("arbitrary", "file", "write") or has("arbitrary", "file", "upload"):
+        return "file-upload"
     return None
 
 
