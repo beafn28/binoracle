@@ -6408,16 +6408,59 @@ def verify_wordpress_sqli(
                                 if _cpts_found:
                                     step(f"CPTs detectados en source: {_cpts_found[:4]} — "
                                          f"creando posts de seed con wp-cli...")
+                                    # Scan plugin source for required post meta keys on the CPT
+                                    # (get_post_meta($id, 'KEY', ...) patterns) so created posts
+                                    # have the meta expected by the plugin's query filters.
+                                    _meta_scan_re = re.compile(
+                                        r"get_post_meta\s*\([^,]+,\s*['\"]([A-Za-z0-9_]{3,50})['\"]",
+                                        re.I)
+                                    _required_meta: dict = {}  # key -> default value
+                                    for _phpf2 in _glob2.glob(
+                                            str(plugin_source_dir) + "/**/*.php", recursive=True):
+                                        try:
+                                            _phpc2 = open(_phpf2, encoding="utf-8",
+                                                          errors="replace").read(60_000)
+                                        except OSError:
+                                            continue
+                                        for _mm in _meta_scan_re.finditer(_phpc2):
+                                            _mk = _mm.group(1)
+                                            if _mk not in _required_meta and len(_required_meta) < 10:
+                                                # Assign reasonable defaults by key name heuristic
+                                                if any(x in _mk.lower() for x in
+                                                       ("start", "date", "begin", "time", "stamp")):
+                                                    _required_meta[_mk] = "2026-01-01"
+                                                elif any(x in _mk.lower() for x in
+                                                         ("status", "state", "approved")):
+                                                    _required_meta[_mk] = "1"
+                                                elif any(x in _mk.lower() for x in
+                                                         ("id", "location", "venue", "place")):
+                                                    _required_meta[_mk] = "0"
+                                                elif any(x in _mk.lower() for x in
+                                                         ("price", "cost", "amount")):
+                                                    _required_meta[_mk] = "0"
+                                                else:
+                                                    _required_meta[_mk] = "1"
                                     for _cpt in _cpts_found[:3]:
                                         try:
-                                            lab.wp_cli(
+                                            _post_id_raw = lab.wp_cli(
                                                 "post", "create",
                                                 f"--post_type={_cpt}",
                                                 f"--post_title=Seed {_cpt} 1",
                                                 "--post_status=publish",
+                                                "--porcelain",
                                                 timeout=15)
+                                            _post_id = (_post_id_raw or "").strip()
+                                            if _post_id.isdigit() and _required_meta:
+                                                for _mk, _mv in list(_required_meta.items())[:6]:
+                                                    try:
+                                                        lab.wp_cli("post", "meta", "update",
+                                                                   _post_id, _mk, _mv, timeout=10)
+                                                    except Exception:
+                                                        pass
                                         except Exception:
                                             pass
+                                    if _required_meta:
+                                        step(f"meta seed en posts CPT: {list(_required_meta.keys())[:5]}")
                                     try:
                                         base_resp = send(orig_value)
                                         base_len = len(base_resp.text or "")
