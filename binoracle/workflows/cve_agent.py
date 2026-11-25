@@ -17063,8 +17063,10 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 from .genericverify import verify_generic_redos
                 _rdos_ep      = notes.get("endpoint") or "/"
                 _rdos_method  = notes.get("http_method") or "POST"
-                _rdos_param   = notes.get("redos_param") or notes.get("inject_param") or "input"
-                _rdos_payload = notes.get("redos_payload") or notes.get("payload_example") or ""
+                _rdos_param   = (notes.get("redos_param") or notes.get("inject_param")
+                                 or notes.get("dos_param") or "input")
+                _rdos_payload = (notes.get("redos_payload") or notes.get("payload_example")
+                                 or notes.get("hueco_payload_hint") or "")
                 _rdos_cs      = notes.get("confirm_string") or ""
                 step(("intentando verificacion DINAMICA GENERICA -- ReDoS "
                       "(diferencial de tiempo entre input benigno y malicioso)..." if es else
