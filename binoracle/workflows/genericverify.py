@@ -308,6 +308,30 @@ def _detect_cms_fingerprint(source_dir: str) -> Optional[str]:
             # Keystone: dep "@keystone-6/core" or "@keystonejs/keystone"
             if any(k.startswith(("@keystone-6/", "@keystonejs/")) for k in deps_all):
                 return "keystone"
+            # Vite: dep "vite" or name contains "vite"
+            if "vite" in deps_all or "vite" in name:
+                return "vite"
+            # Hono: dep "hono"
+            if "hono" in deps_all:
+                return "hono"
+            # h3: dep "h3"
+            if "h3" in deps_all and "@types/h3" not in deps_all:
+                return "h3"
+            # Nitro/Nuxt: dep "nitropack" or "nuxt"
+            if "nitropack" in deps_all or "nuxt" in deps_all:
+                return "nitro"
+            # Elysia: dep "elysia"
+            if "elysia" in deps_all:
+                return "elysia"
+            # Remix: dep "@remix-run/node" or "@remix-run/react"
+            if any(k.startswith("@remix-run/") for k in deps_all):
+                return "remix"
+            # SvelteKit: dep "@sveltejs/kit"
+            if "@sveltejs/kit" in deps_all:
+                return "sveltekit"
+            # Astro: dep "astro"
+            if "astro" in deps_all:
+                return "astro"
         except (OSError, ValueError, KeyError):
             pass
     # PHP CMS detection via composer.json
@@ -376,6 +400,43 @@ def _detect_cms_fingerprint(source_dir: str) -> Optional[str]:
                 return "mattermost"
         except OSError:
             pass
+    # Ruby: Gemfile references sinatra or rack
+    gemfile_path = os.path.join(source_dir, "Gemfile")
+    if os.path.isfile(gemfile_path):
+        try:
+            content = open(gemfile_path).read().lower()
+            if "sinatra" in content:
+                return "sinatra"
+            if "rack" in content and "rails" not in content:
+                return "rack"
+            if "rails" in content:
+                return "rails"
+        except OSError:
+            pass
+    # Django / Flask: manage.py or app.py with Django/Flask imports
+    if os.path.isfile(os.path.join(source_dir, "manage.py")):
+        try:
+            content = open(os.path.join(source_dir, "manage.py")).read()
+            if "django" in content.lower():
+                return "django"
+        except OSError:
+            pass
+    # Gradio: requirements.txt or setup.py references gradio
+    for _pyreq in ("requirements.txt", "setup.py", "pyproject.toml"):
+        _pyreq_path = os.path.join(source_dir, _pyreq)
+        if os.path.isfile(_pyreq_path):
+            try:
+                _pyreq_content = open(_pyreq_path).read().lower()
+                if "gradio" in _pyreq_content:
+                    return "gradio"
+                if "flask" in _pyreq_content:
+                    return "flask"
+                if "fastapi" in _pyreq_content:
+                    return "fastapi"
+                if "django" in _pyreq_content:
+                    return "django"
+            except OSError:
+                pass
     return None
 
 
@@ -636,6 +697,54 @@ def _cms_dockerfile_lines(cms: str, source_dir: str,
                   'CMD ["sh", "-c", "mysqld_safe --skip-networking=false & sleep 5 && '
                   'apache2-foreground"]'])
         return (_base, 80, lines)
+
+    # Node.js meta-frameworks and modern web frameworks
+    if cms in ("vite", "h3", "nitro", "hono", "elysia", "remix", "sveltekit", "astro"):
+        _port_map = {"vite": 5173, "h3": 3000, "nitro": 3000, "hono": 3000,
+                     "elysia": 3000, "remix": 3000, "sveltekit": 5173, "astro": 4321}
+        _port = _port_map.get(cms, 3000)
+        _start_cmd = {
+            "vite": "npm run dev -- --host 0.0.0.0",
+            "h3": "node server.js || node index.js || npx tsx server.ts || npx tsx index.ts",
+            "nitro": "node .output/server/index.mjs || npm run build && node .output/server/index.mjs",
+            "hono": "node dist/index.js || npx tsx src/index.ts || node src/index.js",
+            "elysia": "bun run src/index.ts || node dist/index.js",
+            "remix": "npm run build && npm start",
+            "sveltekit": "npm run build && node build",
+            "astro": "npm run build && node dist/server/entry.mjs",
+        }.get(cms, "npm start")
+        lines = (["WORKDIR /app", "COPY . ."] + proxy +
+                 [f"RUN npm install || npm install --legacy-peer-deps || true",
+                  f'CMD ["sh", "-c", "{_start_cmd}"]'])
+        return ("node:20-alpine", _port, lines)
+
+    # Ruby frameworks
+    if cms in ("sinatra", "rack", "rails"):
+        _port = 9292 if cms in ("sinatra", "rack") else 3000
+        _start_cmd = {
+            "sinatra": "ruby app.rb -o 0.0.0.0 -p 9292 || rackup --host 0.0.0.0 -p 9292",
+            "rack": "rackup --host 0.0.0.0 -p 9292",
+            "rails": "rails server -b 0.0.0.0 -p 3000",
+        }.get(cms, "rackup --host 0.0.0.0 -p 9292")
+        lines = (["WORKDIR /app", "COPY . ."] + proxy +
+                 ["RUN gem install bundler && bundle install || true",
+                  f'CMD ["sh", "-c", "{_start_cmd}"]'])
+        return ("ruby:3.2-slim", _port, lines)
+
+    # Python web frameworks
+    if cms in ("django", "flask", "fastapi", "gradio"):
+        _port = 8000
+        _start_cmd = {
+            "django": "python manage.py migrate --run-syncdb 2>/dev/null || true && python manage.py runserver 0.0.0.0:8000",
+            "flask": "FLASK_ENV=development python app.py || FLASK_ENV=development flask run --host 0.0.0.0 --port 8000",
+            "fastapi": "uvicorn main:app --host 0.0.0.0 --port 8000 || uvicorn app.main:app --host 0.0.0.0 --port 8000",
+            "gradio": "python app.py || python main.py",
+        }.get(cms, "python app.py")
+        lines = (["WORKDIR /app", "COPY . ."] + proxy +
+                 ["RUN pip install -r requirements.txt 2>/dev/null || "
+                  "pip install -r requirements.txt --no-cache-dir || true",
+                  f'CMD ["sh", "-c", "{_start_cmd}"]'])
+        return ("python:3.11-slim", _port, lines)
 
     return None
 
