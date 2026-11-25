@@ -7222,10 +7222,13 @@ def verify_wordpress_sqli(
                 consistent_diffs += 1
         res.evidence["boolean_intentos"] = bool_tried
 
-        # Empty-expansion check: when control is empty (≤5B like [] or {}),
+        # Empty-expansion check: when control is empty or a JSON wrapper with empty list,
         # the standard `matches_base` guard filters out OR payloads that do expand.
-        # Detect SQLi by checking if OR 1=1 significantly expands vs OR 1=2.
-        if consistent_diffs < 2 and base_len <= 5:
+        # Trigger for: [] {} empty "" null, and {"data":[],"total":0}-style wrappers ≤150B.
+        _ctrl_body_txt = getattr(base_resp, "text", "") or ""
+        _ctrl_is_empty = (base_len <= 5 or
+                          (base_len <= 150 and bool(re.search(r':\s*\[\s*\]', _ctrl_body_txt))))
+        if consistent_diffs < 2 and _ctrl_is_empty:
             _exp_pairs = [
                 (f"{orig_value}' OR '1'='1", f"{orig_value}' OR '1'='2"),
                 (f"{orig_value} OR 1=1", f"{orig_value} OR 1=2"),
