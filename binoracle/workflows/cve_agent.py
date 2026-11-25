@@ -10435,7 +10435,8 @@ def _scaffold_llm_lab(llm, source_dir: str, notes: dict, cve_id: str,
         return None
 
     server_code = _force_bind_all_interfaces(data.get("server_code") or "")
-    dockerfile  = _fix_dockerfile_port_for_server(server_code, data.get("dockerfile") or "")
+    dockerfile  = _fix_dockerfile_debian_compat(
+                    _fix_dockerfile_port_for_server(server_code, data.get("dockerfile") or ""))
     if not server_code or not dockerfile:
         return None
 
@@ -10690,6 +10691,27 @@ def _force_bind_all_interfaces(server_code: str) -> str:
     return fixed
 
 
+def _fix_dockerfile_debian_compat(dockerfile: str) -> str:
+    """Parchea incompatibilidades conocidas de paquetes Debian Trixie en Dockerfiles LLM.
+
+    La imagen wordpress:php8.2-apache (y versiones recientes) usa Debian Trixie donde
+    'php-cli' no existe como meta-paquete; hay que usar 'php8.4-cli' o, si ya estamos
+    dentro de una imagen PHP, simplemente php esta disponible como /usr/local/bin/php."""
+    if not dockerfile:
+        return dockerfile
+    # En imagenes FROM wordpress:* o FROM php:*, PHP ya esta instalado; 'php-cli' en
+    # apt-get install es redundante Y rompe el build en Trixie. Quitarlo.
+    _WP_OR_PHP_BASE = re.compile(
+        r"^FROM\s+(wordpress|php)[:/ ]", re.MULTILINE | re.IGNORECASE)
+    if _WP_OR_PHP_BASE.search(dockerfile):
+        # Elimina 'php-cli' de cualquier RUN apt-get install dentro de este Dockerfile.
+        dockerfile = re.sub(
+            r'(RUN\s+(?:apt-get\s+install|apt\s+install)[^\n]*)\bphp-cli\b',
+            lambda m: m.group(0).replace("php-cli", "").replace("  ", " ").strip(),
+            dockerfile, flags=re.IGNORECASE)
+    return dockerfile
+
+
 def _fix_dockerfile_port_for_server(server_code: str, dockerfile: str) -> str:
     """Si server_code usa demo.launch(server_port=N), asegura que el Dockerfile
     expone y CMD usa ese mismo puerto. Gradio default es 7860; Qwen suele generar
@@ -10887,7 +10909,8 @@ def _scaffold_llm_lab_for_class(llm, source_dir: str, notes: dict, cve_id: str,
         return None
 
     server_code = _force_bind_all_interfaces(data.get("server_code") or "")
-    dockerfile  = _fix_dockerfile_port_for_server(server_code, data.get("dockerfile") or "")
+    dockerfile  = _fix_dockerfile_debian_compat(
+                    _fix_dockerfile_port_for_server(server_code, data.get("dockerfile") or ""))
     if not server_code or not dockerfile:
         return None
 
@@ -12464,6 +12487,32 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                  (f"deterministic grep (no LLM): endpoint="
                                   f"{det_no_llm.get('endpoint')}, parameters="
                                   f"{det_no_llm.get('parameters')}"))
+            # Fallback: si aun no hay endpoint para SQLi WP y los params conocidos no matcharon,
+            # usar la primera accion AJAX registrada en el plugin (cualquier accion es mejor que
+            # ninguna: el UNION-based va a fallar igual sin endpoint, pero con el primero que
+            # salga tenemos al menos una pista real del plugin para el feedback loop del LLM).
+            if (fr.ok and not is_drupal and not is_joomla and plugin_dir and fr.local_path
+                    and not notes.get("endpoint")
+                    and inv.vuln_class in ("sqli", "sql-injection")):
+                from .websource import find_all_ajax_actions, find_unsafe_sql_concat_sinks
+                try:
+                    _fb_actions = find_all_ajax_actions(fr.local_path)
+                    _fb_sinks = find_unsafe_sql_concat_sinks(fr.local_path, plugin_dir)
+                    if _fb_actions:
+                        _fb_ep = None
+                        for _aa in _fb_actions:
+                            if any(_aa in str(s) for s in _fb_sinks):
+                                _fb_ep = f"/wp-admin/admin-ajax.php?action={_aa}"
+                                break
+                        if not _fb_ep:
+                            _fb_ep = f"/wp-admin/admin-ajax.php?action={_fb_actions[0]}"
+                        step((f"[SQLi fallback] endpoint detectado via AJAX scanner: {_fb_ep}" if es else
+                              f"[SQLi fallback] endpoint detected via AJAX scanner: {_fb_ep}"))
+                        notes = {**notes, "endpoint": _fb_ep, "http_method": "POST"}
+                        inv.llm_notes["endpoint"] = _fb_ep
+                        inv.llm_notes["http_method"] = "POST"
+                except Exception:
+                    pass
             # verificacion DINAMICA: solo para el caso concreto que wpverify.py sabe confirmar de
             # verdad (account-takeover por missing-authorization/idor en un plugin de WordPress).
             # Cualquier fuente que de verdad trajo codigo de un plugin sirve -- no solo
