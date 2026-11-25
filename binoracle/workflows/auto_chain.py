@@ -4627,7 +4627,11 @@ def process_never_attempted_cves(
         cvss = d.get("cvss_score") or 0.0
         if cvss < min_cvss:
             continue
-        candidates.append((cvss, d.get("cve_id", fname.replace(".json", ""))))
+        # Prefer EPSS score for ordering (higher exploitation probability first)
+        epss = float(n.get("_intel_epss", 0) or 0)
+        # Composite score: EPSS * 10 + CVSS/10 → EPSS dominates, CVSS breaks ties
+        score = epss * 10.0 + (cvss / 10.0)
+        candidates.append((score, d.get("cve_id", fname.replace(".json", ""))))
 
     candidates.sort(key=lambda x: -x[0])
     step(f"process_never_attempted_cves: {len(candidates)} CVEs elegibles, procesando hasta {max_cves}")
