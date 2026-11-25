@@ -13874,6 +13874,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _pt_custom_hdrs = notes.get("custom_headers") or None
                 _pt_dockerfile = _notes_dockerfile(notes)
                 _pt_extra_files = notes.get("extra_files") or None
+                _pt_setup_cmds = notes.get("setup_cmds") or None
                 # Si el source_dir ya tiene un Dockerfile propio (p.ej. _scaffold_httpd_lab lo
                 # creó), léelo — evita que _scaffold_llm_lab_for_class lo sobreescriba con
                 # Node.js. Antes del fix del cache (40920f2), el _scaffold_cache enmascaraba
@@ -13944,7 +13945,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     params, path_param_hint=path_p or "", on_step=step, budget_s=budget_s,
                     url_suffix=_pt_url_suffix, custom_headers=_pt_custom_hdrs,
                     query_suffix=_pt_query_suffix,
-                    dockerfile_body=_pt_dockerfile, extra_files=_pt_extra_files)
+                    dockerfile_body=_pt_dockerfile, extra_files=_pt_extra_files,
+                    setup_commands=_pt_setup_cmds)
                 # Bucle de feedback: si Qwen scaffoldeo y fallo, que diagnostique y regenere
                 if _scf_pt and not wr.verified:
                     _lab_cfg_pt = {
@@ -13979,7 +13981,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             budget_s=budget_s,
                             url_suffix=_pt_url_suffix, custom_headers=_pt_custom_hdrs,
                             query_suffix=_pt_query_suffix,
-                            dockerfile_body=_pt_dockerfile, extra_files=_pt_extra_files)
+                            dockerfile_body=_pt_dockerfile, extra_files=_pt_extra_files,
+                            setup_commands=_pt_setup_cmds)
                         wr = wr_fb
                         if wr_fb.verified:
                             break
@@ -13999,7 +14002,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         path_param_hint=pr or "", on_step=step, budget_s=budget_s,
                         url_suffix=_pt_url_suffix, custom_headers=_pt_custom_hdrs,
                         query_suffix=_pt_query_suffix,
-                        dockerfile_body=_pt_dockerfile, extra_files=_pt_extra_files)
+                        dockerfile_body=_pt_dockerfile, extra_files=_pt_extra_files,
+                        setup_commands=_pt_setup_cmds)
                 wr = _run_evidence_retry_loop(
                     llm, step, es, _GENERIC_PATH_TRAVERSAL_RETRY_SYS,
                     _GENERIC_PATH_TRAVERSAL_RETRY_EVIDENCE_KEYS, _attempt_pt, wr,
@@ -14018,7 +14022,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         params, path_param_hint=path_p or "", on_step=step, budget_s=budget_s,
                         url_suffix=_pt_url_suffix, custom_headers=_pt_custom_hdrs,
                         query_suffix=_pt_query_suffix,
-                        dockerfile_body=_pt_dockerfile, extra_files=_pt_extra_files)
+                        dockerfile_body=_pt_dockerfile, extra_files=_pt_extra_files,
+                        setup_commands=_pt_setup_cmds)
                     if _wr_extra.verified or (not wr.verified and _wr_extra.ok):
                         wr = _wr_extra
                 # Cachear el scaffold SOLO si quedo verificado de verdad (igual que
@@ -14224,6 +14229,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _auth_ep = notes.get("endpoint")
                 _auth_dockerfile = _notes_dockerfile(notes)
                 _auth_extra_files = notes.get("extra_files") or None
+                _auth_setup_cmds = notes.get("setup_cmds") or None
                 _auth_bypass_hdr = notes.get("bypass_header", "")
                 _auth_bypass_val = notes.get("bypass_value", "")
                 _auth_confirm = notes.get("confirm_string", "")
@@ -14286,7 +14292,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         bypass_url=_auth_bypass_url,
                         dockerfile_body=_auth_dockerfile,
                         extra_files=_auth_extra_files,
-                        pkg_version=_auth_pkg_ver)
+                        pkg_version=_auth_pkg_ver,
+                        setup_commands=_auth_setup_cmds)
                 if _scf_auth and not wr.verified:
                     _lab_cfg_auth = {
                         "dockerfile_body": _auth_dockerfile, "extra_files": _auth_extra_files,
@@ -14314,7 +14321,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             on_step=step, budget_s=budget_s,
                             bypass_url=_auth_bypass_url,
                             dockerfile_body=_auth_dockerfile,
-                            extra_files=_auth_extra_files)
+                            extra_files=_auth_extra_files,
+                            setup_commands=_auth_setup_cmds)
                         wr = wr_fb
                         if wr_fb.verified:
                             break
@@ -14492,6 +14500,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _cmdi_ep = notes.get("endpoint")
                 _cmdi_dockerfile = _notes_dockerfile(notes)
                 _cmdi_extra_files = notes.get("extra_files") or None
+                _cmdi_setup_cmds = notes.get("setup_cmds") or None
                 _scf_cmdi = False
                 if not _cmdi_dockerfile and llm is not None:
                     _scf = _scaffold_llm_lab_for_class(
@@ -14510,7 +14519,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     _cmdi_local_path_str, _cmdi_ep, notes.get("http_method") or "GET",
                     params, cmd_param_hint=cmd_p or "", on_step=step, budget_s=budget_s,
                     custom_headers=_cmdi_custom_hdrs,
-                    dockerfile_body=_cmdi_dockerfile, extra_files=_cmdi_extra_files)
+                    dockerfile_body=_cmdi_dockerfile, extra_files=_cmdi_extra_files,
+                    setup_commands=_cmdi_setup_cmds)
                 if _scf_cmdi and not wr.verified:
                     _lab_cfg_cmdi = {
                         "dockerfile_body": _cmdi_dockerfile,
@@ -14537,7 +14547,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             _cmdi_local_path_str, _cmdi_ep, notes.get("http_method") or "GET",
                             params, cmd_param_hint=cmd_p or "", on_step=step, budget_s=budget_s,
                             custom_headers=_cmdi_custom_hdrs,
-                            dockerfile_body=_cmdi_dockerfile, extra_files=_cmdi_extra_files)
+                            dockerfile_body=_cmdi_dockerfile, extra_files=_cmdi_extra_files,
+                            setup_commands=_cmdi_setup_cmds)
                         wr = wr_fb
                         if wr_fb.verified:
                             break
@@ -14551,7 +14562,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         _cmdi_local_path_str, ep, notes.get("http_method") or "GET", params,
                         cmd_param_hint=pr or "", on_step=step, budget_s=budget_s,
                         custom_headers=_cmdi_custom_hdrs,
-                        dockerfile_body=_cmdi_dockerfile, extra_files=_cmdi_extra_files)
+                        dockerfile_body=_cmdi_dockerfile, extra_files=_cmdi_extra_files,
+                        setup_commands=_cmdi_setup_cmds)
                 wr = _run_evidence_retry_loop(
                     llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
                     _attempt_cmdi_generic, wr, _cmdi_ep, cmd_p,
@@ -15628,6 +15640,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _ssrf_ep = notes.get("endpoint")
                 _ssrf_dockerfile = _notes_dockerfile(notes)
                 _ssrf_extra_files = notes.get("extra_files") or None
+                _ssrf_setup_cmds = notes.get("setup_cmds") or None
                 _scf_ssrf = False
                 if not _ssrf_dockerfile and llm is not None:
                     _scf = _scaffold_llm_lab_for_class(
@@ -15646,7 +15659,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     fr.local_path, _ssrf_ep, notes.get("http_method") or "GET",
                     params, url_param_hint=url_p or "", on_step=step, budget_s=budget_s,
                     custom_headers=_ssrf_custom_hdrs,
-                    dockerfile_body=_ssrf_dockerfile, extra_files=_ssrf_extra_files)
+                    dockerfile_body=_ssrf_dockerfile, extra_files=_ssrf_extra_files,
+                    setup_commands=_ssrf_setup_cmds)
                 if _scf_ssrf and not wr.verified:
                     _lab_cfg_ssrf = {
                         "dockerfile_body": _ssrf_dockerfile,
@@ -15673,7 +15687,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             fr.local_path, _ssrf_ep, notes.get("http_method") or "GET",
                             params, url_param_hint=url_p or "", on_step=step, budget_s=budget_s,
                             custom_headers=_ssrf_custom_hdrs,
-                            dockerfile_body=_ssrf_dockerfile, extra_files=_ssrf_extra_files)
+                            dockerfile_body=_ssrf_dockerfile, extra_files=_ssrf_extra_files,
+                            setup_commands=_ssrf_setup_cmds)
                         wr = wr_fb
                         if wr_fb.verified:
                             break
@@ -15687,7 +15702,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         fr.local_path, ep, notes.get("http_method") or "GET", params,
                         url_param_hint=pr or "", on_step=step, budget_s=budget_s,
                         custom_headers=_ssrf_custom_hdrs,
-                        dockerfile_body=_ssrf_dockerfile, extra_files=_ssrf_extra_files)
+                        dockerfile_body=_ssrf_dockerfile, extra_files=_ssrf_extra_files,
+                        setup_commands=_ssrf_setup_cmds)
                 wr = _run_evidence_retry_loop(
                     llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
                     _attempt_ssrf_generic, wr, _ssrf_ep, url_p,
@@ -15924,6 +15940,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _xss_ep = notes.get("endpoint")
                 _xss_dockerfile = _notes_dockerfile(notes)
                 _xss_extra_files = notes.get("extra_files") or None
+                _xss_setup_cmds = notes.get("setup_cmds") or None
                 _scf_xss = False
                 if not _xss_dockerfile and llm is not None:
                     _scf = _scaffold_llm_lab_for_class(
@@ -15941,7 +15958,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 wr = verify_generic_xss(
                     fr.local_path, _xss_ep, notes.get("http_method") or "GET",
                     params, xss_param_hint=xss_p or "", on_step=step, budget_s=budget_s,
-                    dockerfile_body=_xss_dockerfile, extra_files=_xss_extra_files)
+                    dockerfile_body=_xss_dockerfile, extra_files=_xss_extra_files,
+                    setup_commands=_xss_setup_cmds)
                 if _scf_xss and not wr.verified:
                     _lab_cfg_xss = {
                         "dockerfile_body": _xss_dockerfile, "extra_files": _xss_extra_files,
@@ -15964,7 +15982,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         wr_fb = verify_generic_xss(
                             fr.local_path, _xss_ep, notes.get("http_method") or "GET",
                             params, xss_param_hint=xss_p or "", on_step=step, budget_s=budget_s,
-                            dockerfile_body=_xss_dockerfile, extra_files=_xss_extra_files)
+                            dockerfile_body=_xss_dockerfile, extra_files=_xss_extra_files,
+                            setup_commands=_xss_setup_cmds)
                         wr = wr_fb
                         if wr_fb.verified:
                             break
@@ -15977,7 +15996,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     return verify_generic_xss(
                         fr.local_path, ep, notes.get("http_method") or "GET", params,
                         xss_param_hint=pr or "", on_step=step, budget_s=budget_s,
-                        dockerfile_body=_xss_dockerfile, extra_files=_xss_extra_files)
+                        dockerfile_body=_xss_dockerfile, extra_files=_xss_extra_files,
+                        setup_commands=_xss_setup_cmds)
                 wr = _run_evidence_retry_loop(
                     llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
                     _attempt_xss_generic, wr, _xss_ep, xss_p,
@@ -16066,6 +16086,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _ssti_ep = notes.get("endpoint")
                 _ssti_dockerfile = _notes_dockerfile(notes)
                 _ssti_extra_files = notes.get("extra_files") or None
+                _ssti_setup_cmds = notes.get("setup_cmds") or None
                 _scf_ssti = False
                 if not _ssti_dockerfile and llm is not None:
                     _scf = _scaffold_llm_lab_for_class(
@@ -16084,7 +16105,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     fr.local_path, _ssti_ep, notes.get("http_method") or "GET",
                     params, ssti_param_hint=ssti_p or "", on_step=step, budget_s=budget_s,
                     custom_headers=_ssti_custom_hdrs,
-                    dockerfile_body=_ssti_dockerfile, extra_files=_ssti_extra_files)
+                    dockerfile_body=_ssti_dockerfile, extra_files=_ssti_extra_files,
+                    setup_commands=_ssti_setup_cmds)
                 if _scf_ssti and not wr.verified:
                     _lab_cfg_ssti = {
                         "dockerfile_body": _ssti_dockerfile,
@@ -16111,7 +16133,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             fr.local_path, _ssti_ep, notes.get("http_method") or "GET",
                             params, ssti_param_hint=ssti_p or "", on_step=step, budget_s=budget_s,
                             custom_headers=_ssti_custom_hdrs,
-                            dockerfile_body=_ssti_dockerfile, extra_files=_ssti_extra_files)
+                            dockerfile_body=_ssti_dockerfile, extra_files=_ssti_extra_files,
+                            setup_commands=_ssti_setup_cmds)
                         wr = wr_fb
                         if wr_fb.verified:
                             break
@@ -16125,7 +16148,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         fr.local_path, ep, notes.get("http_method") or "GET", params,
                         ssti_param_hint=pr or "", on_step=step, budget_s=budget_s,
                         custom_headers=_ssti_custom_hdrs,
-                        dockerfile_body=_ssti_dockerfile, extra_files=_ssti_extra_files)
+                        dockerfile_body=_ssti_dockerfile, extra_files=_ssti_extra_files,
+                        setup_commands=_ssti_setup_cmds)
                 wr = _run_evidence_retry_loop(
                     llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
                     _attempt_ssti_generic, wr, _ssti_ep, ssti_p,
@@ -16405,6 +16429,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _or_ep = notes.get("endpoint")
                 _or_dockerfile = _notes_dockerfile(notes)
                 _or_extra_files = notes.get("extra_files") or None
+                _or_setup_cmds = notes.get("setup_cmds") or None
                 _scf_or = False
                 if not _or_dockerfile and llm is not None:
                     _scf = _scaffold_llm_lab_for_class(
@@ -16423,7 +16448,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     _or_local_path_str, _or_ep, notes.get("http_method") or "GET",
                     params, redirect_param_hint=redir_p or "", on_step=step, budget_s=budget_s,
                     custom_headers=_or_custom_hdrs,
-                    dockerfile_body=_or_dockerfile, extra_files=_or_extra_files)
+                    dockerfile_body=_or_dockerfile, extra_files=_or_extra_files,
+                    setup_commands=_or_setup_cmds)
                 if _scf_or and not wr.verified:
                     _lab_cfg_or = {
                         "dockerfile_body": _or_dockerfile, "extra_files": _or_extra_files,
@@ -16445,7 +16471,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             _or_local_path_str, _or_ep, notes.get("http_method") or "GET",
                             params, redirect_param_hint=redir_p or "", on_step=step, budget_s=budget_s,
                             custom_headers=_or_custom_hdrs,
-                            dockerfile_body=_or_dockerfile, extra_files=_or_extra_files)
+                            dockerfile_body=_or_dockerfile, extra_files=_or_extra_files,
+                            setup_commands=_or_setup_cmds)
                         wr = wr_fb
                         if wr_fb.verified:
                             break
@@ -16459,7 +16486,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         _or_local_path_str, ep, notes.get("http_method") or "GET", params,
                         redirect_param_hint=pr or "", on_step=step, budget_s=budget_s,
                         custom_headers=_or_custom_hdrs,
-                        dockerfile_body=_or_dockerfile, extra_files=_or_extra_files)
+                        dockerfile_body=_or_dockerfile, extra_files=_or_extra_files,
+                        setup_commands=_or_setup_cmds)
                 wr = _run_evidence_retry_loop(
                     llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
                     _attempt_or_generic, wr, _or_ep, redir_p,
@@ -17500,6 +17528,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                       "(middleware bypass via req.url)..."))
                 _pconf_dockerfile  = _notes_dockerfile(notes)
                 _pconf_extra_files = notes.get("extra_files") or None
+                _pconf_setup_cmds  = notes.get("setup_cmds") or None
                 _scf_pconf = False
                 if not _pconf_dockerfile and llm is not None:
                     _scf = _scaffold_llm_lab_for_class(
@@ -17516,7 +17545,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     bypass_header=_pconf_bphdr, bypass_value=_pconf_bpval,
                     bypass_url=_pconf_bpurl, confirm_string=_pconf_cs,
                     on_step=step, budget_s=budget_s,
-                    dockerfile_body=_pconf_dockerfile, extra_files=_pconf_extra_files)
+                    dockerfile_body=_pconf_dockerfile, extra_files=_pconf_extra_files,
+                    setup_commands=_pconf_setup_cmds)
                 if _scf_pconf and not wr.verified:
                     _lab_cfg_pconf = {
                         "dockerfile_body": _pconf_dockerfile, "extra_files": _pconf_extra_files,
@@ -17530,7 +17560,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             confirm_string=cfg.get("confirm_string", _pconf_cs),
                             on_step=step, budget_s=budget_s,
                             dockerfile_body=cfg["dockerfile_body"],
-                            extra_files=cfg.get("extra_files"))
+                            extra_files=cfg.get("extra_files"),
+                            setup_commands=_pconf_setup_cmds)
                     wr, _lab_cfg_pconf, _prog = _feedback_loop(
                         llm, _pconf_verifier, wr, _lab_cfg_pconf, step, es,
                         vuln_class=inv.vuln_class, cve_description=inv.description)

@@ -2083,6 +2083,7 @@ def verify_generic_command_injection(
     cmd_param_hint: str = "", on_step: Optional[Callable[[str], None]] = None,
     budget_s: float = 900.0, custom_headers: Optional[dict] = None,
     dockerfile_body: str = "", extra_files: Optional[dict] = None,
+    setup_commands: Optional[List[str]] = None,
 ) -> WpVerifyResult:
     """Verifica OS command injection contra CUALQUIER objetivo que traiga su propio Dockerfile/
     docker-compose.yml, sin asumir el stack (Python/Node/Go/PHP/Java/Ruby... todos escriben a
@@ -2098,7 +2099,8 @@ def verify_generic_command_injection(
         return res
 
     boot = _bootstrap_generic_lab(source_dir, step, res, budget_s,
-                                   dockerfile_body=dockerfile_body, extra_files=extra_files)
+                                   dockerfile_body=dockerfile_body, extra_files=extra_files,
+                                   setup_commands=setup_commands)
     if boot is None:
         return res
     lab, base_url, container = boot
@@ -3235,6 +3237,7 @@ def verify_generic_ssrf(
     url_param_hint: str = "", on_step: Optional[Callable[[str], None]] = None,
     budget_s: float = 900.0, custom_headers: Optional[dict] = None,
     dockerfile_body: str = "", extra_files: Optional[dict] = None,
+    setup_commands: Optional[List[str]] = None,
 ) -> WpVerifyResult:
     """Analogo generico de verify_wordpress_ssrf: levanta un contenedor 'callback' en la MISMA
     red del laboratorio generico (sea `dockerfile` o `compose` -- ver _GenericLab.resolve_network)
@@ -3256,7 +3259,8 @@ def verify_generic_ssrf(
         return res
 
     boot = _bootstrap_generic_lab(source_dir, step, res, budget_s,
-                                   dockerfile_body=dockerfile_body, extra_files=extra_files)
+                                   dockerfile_body=dockerfile_body, extra_files=extra_files,
+                                   setup_commands=setup_commands)
     if boot is None:
         return res
     lab, base_url, container = boot
@@ -4761,6 +4765,7 @@ def verify_generic_open_redirect(
     redirect_param_hint: str = "", on_step: Optional[Callable[[str], None]] = None,
     budget_s: float = 900.0, custom_headers: Optional[dict] = None,
     dockerfile_body: str = "", extra_files: Optional[dict] = None,
+    setup_commands: Optional[List[str]] = None,
 ) -> WpVerifyResult:
     """Analogo generico de verify_wordpress_open_redirect: manda la misma bateria de variantes de
     URL externa/bypass (directa, protocol-relative, backslash, userinfo, espacios/tabs,
@@ -4784,7 +4789,8 @@ def verify_generic_open_redirect(
         return res
 
     boot = _bootstrap_generic_lab(source_dir, step, res, budget_s,
-                                  dockerfile_body=dockerfile_body, extra_files=extra_files)
+                                  dockerfile_body=dockerfile_body, extra_files=extra_files,
+                                  setup_commands=setup_commands)
     if boot is None:
         return res
     lab, base_url, container = boot
@@ -4888,6 +4894,7 @@ def verify_generic_xss(
     xss_param_hint: str = "", on_step: Optional[Callable[[str], None]] = None,
     budget_s: float = 900.0,
     dockerfile_body: str = "", extra_files: Optional[dict] = None,
+    setup_commands: Optional[List[str]] = None,
 ) -> WpVerifyResult:
     """Analogo generico de verify_wordpress_xss: carga la respuesta en un Chromium headless REAL
     (ver _xss_render) y prueba la misma bateria de variantes elegidas a mano (rotura de HTML/
@@ -4922,7 +4929,8 @@ def verify_generic_xss(
         return res
 
     boot = _bootstrap_generic_lab(source_dir, step, res, budget_s,
-                                  dockerfile_body=dockerfile_body, extra_files=extra_files)
+                                  dockerfile_body=dockerfile_body, extra_files=extra_files,
+                                  setup_commands=setup_commands)
     if boot is None:
         return res
     lab, base_url, container = boot
@@ -5038,6 +5046,7 @@ def verify_generic_ssti(
     ssti_param_hint: str = "", on_step: Optional[Callable[[str], None]] = None,
     budget_s: float = 900.0, custom_headers: Optional[dict] = None,
     dockerfile_body: str = "", extra_files: Optional[dict] = None,
+    setup_commands: Optional[List[str]] = None,
 ) -> WpVerifyResult:
     """Analogo generico de verify_wordpress_ssti: el payload pide al motor de plantillas que
     CALCULE una operacion aritmetica con dos numeros aleatorios; si el resultado (que no aparece
@@ -5086,7 +5095,8 @@ def verify_generic_ssti(
         return res
 
     boot = _bootstrap_generic_lab(source_dir, step, res, budget_s,
-                                   dockerfile_body=dockerfile_body, extra_files=extra_files)
+                                   dockerfile_body=dockerfile_body, extra_files=extra_files,
+                                   setup_commands=setup_commands)
     if boot is None:
         return res
     lab, base_url, container = boot
@@ -5350,6 +5360,7 @@ def verify_generic_header_bypass(
     dockerfile_body: str = "", extra_files: Optional[dict] = None,
     pkg_version: str = "",
     vuln_class: str = "",
+    setup_commands: Optional[List[str]] = None,
 ) -> WpVerifyResult:
     """Verifica un bypass de autorizacion via CABECERA HTTP o URL manipulada.
 
@@ -5384,7 +5395,7 @@ def verify_generic_header_bypass(
 
     boot = _bootstrap_generic_lab(source_dir, step, res, budget_s,
                                    dockerfile_body=dockerfile_body, extra_files=extra_files,
-                                   pkg_version=pkg_version)
+                                   pkg_version=pkg_version, setup_commands=setup_commands)
     if boot is None:
         return res
     lab, base_url, container = boot
