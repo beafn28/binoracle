@@ -49,6 +49,29 @@ from typing import Callable, List, Optional
 
 from binoracle.workflows.engine import SourceCodeIntelligence as _SCI
 
+# requests no siempre esta en el sys.path cuando el usuario invoca con el Python del sistema en
+# lugar del venv (ej. `python3 -m binoracle.cli` sin activar). Lo importamos aqui para que el
+# error falle rapido y en un lugar visible, con un mensaje util. Si falla, intenta el site-packages
+# del venv que esta junto al ejecutable actual (detecta tanto `python3` del sistema como el venv).
+try:
+    import requests as _requests_check; del _requests_check  # noqa: E702 — solo para verificar
+except ImportError:
+    import sys as _sys, pathlib as _pathlib
+    # El venv esta junto al paquete binoracle (desktop/binoracle/.venv), no junto al ejecutable.
+    # Busca hacia arriba desde este fichero hasta encontrar un .venv con site-packages.
+    _pkg_root = _pathlib.Path(__file__).parent
+    _found = False
+    for _ in range(5):  # max 5 niveles
+        _pkg_root = _pkg_root.parent
+        for _sp in sorted(_pkg_root.glob(".venv/lib/python*/site-packages")):
+            if str(_sp) not in _sys.path:
+                _sys.path.insert(0, str(_sp))
+                _found = True
+                break
+        if _found:
+            break
+    del _pkg_root, _found
+
 _MYSQL_IMAGE = "mysql:8.0"
 # Overridable: confirmed live investigating CVE-2024-1071 (Ultimate Member SQLi) that the
 # vulnerable code's `in_array($sortby, $custom_sort)` / loose `==` comparisons are PHP-version
@@ -9863,6 +9886,101 @@ def verify_wordpress_plugin_install_rce(
                           f"ejecucion de PHP en wp-content/plugins por configuracion del servidor)")
         res.evidence["screenshots"] = boot.shots
         res.evidence["http_captures"] = boot.http_captures
+        return res
+    except subprocess.TimeoutExpired as e:
+        res.detail = f"timeout de infraestructura: {e}"
+        return res
+    except Exception as e:
+        res.detail = f"error inesperado: {e}"
+        return res
+    finally:
+        _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
+
+
+def verify_wordpress_missing_auth_probe(
+    plugin_source_dir: str, slug: str, endpoint: str, http_method: str,
+    parameters, on_step: Optional[Callable[[str], None]] = None,
+    budget_s: float = 600.0, companion_plugins: Optional[list] = None,
+    keep_lab_on_failure: bool = False,
+) -> WpVerifyResult:
+    """Sonda no-autenticada para information-disclosure / missing-authorization.
+
+    Para CVEs donde un endpoint AJAX devuelve datos sensibles sin comprobar autenticacion.
+    No puede poner verified=True (no hay cuenta victim para demostrar acceso indebido), pero
+    pone ok=True si el endpoint responde con contenido no trivial sin login (HTTP 200 + body
+    no vacio que no sea solo el error estandar de WordPress 'You need to log in').
+
+    Esta verificacion es DEBIL (solo prueba que el endpoint responde, no que devuelve datos
+    de otra cuenta), pero es evidencia real de que la comprobacion de autenticacion falta."""
+    step = on_step or (lambda _m: None)
+    pre = _check_prereqs(plugin_source_dir, slug)
+    if pre is not None:
+        return pre
+    res = WpVerifyResult()
+    t0 = time.time()
+    lab = _Lab(_token())
+    boot = None
+    try:
+        boot = _boot_wordpress_lab(lab, plugin_source_dir, slug,
+                                   companion_plugins=companion_plugins,
+                                   on_step=step, budget_s=budget_s)
+        if not boot:
+            res.detail = "fallo al arrancar el laboratorio WordPress"
+            return res
+
+        m = (http_method or "POST").upper()
+        params_dict = (parameters if isinstance(parameters, dict)
+                       else dict.fromkeys(parameters or [], ""))
+
+        # Probamos como sesion ANONIMA (sin cookies de autenticacion)
+        anon_sess = _make_session()
+        try:
+            r = anon_sess.request(
+                m, boot.base_url + endpoint,
+                data=params_dict if m not in ("GET", "HEAD") else None,
+                params=params_dict if m == "GET" else None,
+                timeout=20, allow_redirects=True)
+            status = r.status_code
+            body = (r.text or "")[:2000]
+        except Exception as _e:
+            res.detail = f"error de red al probar endpoint: {_e}"
+            return res
+
+        # Señales de que el endpoint SÍ comprueba autenticacion
+        _AUTH_REJECT_SIGNALS = (
+            "you need to log in", "log in to continue", "login_required",
+            "must be logged in", "nonce verification failed",
+            "you do not have permission", "forbidden", "unauthorized",
+            "-1",  # WordPress AJAX responde -1 cuando el nonce es invalido
+        )
+        body_low = body.lower()
+        _rejected = (status in (401, 403) or
+                     any(s in body_low for s in _AUTH_REJECT_SIGNALS) or
+                     (status == 200 and body.strip() in ("", "0", "-1", "null")))
+
+        res.evidence["status_anonimo"] = status
+        res.evidence["body_recorte"] = body[:300]
+        res.evidence["endpoint"] = endpoint
+        res.evidence["metodo"] = m
+
+        boot.capture(anon_sess, endpoint,
+                     f"Sonda no-auth: {m} {endpoint} → HTTP {status}",
+                     f"No-auth probe: {m} {endpoint} → HTTP {status}")
+        res.evidence["screenshots"] = boot.shots
+        res.evidence["http_captures"] = boot.http_captures
+
+        if _rejected:
+            res.ok = True
+            res.detail = (f"el endpoint responde HTTP {status} o devuelve senal de rechazo "
+                          f"('{body.strip()[:60]}') sin autenticacion — la comprobacion parece "
+                          f"activa en esta version; probable version ya parchada")
+        else:
+            res.ok = True
+            res.detail = (f"sonda no-auth: el endpoint responde HTTP {status} con contenido "
+                          f"no trivial ({len(body)} bytes) sin autenticacion — evidencia debil "
+                          f"de que la comprobacion falta, pero no hay cuenta victim para "
+                          f"confirmar acceso indebido; ejecuta contra objetivo autorizado")
+            # Solo informativo (ok=True), nunca verified=True — falta la prueba de account cross-access
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = f"timeout de infraestructura: {e}"

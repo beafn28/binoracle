@@ -22,7 +22,8 @@ import subprocess
 import time
 from typing import Callable, List, Optional
 
-from .wpverify import (WpVerifyResult, _ALPINE_IMAGE, _FILE_UPLOAD_HINTS, _ID_HINTS, _PATH_HINTS,
+from .wpverify import (  # wpverify parchea sys.path para requests si hace falta (ver su try/except)
+    WpVerifyResult, _ALPINE_IMAGE, _FILE_UPLOAD_HINTS, _ID_HINTS, _PATH_HINTS,
                        _UPLOAD_BINARY_SUFFIXES, _HEADER_INJECTION_HINTS,
                        _REDIRECT_HINTS, _SQLI_HINTS, _URL_HINTS, _XML_HINTS, _XSS_HINTS,
                        _XssBrowserSession, _docker_daemon_ok, _http_request,

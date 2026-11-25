@@ -12708,6 +12708,25 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             companion_plugins=companion_plugins,
                             shortcode_name=shortcode_name_generic,
                             keep_lab_on_failure=keep_lab_on_failure)
+                # SEXTA forma: sonda de endpoint no-auth para information-disclosure/missing-auth
+                # sin cuenta objetivo. Para CVEs donde el AJAX endpoint simplemente devuelve datos
+                # sin comprobar autenticacion. No se pone verified=True: solo ok=True si la
+                # respuesta no-auth devuelve contenido no trivial (no 403/401/empty).
+                if wr is None and inv.vuln_class in (
+                    "information-disclosure", "missing-authorization", "idor",
+                    "sensitive-info-exposure", "data-exposure", "unauthorized-read"
+                ) and notes.get("endpoint") and plugin_dir:
+                    from .wpverify import verify_wordpress_missing_auth_probe
+                    _probe_params = notes.get("parameters") or []
+                    step(("intentando sonda no-auth (information-disclosure): verificando que "
+                          "el endpoint responde sin autenticacion..." if es else
+                          "attempting no-auth probe (information-disclosure): checking if "
+                          "endpoint responds without authentication..."))
+                    wr = verify_wordpress_missing_auth_probe(
+                        fr.local_path, plugin_dir, notes.get("endpoint"),
+                        notes.get("http_method") or "POST", _probe_params,
+                        on_step=step, budget_s=budget_s, companion_plugins=companion_plugins,
+                        keep_lab_on_failure=keep_lab_on_failure)
                 if wr is None:
                     inv.blockers.append(("verificacion dinamica no intentada: la hipotesis no trae "
                                          "ni un parametro de email/password ni uno de ID "
