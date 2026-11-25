@@ -5753,6 +5753,9 @@ def verify_wordpress_sqli(
                                 f"'seed-{_cpt}', 'seed-{_cpt}', NOW(), NOW(), NOW(), NOW(), "
                                 f"'', '', '');", boot.db_pw)
                         step(f"seed CPT: wp_posts insertados para tipos {_cpt_types[:3]}")
+                        res.evidence["cpt_seed_realizado"] = _cpt_types[:3]
+                    elif _cpt_count > 0:
+                        res.evidence["cpt_seed_ya_existia"] = _cpt_types[:3]
 
             import socket as _sock_uri, time as _time_uri
 
@@ -7992,6 +7995,7 @@ def verify_wordpress_ssrf(
                             f"'seed-{_cpt}', 'seed-{_cpt}', NOW(), NOW(), NOW(), NOW(), "
                             f"'', '', '');", boot.db_pw)
                     step(f"seed SSRF CPT: wp_posts insertados para {_ssrf_cpts[:3]}")
+                    res.evidence["cpt_seed_realizado"] = _ssrf_cpts[:3]
 
         # Backfill ID params: if the action needs a record ID (e.g. GiveWP get_receipt
         # needs donation_id), look for id/post_id/item_id params that have no value and
