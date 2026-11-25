@@ -13480,7 +13480,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             elif (not plugin_dir and
                   (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
                   inv.vuln_class in ("missing-authorization", "auth-bypass", "idor",
-                                     "broken-access-control") and
+                                     "broken-access-control", "privilege-escalation",
+                                     "vertical-privilege-escalation", "unauthorized-access") and
                   notes.get("endpoint")):
                 # Auto-inject common bypass header candidates when LLM didn't name one.
                 # For pure missing-authorization CVEs (no special header needed) this
@@ -13616,7 +13617,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             # mismo laboratorio efimero, para command injection en Drupal (cuarta clase de
             # Drupal, "poco a poco" -- ver drupalverify.py).
             elif (is_drupal and fr.kind in ("drupal-module", "local-zip", "zip-url") and plugin_dir
-                  and inv.vuln_class in ("command-injection", "os-command-injection")
+                  and inv.vuln_class in ("command-injection", "os-command-injection", "rce")
                   and notes.get("endpoint")):
                 from .drupalverify import verify_drupal_command_injection, _pick_param
                 from .wpverify import _CMD_HINTS
@@ -13688,7 +13689,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _apply_wpverify_result(inv, wr, es, llm)
 
             elif (not is_drupal and not is_joomla and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
-                  and inv.vuln_class in ("command-injection", "os-command-injection")
+                  and inv.vuln_class in ("command-injection", "os-command-injection", "rce")
                   and notes.get("endpoint")):
                 from .wpverify import verify_wordpress_command_injection, _pick_param, _CMD_HINTS
                 params = notes.get("parameters") or []
@@ -13752,7 +13753,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             # las clases que no lo necesitan.
             elif (not plugin_dir and
                   (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
-                  inv.vuln_class in ("command-injection", "os-command-injection")
+                  inv.vuln_class in ("command-injection", "os-command-injection", "rce")
                   and notes.get("endpoint")):
                 from .genericverify import verify_generic_command_injection, _pick_param
                 from .wpverify import _CMD_HINTS

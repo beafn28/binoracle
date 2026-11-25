@@ -238,6 +238,15 @@ def classify_cve(text: str) -> Optional[str]:
               ("context" in t and "php" in t))) or
             ("local" in t and ("path" in t or "php" in t))):
         return "lfi"
+    # DESERIALIZATION ANTES que _CLASSES["rce"]: "RCE via unsafe deserialization" llega al loop
+    # con "remote code execution" que esta en _CLASSES["rce"] y gana antes que "deserialization".
+    # El mecanismo (deserialización) importa más que la consecuencia (rce) para el verificador.
+    # Negaciones ("does not deserialize", "without deserialization") deben NO activar este bloque.
+    _dser_neg = ("not deserializ" in t or "without deserializ" in t or
+                 "prevent deserializ" in t or "fix deserializ" in t or
+                 "not unserializ" in t or "without unserializ" in t)
+    if not _dser_neg and ("deserializ" in t or "unserializ" in t or "object injection" in t):
+        return "deserialization"
     for cls, kws, _prim, _refs in _CLASSES:
         if any(k in t for k in kws):
             return cls
