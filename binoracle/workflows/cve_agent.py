@@ -5965,6 +5965,15 @@ def _synthesize_exploit_from_intel(
                  "thymeleaf-ssti", "freemarker-ssti", "velocity-ssti",
                  "ognl-injection", "struts-rce"):
         _vc_normalized = "el-injection"
+    elif _vc in ("account-takeover", "password-reset-bypass", "weak-password-reset",
+                 "token-prediction", "session-fixation", "session-hijacking"):
+        _vc_normalized = "account-takeover"
+    elif _vc in ("race-condition", "toctou", "time-of-check-time-of-use",
+                 "concurrency-issue", "race"):
+        _vc_normalized = "race-condition"
+    elif _vc in ("http-request-smuggling", "request-smuggling", "desync",
+                 "cl-te", "te-cl", "te-te"):
+        _vc_normalized = "request-smuggling"
 
     spec = _CLASS_SPECS.get(_vc_normalized, _CLASS_SPECS.get("sqli"))  # fallback to sqli spec
 
@@ -18027,6 +18036,104 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     fr.local_path, _el_ep, _el_m, _el_param,
                     on_step=step, budget_s=budget_s,
                     dockerfile_body=_el_df, extra_files=_el_extra)
+                _apply_wpverify_result(inv, wr, es, llm)
+            # --- Race condition / TOCTOU (concurrent requests burst) ---
+            elif (not plugin_dir and
+                  (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
+                  inv.vuln_class in ("race-condition", "toctou", "race",
+                                     "time-of-check-time-of-use", "concurrency-issue")):
+                from .genericverify import verify_generic_race_condition
+                step(("intentando verificacion DINAMICA GENERICA -- RACE CONDITION "
+                      "(rafaga concurrente, estado no atómico)..." if es else
+                      "attempting GENERIC DYNAMIC verification -- RACE CONDITION "
+                      "(concurrent burst, non-atomic state)..."))
+                _rc_ep     = notes.get("endpoint") or "/"
+                _rc_m      = notes.get("http_method") or "POST"
+                _rc_params = notes.get("parameters") or {}
+                _rc_cs     = notes.get("confirm_string") or ""
+                _rc_n      = int(notes.get("concurrent_requests") or 20)
+                _rc_df     = _notes_dockerfile(notes)
+                _rc_extra  = notes.get("extra_files") or None
+                if not _rc_df and llm is not None:
+                    _scf = _scaffold_llm_lab_for_class(
+                        llm, str(fr.local_path), notes, inv.cve_id,
+                        "race-condition", step, es,
+                        patch_diff=inv.llm_notes.get("patch_diff_analysis"))
+                    if _scf:
+                        _rc_df    = _scf["dockerfile_body"]
+                        _rc_extra = _scf["extra_files"]
+                        _rc_ep    = _scf.get("endpoint") or _rc_ep
+                        _rc_cs    = _scf.get("confirm_string") or _rc_cs
+                wr = verify_generic_race_condition(
+                    fr.local_path, _rc_ep, _rc_m,
+                    race_params=_rc_params if isinstance(_rc_params, dict) else {},
+                    confirm_string=_rc_cs, concurrent_requests=_rc_n,
+                    on_step=step, budget_s=budget_s,
+                    dockerfile_body=_rc_df, extra_files=_rc_extra)
+                _apply_wpverify_result(inv, wr, es, llm)
+            # --- Account takeover (password reset token prediction / session fixation) ---
+            elif (not plugin_dir and
+                  (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
+                  inv.vuln_class in ("account-takeover", "password-reset-bypass",
+                                     "weak-password-reset", "token-prediction",
+                                     "session-fixation", "session-hijacking")):
+                from .genericverify import verify_generic_account_takeover
+                step(("intentando verificacion DINAMICA GENERICA -- ACCOUNT TAKEOVER "
+                      "(password reset token predecible / session fixation)..." if es else
+                      "attempting GENERIC DYNAMIC verification -- ACCOUNT TAKEOVER "
+                      "(predictable password reset token / session fixation)..."))
+                _at_ep     = notes.get("endpoint") or "/password-reset"
+                _at_m      = notes.get("http_method") or "POST"
+                _at_victim = notes.get("victim_identifier") or notes.get("confirm_string") or ""
+                _at_params = notes.get("parameters") or {}
+                _at_cs     = notes.get("confirm_string") or ""
+                _at_login  = notes.get("login_endpoint") or ""
+                _at_df     = _notes_dockerfile(notes)
+                _at_extra  = notes.get("extra_files") or None
+                if not _at_df and llm is not None:
+                    _scf = _scaffold_llm_lab_for_class(
+                        llm, str(fr.local_path), notes, inv.cve_id,
+                        "account-takeover", step, es,
+                        patch_diff=inv.llm_notes.get("patch_diff_analysis"))
+                    if _scf:
+                        _at_df    = _scf["dockerfile_body"]
+                        _at_extra = _scf["extra_files"]
+                        _at_ep    = _scf.get("endpoint") or _at_ep
+                        _at_cs    = _scf.get("confirm_string") or _at_cs
+                wr = verify_generic_account_takeover(
+                    fr.local_path, _at_ep, _at_m,
+                    victim_identifier=_at_victim,
+                    takeover_params=_at_params if isinstance(_at_params, dict) else {},
+                    confirm_string=_at_cs, login_endpoint=_at_login,
+                    on_step=step, budget_s=budget_s,
+                    dockerfile_body=_at_df, extra_files=_at_extra)
+                _apply_wpverify_result(inv, wr, es, llm)
+            # --- HTTP Request Smuggling (CL.TE / TE.CL timing-based detection) ---
+            elif (not plugin_dir and
+                  (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
+                  inv.vuln_class in ("http-request-smuggling", "request-smuggling",
+                                     "desync", "cl-te", "te-cl", "te-te")):
+                from .genericverify import verify_generic_http_request_smuggling
+                step(("intentando verificacion DINAMICA GENERICA -- HTTP REQUEST SMUGGLING "
+                      "(CL.TE / TE.CL timing-based, raw socket)..." if es else
+                      "attempting GENERIC DYNAMIC verification -- HTTP REQUEST SMUGGLING "
+                      "(CL.TE / TE.CL timing-based, raw socket)..."))
+                _hrs_ep  = notes.get("endpoint") or "/"
+                _hrs_df  = _notes_dockerfile(notes)
+                _hrs_ext = notes.get("extra_files") or None
+                if not _hrs_df and llm is not None:
+                    _scf = _scaffold_llm_lab_for_class(
+                        llm, str(fr.local_path), notes, inv.cve_id,
+                        "request-smuggling", step, es,
+                        patch_diff=inv.llm_notes.get("patch_diff_analysis"))
+                    if _scf:
+                        _hrs_df  = _scf["dockerfile_body"]
+                        _hrs_ext = _scf["extra_files"]
+                        _hrs_ep  = _scf.get("endpoint") or _hrs_ep
+                wr = verify_generic_http_request_smuggling(
+                    fr.local_path, _hrs_ep,
+                    on_step=step, budget_s=budget_s,
+                    dockerfile_body=_hrs_df, extra_files=_hrs_ext)
                 _apply_wpverify_result(inv, wr, es, llm)
         else:
             step(f"no se pudo obtener el codigo: {fr.note}" if es else

