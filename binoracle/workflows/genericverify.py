@@ -5969,22 +5969,67 @@ def run_request_chain(
                 step_ev["status"] = status
                 step_ev["body_snippet"] = body[:400]
 
-                # Apply extraction rules
+                # Apply extraction rules.
+                # Pattern forms:
+                #   "json:field"           — JSON object top-level field
+                #   "json:field.subfield"  — nested JSON path (dot-separated)
+                #   "header:Header-Name"   — specific response header value
+                #   "regex:pattern"        — explicit regex with capture group
+                #   anything else          — treated as a regex (backward compat)
                 for var_name, pattern in extract_rules.items():
-                    m = _re_chain.search(pattern, body)
-                    if m:
-                        _vars[var_name] = m.group(1) if m.lastindex else m.group(0)
-                        step_ev[f"extracted_{var_name}"] = _vars[var_name]
-                        _step(f"    extracted {var_name}={_vars[var_name][:60]!r}")
+                    _extracted = None
+                    if pattern.startswith("json:"):
+                        _jpath = pattern[5:].split(".")
+                        try:
+                            import json as _jmod_chain
+                            _jobj = _jmod_chain.loads(body)
+                            for _jkey in _jpath:
+                                if isinstance(_jobj, dict):
+                                    _jobj = _jobj.get(_jkey)
+                                else:
+                                    _jobj = None
+                                    break
+                            if _jobj is not None:
+                                _extracted = str(_jobj)
+                        except Exception:
+                            pass
+                        if _extracted is None:
+                            # Fallback: regex on JSON string for the key
+                            _jk = _jpath[-1]
+                            _m_fb = _re_chain.search(
+                                rf'["\']?{re.escape(_jk)}["\']?\s*[:=]\s*["\']?([^"\'\\,\}}\]]+)',
+                                body)
+                            if _m_fb:
+                                _extracted = _m_fb.group(1).strip()
+                    elif pattern.startswith("header:"):
+                        _hname = pattern[7:].strip()
+                        _extracted = r.headers.get(_hname) or r.headers.get(_hname.lower())
+                    elif pattern.startswith("regex:"):
+                        _pat = pattern[6:]
+                        m = _re_chain.search(_pat, body)
+                        if m:
+                            _extracted = m.group(1) if m.lastindex else m.group(0)
+                        else:
+                            for _hdr_name, hdr_val in r.headers.items():
+                                m2 = _re_chain.search(_pat, hdr_val)
+                                if m2:
+                                    _extracted = m2.group(1) if m2.lastindex else m2.group(0)
+                                    break
                     else:
-                        # Try response headers
-                        for _hdr_name, hdr_val in r.headers.items():
-                            m2 = _re_chain.search(pattern, hdr_val)
-                            if m2:
-                                _vars[var_name] = m2.group(1) if m2.lastindex else m2.group(0)
-                                step_ev[f"extracted_{var_name}"] = _vars[var_name]
-                                _step(f"    extracted {var_name} from header={_vars[var_name][:60]!r}")
-                                break
+                        # Legacy: bare regex pattern
+                        m = _re_chain.search(pattern, body)
+                        if m:
+                            _extracted = m.group(1) if m.lastindex else m.group(0)
+                        else:
+                            for _hdr_name, hdr_val in r.headers.items():
+                                m2 = _re_chain.search(pattern, hdr_val)
+                                if m2:
+                                    _extracted = m2.group(1) if m2.lastindex else m2.group(0)
+                                    break
+                    if _extracted is not None:
+                        _vars[var_name] = _extracted
+                        step_ev[f"extracted_{var_name}"] = _extracted
+                        _step(f"    extracted {var_name}={_extracted[:60]!r}")
 
                 # Evaluate step outcome
                 _2xx = status in range(200, 300)
