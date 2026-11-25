@@ -8275,11 +8275,16 @@ def _guess_wp_slug_from_description(description: str) -> Optional[str]:
             slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
             if slug and len(slug) >= 3:
                 # Recover real slug from NVD phrasing artifacts:
-                # "an-issue-in-woocommerce-payments" → "woocommerce-payments"
-                for pfx in _SLUG_REJECT_PREFIXES:
-                    if slug.startswith(pfx):
-                        slug = slug[len(pfx):]
-                        break
+                # "unauthenticated-sql-injection-in-capella" → "capella"
+                # Apply iteratively: each pass strips one prefix until stable.
+                changed = True
+                while changed:
+                    changed = False
+                    for pfx in _SLUG_REJECT_PREFIXES:
+                        if slug.startswith(pfx):
+                            slug = slug[len(pfx):]
+                            changed = True
+                            break
                 if slug and len(slug) >= 3:
                     return slug
     return None
