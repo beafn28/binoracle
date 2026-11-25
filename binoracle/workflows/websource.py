@@ -4681,14 +4681,15 @@ def find_web_routes(local_path: str, tech: str = "auto", max_routes: int = 40) -
 
                     def _clean_method(s: str) -> str:
                         # Strip quotes and take first method if comma-separated
-                        s = s.strip().strip("'\"").split(",")[0].strip().upper()
+                        # Handles: "GET", 'POST', "POST", "GET"  (quotes may appear per element)
+                        s = s.strip().split(",")[0].strip().strip("'\"").upper()
                         return s if s in _HTTP_METHODS else "ANY"
 
                     if len(_groups) == 2:
                         g0 = (_groups[0] or "").strip()
                         g1 = (_groups[1] or "").strip()
                         g0_up = g0.strip("'\"").upper()
-                        g1_up = g1.strip("'\"").split(",")[0].strip().upper()
+                        g1_up = g1.split(",")[0].strip().strip("'\"").upper()
                         # Express: (method, path) where group[0] is a method verb
                         if g0_up in _HTTP_METHODS and g0_up not in ("ANY", "ALL"):
                             _method = g0_up
