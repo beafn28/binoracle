@@ -11581,12 +11581,18 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                       f"CVSS={_cve_intel.get('cvss_score', 0)}, "
                       f"CWEs={_cve_intel.get('cwes', [])}"))
                 # Propagar param/endpoint del advisory si aún no los tenemos
-                if _cve_intel.get("vulnerable_param") and not notes.get("sqli_param"):
-                    notes["sqli_param"] = _cve_intel["vulnerable_param"]
-                    step((f"parametro vulnerable del advisory: "
-                          f"'{_cve_intel['vulnerable_param']}'") if es else
-                         (f"vulnerable parameter from advisory: "
-                          f"'{_cve_intel['vulnerable_param']}'"))
+                _intel_param = _cve_intel.get("vulnerable_param", "").strip()
+                if _intel_param:
+                    _vc_now = (inv.vuln_class or "").lower()
+                    if not notes.get("sqli_param") and _vc_now in ("sqli", "sql-injection", ""):
+                        notes["sqli_param"] = _intel_param
+                        inv.llm_notes["sqli_param"] = _intel_param
+                    if not notes.get("path_param") and _vc_now in (
+                            "lfi", "path-traversal", "directory-traversal", "arbitrary-file-read", ""):
+                        notes["path_param"] = _intel_param
+                        inv.llm_notes["path_param"] = _intel_param
+                    step((f"parametro vulnerable del advisory: '{_intel_param}'") if es else
+                         (f"vulnerable parameter from advisory: '{_intel_param}'"))
                 if _cve_intel.get("endpoint_hint") and not notes.get("endpoint"):
                     _ep_hint = _cve_intel["endpoint_hint"]
                     # Si el hint es solo el nombre de una accion AJAX (sin "/"), construir URL completa
