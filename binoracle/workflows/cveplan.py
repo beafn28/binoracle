@@ -71,7 +71,8 @@ _CLASSES = [
     ("race-condition", ("race condition", "toctou", "time-of-check", "condicion de carrera", "double fetch"),
      "ventana de carrera -> estado inconsistente (p.ej. escalada/ficheros)", ["race-conditions"]),
     ("command-injection", ("command injection", "os command injection", "inyeccion de comandos",
-                          "shell command"),
+                          "shell command", "shell metacharacter", "os command execution",
+                          "command execution via"),
      "ejecucion de comandos del sistema con entrada no saneada", ["pentest-binarios"]),
     # --- clases WEB / aplicacion (no memoria nativa: el "exploit" es una peticion HTTP, no ROP) ---
     ("missing-authorization", ("missing authorization", "broken access control", "falta de autorizacion",
@@ -189,6 +190,11 @@ def classify_cve(text: str) -> Optional[str]:
     # "stored XSS via settings page" devolveria "xss" sin llegar a "stored-xss".
     if ("stored" in t or "persistent" in t) and ("xss" in t or "cross-site scripting" in t):
         return "stored-xss"
+    # OPEN-REDIRECT ANTES que _CLASSES["xss"]: "open redirect AND xss" → _CLASSES["xss"] gana
+    # porque xss (line 87) precede a open-redirect (line 116). La frase "open redirect" indica
+    # el mecanismo primario; XSS es un efecto derivado (p.ej. CVE-2024-29041 Express.js).
+    if "open redirect" in t or "unvalidated redirect" in t:
+        return "open-redirect"
     # JWT-BYPASS ANTES que _CLASSES: "authentication bypass via JWT" → _CLASSES["auth-bypass"] gana.
     if "jwt" in t and ("bypass" in t or "none" in t or "algorithm" in t or "secret" in t or "forge" in t):
         return "jwt-bypass"
