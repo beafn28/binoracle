@@ -13698,7 +13698,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         notes.get("http_method") or "POST", _probe_params,
                         on_step=step, budget_s=budget_s, companion_plugins=companion_plugins,
                         keep_lab_on_failure=keep_lab_on_failure,
-                        confirm_string=notes.get("confirm_string") or None)
+                        confirm_string=notes.get("confirm_string") or None,
+                        json_body=bool(notes.get("json_body")))
                 if wr is None:
                     inv.blockers.append(("verificacion dinamica no intentada: la hipotesis no trae "
                                          "ni un parametro de email/password ni uno de ID "
@@ -14737,7 +14738,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             # Strapi headless CMS: especializado con JWT Admin API auth y lab SQLite.
             # Se activa cuando el CMS detectado es Strapi (via package.json) y hay endpoint.
             elif (not plugin_dir and fr.local_path and
-                  (any(w in (inv.cms or "").lower() for w in ("strapi",))
+                  (any(w in (getattr(inv, "cms", "") or "").lower() for w in ("strapi",))
                    or any(w in (notes.get("cms") or "").lower() for w in ("strapi",)))
                   and inv.vuln_class in ("xss", "sqli", "sql-injection", "ssrf", "idor",
                                          "missing-authorization", "auth-bypass",
@@ -14764,7 +14765,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     _apply_wpverify_result(inv, wr, es, llm)
             # Craft CMS: PHP-based CMS with CSRF+cookie session auth
             elif (not plugin_dir and fr.local_path and
-                  (any(w in (inv.cms or "").lower() for w in ("craft", "craftcms"))
+                  (any(w in (getattr(inv, "cms", "") or "").lower() for w in ("craft", "craftcms"))
                    or any(w in (notes.get("cms") or "").lower() for w in ("craft", "craftcms")))
                   and inv.vuln_class in ("xss", "sqli", "sql-injection", "ssrf", "idor",
                                          "missing-authorization", "auth-bypass",
@@ -14794,7 +14795,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     _apply_wpverify_result(inv, wr, es, llm)
             # Payload CMS: Node.js headless CMS with JWT admin auth
             elif (not plugin_dir and fr.local_path and
-                  (any(w in (inv.cms or "").lower() for w in ("payload", "payloadcms"))
+                  (any(w in (getattr(inv, "cms", "") or "").lower() for w in ("payload", "payloadcms"))
                    or any(w in (notes.get("cms") or "").lower() for w in ("payload", "payloadcms")))
                   and inv.vuln_class in ("xss", "sqli", "sql-injection", "ssrf", "idor",
                                          "missing-authorization", "auth-bypass",
@@ -14822,7 +14823,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     _apply_wpverify_result(inv, wr, es, llm)
             # Wagtail CMS: Django-based CMS with admin/login/ CSRF flow.
             elif (not plugin_dir and fr.local_path and
-                  (any(w in (inv.cms or "").lower() for w in ("wagtail",))
+                  (any(w in (getattr(inv, "cms", "") or "").lower() for w in ("wagtail",))
                    or any(w in (notes.get("cms") or "").lower() for w in ("wagtail",)))
                   and inv.vuln_class in ("xss", "sqli", "sql-injection", "ssrf", "idor",
                                          "missing-authorization", "auth-bypass",
@@ -14849,7 +14850,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     _apply_wpverify_result(inv, wr, es, llm)
             # Directus headless CMS: Node.js with Bearer JWT auth and REST/GraphQL API.
             elif (not plugin_dir and fr.local_path and
-                  (any(w in (inv.cms or "").lower() for w in ("directus",))
+                  (any(w in (getattr(inv, "cms", "") or "").lower() for w in ("directus",))
                    or any(w in (notes.get("cms") or "").lower() for w in ("directus",)))
                   and inv.vuln_class in ("xss", "sqli", "sql-injection", "ssrf", "idor",
                                          "missing-authorization", "auth-bypass",

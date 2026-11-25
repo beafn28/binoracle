@@ -10763,6 +10763,7 @@ def verify_wordpress_missing_auth_probe(
     budget_s: float = 600.0, companion_plugins: Optional[list] = None,
     keep_lab_on_failure: bool = False,
     confirm_string: Optional[str] = None,
+    json_body: bool = False,
 ) -> WpVerifyResult:
     """Sonda no-autenticada para information-disclosure / missing-authorization.
 
@@ -10799,7 +10800,8 @@ def verify_wordpress_missing_auth_probe(
         try:
             r = anon_sess.request(
                 m, boot.base_url + endpoint,
-                data=params_dict if m not in ("GET", "HEAD") else None,
+                json=params_dict if (m not in ("GET", "HEAD") and json_body) else None,
+                data=params_dict if (m not in ("GET", "HEAD") and not json_body) else None,
                 params=params_dict if m == "GET" else None,
                 timeout=20, allow_redirects=True)
             status = r.status_code
