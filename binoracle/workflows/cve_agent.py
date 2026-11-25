@@ -6770,8 +6770,10 @@ def _hueco_code_analysis(inv: "Investigation", fr: Any, llm: Any, step: Any, es:
         ("rce",              ["remote code execution", "arbitrary code execution", "command injection"]),
         ("xss",              ["cross-site scripting", "xss", "reflected xss", "stored xss", "dom xss"]),
         ("ssrf",             ["server-side request forgery", "ssrf", "unvalidated upstream", "open redirect"]),
+        ("redos",            ["regular expression denial", "redos", "catastrophic backtracking",
+                               "exponential backtracking", "polynomial backtracking", "regex.*denial"]),
         ("dos",              ["denial of service", "denial-of-service", " dos ", "event loop", "infinite loop",
-                               "algorithmic complexity", "redos", "regular expression denial", "catastrophic backtracking"]),
+                               "algorithmic complexity"]),
         ("path-traversal",   ["path traversal", "directory traversal", "lfi", "local file inclusion"]),
         ("file-upload",      ["arbitrary file upload", "unrestricted file upload", "file upload"]),
         ("missing-authorization", ["missing authorization", "capability check", "nonce check",
@@ -6789,6 +6791,9 @@ def _hueco_code_analysis(inv: "Investigation", fr: Any, llm: Any, step: Any, es:
         "sqli", "sql-injection", "xss", "stored-xss", "reflected-xss",
         "ssrf", "path-traversal", "lfi", "xxe", "ssti", "idor",
         "missing-authorization", "deserialization", "open-redirect",
+        "redos", "regex-dos", "algorithmic-complexity", "catastrophic-backtracking",
+        "race-condition", "jwt-bypass", "prototype-pollution", "nosql-injection",
+        "mass-assignment", "crlf", "cors-misconfiguration",
     }
     _analyst_locked = notes.get("analyst_endpoint_lock") or vc in _ANALYST_SPECIFIC_CLASSES
     if not _analyst_locked:
@@ -6832,6 +6837,8 @@ def _hueco_code_analysis(inv: "Investigation", fr: Any, llm: Any, step: Any, es:
                         notes.setdefault("path_param", _hint_p)
                     elif vc in ("ssrf",):
                         notes.setdefault("url_param", _hint_p)
+                    elif vc in ("redos", "regex-dos", "algorithmic-complexity"):
+                        notes.setdefault("redos_param", _hint_p)
                     # generic fallback — store as parameters hint
                     notes.setdefault("_desc_param_hint", _hint_p)
                     step((f"[HUECO] param extraido desde descripcion NVD: '{_hint_p}' "
