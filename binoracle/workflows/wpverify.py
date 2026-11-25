@@ -5304,7 +5304,12 @@ def _seed_plugin_tables(lab: "_Lab", db_pw: str, tables: list, step,
                           "slug": "test-post", "path": "/test", "query": "test",
                           "email": "seed@example.com", "username": "seeduser",
                           "code": "SEED1", "token": "seedtoken", "key": "seedkey",
-                          "hash": "seedhash", "ref": "seedref", "name": "seedname"}
+                          "hash": "seedhash", "ref": "seedref", "name": "seedname",
+                          "title": "Seed Event", "event_name": "Seed Event",
+                          "event_title": "Seed Event", "course_title": "Seed Course",
+                          "booking_name": "Seed Booking", "post_title": "Seed Post",
+                          "search": "seed", "keyword": "seed", "term": "seed",
+                          "q": "seed", "s": "seed", "phrase": "seed"}
             # Si tenemos el valor real que usa el PoC, actualizar con ese valor concreto
             # para que el WHERE code='x' del PoC encuentre la fila seeded.
             _col_val = sqli_param_value if sqli_param_value else _TEXT_COLS.get(sqli_param.lower())
@@ -5384,8 +5389,7 @@ def _seed_plugin_tables(lab: "_Lab", db_pw: str, tables: list, step,
                     for _fk in _fk_col_names:
                         lab.exec_mysql(
                             f"UPDATE {_ft} SET {_fk}={_post_id} "
-                            f"WHERE id=(SELECT MIN(id) FROM (SELECT id FROM {_ft} LIMIT 1) t) "
-                            f"AND {_fk}=0 OR {_fk} IS NULL;",
+                            f"WHERE ({_fk}=0 OR {_fk} IS NULL);",
                             db_pw)
 
     return seeded
