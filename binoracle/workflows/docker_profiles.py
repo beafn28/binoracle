@@ -144,8 +144,25 @@ _DOCKER_IMAGE_PROFILES: dict[str, dict] = {
         "startup_wait": 30,
         "health_path": "/api/",
     },
+    # --- Etherpad collaborative editor ---
+    "etherpad/etherpad:": {
+        "port": 9001,
+        "envs": {"NODE_ENV": "production"},
+        "cmd": None,
+        "startup_wait": 25,
+        "health_path": "/",
+    },
+    # --- Apache HTTP Server (generic) ---
+    # Note: CVE-specific configs (AllowOverride etc.) should be in dockerfile_body
+    "httpd:": {
+        "port": 80,
+        "envs": {},
+        "cmd": None,
+        "startup_wait": 5,
+        "health_path": "/",
+    },
     # --- Gradio (Python ML web UI) ---
-    "python:": {
+    "gradio/gradio:": {
         "port": 7860,
         "envs": {
             "GRADIO_SERVER_PORT": "7860",
@@ -153,6 +170,16 @@ _DOCKER_IMAGE_PROFILES: dict[str, dict] = {
         },
         "cmd": None,
         "startup_wait": 15,
+        "health_path": "/",
+    },
+    # --- Generic Python app (Flask/FastAPI/aiohttp etc.) ---
+    # Minimal profile; dockerfile_body in the CVE JSON should provide the CMD.
+    # Matches python:3.x, python:3.x-slim, python:3.x-alpine etc.
+    "python:": {
+        "port": 5000,
+        "envs": {},
+        "cmd": None,
+        "startup_wait": 10,
         "health_path": "/",
     },
     # --- Rack/Ruby web apps ---

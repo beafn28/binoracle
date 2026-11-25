@@ -11865,6 +11865,17 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
     cve_id = inv.cve_id
     notes = inv.llm_notes or {}
 
+    # --- Intel enrichment: OSV.dev + Nuclei Templates (additive, non-blocking) ---
+    try:
+        from .cve_intel import auto_enrich_before_analysis as _intel_enrich
+        _enriched_notes = _intel_enrich(cve_id, notes)
+        if _enriched_notes is not notes:
+            inv.llm_notes = _enriched_notes
+            notes = _enriched_notes
+            step(f"[intel] enriquecimiento OSV+Nuclei completado para {cve_id}")
+    except Exception as _intel_e:
+        step(f"[intel] enriquecimiento omitido ({_intel_e})")
+
     # Merge endpoint_candidates (Stage 2.7) into alt_endpoints when alt_endpoints is empty
     _ep_cands = notes.get("endpoint_candidates") or []
     if _ep_cands and not notes.get("alt_endpoints"):
@@ -15227,6 +15238,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     sqli_via_request_uri=_via_uri,
                     sqli_via_rawurldecode=_via_rawurldecode,
                     sqli_via_orderby=_via_orderby,
+                    required_role=notes.get("required_role") or "subscriber",
                     seed_sql=notes.get("seed_sql") or [])
                 # Inject full params list into evidence so the LLM knows all available
                 # parameters to suggest as alternatives during retries.
@@ -15300,6 +15312,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         sqli_via_request_uri=_via_uri,
                         sqli_via_rawurldecode=_via_rawurldecode,
                         sqli_via_orderby=_via_orderby,
+                        required_role=notes.get("required_role") or "subscriber",
                         seed_sql=notes.get("seed_sql") or [])
                 _ep_lock_active = bool(notes.get("analyst_endpoint_lock")
                                        or notes.get("poc_raw_http_lock")

@@ -2280,6 +2280,59 @@ def cmd_reanalyze_failed(args, config):
     print(f"\nTotal: {len(results)} CVEs reanalizado, {verified} verificados")
 
 
+def cmd_enrich_intel(args, config):
+    """Enrich CVE batch report JSONs from OSV.dev, Nuclei Templates, PoC-in-GitHub."""
+    from .workflows.cve_intel import enrich_batch_reports, enrich_cve
+    import json as _json
+    from pathlib import Path as _Path
+
+    batch_dir = getattr(args, "batch_dir", "binoracle_batch_reports")
+    force     = bool(getattr(args, "force", False))
+    dry_run   = bool(getattr(args, "dry_run", False))
+    cve_ids   = list(getattr(args, "cve_ids", None) or [])
+
+    def _step(msg):
+        print(msg, flush=True)
+
+    if cve_ids:
+        for cve_id in cve_ids:
+            _step(f"\n=== Enriching {cve_id} ===")
+            json_path = _Path(batch_dir) / f"{cve_id}.json"
+            notes: dict = {}
+            if json_path.exists():
+                with open(json_path) as _f:
+                    notes = _json.load(_f).get("llm_notes", {})
+            enriched = enrich_cve(cve_id, notes, force=force, on_step=_step)
+            new_fields = [k for k in enriched if k not in notes and enriched[k]]
+            _step(f"[enrich-intel] {len(new_fields)} nuevos campos: "
+                  f"{', '.join(new_fields[:10])}")
+            if not dry_run and json_path.exists():
+                with open(json_path) as _f:
+                    data = _json.load(_f)
+                data["llm_notes"] = enriched
+                with open(json_path, "w") as _f:
+                    _json.dump(data, _f, indent=2, ensure_ascii=False)
+                _step(f"[enrich-intel] {json_path} actualizado")
+            elif dry_run:
+                new_data = {k: v for k, v in enriched.items() if k not in notes and enriched[k]}
+                _step(_json.dumps(new_data, indent=2, ensure_ascii=False))
+    else:
+        results = enrich_batch_reports(batch_dir, force=force, on_step=_step)
+        _step("\n=== RESUMEN DE ENRIQUECIMIENTO ===")
+        total_nuclei = sum(1 for s in results.values() if s["nuclei"])
+        total_pocs   = sum(s["poc_count"] for s in results.values())
+        total_diffs  = sum(1 for s in results.values() if s["patch_diff"])
+        _step(f"CVEs procesados:      {len(results)}")
+        _step(f"Con Nuclei template:  {total_nuclei}")
+        _step(f"PoCs encontrados:     {total_pocs}")
+        _step(f"Patch diffs obtenidos:{total_diffs}")
+        for cve_id, s in results.items():
+            if s["nuclei"] or s["poc_count"] or s["patch_diff"]:
+                _step(f"  {cve_id}: nuclei={s['nuclei']}, pocs={s['poc_count']}, "
+                      f"patch_diff={s['patch_diff']}, "
+                      f"confirm={s['confirm_string'][:30] if s['confirm_string'] else 'N/A'}")
+
+
 def cmd_nvd_watch(args, config):
     """Fully autonomous mode: polls NVD API for new high-severity CVEs and investigates each."""
     import time as _time
@@ -3322,6 +3375,20 @@ def build_parser() -> argparse.ArgumentParser:
                       help="also re-analyze CVEs with attempt_evidence but verified=False, using LLM "
                            "to repair the hypothesis from real HTTP response data")
     nvdw.set_defaults(func=cmd_nvd_watch)
+
+    # --- enrich-intel: enrich CVE JSONs from OSV.dev + Nuclei Templates + PoC-in-GitHub ---
+    ei = sub.add_parser("enrich-intel",
+                        help="enrich CVE batch reports with public intel: OSV.dev, "
+                             "Nuclei Templates, PoC-in-GitHub, GitHub patch diffs")
+    ei.add_argument("cve_ids", nargs="*", metavar="CVE-ID",
+                    help="CVE IDs to enrich (default: all files in --batch-dir)")
+    ei.add_argument("--batch-dir", default="binoracle_batch_reports",
+                    help="directory with CVE JSON files (default: binoracle_batch_reports)")
+    ei.add_argument("--force", action="store_true",
+                    help="overwrite existing fields (default: only fill empty fields)")
+    ei.add_argument("--dry-run", action="store_true",
+                    help="show what would be enriched without writing files")
+    ei.set_defaults(func=cmd_enrich_intel)
 
     sc2 = sub.add_parser("scan", help="static security scan + dependency audit + CVE test strategies "
                                       "for a source directory (wraps the Universal Engine full_analysis)")
