@@ -4664,8 +4664,12 @@ def _inject_custom_docker_lab(source_dir: str, notes: dict, step=None) -> None:
             if os.path.exists(os.path.join(source_dir, existing)):
                 return  # proyecto ya trae su propio Dockerfile/compose, no tocarlo
     df_path = os.path.join(source_dir, "Dockerfile")
-    if docker_image:
-        df_content = f"FROM {docker_image}\n"
+    if docker_image and not dockerfile_body:
+        from binoracle.workflows.docker_profiles import dockerfile_from_profile as _dfp
+        _generated = _dfp(docker_image)
+        df_content = _generated if _generated is not None else f"FROM {docker_image}\n"
+    elif docker_image:
+        df_content = dockerfile_body + "\n"
     else:
         df_content = dockerfile_body + "\n"
     with open(df_path, "w") as fh:
