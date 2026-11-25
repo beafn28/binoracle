@@ -3176,7 +3176,6 @@ def run_full_chain(
         "unauthorized-access": "missing-authorization",
         "unauthorized-modification": "missing-authorization",
         "unauthorized-read": "missing-authorization",
-        "broken-access-control": "missing-authorization",
         "improper-access-control": "missing-authorization",
         "insufficient-authorization": "missing-authorization",
         "arbitrary-file-read": "path-traversal",

@@ -7254,7 +7254,7 @@ def _hueco_code_analysis(inv: "Investigation", fr: Any, llm: Any, step: Any, es:
             _t.start()
             _t.join(timeout=90)  # 90s cap per HUECO LLM call
             if _t.is_alive():
-                step(f"[HUECO] LLM call exceeded 90s timeout — skipping analysis to preserve budget")
+                step("[HUECO] LLM call exceeded 90s timeout — skipping analysis to preserve budget")
                 return None
             if _exc[0] is not None:
                 step(f"[HUECO] LLM {vc} analysis error: {_exc[0]}")
@@ -11072,8 +11072,6 @@ _SCAFFOLD_SYS_FOR_CLASS = {
     "crlf-injection":              "_LAB_SCAFFOLD_HEADER_INJECTION_SYS",
     "response-splitting":          "_LAB_SCAFFOLD_HEADER_INJECTION_SYS",
     # SQL injection
-    "sqli":                        "_LAB_SCAFFOLD_SQLI_SYS",
-    "sql-injection":               "_LAB_SCAFFOLD_SQLI_SYS",
     "sqli-union":                  "_LAB_SCAFFOLD_SQLI_SYS",
     "sqli-blind":                  "_LAB_SCAFFOLD_SQLI_SYS",
     "sqli-error":                  "_LAB_SCAFFOLD_SQLI_SYS",
@@ -11738,10 +11736,10 @@ def _lab_feedback_for_class(llm, fail_reason: str, lab_config: dict,
     _bind_was_wrong = (_det_server_fixed != server_code and "0.0.0.0" in _det_server_fixed
                        and "0.0.0.0" not in server_code)
     if _bind_was_wrong and _category in ("server_not_responding", "unknown"):
-        step((f"[deterministic-fix] bind incorrecto detectado en el codigo del servidor — "
-              f"corregido a 0.0.0.0 sin llamar al LLM") if es else
-             (f"[deterministic-fix] incorrect bind detected in server code — "
-              f"fixed to 0.0.0.0 without LLM call"))
+        step(("[deterministic-fix] bind incorrecto detectado en el codigo del servidor — "
+              "corregido a 0.0.0.0 sin llamar al LLM") if es else
+             ("[deterministic-fix] incorrect bind detected in server code — "
+              "fixed to 0.0.0.0 without LLM call"))
         _fixed_cfg = dict(lab_config)
         _fixed_cfg["extra_files"] = {srv_file: _det_server_fixed}
         _fixed_cfg["dockerfile_body"] = _det_df_fixed
@@ -13849,7 +13847,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                 and _pt_precheck["confidence"] >= 0.80):
                             try:
                                 from .websource import fetch_wordpress_plugin as _fwp_pt_retry
-                                step((f"[Fix-C] probable versión parchada → intentando anterior") if es
+                                step(("[Fix-C] probable versión parchada → intentando anterior") if es
                                      else "[Fix-C] probable patched version → trying previous")
                                 _fr_pt_older = _fwp_pt_retry(
                                     fr.source, version=fr.resolved_version, dest_dir="",

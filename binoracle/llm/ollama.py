@@ -79,11 +79,11 @@ class OllamaBackend(LLMBackend):
                         )
                     try:
                         line = resp.readline()
-                    except _socket.timeout:
+                    except _socket.timeout as _tout:
                         raise LLMUnavailable(
                             f"Ollama LLM stalled: no token for {_PER_TOKEN_TIMEOUT}s — "
                             "model may be stuck; check Ollama logs"
-                        )
+                        ) from _tout
                     if not line:
                         break
                     try:

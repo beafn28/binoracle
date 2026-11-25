@@ -5454,7 +5454,7 @@ def _seed_plugin_tables(lab: "_Lab", db_pw: str, tables: list, step,
         if _cpts:
             # Check if we already created seed posts (via wp_posts rows in DB)
             _existing_posts = lab.exec_mysql(
-                f"SELECT COUNT(*) FROM wp_posts WHERE post_type IN ("
+                "SELECT COUNT(*) FROM wp_posts WHERE post_type IN ("
                 + ", ".join(f"'{c}'" for c in _cpts[:6])
                 + ") AND post_status='publish';", db_pw) or ""
             _existing_count = 0
@@ -5852,7 +5852,7 @@ def verify_wordpress_sqli(
                 _ssql_r = lab.exec_mysql(_all_seed, boot.db_pw)
                 step(f"seed_sql: {len(seed_sql)} statements → {'OK' if _ssql_r is not None else 'ERROR'}")
                 if _ssql_r is None:
-                    step(f"seed_sql ADVERTENCIA: algunos statements fallaron — el lab sigue")
+                    step("seed_sql ADVERTENCIA: algunos statements fallaron — el lab sigue")
                 res.evidence["seed_sql_ejecutado"] = len(seed_sql)
 
             import socket as _sock_uri, time as _time_uri
@@ -6653,13 +6653,13 @@ def verify_wordpress_sqli(
             if slug:
                 _slug_clean_lazy = re.sub(r'[^a-z0-9]', '', slug.lower())
                 _lazy_tables_raw = lab.exec_mysql(
-                    f"SELECT table_name FROM information_schema.tables "
-                    f"WHERE table_schema=DATABASE() AND table_name LIKE 'wp_%' "
-                    f"AND table_name NOT IN "
-                    f"('wp_posts','wp_postmeta','wp_terms','wp_term_taxonomy',"
-                    f"'wp_term_relationships','wp_options','wp_users','wp_usermeta',"
-                    f"'wp_comments','wp_commentmeta','wp_links') "
-                    f"ORDER BY table_name;",
+                    "SELECT table_name FROM information_schema.tables "
+                    "WHERE table_schema=DATABASE() AND table_name LIKE 'wp_%' "
+                    "AND table_name NOT IN "
+                    "('wp_posts','wp_postmeta','wp_terms','wp_term_taxonomy',"
+                    "'wp_term_relationships','wp_options','wp_users','wp_usermeta',"
+                    "'wp_comments','wp_commentmeta','wp_links') "
+                    "ORDER BY table_name;",
                     boot.db_pw) or ""
                 _lazy_tables = [
                     t.strip().lstrip('wp_').strip()
@@ -10687,10 +10687,9 @@ def verify_wordpress_missing_auth_probe(
     lab = _Lab(_token())
     boot = None
     try:
-        boot = _boot_wordpress_lab(lab, plugin_source_dir, slug,
-                                   companion_plugins=companion_plugins,
-                                   on_step=step, budget_s=budget_s)
-        if not boot:
+        boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
+                              companion_plugins=companion_plugins)
+        if boot is None:
             res.detail = "fallo al arrancar el laboratorio WordPress"
             return res
 

@@ -761,7 +761,7 @@ def _cms_dockerfile_lines(cms: str, source_dir: str,
             f"[ -f server.ts ] || [ -f index.ts ] || cp /app/_h3fb.js server.js)"
         )
         lines = (["WORKDIR /app", "COPY . ."] + proxy +
-                 [f"RUN npm install || npm install --legacy-peer-deps || true"] +
+                 ["RUN npm install || npm install --legacy-peer-deps || true"] +
                  ([f"RUN {_h3_inject}"] if cms == "h3" else []) +
                  [f'CMD ["sh", "-c", "{_start_cmd}"]'])
         return ("node:20-alpine", _port, lines)
@@ -2466,8 +2466,8 @@ def verify_generic_path_traversal(
             else:
                 # Fallback 2: use /etc/passwd as the read target — no plant needed,
                 # check response for root:x:0:0: (always present on Linux containers)
-                step(f"planta de canario fallida — continuando en modo /etc/passwd "
-                     f"(sin canario propio; confirma traversal si root:x:0:0: aparece)")
+                step("planta de canario fallida — continuando en modo /etc/passwd "
+                     "(sin canario propio; confirma traversal si root:x:0:0: aparece)")
                 _canary_failed = True
 
         rel = canary_path.lstrip("/")
@@ -2610,10 +2610,10 @@ def verify_generic_path_traversal(
                             res=res, method=cand_meth, url=_shot_url,
                             resp_or_body=resp,
                             highlight="root:x:0:0:",
-                            caption_es=(f"PATH TRAVERSAL confirmado (via /etc/passwd): "
-                                        f"root:x:0:0: visible en la respuesta."),
-                            caption_en=(f"PATH TRAVERSAL confirmed (via /etc/passwd): "
-                                        f"root:x:0:0: visible in response."),
+                            caption_es=("PATH TRAVERSAL confirmado (via /etc/passwd): "
+                                        "root:x:0:0: visible en la respuesta."),
+                            caption_en=("PATH TRAVERSAL confirmed (via /etc/passwd): "
+                                        "root:x:0:0: visible in response."),
                             extra_terminal=(f"Payload: {payload_value}\n"
                                             f"Response body:\n{_resp_body[:400]}"),
                         )
@@ -4487,8 +4487,8 @@ def verify_generic_sqli_blind(
                     _sweep_orig = str(_sweep_base.get(_sweep_p) or "1")
                     _sweep_threshold = max(8, int((_ctrl_len if isinstance(_ctrl_len, int) else 20) * 0.05))
 
-                    def _sweep_send(val: str) -> Optional[int]:
-                        _p2 = dict(_sweep_base); _p2[_sweep_p] = val
+                    def _sweep_send(val: str, _sb=_sweep_base, _sp=_sweep_p) -> Optional[int]:
+                        _p2 = dict(_sb); _p2[_sp] = val
                         try:
                             _r2 = _http_request(m, base_url + endpoint_path, timeout=12,
                                                 data=_p2 if m != "GET" else None,

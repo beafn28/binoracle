@@ -629,6 +629,7 @@ def _github_mirror_fetch_wp_plugin(slug: str, version: str, dest_dir: str, step,
     wp-plugins/<slug>, or the author's own account). Try a release tag ZIP
     first, then the branch archive at the target version.
     """
+    import urllib.request as _ur, os as _os
     res = SourceFetchResult(kind="wordpress-plugin", source=slug)
     _candidate_orgs = ("wp-plugins", "wordpress-plugins", "WordPress")
     # If a version is given, try release tag zip from common GitHub mirror orgs
@@ -671,6 +672,7 @@ def _wayback_fetch_wp_plugin(slug: str, version: str, dest_dir: str, step,
     Uses the CDX API to find snapshots — no browser/JS required:
       https://web.archive.org/cdx/search/cdx?url=...&output=json&limit=1&fl=timestamp
     """
+    import urllib.request as _ur, os as _os
     res = SourceFetchResult(kind="wordpress-plugin", source=slug)
     _base_dl = f"downloads.wordpress.org/plugin/{slug}"
     if version:
@@ -4796,7 +4798,7 @@ def find_file_upload_handlers(local_path: str) -> list:
 
     for action, info in handlers.items():
         handler_fn = info["handler_fn"]
-        for fpath, text in all_texts.items():
+        for _fpath, text in all_texts.items():
             # Scope $_FILES check to the handler's function body when possible,
             # to avoid false positives from sibling functions in the same file.
             body = _fn_body(text, handler_fn) if handler_fn else ""
@@ -5012,11 +5014,11 @@ def find_web_routes(local_path: str, tech: str = "auto", max_routes: int = 40) -
                     _path = ""
                     _HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "ALL", "ANY", "HEAD", "OPTIONS"}
 
-                    def _clean_method(s: str) -> str:
+                    def _clean_method(s: str, _hm=_HTTP_METHODS) -> str:
                         # Strip quotes and take first method if comma-separated
                         # Handles: "GET", 'POST', "POST", "GET"  (quotes may appear per element)
                         s = s.strip().split(",")[0].strip().strip("'\"").upper()
-                        return s if s in _HTTP_METHODS else "ANY"
+                        return s if s in _hm else "ANY"
 
                     if len(_groups) == 2:
                         g0 = (_groups[0] or "").strip()
