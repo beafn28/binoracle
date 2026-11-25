@@ -234,6 +234,7 @@ def _save_chain_to_history(result: "ChainResult") -> None:
                 "verified":      result.verified,
                 "dynamic_verify": _dv,
                 "cve_class":     result.cve_class,
+                "vuln_class":    (getattr(_inv, "vuln_class", "") if _inv else "") or "",
                 "cvss_score":    result.cvss_score,
                 "cvss_severity": result.cvss_severity,
                 "risk_label":    result.risk_label,
@@ -243,6 +244,10 @@ def _save_chain_to_history(result: "ChainResult") -> None:
                                   if isinstance(v, (str, int, float, bool, list, dict, type(None)))},
                 "report_path":   result.report_path,
                 "error":         result.error,
+                "blockers":      list(getattr(_inv, "blockers", []) if _inv else []),
+                "poc_source":    getattr(_inv, "poc_source_used", "") if _inv else "",
+                "source_fetch":  (getattr(_inv, "source_fetch", {}) or {}) if _inv else {},
+                "llm_notes":     (getattr(_inv, "llm_notes", {}) or {}) if _inv else {},
             },
         }
         with open(_path, "w", encoding="utf-8") as _f:
