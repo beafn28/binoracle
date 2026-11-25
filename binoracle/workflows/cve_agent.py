@@ -1087,8 +1087,11 @@ def _diagnose_failure(wr: Any, technique_label: str = "", vuln_class: str = "") 
         causa = "auth_gate"
         detalle = "El endpoint requiere autenticación — la petición llega autenticada."
 
-    # 4 — respuesta vacía / JSON vacío {}
-    elif ctrl_body.strip() in ("{}", "[]", "", "null") or not ctrl_body.strip():
+    # 4 — respuesta vacía / JSON vacío {} — incluye wrappers con lista vacía como
+    # {"data":[],"total":0}, {"items":[],"count":0}, {"results":[]}, {"rows":[]}, etc.
+    elif (ctrl_body.strip() in ("{}", "[]", "", "null") or not ctrl_body.strip()
+          or __import__('re').search(r':\s*\[\s*\]', ctrl_body) is not None
+          and len(ctrl_body.strip()) < 150):
         causa = "respuesta_vacia"
         detalle = ("Respuesta de control vacía o JSON vacío — el handler existe pero la "
                    "query no devuelve filas. La DB del lab está vacía. Seed data en la tabla "
