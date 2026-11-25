@@ -12459,6 +12459,16 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             # necesita saber de que CMS es: Drupal (routing.yml) y Joomla ($input->getXxx()) se
             # leen distinto que WordPress (add_action/register_rest_route).
             plugin_dir = fr.plugin_dir or (fr.source if fr.kind in ("wordpress-plugin", "drupal-module") else "")
+            # Git fetches from common-repository/* (GitHub WP mirror) should behave as WP plugins
+            if not plugin_dir and fr.kind == "git" and fr.ok and fr.local_path:
+                _fr_src = fr.source or ""
+                if "common-repository/" in _fr_src or "plugins.svn.wordpress.org/" in _fr_src:
+                    _slug_from_mirror = _fr_src.rstrip("/").split("/")[-1]
+                    if _slug_from_mirror:
+                        plugin_dir = _slug_from_mirror
+                        # Treat as a WP plugin for downstream dispatch
+                        fr.kind = "wordpress-plugin"
+                        fr.plugin_dir = _slug_from_mirror
             inv.source_fetch["plugin_dir"] = plugin_dir
             is_drupal = fr.kind == "drupal-module" or (
                 fr.kind in ("local-zip", "zip-url") and _looks_like_drupal_module(fr.local_path, plugin_dir))
