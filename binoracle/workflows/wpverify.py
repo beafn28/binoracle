@@ -5357,13 +5357,23 @@ def _seed_plugin_tables(lab: "_Lab", db_pw: str, tables: list, step,
                     col_name, col_type, nullable = parts[0], parts[1], parts[2]
                     if nullable.upper() == 'NO' and 'auto_increment' not in line.lower():
                         # columna NOT NULL sin auto_increment → necesita valor
-                        if 'int' in col_type.lower():
+                        if 'int' in col_type.lower() or 'float' in col_type.lower() or 'decimal' in col_type.lower() or 'double' in col_type.lower():
                             nn_cols[col_name] = '1'
                         elif ('char' in col_type.lower() or 'text' in col_type.lower() or
-                              'blob' in col_type.lower() or 'binary' in col_type.lower()):
+                              'blob' in col_type.lower() or 'binary' in col_type.lower() or
+                              'json' in col_type.lower()):
                             nn_cols[col_name] = "'seed'"
                         elif 'datetime' in col_type.lower() or 'timestamp' in col_type.lower():
                             nn_cols[col_name] = "NOW()"
+                        elif 'date' in col_type.lower():
+                            nn_cols[col_name] = "CURDATE()"
+                        elif 'time' in col_type.lower():
+                            nn_cols[col_name] = "CURTIME()"
+                        elif 'enum' in col_type.lower() or 'set' in col_type.lower():
+                            # Pick first value from ENUM definition e.g. enum('a','b')
+                            import re as _re_col
+                            _enum_m = _re_col.search(r"['\"]([^'\"]+)['\"]", col_type)
+                            nn_cols[col_name] = f"'{_enum_m.group(1)}'" if _enum_m else "'0'"
             if nn_cols:
                 cols = ', '.join(nn_cols.keys())
                 vals = ', '.join(nn_cols.values())

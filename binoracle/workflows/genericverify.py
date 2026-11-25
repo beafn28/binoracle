@@ -3926,10 +3926,17 @@ def verify_generic_sqli_blind(
         for _eb_key, _eb_p in _eb_payloads.items():
             try:
                 _eb_pl = dict(base_params); _eb_pl[sqli_param] = _eb_p
-                _eb_r = _http_request(m, base_url + endpoint_path, timeout=15,
-                                      params=_eb_pl if m == "GET" else None,
-                                      data=_eb_pl if m != "GET" else None,
-                                      headers=custom_headers or None)
+                _eb_hdrs = dict(custom_headers or {})
+                if _use_json_body and m != "GET":
+                    _eb_hdrs.setdefault("Content-Type", "application/json")
+                    _eb_r = _http_request(m, base_url + endpoint_path, timeout=15,
+                                          json=_eb_pl,
+                                          headers=_eb_hdrs or None)
+                else:
+                    _eb_r = _http_request(m, base_url + endpoint_path, timeout=15,
+                                          params=_eb_pl if m == "GET" else None,
+                                          data=_eb_pl if m != "GET" else None,
+                                          headers=_eb_hdrs or None)
                 _eb_body = getattr(_eb_r, "text", "") or ""
                 if any(sig in _eb_body for sig in _eb_sigs):
                     res.verified = True
