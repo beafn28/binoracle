@@ -6810,18 +6810,36 @@ def verify_wordpress_sqli(
                                         for _mm in _meta_scan_re.finditer(_phpc2):
                                             _mk = _mm.group(1)
                                             if _mk not in _required_meta and len(_required_meta) < 10:
-                                                # Assign reasonable defaults by key name heuristic
-                                                if any(x in _mk.lower() for x in
-                                                       ("start", "date", "begin", "time", "stamp")):
+                                                # Priority: if this meta key IS the sqli_param (or contains it),
+                                                # seed with the original attack value — this handles
+                                                # WP Hotel Booking room_type=standard, etc.
+                                                _mk_lower = _mk.lower()
+                                                _sp_lower = (sqli_param or "").lower()
+                                                if _sp_lower and (_mk_lower == _sp_lower or
+                                                                   _sp_lower in _mk_lower or
+                                                                   _mk_lower in _sp_lower):
+                                                    _required_meta[_mk] = str(orig_value or "1")
+                                                elif any(x in _mk_lower for x in
+                                                         ("start", "date", "begin", "time", "stamp")):
                                                     _required_meta[_mk] = "2026-01-01"
-                                                elif any(x in _mk.lower() for x in
-                                                         ("status", "state", "approved")):
+                                                elif any(x in _mk_lower for x in
+                                                         ("status", "state", "approved", "active")):
                                                     _required_meta[_mk] = "1"
-                                                elif any(x in _mk.lower() for x in
-                                                         ("id", "location", "venue", "place")):
+                                                elif any(x in _mk_lower for x in
+                                                         ("price", "cost", "amount", "fee", "rate")):
                                                     _required_meta[_mk] = "0"
-                                                elif any(x in _mk.lower() for x in
-                                                         ("price", "cost", "amount")):
+                                                elif any(x in _mk_lower for x in
+                                                         ("type", "kind", "category", "class",
+                                                          "room", "spot", "mode", "format")):
+                                                    _required_meta[_mk] = str(orig_value or "standard")
+                                                elif any(x in _mk_lower for x in
+                                                         ("adult", "child", "guest", "people",
+                                                          "capacity", "seats", "count", "qty",
+                                                          "quantity", "spots")):
+                                                    _required_meta[_mk] = "1"
+                                                elif any(x in _mk_lower for x in
+                                                         ("id", "location", "venue", "place",
+                                                          "order", "ref", "post")):
                                                     _required_meta[_mk] = "0"
                                                 else:
                                                     _required_meta[_mk] = "1"
