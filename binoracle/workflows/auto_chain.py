@@ -3056,6 +3056,37 @@ def run_full_chain(
             step(f"  [2.5] correlación: error: {_ce}")
             result.add_step("correlation", "error", str(_ce)[:60])
 
+    # ── Stage 2.6: NVD-description endpoint extractor ────────────────────────
+    # When Stage 2 (LLM) produced no endpoint and no source, try extracting them
+    # from the raw NVD description using simple regex patterns. This is a last-resort
+    # fallback — it costs nothing and fixes many "ep=?" cases that reach Stage 5 blind.
+    if not binary and not llm_notes.get("endpoint"):
+        _nvd_desc = (getattr(cve_info, "description", "") or "")
+        if _nvd_desc:
+            import re as _re_26
+            # WP REST endpoints: /wp-json/namespace/v1/path
+            _m_wpjson = _re_26.search(r'(/wp-json/[a-zA-Z0-9_/-]+(?:/v\d+)?/[a-zA-Z0-9_/-]+)',
+                                      _nvd_desc)
+            # admin-ajax.php action= (keep action value for param detection)
+            _m_ajax = _re_26.search(r'(admin-ajax\.php)', _nvd_desc, _re_26.I)
+            # generic /wp-admin/... endpoint
+            _m_wpadmin = _re_26.search(r'(/wp-admin/[a-zA-Z0-9_/.-]+\.php)', _nvd_desc, _re_26.I)
+            # generic /api/v1/... REST path
+            _m_api = _re_26.search(r'(/api(?:/v\d+)?/[a-zA-Z0-9_/-]{3,})', _nvd_desc)
+            _ep_from_desc = None
+            if _m_wpjson:
+                _ep_from_desc = _m_wpjson.group(1)
+            elif _m_wpadmin:
+                _ep_from_desc = _m_wpadmin.group(1)
+            elif _m_ajax:
+                _ep_from_desc = "admin-ajax.php"
+            elif _m_api:
+                _ep_from_desc = _m_api.group(1)
+            if _ep_from_desc:
+                llm_notes["endpoint"] = _ep_from_desc
+                step(f"  [2.6] endpoint extraído de descripción NVD: {_ep_from_desc}")
+                result.add_step("endpoint_extract", "ok", _ep_from_desc)
+
     # ── Stage 3: Classify ─────────────────────────────────────────────────────
     _banner(step, "[3/8] CLASSIFY")
     if binary:
