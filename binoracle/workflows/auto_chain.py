@@ -3135,6 +3135,22 @@ def run_full_chain(
         "time-of-check-time-of-use": "toctou",
         "race condition": "toctou", "race-condition": "toctou",
         "insecure-deserialization": "deserialization",
+        "unauthorized-access": "missing-authorization",
+        "unauthorized-modification": "missing-authorization",
+        "unauthorized-read": "missing-authorization",
+        "broken-access-control": "missing-authorization",
+        "improper-access-control": "missing-authorization",
+        "insufficient-authorization": "missing-authorization",
+        "arbitrary-file-read": "path-traversal",
+        "arbitrary-file-write": "arbitrary-file-upload",
+        "sensitive-info-exposure": "information-disclosure",
+        "sensitive-data-exposure": "information-disclosure",
+        "data-exposure": "information-disclosure", "info-leak": "information-disclosure",
+        "privilege-escalation": "missing-authorization",
+        "vertical-privilege-escalation": "missing-authorization",
+        "horizontal-privilege-escalation": "idor",
+        "php-object-injection": "deserialization",
+        "account-takeover": "auth-bypass",
     }
     _vc_raw = (llm_notes.get("vuln_class") or "").strip().lower()
     if _vc_raw and _vc_raw in _VC_NORMALIZE:

@@ -1156,37 +1156,45 @@ def _static_vuln_precheck(local_path: str, plugin_dir: str, vuln_class: str,
         except Exception:
             pass
 
-    # --- Check 3: LFI/path-traversal — verificar que hay lectura de archivo con input externo ---
+    # --- Check 3: LFI/path-traversal — verificar que hay operacion de archivo en el plugin ---
     if vuln_class in ("lfi", "path-traversal"):
         import os as _os_pc
-        _UNSAFE_FILE_PATTERNS = re.compile(
-            r'(file_get_contents|readfile|fopen|include|require|file)\s*\(\s*'
-            r'(?:\$_(?:GET|POST|REQUEST|COOKIE)|\\$[a-zA-Z_]\w*)',
+        # Pattern A: direct call with user input as first arg
+        _UNSAFE_DIRECT = re.compile(
+            r'(file_get_contents|readfile|fopen|fread|highlight_file|show_source'
+            r'|stream_get_contents|file\s*\(|SplFileObject|include(_once)?|require(_once)?'
+            r'|file_put_contents|move_uploaded_file|copy)\s*\(',
             re.IGNORECASE)
-        _found_unsafe = False
+        # Pattern B: user input assigned to variable (tainted source)
+        _USER_INPUT_RE = re.compile(
+            r'\$_(?:GET|POST|REQUEST|COOKIE|FILES)\s*\[', re.IGNORECASE)
+        _found_file_op = False
+        _found_user_input = False
         try:
             for _root, _, _files in _os_pc.walk(local_path):
                 for _f in _files:
-                    if not _f.endswith(".php"):
+                    if not _f.endswith((".php", ".js", ".ts", ".py", ".rb")):
                         continue
                     _fpath = _os_pc.path.join(_root, _f)
                     try:
-                        with open(_fpath, encoding="utf-8", errors="ignore") as _fh:
-                            if _UNSAFE_FILE_PATTERNS.search(_fh.read()):
-                                _found_unsafe = True
-                                break
+                        _src = open(_fpath, encoding="utf-8", errors="ignore").read()
+                        if _UNSAFE_DIRECT.search(_src):
+                            _found_file_op = True
+                        if _USER_INPUT_RE.search(_src) or "req.params" in _src or "request.GET" in _src:
+                            _found_user_input = True
                     except Exception:
                         continue
-                if _found_unsafe:
+                if _found_file_op and _found_user_input:
                     break
         except Exception:
             pass
-        if not _found_unsafe:
+        # Only block if no file operations exist at all in the code
+        if not _found_file_op:
             return {
                 "ok": False,
-                "reason": ("pre-check LFI: no se detectaron lecturas de archivo con "
-                           "input de usuario en el código descargado — probable versión parchada"),
-                "confidence": 0.70,
+                "reason": ("pre-check LFI: no se detectaron operaciones de archivo "
+                           "en el código descargado — probable versión parchada"),
+                "confidence": 0.80,
             }
 
     # --- Check 4: path-traversal en Node.js / npm — detectar capas de validación ---

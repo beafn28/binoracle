@@ -148,6 +148,22 @@ WEB_CLASSES = frozenset({
     "pickle", "yaml-deserialization",
     "graphql-injection", "graphql-auth", "graphql", "graphql-authorization",
     "graphql-introspection",
+    # Information disclosure / access control variants LLM may produce
+    "information-disclosure", "sensitive-info-exposure", "sensitive-data-exposure",
+    "data-exposure", "info-leak", "information-leak",
+    "unauthorized-access", "unauthorized-modification", "unauthorized-read",
+    "unauthorized-file-access", "broken-access-control", "improper-access-control",
+    "insufficient-authorization", "privilege-escalation", "vertical-privilege-escalation",
+    "horizontal-privilege-escalation",
+    "arbitrary-file-read", "arbitrary-file-write", "arbitrary-file-deletion",
+    "arbitrary-file-move", "file-read", "file-write", "file-delete",
+    "object-deserialization", "php-deserialization", "java-deserialization",
+    "account-takeover", "user-enumeration", "password-reset",
+    "open-redirect", "unvalidated-redirect",
+    "xml-injection", "html-injection", "template-injection",
+    "cache-poisoning", "web-cache-poisoning", "request-smuggling",
+    "clickjacking", "ui-redress",
+    "cve-class-unknown", "unknown",  # allow web stage to run on unknown
 })
 
 
