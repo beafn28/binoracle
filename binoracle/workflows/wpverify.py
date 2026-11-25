@@ -6509,6 +6509,31 @@ def verify_wordpress_sqli(
                     if _mysql_tables:
                         _plugin_tables = _mysql_tables
                         step(f"tablas detectadas via MySQL LIKE query: {_mysql_tables}")
+            # Broader fallback: when slug-LIKE found nothing (short plugin table prefixes like
+            # hb_ for hotel-booking, cbs_ for course-booking), collect ALL custom non-core
+            # WP tables. This catches plugins that use abbreviation-based prefixes that don't
+            # match the full plugin slug.
+            _WP_CORE_TABLES = {
+                "posts", "postmeta", "terms", "term_taxonomy", "term_relationships",
+                "options", "users", "usermeta", "comments", "commentmeta", "links",
+            }
+            if not _plugin_tables:
+                try:
+                    _all_custom_raw = lab.exec_mysql(
+                        "SELECT table_name FROM information_schema.tables "
+                        "WHERE table_schema=DATABASE() AND table_name LIKE 'wp_%';",
+                        boot.db_pw) or ""
+                    _all_custom = [
+                        t.strip()[3:]  # strip 'wp_'
+                        for t in _all_custom_raw.strip().split('\n')
+                        if (t.strip().startswith('wp_')
+                            and t.strip()[3:] not in _WP_CORE_TABLES)
+                    ]
+                    if _all_custom:
+                        _plugin_tables = _all_custom
+                        step(f"tablas custom (broader fallback): {_all_custom[:8]}")
+                except Exception:
+                    pass
             if _plugin_tables:
                 _seeded = _seed_plugin_tables(lab, boot.db_pw, _plugin_tables, step,
                                              sqli_param=sqli_param,
