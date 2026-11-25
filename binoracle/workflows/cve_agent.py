@@ -334,8 +334,11 @@ _RESEARCH_SYS = (
     "una vulnerabilidad y propones un plan tecnico. Responde SOLO con JSON valido con las claves: "
     "vuln_class (memoria: stack-overflow, heap-overflow, uaf, double-free, format-string, oob-write, "
     "oob-read, integer-overflow, type-confusion; WEB/APP: missing-authorization, idor, auth-bypass, "
-    "sqli, xss, ssrf, command-injection, rce, path-traversal, lfi, file-upload, deserialization, xxe, "
-    "ssti, csrf, open-redirect, code-injection, dos, redos; u otra; "
+    "sqli, xss, stored-xss, ssrf, command-injection, rce, path-traversal, lfi, file-upload, "
+    "deserialization, xxe, ssti, csrf, open-redirect, code-injection, mass-assignment, "
+    "crlf-injection, session-fixation, account-takeover, 2fa-bypass, race-condition, "
+    "nosql-injection, prototype-pollution, jwt-bypass, oauth-bypass, graphql-bypass, "
+    "boolean-oracle, dos, redos; u otra; "
     "NOTAS CRITICAS DE CLASIFICACION -- LEE ESTO ANTES DE ASIGNAR: "
     "(1) SSRF vs FILE-UPLOAD: usa 'ssrf' cuando el SERVIDOR hace una peticion HTTP a una URL que CONTROLA EL ATACANTE "
     "(fetch remoto, import de URL, webhook, proxy, carga de recurso desde URL arbitraria) -- esto incluye 'zip upload via "
@@ -5587,7 +5590,8 @@ def _synthesize_exploit_from_intel(
                  "unauthorized-read", "sensitive-data-exposure"):
         _vc_normalized = "idor"
     elif _vc in ("privilege-escalation", "privesc", "broken-auth",
-                 "role-escalation", "account-takeover"):
+                 "role-escalation", "account-takeover",
+                 "session-fixation", "session-hijacking", "token-fixation"):
         _vc_normalized = "privesc"
     elif _vc in ("auth-bypass", "authentication-bypass", "broken-authentication",
                  "unauthenticated-access", "improper-authentication"):
@@ -10672,6 +10676,12 @@ _SCAFFOLD_SYS_FOR_CLASS = {
     "auth-chain":                  "_LAB_SCAFFOLD_MULTISTEP_SYS",
     "multistep":                   "_LAB_SCAFFOLD_MULTISTEP_SYS",
     "authentication-bypass":       "_LAB_SCAFFOLD_MULTISTEP_SYS",
+    # Session fixation / account takeover
+    "session-fixation":            "_LAB_SCAFFOLD_MULTISTEP_SYS",
+    "session-hijacking":           "_LAB_SCAFFOLD_MULTISTEP_SYS",
+    "token-fixation":              "_LAB_SCAFFOLD_MULTISTEP_SYS",
+    "account-takeover":            "_LAB_SCAFFOLD_MULTISTEP_SYS",
+    "password-reset-bypass":       "_LAB_SCAFFOLD_MULTISTEP_SYS",
 }
 
 # Cache de scaffolds verificados: (tech, vuln_class) → lab_config dict.
@@ -17329,6 +17339,11 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
                     "path-traversal", "sqli", "xss", "ssrf", "ssti", "xxe",
                     "open-redirect", "file-upload", "idor", "missing-authorization",
                     "auth-bypass", "csrf", "command-injection",
+                    "deserialization", "race-condition", "nosql-injection",
+                    "prototype-pollution", "mass-assignment", "crlf-injection",
+                    "session-fixation", "2fa-bypass", "jwt-bypass",
+                    "boolean-oracle", "graphql-bypass", "oauth-bypass",
+                    "stored-xss", "code-injection",
                 }
                 if (_existing_vc in _CAUSE_ROOT_CLASSES and
                         _poc_vc not in _CAUSE_ROOT_CLASSES and _poc_vc):
