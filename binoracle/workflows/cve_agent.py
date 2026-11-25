@@ -1090,8 +1090,11 @@ def _diagnose_failure(wr: Any, technique_label: str = "", vuln_class: str = "") 
     # 4 — respuesta vacía / JSON vacío {}
     elif ctrl_body.strip() in ("{}", "[]", "", "null") or not ctrl_body.strip():
         causa = "respuesta_vacia"
-        detalle = ("Respuesta de control vacía o JSON vacío — el handler existe "
-                   "pero no procesa el parámetro probado.")
+        detalle = ("Respuesta de control vacía o JSON vacío — el handler existe pero la "
+                   "query no devuelve filas. La DB del lab está vacía. Seed data en la tabla "
+                   "del plugin antes de inyectar: INSERT INTO wp_{plugin_table} o crear un CPT "
+                   "post con wp-cli post create --post_type={cpt} para que el endpoint "
+                   "devuelva al menos una fila sobre la que sea detectable el diferencial booleano.")
 
     # 5 — time-based con delta insignificante
     elif "time" in td or "tiempo" in td:
@@ -1134,6 +1137,10 @@ def _diagnose_failure(wr: Any, technique_label: str = "", vuln_class: str = "") 
         # For missing-authorization CVEs a 403/401 means the bypass hasn't been attempted yet.
         # Try common header-based bypasses before giving up or going to LLM.
         next_action = "try_bypass_headers"
+    elif causa == "respuesta_vacia" and vuln_class in ("sqli", "sql-injection",
+                                                        "order-by-injection"):
+        # Empty response means the DB has no rows; the LLM should seed data before injecting.
+        next_action = "try_seed_data"
     elif cambio_tecnica and not tecnica_agotada:
         next_action = "escalate_technique"
     else:
