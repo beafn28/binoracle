@@ -13199,6 +13199,32 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         fr.local_path, _pt_ep, notes.get("http_method") or "GET",
                         params, path_param_hint=path_p or "", on_step=step, budget_s=budget_s)
                     _apply_wpverify_result(inv, wr_rce, es, llm)
+            # Auto-detect endpoint+param para LFI cuando notes esta vacio.
+            # Busca file_get_contents/readfile con input del usuario via AJAX.
+            if (not is_drupal and not is_joomla
+                    and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
+                    and inv.vuln_class == "lfi" and not notes.get("endpoint") and fr.local_path):
+                from .websource import find_all_ajax_actions, find_ajax_action_for_param
+                _LFI_PATH_CANDIDATES = ["file", "path", "source", "template", "url",
+                                        "filename", "filepath", "dir", "include", "page"]
+                try:
+                    _lfi_action = None
+                    _lfi_param = ""
+                    for _cand_p in _LFI_PATH_CANDIDATES:
+                        _r = find_ajax_action_for_param(fr.local_path, _cand_p)
+                        if _r:
+                            _lfi_action = _r
+                            _lfi_param = _cand_p
+                            break
+                    if _lfi_action:
+                        _lfi_ep = f"/wp-admin/admin-ajax.php?action={_lfi_action}"
+                        step((f"[LFI] endpoint detectado via AJAX scanner: {_lfi_ep}" if es else
+                              f"[LFI] endpoint detected via AJAX scanner: {_lfi_ep}"))
+                        notes = {**notes, "endpoint": _lfi_ep, "http_method": "GET",
+                                 "parameters": {_lfi_param: ""}, "path_param": _lfi_param}
+                        inv.llm_notes.update(notes)
+                except Exception:
+                    pass
             # LFI (Local File Inclusion) en WordPress: include()/require() con parametro
             # controlado por el atacante. Dos niveles: lectura de fichero (/etc/passwd,
             # wp-config.php) y escalada a RCE via log poisoning (ver verify_wordpress_lfi).
