@@ -4578,6 +4578,87 @@ def auto_queue_telegram(channel: str = "CVENotify", web_only: bool = False,
     return results
 
 
+def process_never_attempted_cves(
+    max_cves: int = 10,
+    min_cvss: float = 7.0,
+    lang: str = "es",
+    budget_s: float = 300.0,
+    reports_dir: str = "binoracle_batch_reports",
+    on_step=None,
+) -> List["ChainResult"]:
+    """Re-run full chain on CVEs that have been investigated but never verified.
+
+    Scans `reports_dir` for JSON files where `attempt_evidence` is absent/empty
+    and `verified` is falsy — these have an LLM hypothesis but no dynamic test.
+    Sorts by CVSS descending and processes up to `max_cves`, re-running
+    run_full_chain so the verifier phase runs with the saved docker_image /
+    dockerfile_body / confirm_string as hints.
+    """
+    import json as _j, os as _os, re as _re_na
+    step = on_step or print
+
+    # Collect never-attempted CVEs with enough config to try
+    candidates = []
+    for fname in sorted(_os.listdir(reports_dir)):
+        if not fname.endswith(".json"):
+            continue
+        fpath = _os.path.join(reports_dir, fname)
+        try:
+            with open(fpath, encoding="utf-8") as fh:
+                d = _j.load(fh)
+        except Exception:
+            continue
+        if d.get("verified") or d.get("attempt_evidence"):
+            continue
+        n = d.get("llm_notes") or {}
+        # Must have at minimum an endpoint to attack
+        if not n.get("endpoint"):
+            continue
+        # Must have some Docker config OR a valid WP plugin source (slug only, no pip/pypi)
+        has_docker = bool(n.get("dockerfile_body") or n.get("docker_image"))
+        _src = n.get("source_url", "") or ""
+        # WP plugin slug: lowercase/digits/hyphens, no '=', no '/', no extension
+        _is_wp_slug = bool(_src and not _src.startswith("http")
+                           and not _re_na.search(r'[=./]', _src))
+        has_wp_source = _is_wp_slug
+        if not has_docker and not has_wp_source:
+            continue
+        cvss = d.get("cvss_score") or 0.0
+        if cvss < min_cvss:
+            continue
+        candidates.append((cvss, d.get("cve_id", fname.replace(".json", ""))))
+
+    candidates.sort(key=lambda x: -x[0])
+    step(f"process_never_attempted_cves: {len(candidates)} CVEs elegibles, procesando hasta {max_cves}")
+
+    results = []
+    for _, cve_id in candidates[:max_cves]:
+        step(f"\nprocess_never_attempted_cves: ejecutando {cve_id}...")
+        try:
+            r = run_full_chain(cve_id, lang=lang, budget_s=budget_s,
+                               on_step=step, save_report=True)
+            results.append(r)
+            # Persist the new verified/attempt status back to the batch report JSON
+            _out_path = _os.path.join(reports_dir, f"{cve_id}.json")
+            if _os.path.exists(_out_path):
+                try:
+                    with open(_out_path, encoding="utf-8") as fh:
+                        _existing = _j.load(fh)
+                    _existing["verified"] = r.verified
+                    _existing["engine_confidence"] = r.engine_confidence
+                    if r.evidence:
+                        _existing["attempt_evidence"] = r.evidence
+                    with open(_out_path, "w", encoding="utf-8") as fh:
+                        _j.dump(_existing, fh, indent=2, ensure_ascii=False, default=str)
+                    step(f"  {cve_id}: batch JSON actualizado ({_out_path})")
+                except Exception as _save_e:
+                    step(f"  {cve_id}: advertencia al actualizar JSON — {_save_e}")
+            step(f"  {cve_id}: {'✓ VERIFICADO' if r.verified else '? completado'}")
+        except Exception as exc:
+            step(f"  {cve_id}: error — {exc}")
+    return results
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 def chain_cli(argv=None):

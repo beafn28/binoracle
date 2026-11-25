@@ -2250,10 +2250,25 @@ def cmd_investigate_batch(args, config):
         use_chain=bool(getattr(args, "chain", False)))
 
 
+def cmd_investigate_never_attempted(args, config):
+    """Verifica CVEs que tienen hipótesis LLM pero nunca pasaron por el verificador dinámico."""
+    from .workflows.auto_chain import process_never_attempted_cves
+    max_cves  = int(getattr(args, "max_cves", 10) or 10)
+    min_cvss  = float(getattr(args, "min_cvss", 7.0) or 7.0)
+    budget_s  = float(getattr(args, "budget", 300) or 300)
+    lang      = getattr(args, "lang", "es") or "es"
+    reports   = getattr(args, "reports_dir", "binoracle_batch_reports") or "binoracle_batch_reports"
+    results   = process_never_attempted_cves(
+        max_cves=max_cves, min_cvss=min_cvss, lang=lang,
+        budget_s=budget_s, reports_dir=reports, on_step=print)
+    verified = sum(1 for r in results if r.verified)
+    print(f"\nTotal: {len(results)} CVEs procesados, {verified} verificados")
+
+
 def cmd_nvd_watch(args, config):
     """Fully autonomous mode: polls NVD API for new high-severity CVEs and investigates each."""
     import time as _time
-    from .workflows.auto_chain import auto_queue_nvd, retry_failed_cves
+    from .workflows.auto_chain import auto_queue_nvd, retry_failed_cves, process_never_attempted_cves
 
     days_back  = int(getattr(args, "days_back", 2) or 2)
     min_cvss   = float(getattr(args, "min_cvss", 7.0) or 7.0)
@@ -2264,7 +2279,8 @@ def cmd_nvd_watch(args, config):
     priority   = getattr(args, "priority", "cvss") or "cvss"
     budget_s   = float(getattr(args, "budget", 300) or 300)
     lang       = getattr(args, "lang", "es") or "es"
-    do_retry   = bool(getattr(args, "retry", False))
+    do_retry           = bool(getattr(args, "retry", False))
+    do_never_attempted = bool(getattr(args, "never_attempted", False))
 
     def _step(msg):
         print(msg, flush=True)
@@ -2301,6 +2317,13 @@ def cmd_nvd_watch(args, config):
             retry_results = retry_failed_cves(max_cves=5, lang=lang,
                                               budget_s=budget_s, on_step=_step)
             _step(f"nvd-watch: {len(retry_results)} CVEs reintentados")
+
+        if do_never_attempted:
+            _step("nvd-watch: procesando CVEs nunca intentados del historial...")
+            _na_results = process_never_attempted_cves(
+                max_cves=5, min_cvss=min_cvss, lang=lang,
+                budget_s=budget_s, on_step=_step)
+            _step(f"nvd-watch: {len(_na_results)} CVEs nunca intentados procesados")
 
         # Send Telegram cycle summary if BINORACLE_TELEGRAM_TOKEN + CHAT_ID are set
         import os as _os_tg, json as _json_tg
@@ -3211,6 +3234,20 @@ def build_parser() -> argparse.ArgumentParser:
                           "instead of investigate_cve; produces full reports + feeds history/")
     ipw.set_defaults(func=cmd_investigate_watch)
 
+    ina = sub.add_parser("investigate-never-attempted",
+                          help="re-run full chain on CVEs that were investigated but never verified — "
+                               "picks up batch-report JSONs with no attempt_evidence and re-tests them")
+    ina.add_argument("--max-cves", type=int, default=10,
+                     help="maximum CVEs to process in one run (default 10)")
+    ina.add_argument("--min-cvss", type=float, default=7.0,
+                     help="minimum CVSS score (default 7.0)")
+    ina.add_argument("--budget", type=float, default=300,
+                     help="verification budget in seconds per CVE (default 300)")
+    ina.add_argument("--lang", choices=["es", "en"], default="es")
+    ina.add_argument("--reports-dir", default="binoracle_batch_reports",
+                     help="directory containing the batch JSON reports (default binoracle_batch_reports)")
+    ina.set_defaults(func=cmd_investigate_never_attempted)
+
     nvdw = sub.add_parser("nvd-watch", help="poll NVD API for new high-severity web CVEs and "
                                             "auto-investigate each — fully autonomous mode: "
                                             "no manual CVE input needed, runs forever")
@@ -3238,6 +3275,8 @@ def build_parser() -> argparse.ArgumentParser:
                       help="report language (default es)")
     nvdw.add_argument("--retry", action="store_true",
                       help="also retry previously failed CVEs from the retry queue")
+    nvdw.add_argument("--never-attempted", dest="never_attempted", action="store_true",
+                      help="also process CVEs in batch reports that were investigated but never verified")
     nvdw.set_defaults(func=cmd_nvd_watch)
 
     sc2 = sub.add_parser("scan", help="static security scan + dependency audit + CVE test strategies "
