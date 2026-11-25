@@ -4608,6 +4608,10 @@ def find_web_routes(local_path: str, tech: str = "auto", max_routes: int = 40) -
             _tech = "php"
         elif _exts.get("rb", 0) > 0:
             _tech = "ruby"
+        elif _exts.get("go", 0) > 0:
+            _tech = "go"
+        elif _exts.get("java", 0) > 0:
+            _tech = "java"
         else:
             _tech = "nodejs"
 
@@ -4653,6 +4657,27 @@ def find_web_routes(local_path: str, tech: str = "auto", max_routes: int = 40) -
         _patterns = [
             # Rails routes.rb: get '/path', to: 'controller#action'
             _re.compile(r'^\s*(get|post|put|patch|delete|resources?)\s+[\'"]([^\'"]+)[\'"]', _re.IGNORECASE | _re.MULTILINE),
+        ]
+
+    elif _tech in ("go", "golang"):
+        _extensions = (".go",)
+        _patterns = [
+            # Gin: router.GET("/path", handler) / r.POST("/path", ...)
+            _re.compile(r'(?:router|r|g|e|mux|api)\s*\.\s*(GET|POST|PUT|PATCH|DELETE|Any|Handle)\s*\(\s*[\'"`]([^\'"`]+)[\'"`]', _re.IGNORECASE),
+            # net/http mux: mux.HandleFunc("/path", handler)
+            _re.compile(r'(?:mux|http|router|r)\s*\.\s*HandleFunc\s*\(\s*[\'"`]([^\'"`]+)[\'"`]', _re.IGNORECASE),
+            # Echo: e.GET("/path", ...) already covered above, but also e.Add("GET", "/path", ...)
+            _re.compile(r'\.Add\s*\(\s*[\'"`](GET|POST|PUT|PATCH|DELETE)[\'"`]\s*,\s*[\'"`]([^\'"`]+)[\'"`]', _re.IGNORECASE),
+        ]
+
+    elif _tech in ("java", "spring", "springboot", "jakarta"):
+        _extensions = (".java",)
+        _patterns = [
+            # Spring: @GetMapping("/path") / @PostMapping("/path") / @RequestMapping(value="/path", method=GET)
+            _re.compile(r'@(Get|Post|Put|Patch|Delete)Mapping\s*\(\s*(?:value\s*=\s*)?[\'"`]([^\'"`]+)[\'"`]', _re.IGNORECASE),
+            _re.compile(r'@RequestMapping\s*\([^)]*value\s*=\s*[\'"]([^\'"]+)[\'"]', _re.IGNORECASE),
+            # JAX-RS: @GET @Path("/path")
+            _re.compile(r'@(GET|POST|PUT|DELETE|PATCH)\s*\n\s*@Path\s*\(\s*[\'"]([^\'"]+)[\'"]', _re.IGNORECASE | _re.DOTALL),
         ]
 
     if not _patterns:
