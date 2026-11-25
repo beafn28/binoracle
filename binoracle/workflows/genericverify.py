@@ -724,10 +724,18 @@ def _cms_dockerfile_lines(cms: str, source_dir: str,
         _start_cmd = {
             "sinatra": "ruby app.rb -o 0.0.0.0 -p 9292 || rackup --host 0.0.0.0 -p 9292",
             "rack": "rackup --host 0.0.0.0 -p 9292",
-            "rails": "rails server -b 0.0.0.0 -p 3000",
+            "rails": "RAILS_ENV=development rails server -b 0.0.0.0 -p 3000",
         }.get(cms, "rackup --host 0.0.0.0 -p 9292")
+        # Rails: also install libvips + libmagickwand for Active Storage image processing
+        _extra_pkgs = ""
+        if cms == "rails":
+            _extra_pkgs = ("RUN apt-get update -qq && apt-get install -y --no-install-recommends "
+                           "libvips-dev libmagickwand-dev curl nodejs yarn postgresql-client "
+                           "sqlite3 libsqlite3-dev && rm -rf /var/lib/apt/lists/*\n")
         lines = (["WORKDIR /app", "COPY . ."] + proxy +
+                 ([_extra_pkgs] if _extra_pkgs else []) +
                  ["RUN gem install bundler && bundle install || true",
+                  "RUN rails db:create db:migrate 2>/dev/null || true",
                   f'CMD ["sh", "-c", "{_start_cmd}"]'])
         return ("ruby:3.2-slim", _port, lines)
 
@@ -5853,6 +5861,42 @@ def run_request_chain(
         )
 
         for i, step_def in enumerate(steps[:8]):  # cap at 8 steps
+            # Crypto step: compute AES-CBC/HMAC/base64/etc without sending an HTTP request.
+            # Supported: type="aes_cbc_encrypt", type="base64_encode", type="hmac_sha1"
+            if step_def.get("type") in ("aes_cbc_encrypt", "base64_encode",
+                                        "base64_decode", "hmac_sha1", "hmac_sha256"):
+                _op = step_def["type"]
+                _plaintext = _substitute(step_def.get("plaintext", ""))
+                _output_var = step_def.get("output_var", f"crypto_{i}")
+                try:
+                    if _op == "base64_encode":
+                        import base64 as _b64
+                        _vars[_output_var] = _b64.b64encode(_plaintext.encode()).decode()
+                    elif _op == "base64_decode":
+                        import base64 as _b64
+                        _vars[_output_var] = _b64.b64decode(_plaintext).decode("latin-1")
+                    elif _op == "aes_cbc_encrypt":
+                        from Crypto.Cipher import AES as _AES
+                        from Crypto.Util.Padding import pad as _pad
+                        import base64 as _b64
+                        _key_hex = _substitute(step_def.get("key_hex", "00" * 16))
+                        _iv_hex = _substitute(step_def.get("iv_hex", "00" * 16))
+                        _key = bytes.fromhex(_key_hex.replace(" ", ""))
+                        _iv = bytes.fromhex(_iv_hex.replace(" ", ""))
+                        _cipher = _AES.new(_key, _AES.MODE_CBC, _iv)
+                        _ciphertext = _cipher.encrypt(_pad(_plaintext.encode(), 16))
+                        _vars[_output_var] = _b64.b64encode(_ciphertext).decode()
+                    elif _op in ("hmac_sha1", "hmac_sha256"):
+                        import hmac as _hmac, hashlib as _hl, base64 as _b64
+                        _algo = _hl.sha1 if _op == "hmac_sha1" else _hl.sha256
+                        _secret = _substitute(step_def.get("secret", ""))
+                        _mac = _hmac.new(_secret.encode(), _plaintext.encode(), _algo)
+                        _vars[_output_var] = _b64.b64encode(_mac.digest()).decode()
+                    _step(f"  request-chain[{i+1}/{len(steps)}]: {_op} → {_output_var}={_vars[_output_var][:40]!r}")
+                except Exception as _ce:
+                    _step(f"  [WARN] crypto step {_op} falló: {_ce}")
+                continue
+
             ep = _substitute(step_def.get("endpoint", "/"))
             method = (step_def.get("method") or "GET").upper()
             body_raw = _substitute(step_def.get("body") or "")
