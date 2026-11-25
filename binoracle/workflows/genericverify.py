@@ -2580,6 +2580,9 @@ def verify_generic_lfi_rce(
                                    "lleva la ruta/fichero; afina 'parameters' o pasalo a mano "
                                    "(path_param_hint)")
             return res
+    # Normalizar variantes de placeholder URL_PATH mal generadas por el LLM
+    if re.match(r'^url.?p(?:at(?:h)?|ath)$', path_param, re.IGNORECASE):
+        path_param = "URL_PATH"
 
     boot = _bootstrap_generic_lab(source_dir, step, res, budget_s,
                                    dockerfile_body=dockerfile_body, extra_files=extra_files)

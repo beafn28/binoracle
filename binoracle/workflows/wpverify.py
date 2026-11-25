@@ -4332,6 +4332,10 @@ def verify_wordpress_lfi(
                 "la verificacion de LFI necesita saber que parametro lleva la ruta; "
                 "afina 'parameters' en la hipotesis del LLM o pasalo a mano (path_param_hint)")
             return res
+    # Normalizar variantes de placeholder URL_PATH que el LLM genera mal
+    # (ej. 'URL_PAT', 'URLPAT', 'urlpath', 'url_path') → canonical 'URL_PATH'
+    if re.match(r'^url.?p(?:at(?:h)?|ath)$', path_param, re.IGNORECASE):
+        path_param = "URL_PATH"
 
     lab = _Lab(_token())
     boot = None
