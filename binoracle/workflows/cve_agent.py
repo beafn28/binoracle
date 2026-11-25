@@ -4650,6 +4650,7 @@ def _inject_custom_docker_lab(source_dir: str, notes: dict, step=None) -> None:
         fpath = os.path.join(source_dir, fname)
         # Siempre sobreescribir: extra_files del analista son autoritativos sobre
         # cualquier residuo de una ejecucion anterior en el mismo source_dir.
+        os.makedirs(os.path.dirname(fpath), exist_ok=True)
         with open(fpath, "w") as fh2:
             fh2.write(fcontent)
     label = "docker_image" if docker_image else "dockerfile_body"
