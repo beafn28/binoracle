@@ -11052,6 +11052,13 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
 
     cve_id = inv.cve_id
     notes = inv.llm_notes or {}
+
+    # Merge endpoint_candidates (Stage 2.7) into alt_endpoints when alt_endpoints is empty
+    _ep_cands = notes.get("endpoint_candidates") or []
+    if _ep_cands and not notes.get("alt_endpoints"):
+        notes["alt_endpoints"] = [{"endpoint": ep} for ep in _ep_cands
+                                   if ep != notes.get("endpoint")]
+        inv.llm_notes = notes
     # CVE sobre una herramienta CLI LOCAL (sin servicio escuchando, sin endpoint HTTP) -- ver
     # cliverify.py, confirmado en vivo con CVE-2025-64756 (glob npm CLI). Reusa la clase
     # command-injection/os-command-injection de siempre (asi la clasifica classify_cve() sobre
