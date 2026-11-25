@@ -16672,16 +16672,57 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             step(f"no se pudo obtener el codigo: {fr.note}" if es else
                  f"could not fetch the source: {fr.note}")
             if guessed_source:
-                inv.blockers.append((f"el LLM no indico source_url; se probo '{source}' como "
-                                     f"slug de WordPress.org (adivinado del propio texto del "
-                                     f"aviso, 'This issue affects {source}:') pero no se pudo "
-                                     f"descargar ({fr.note}) -- pasa --source a mano con el slug "
-                                     f"real/un .zip si lo conoces" if es else
-                                     f"the LLM gave no source_url; tried '{source}' as a "
-                                     f"WordPress.org slug (guessed from the advisory's own "
-                                     f"'This issue affects {source}:' text) but it could not be "
-                                     f"downloaded ({fr.note}) -- pass --source by hand with the "
-                                     f"real slug/a .zip if you know it"))
+                # Try slug variants before giving up: "jupiter-x-core" → "jupiterx-core", etc.
+                _slug_variants: list = []
+                _base_slug = source or ""
+                _parts = _base_slug.split("-")
+                # Variant 1: compact single-letter components (X, Y, Z → join with adjacent)
+                _compact = []
+                i = 0
+                while i < len(_parts):
+                    if len(_parts[i]) == 1 and i > 0:
+                        _compact[-1] = _compact[-1] + _parts[i]
+                    else:
+                        _compact.append(_parts[i])
+                    i += 1
+                _v1 = "-".join(_compact)
+                if _v1 != _base_slug:
+                    _slug_variants.append(_v1)
+                # Variant 2: remove last component (sometimes "plugin"/"addon" suffix)
+                if len(_parts) > 2 and _parts[-1] in ("plugin", "addon", "widget", "app"):
+                    _slug_variants.append("-".join(_parts[:-1]))
+                # Variant 3: no hyphens at all
+                _slug_variants.append(_base_slug.replace("-", ""))
+                # Try variants
+                _fr_variant = None
+                _used_variant = None
+                for _sv in _slug_variants:
+                    if not _sv or len(_sv) < 3 or _sv == _base_slug:
+                        continue
+                    _fr_v = fetch_source(_sv, version=version, on_step=step,
+                                         cms_hint="wordpress",
+                                         exclusive_upper_bound=version_exclusive)
+                    if _fr_v.ok:
+                        _fr_variant = _fr_v
+                        _used_variant = _sv
+                        break
+                if _fr_variant:
+                    step((f"[Fix-slug] slug '{source}' falló → variante '{_used_variant}' OK") if es else
+                         (f"[Fix-slug] slug '{source}' failed → variant '{_used_variant}' OK"))
+                    fr = _fr_variant
+                    source = _used_variant
+                    # Fall through — fr.ok is now True, skip the blocker
+                else:
+                    inv.blockers.append((f"el LLM no indico source_url; se probo '{source}' como "
+                                         f"slug de WordPress.org (adivinado del propio texto del "
+                                         f"aviso, 'This issue affects {source}:') pero no se pudo "
+                                         f"descargar ({fr.note}) -- pasa --source a mano con el slug "
+                                         f"real/un .zip si lo conoces" if es else
+                                         f"the LLM gave no source_url; tried '{source}' as a "
+                                         f"WordPress.org slug (guessed from the advisory's own "
+                                         f"'This issue affects {source}:' text) but it could not be "
+                                         f"downloaded ({fr.note}) -- pass --source by hand with the "
+                                         f"real slug/a .zip if you know it"))
             else:
                 inv.blockers.append((f"no se pudo descargar el codigo ({fr.note})" if es else
                                      f"could not download the source ({fr.note})"))
