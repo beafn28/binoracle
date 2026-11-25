@@ -7956,6 +7956,40 @@ def verify_wordpress_ssrf(
                             f"'', '', '');", boot.db_pw)
                     step(f"seed SSRF CPT: wp_posts insertados para {_ssrf_cpts[:3]}")
 
+        # Backfill ID params: if the action needs a record ID (e.g. GiveWP get_receipt
+        # needs donation_id), look for id/post_id/item_id params that have no value and
+        # fill them with the first available row from plugin tables or wp_posts CPT rows.
+        _ID_PARAM_HINTS = frozenset({"id", "donation_id", "post_id", "item_id", "receipt_id",
+                                     "order_id", "event_id", "booking_id", "product_id",
+                                     "form_id", "entry_id", "log_id", "record_id"})
+        for _bp_key, _bp_val in list(base_params.items()):
+            if _bp_key.lower() in _ID_PARAM_HINTS and str(_bp_val) in ("", "0", "1", "null", "undefined"):
+                # Try plugin tables first, then wp_posts
+                _id_found = None
+                if plugin_source_dir:
+                    _ssrf_tbl_ids = _detect_plugin_tables(plugin_source_dir)
+                    for _tbl_id in _ssrf_tbl_ids[:4]:
+                        _id_row = lab.exec_mysql(
+                            f"SELECT id FROM wp_{_tbl_id} ORDER BY id LIMIT 1;", boot.db_pw)
+                        if _id_row:
+                            try:
+                                _id_found = int(_id_row.strip().split('\n')[-1])
+                                break
+                            except (ValueError, IndexError):
+                                pass
+                if _id_found is None:
+                    _wp_id_row = lab.exec_mysql(
+                        "SELECT ID FROM wp_posts WHERE post_status='publish' "
+                        "ORDER BY ID LIMIT 1;", boot.db_pw)
+                    if _wp_id_row:
+                        try:
+                            _id_found = int(_wp_id_row.strip().split('\n')[-1])
+                        except (ValueError, IndexError):
+                            pass
+                if _id_found and _id_found > 0:
+                    base_params[_bp_key] = str(_id_found)
+                    step(f"seed SSRF ID backfill: {_bp_key}={_id_found} (hallado en DB)")
+
         found = False
         tried = []
 
