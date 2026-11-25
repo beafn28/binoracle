@@ -10665,13 +10665,16 @@ def verify_wordpress_missing_auth_probe(
     parameters, on_step: Optional[Callable[[str], None]] = None,
     budget_s: float = 600.0, companion_plugins: Optional[list] = None,
     keep_lab_on_failure: bool = False,
+    confirm_string: Optional[str] = None,
 ) -> WpVerifyResult:
     """Sonda no-autenticada para information-disclosure / missing-authorization.
 
     Para CVEs donde un endpoint AJAX devuelve datos sensibles sin comprobar autenticacion.
-    No puede poner verified=True (no hay cuenta victim para demostrar acceso indebido), pero
-    pone ok=True si el endpoint responde con contenido no trivial sin login (HTTP 200 + body
-    no vacio que no sea solo el error estandar de WordPress 'You need to log in').
+    Si `confirm_string` esta en el body de la respuesta, pone verified=True (prueba dura de
+    information-disclosure: el contenido sensible especifico fue expuesto sin auth).
+    Si no hay confirm_string, solo pone ok=True si el endpoint responde con contenido no trivial
+    sin login (HTTP 200 + body no vacio que no sea solo el error estandar de WordPress 'You need
+    to log in').
 
     Esta verificacion es DEBIL (solo prueba que el endpoint responde, no que devuelve datos
     de otra cuenta), pero es evidencia real de que la comprobacion de autenticacion falta."""
@@ -10739,11 +10742,17 @@ def verify_wordpress_missing_auth_probe(
                           f"activa en esta version; probable version ya parchada")
         else:
             res.ok = True
-            res.detail = (f"sonda no-auth: el endpoint responde HTTP {status} con contenido "
-                          f"no trivial ({len(body)} bytes) sin autenticacion — evidencia debil "
-                          f"de que la comprobacion falta, pero no hay cuenta victim para "
-                          f"confirmar acceso indebido; ejecuta contra objetivo autorizado")
-            # Solo informativo (ok=True), nunca verified=True — falta la prueba de account cross-access
+            # Si hay confirm_string y aparece en el body, el information-disclosure esta probado
+            if confirm_string and confirm_string.lower() in body.lower():
+                res.verified = True
+                res.detail = (f"sonda no-auth: endpoint responde HTTP {status} con la cadena "
+                              f"de confirmacion '{confirm_string}' en el body — information "
+                              f"disclosure confirmada sin autenticacion (prueba dura)")
+            else:
+                res.detail = (f"sonda no-auth: el endpoint responde HTTP {status} con contenido "
+                              f"no trivial ({len(body)} bytes) sin autenticacion — evidencia debil "
+                              f"de que la comprobacion falta, pero no hay cuenta victim para "
+                              f"confirmar acceso indebido; ejecuta contra objetivo autorizado")
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = f"timeout de infraestructura: {e}"

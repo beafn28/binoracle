@@ -4656,9 +4656,13 @@ def _inject_custom_docker_lab(source_dir: str, notes: dict, step=None) -> None:
         return
     if not source_dir or not os.path.isdir(source_dir):
         return
-    for existing in ("Dockerfile", "docker-compose.yml", "compose.yml", "docker-compose.yaml"):
-        if os.path.exists(os.path.join(source_dir, existing)):
-            return  # proyecto ya trae su propio Dockerfile/compose, no tocarlo
+    # Solo cede al Dockerfile del repo si el ANALISTA no especificó docker_image ni
+    # dockerfile_body explícitos: si el analista los especificó, sus campos son autoritativos.
+    _analyst_has_explicit = bool(docker_image or dockerfile_body)
+    if not _analyst_has_explicit:
+        for existing in ("Dockerfile", "docker-compose.yml", "compose.yml", "docker-compose.yaml"):
+            if os.path.exists(os.path.join(source_dir, existing)):
+                return  # proyecto ya trae su propio Dockerfile/compose, no tocarlo
     df_path = os.path.join(source_dir, "Dockerfile")
     if docker_image:
         df_content = f"FROM {docker_image}\n"
@@ -13617,7 +13621,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         fr.local_path, plugin_dir, notes.get("endpoint"),
                         notes.get("http_method") or "POST", _probe_params,
                         on_step=step, budget_s=budget_s, companion_plugins=companion_plugins,
-                        keep_lab_on_failure=keep_lab_on_failure)
+                        keep_lab_on_failure=keep_lab_on_failure,
+                        confirm_string=notes.get("confirm_string") or None)
                 if wr is None:
                     inv.blockers.append(("verificacion dinamica no intentada: la hipotesis no trae "
                                          "ni un parametro de email/password ni uno de ID "
