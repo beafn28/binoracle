@@ -209,13 +209,8 @@ def verify_strapi_web_cve(
         if bearer:
             headers["Authorization"] = bearer
 
-        param = (parameters or [None])[0] if parameters else None
-        body_data = None
-        if http_method.upper() == "POST" and param and payload:
-            body_data = json.dumps({param: payload})
-            headers["Content-Type"] = "application/json"
-        elif param and payload:
-            target_url += f"?{param}={payload}"
+        body_data, target_url, headers = _build_json_params(
+            parameters, payload, http_method, target_url, headers)
 
         step(f"  strapiverify: {http_method.upper()} {target_url}")
         try:

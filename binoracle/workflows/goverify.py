@@ -327,13 +327,8 @@ def verify_go_web_cve(source_path: str, endpoint: str,
         # Build request
         target_url = base_url.rstrip("/") + endpoint
         headers = {"Content-Type": "application/json", **auth_headers}
-        param = (parameters or [None])[0] if parameters else None
-        body = None
-
-        if http_method.upper() in ("POST", "PUT", "PATCH") and param and payload:
-            body = json.dumps({param: payload})
-        elif param and payload:
-            target_url += f"?{param}={payload}"
+        body, target_url, headers = _build_json_params(
+            parameters, payload, http_method, target_url, headers)
 
         step(f"  goverify: {http_method} {target_url}")
         r = _http_request(http_method.upper(), target_url,

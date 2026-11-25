@@ -171,13 +171,22 @@ def verify_craft_web_cve(
             if cookie:
                 headers["Cookie"] = cookie
 
-            param = (parameters or [None])[0] if parameters else None
+            # Build request body/params from parameters (dict or list)
             body = None
-            if http_method.upper() == "POST" and param:
-                body = f"{param}={payload}"
-                headers["Content-Type"] = "application/x-www-form-urlencoded"
-            elif param and payload:
-                target_url += f"?{param}={payload}"
+            if isinstance(parameters, dict) and parameters:
+                from urllib.parse import urlencode as _urlencode
+                if http_method.upper() == "POST":
+                    body = _urlencode(parameters)
+                    headers["Content-Type"] = "application/x-www-form-urlencoded"
+                else:
+                    target_url += "?" + _urlencode(parameters)
+            else:
+                param = (parameters or [None])[0] if parameters else None
+                if http_method.upper() == "POST" and param:
+                    body = f"{param}={payload}"
+                    headers["Content-Type"] = "application/x-www-form-urlencoded"
+                elif param and payload:
+                    target_url += f"?{param}={payload}"
 
             step(f"  craftverify: {http_method} {target_url}")
             r = _http_request(http_method.upper(), target_url,
@@ -238,13 +247,22 @@ def verify_craft_web_cve(
             if cookie:
                 headers["Cookie"] = cookie
 
-            param = (parameters or [None])[0] if parameters else None
+            # Build request body/params from parameters (dict or list)
             body = None
-            if http_method.upper() == "POST" and param:
-                body = f"{param}={payload}"
-                headers["Content-Type"] = "application/x-www-form-urlencoded"
-            elif param and payload:
-                target_url += f"?{param}={payload}"
+            if isinstance(parameters, dict) and parameters:
+                from urllib.parse import urlencode as _urlencode
+                if http_method.upper() == "POST":
+                    body = _urlencode(parameters)
+                    headers["Content-Type"] = "application/x-www-form-urlencoded"
+                else:
+                    target_url += "?" + _urlencode(parameters)
+            else:
+                param = (parameters or [None])[0] if parameters else None
+                if http_method.upper() == "POST" and param:
+                    body = f"{param}={payload}"
+                    headers["Content-Type"] = "application/x-www-form-urlencoded"
+                elif param and payload:
+                    target_url += f"?{param}={payload}"
 
             step(f"  craftverify: {http_method} {target_url}")
             r = _http_request(http_method.upper(), target_url,

@@ -265,13 +265,8 @@ def verify_rails_web_cve(
         if token_header:
             headers["Authorization"] = token_header
 
-        param = (parameters or [None])[0] if parameters else None
-        body = None
-        if http_method.upper() == "POST" and param:
-            body = f"{param}={payload}"
-            headers["Content-Type"] = "application/x-www-form-urlencoded"
-        elif param and payload:
-            target_url += f"?{param}={payload}"
+        body, target_url, headers = _build_http_params(
+            parameters, payload, http_method, target_url, headers)
 
         step(f"  rails: {http_method} {target_url}")
         r = _http_request(http_method.upper(), target_url,

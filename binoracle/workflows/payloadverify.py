@@ -132,13 +132,9 @@ def verify_payload_web_cve(
         if bearer:
             headers["Authorization"] = bearer
 
-        param = (parameters or [None])[0] if parameters else None
-        body_data = None
-        if http_method.upper() == "POST" and param:
-            body_data = json.dumps({param: payload})
-            headers["Content-Type"] = "application/json"
-        elif param and payload:
-            target_url += f"?{param}={payload}"
+        from .genericverify import _build_json_params
+        body_data, target_url, headers = _build_json_params(
+            parameters, payload, http_method, target_url, headers)
 
         step(f"  payloadverify: {http_method} {target_url}")
         r = _http_request(http_method.upper(), target_url,

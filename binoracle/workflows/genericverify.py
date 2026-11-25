@@ -50,6 +50,70 @@ _CI_HINTS = ("cmd", "command", "exec", "run", "host", "ip", "address", "target",
 _AUTO_DOCKERFILE_NAME = ".binoracle_auto_Dockerfile"
 
 
+def _build_http_params(
+    parameters, payload: str, http_method: str, target_url: str, headers: dict
+) -> tuple:
+    """Normalize parameters (dict or list) into (body, url, headers).
+
+    For a dict: builds a full URL-encoded body (POST) or query string (GET).
+    For a list: uses the first element as param name + payload as value.
+    Returns (body_or_None, target_url, headers).
+    """
+    from urllib.parse import urlencode as _ue
+    body = None
+    if isinstance(parameters, dict) and parameters:
+        if http_method.upper() in ("POST", "PUT", "PATCH"):
+            body = _ue(parameters)
+            headers = dict(headers)
+            headers["Content-Type"] = "application/x-www-form-urlencoded"
+        else:
+            sep = "&" if "?" in target_url else "?"
+            target_url = target_url + sep + _ue(parameters)
+    else:
+        param = (parameters or [None])[0] if parameters else None
+        if http_method.upper() in ("POST", "PUT", "PATCH") and param:
+            body = f"{param}={payload}"
+            headers = dict(headers)
+            headers["Content-Type"] = "application/x-www-form-urlencoded"
+        elif param and payload:
+            sep = "&" if "?" in target_url else "?"
+            target_url = target_url + sep + f"{param}={payload}"
+    return body, target_url, headers
+
+
+def _build_json_params(
+    parameters, payload: str, http_method: str, target_url: str, headers: dict
+) -> tuple:
+    """Normalize parameters (dict or list) into (json_body, url, headers).
+
+    For a dict: json.dumps(parameters) as body.
+    For a list: json.dumps({first_param: payload}) as body.
+    GET/query params handled via URL encoding.
+    Returns (body_or_None, target_url, headers).
+    """
+    import json as _json
+    from urllib.parse import urlencode as _ue
+    body = None
+    if isinstance(parameters, dict) and parameters:
+        if http_method.upper() in ("POST", "PUT", "PATCH"):
+            body = _json.dumps(parameters)
+            headers = dict(headers)
+            headers.setdefault("Content-Type", "application/json")
+        else:
+            sep = "&" if "?" in target_url else "?"
+            target_url = target_url + sep + _ue(parameters)
+    else:
+        param = (parameters or [None])[0] if parameters else None
+        if http_method.upper() in ("POST", "PUT", "PATCH") and param:
+            body = _json.dumps({param: payload})
+            headers = dict(headers)
+            headers.setdefault("Content-Type", "application/json")
+        elif param and payload:
+            sep = "&" if "?" in target_url else "?"
+            target_url = target_url + sep + f"{param}={payload}"
+    return body, target_url, headers
+
+
 def _best_python_image() -> str:
     """Returns the best available Python base image.
 

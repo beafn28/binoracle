@@ -2088,7 +2088,10 @@ def _render_chain_log(result: ChainResult, lang: str = "es",
     if result.cvss_score:
         out.append(f"- **CVSS**: {result.cvss_score} ({result.cvss_severity})")
     if result.epss_score is not None:
-        out.append(f"- **EPSS**: {result.epss_score:.1%} ({result.epss_pct:.0f}th percentil)")
+        _epss_pct_str = (f"{result.epss_pct:.0f}th percentil"
+                         if result.epss_pct is not None else "")
+        _epss_pct_part = f" ({_epss_pct_str})" if _epss_pct_str else ""
+        out.append(f"- **EPSS**: {result.epss_score:.1%}{_epss_pct_part}")
     if result.in_cisa_kev:
         out.append("- **CISA KEV**: SÍ — EXPLOTADA ACTIVAMENTE")
     _cwe_id = result.evidence.get("cwe_id", "")

@@ -131,16 +131,8 @@ def verify_directus_web_cve(
         if bearer:
             headers["Authorization"] = bearer
 
-        param = (parameters or [None])[0] if parameters else None
-        body = None
-        if http_method.upper() == "POST" and param:
-            body = json.dumps({param: payload})
-            headers["Content-Type"] = "application/json"
-        elif http_method.upper() == "PATCH" and param:
-            body = json.dumps({param: payload})
-            headers["Content-Type"] = "application/json"
-        elif param and payload:
-            target_url += f"?{param}={payload}"
+        body, target_url, headers = _build_json_params(
+            parameters, payload, http_method, target_url, headers)
 
         step(f"  directus: {http_method} {target_url}")
         r = _http_request(http_method.upper(), target_url,

@@ -252,6 +252,7 @@ class Investigation:
     dynamic_verify: dict = field(default_factory=dict)    # {attempted, available, verified, detail}
     poc_source_used: str = ""   # URL del PoC publico (GitHub) realmente leido, "" si ninguno
     tech: str = ""               # pila tecnologica detectada: 'php','nodejs','python','ruby','java','go','dotnet','unknown'
+    cms: str = ""                # CMS detectado: 'craft','strapi','payload','wagtail','directus','ghost', etc.
     attempt_evidence: dict = field(default_factory=dict)  # evidencia REAL del intento (screenshots
                                                              # incluidas) incluso cuando NO se
                                                              # confirma -- bug real encontrado en
@@ -12177,6 +12178,14 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             _tech_as_hint = _cand
                             break
         _cms_pass = _explicit_cms or (_tech_as_hint if _tech_as_hint not in ("php", "unknown", "") else "")
+        # Persist CMS hint on investigation object so dispatch blocks can read it
+        _CMS_NAMES = {"ghost", "strapi", "payload", "craft", "craftcms", "wagtail",
+                      "directus", "typo3", "contao", "statamic", "kirby", "modx",
+                      "joomla", "drupal", "magento", "shopify", "prestashop"}
+        if _cms_pass and _cms_pass in _CMS_NAMES:
+            inv.cms = _cms_pass
+        elif _explicit_cms:
+            inv.cms = _explicit_cms
         fr = fetch_source(source, version=version, on_step=step,
                          cms_hint=_cms_pass,
                          exclusive_upper_bound=version_exclusive)
@@ -14757,6 +14766,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 if detect_craft(str(fr.local_path)):
                     step(("  craftverify: Craft CMS detectado — iniciando lab" if es else
                           "  craftverify: Craft CMS detected — starting lab"))
+                    # Si el analista especificó dockerfile_body, inyectarlo antes del lab
+                    _inject_custom_docker_lab(str(fr.local_path), notes, step)
                     wr = verify_craft_web_cve(
                         str(fr.local_path),
                         endpoint=notes.get("endpoint") or "/",

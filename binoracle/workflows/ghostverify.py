@@ -164,13 +164,8 @@ def verify_ghost_cve(
                 headers["Cookie"] = auth_header
         headers["Origin"] = base_url
 
-        param = (parameters or [None])[0] if parameters else None
-        body = None
-        if http_method.upper() == "POST" and param:
-            body = json.dumps({param: payload})
-            headers["Content-Type"] = "application/json"
-        elif param and payload:
-            target_url += f"?{param}={payload}"
+        body, target_url, headers = _build_json_params(
+            parameters, payload, http_method, target_url, headers)
 
         step(f"  ghost: {http_method} {target_url}")
         r = _http_request(http_method.upper(), target_url,
