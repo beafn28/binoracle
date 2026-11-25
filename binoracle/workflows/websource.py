@@ -367,11 +367,18 @@ def fetch_wordpress_plugin(slug: str, version: str = "", dest_dir: str = "",
             _r_gh = _github_mirror_fetch_wp_plugin(slug, version, dest_dir, step, timeout)
             if _r_gh.ok:
                 return _r_gh
+            # Last resort: Wayback Machine CDX API — archive.org may have the ZIP
+            _r_wb = _wayback_fetch_wp_plugin(slug, version, dest_dir, step, timeout)
+            if _r_wb.ok:
+                return _r_wb
             return _r_direct  # devuelve el resultado del intento directo con su error
-        # Fallback for plugins without version: try GitHub mirror
+        # Fallback for plugins without version: try GitHub mirror then Wayback Machine
         _r_gh_nover = _github_mirror_fetch_wp_plugin(slug, "", dest_dir, step, timeout)
         if _r_gh_nover.ok:
             return _r_gh_nover
+        _r_wb_nover = _wayback_fetch_wp_plugin(slug, "", dest_dir, step, timeout)
+        if _r_wb_nover.ok:
+            return _r_wb_nover
         res.note = (f"plugin '{slug}' no resuelto en WordPress.org: {e}. Posibles causas: (a) es "
                     f"COMERCIAL/premium (vendido directo por el fabricante, nunca estuvo en el "
                     f"directorio gratuito), o (b) fue CERRADO/retirado del directorio (frecuente "
@@ -653,6 +660,62 @@ def _github_mirror_fetch_wp_plugin(slug: str, version: str, dest_dir: str, step,
         except Exception:
             continue
     return res
+
+
+def _wayback_fetch_wp_plugin(slug: str, version: str, dest_dir: str, step,
+                              timeout: float) -> "SourceFetchResult":
+    """Wayback Machine CDX API fallback: when a WP plugin ZIP is no longer on
+    downloads.wordpress.org (removed/deleted plugin), look for the last archived
+    snapshot of the ZIP URL in archive.org and download it from there.
+
+    Uses the CDX API to find snapshots — no browser/JS required:
+      https://web.archive.org/cdx/search/cdx?url=...&output=json&limit=1&fl=timestamp
+    """
+    res = SourceFetchResult(kind="wordpress-plugin", source=slug)
+    _base_dl = f"downloads.wordpress.org/plugin/{slug}"
+    if version:
+        _zip_url = f"{_base_dl}.{version}.zip"
+        _cdx_url = (
+            f"https://web.archive.org/cdx/search/cdx?url={_zip_url}"
+            f"&output=json&limit=1&fl=timestamp,original&filter=statuscode:200"
+        )
+    else:
+        _zip_url = f"{_base_dl}.zip"
+        _cdx_url = (
+            f"https://web.archive.org/cdx/search/cdx?url={_zip_url}"
+            f"&output=json&limit=1&fl=timestamp,original&filter=statuscode:200"
+            f"&sort=desc"
+        )
+    try:
+        import json as _json_wb
+        req = _ur.Request(_cdx_url, headers={"User-Agent": "binoracle/1.0"})
+        with _ur.urlopen(req, timeout=min(timeout, 15)) as r:
+            cdx_data = _json_wb.loads(r.read(32 * 1024))
+        # cdx_data[0] is the header row ["timestamp","original"], [1]+ are results
+        if not cdx_data or len(cdx_data) < 2:
+            return res
+        _row = cdx_data[1]
+        _ts, _orig = _row[0], _row[1]
+        _wb_url = f"https://web.archive.org/web/{_ts}if_/{_orig}"
+        step(f"Wayback Machine: encontrado snapshot de '{slug}' ({_ts}) -- descargando...")
+        req2 = _ur.Request(_wb_url, headers={"User-Agent": "binoracle/1.0"})
+        with _ur.urlopen(req2, timeout=min(timeout, 30)) as r2:
+            if r2.status != 200:
+                return res
+            _zip_data = r2.read(50 * 1024 * 1024)
+        import zipfile, io
+        with zipfile.ZipFile(io.BytesIO(_zip_data)) as zf:
+            zf.extractall(dest_dir)
+        _extracted_dirs = [d for d in _os.listdir(dest_dir)
+                           if _os.path.isdir(_os.path.join(dest_dir, d))]
+        if _extracted_dirs:
+            res.ok = True
+            res.local_path = _os.path.join(dest_dir, _extracted_dirs[0])
+            res.resolved_version = version or "archived"
+            step(f"Wayback Machine '{slug}' extraido en {res.local_path}")
+        return res
+    except Exception:
+        return res
 
 
 def _download_wp_zip(slug: str, url: str, resolved_version: str, dest_dir: str, step,
