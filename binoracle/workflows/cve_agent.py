@@ -4405,7 +4405,7 @@ def _inject_custom_docker_lab(source_dir: str, notes: dict, step=None) -> None:
     (p.ej. server.js para h3 que necesita COPY en el Dockerfile).
     """
     docker_image = (notes.get("docker_image") or "").strip()
-    dockerfile_body = (notes.get("dockerfile_body") or "").strip()
+    dockerfile_body = (_notes_dockerfile(notes)).strip()
     if not docker_image and not dockerfile_body:
         return
     if not source_dir or not os.path.isdir(source_dir):
@@ -4429,6 +4429,21 @@ def _inject_custom_docker_lab(source_dir: str, notes: dict, step=None) -> None:
     label = "docker_image" if docker_image else "dockerfile_body"
     if step:
         step(f"inyectado Dockerfile al source_dir desde '{label}' del JSON de hipotesis")
+
+
+def _notes_dockerfile(notes: dict) -> str:
+    """Returns the effective Dockerfile body from LLM notes.
+    1. Use dockerfile_body directly if set
+    2. Fall back to 'FROM {docker_image}' when only docker_image is set
+    3. Return "" otherwise
+    """
+    df = (_notes_dockerfile(notes)).strip()
+    if df:
+        return df
+    img = (notes.get("docker_image") or "").strip()
+    if img:
+        return f"FROM {img}\n"
+    return ""
 
 
 def _notes_param(key: str, notes: dict, params, pick_fn, hints) -> "Optional[str]":
@@ -12990,7 +13005,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             # verificador escanea el codigo fuente para descubrir rutas (Rack::Static, Sinatra,
             # Flask) de forma autonoma (ver _scan_web_routes en genericverify.py).
             elif (not plugin_dir and inv.vuln_class in ("path-traversal", "lfi") and
-                  (fr.local_path or notes.get("dockerfile_body")) and
+                  (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
                   (notes.get("endpoint") or (fr.local_path and os.path.isdir(str(fr.local_path))))):
                 from .genericverify import verify_generic_path_traversal, _pick_param
                 from .wpverify import _PATH_HINTS
@@ -13062,7 +13077,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _pt_url_suffix = notes.get("url_suffix") or ""
                 _pt_query_suffix = notes.get("query_suffix") or ""
                 _pt_custom_hdrs = notes.get("custom_headers") or None
-                _pt_dockerfile = notes.get("dockerfile_body") or ""
+                _pt_dockerfile = _notes_dockerfile(notes)
                 _pt_extra_files = notes.get("extra_files") or None
                 # Si el source_dir ya tiene un Dockerfile propio (p.ej. _scaffold_httpd_lab lo
                 # creó), léelo — evita que _scaffold_llm_lab_for_class lo sobreescriba con
@@ -13368,7 +13383,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     steps=notes["request_chain"],
                     on_step=step,
                     budget_s=budget_s,
-                    dockerfile_body=notes.get("dockerfile_body") or "",
+                    dockerfile_body=_notes_dockerfile(notes),
                     extra_files=notes.get("extra_files") or None,
                     pkg_version=inv.llm_notes.get("vulnerable_version") or "",
                 )
@@ -13407,7 +13422,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                      f"attempting GENERIC DYNAMIC verification -- authorization bypass via "
                      f"{_bypass_kind}, the target is built from its own Dockerfile/compose..."))
                 _auth_ep = notes.get("endpoint")
-                _auth_dockerfile = notes.get("dockerfile_body") or ""
+                _auth_dockerfile = _notes_dockerfile(notes)
                 _auth_extra_files = notes.get("extra_files") or None
                 _auth_bypass_hdr = notes.get("bypass_header", "")
                 _auth_bypass_val = notes.get("bypass_value", "")
@@ -13674,7 +13689,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                      "exec, the target is built from its own Dockerfile/compose..."))
                 _cmdi_custom_hdrs = notes.get("custom_headers") or None
                 _cmdi_ep = notes.get("endpoint")
-                _cmdi_dockerfile = notes.get("dockerfile_body") or ""
+                _cmdi_dockerfile = _notes_dockerfile(notes)
                 _cmdi_extra_files = notes.get("extra_files") or None
                 _scf_cmdi = False
                 if not _cmdi_dockerfile and llm is not None:
@@ -14564,7 +14579,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _is_local_lab = (fr.kind == "local-dir")
                 _sqli_custom_hdrs = notes.get("custom_headers") or None
                 _sqli_setup_cmds = notes.get("setup_cmds") or None
-                _sqli_df = notes.get("dockerfile_body") or ""
+                _sqli_df = _notes_dockerfile(notes)
                 _sqli_ef = notes.get("extra_files") or None
                 _sqli_cs = notes.get("confirm_string") or ""
                 # Motor autonomo: si no hay Dockerfile, Qwen diseña el lab desde el codigo fuente
@@ -14777,7 +14792,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                      "compose..."))
                 _ssrf_custom_hdrs = notes.get("custom_headers") or None
                 _ssrf_ep = notes.get("endpoint")
-                _ssrf_dockerfile = notes.get("dockerfile_body") or ""
+                _ssrf_dockerfile = _notes_dockerfile(notes)
                 _ssrf_extra_files = notes.get("extra_files") or None
                 _scf_ssrf = False
                 if not _ssrf_dockerfile and llm is not None:
@@ -14865,7 +14880,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _hc_confirm = notes.get("confirm_string") or ""
                 _hc_patched = notes.get("patched_patterns") or None
                 _hc_hdrs = notes.get("custom_headers") or None
-                _hc_df = notes.get("dockerfile_body") or ""
+                _hc_df = _notes_dockerfile(notes)
                 _hc_ef = notes.get("extra_files") or None
                 if fr.local_path:
                     _inject_custom_docker_lab(_hc_local_path_str, notes, step)
@@ -15072,7 +15087,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                      if es else "attempting GENERIC DYNAMIC verification -- real headless-"
                      "browser execution, the target is built from its own Dockerfile/compose..."))
                 _xss_ep = notes.get("endpoint")
-                _xss_dockerfile = notes.get("dockerfile_body") or ""
+                _xss_dockerfile = _notes_dockerfile(notes)
                 _xss_extra_files = notes.get("extra_files") or None
                 _scf_xss = False
                 if not _xss_dockerfile and llm is not None:
@@ -15212,7 +15227,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                      "own Dockerfile/compose..."))
                 _ssti_custom_hdrs = notes.get("custom_headers") or None
                 _ssti_ep = notes.get("endpoint")
-                _ssti_dockerfile = notes.get("dockerfile_body") or ""
+                _ssti_dockerfile = _notes_dockerfile(notes)
                 _ssti_extra_files = notes.get("extra_files") or None
                 _scf_ssti = False
                 if not _ssti_dockerfile and llm is not None:
@@ -15299,7 +15314,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                       "(canary de clase, timing de __wakeup, gadget chains)..." if es else
                       "attempting GENERIC DYNAMIC verification -- PHP Object Injection "
                       "(class canary, __wakeup timing, gadget chains)..."))
-                _poi_dockerfile  = notes.get("dockerfile_body") or ""
+                _poi_dockerfile  = _notes_dockerfile(notes)
                 _poi_extra_files = notes.get("extra_files") or None
                 _scf_poi = False
                 if not _poi_dockerfile and llm is not None:
@@ -15412,7 +15427,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                      if es else "attempting GENERIC DYNAMIC verification -- canary file via "
                      "external entity, the target is built from its own Dockerfile/compose..."))
                 _xxe_ep = notes.get("endpoint")
-                _xxe_dockerfile = notes.get("dockerfile_body") or ""
+                _xxe_dockerfile = _notes_dockerfile(notes)
                 _xxe_extra_files = notes.get("extra_files") or None
                 _scf_xxe = False
                 if not _xxe_dockerfile and llm is not None:
@@ -15548,7 +15563,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                      "own Dockerfile/compose..."))
                 _or_custom_hdrs = notes.get("custom_headers") or None
                 _or_ep = notes.get("endpoint")
-                _or_dockerfile = notes.get("dockerfile_body") or ""
+                _or_dockerfile = _notes_dockerfile(notes)
                 _or_extra_files = notes.get("extra_files") or None
                 _scf_or = False
                 if not _or_dockerfile and llm is not None:
@@ -15783,7 +15798,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                      "secret, confirmed inside the container (grep), the target is built from "
                      "its own Dockerfile/compose..."))
                 _fu_ep = notes.get("endpoint")
-                _fu_dockerfile = notes.get("dockerfile_body") or ""
+                _fu_dockerfile = _notes_dockerfile(notes)
                 _fu_extra_files = notes.get("extra_files") or None
                 _scf_fu = False
                 if not _fu_dockerfile and llm is not None:
@@ -16012,7 +16027,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                      "(introspección → query restringida → bypass)..." if es else
                      "attempting GENERIC DYNAMIC verification -- GraphQL auth-bypass "
                      "(introspection → restricted query → bypass)..."))
-                _gql_dockerfile = notes.get("dockerfile_body") or ""
+                _gql_dockerfile = _notes_dockerfile(notes)
                 _gql_extra_files = notes.get("extra_files") or None
                 _scf_gql = False
                 if not _gql_dockerfile and llm is not None:
@@ -16079,7 +16094,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                      "attempting GENERIC DYNAMIC verification -- prototype pollution "
                      "(Object.prototype contaminated via __proto__)..."))
                 _pp_ep = notes.get("endpoint")
-                _pp_dockerfile = notes.get("dockerfile_body") or ""
+                _pp_dockerfile = _notes_dockerfile(notes)
                 _pp_extra_files = notes.get("extra_files") or None
                 _pp_poll_ep = notes.get("poll_endpoint") or "/api/status"
                 _pp_prop = notes.get("poll_prop") or "binoracle_pwned"
@@ -16154,7 +16169,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                      "(diferencia TRUE/FALSE en respuesta)..." if es else
                      "attempting GENERIC DYNAMIC verification -- boolean oracle "
                      "(TRUE/FALSE response difference)..."))
-                _bool_dockerfile = notes.get("dockerfile_body") or ""
+                _bool_dockerfile = _notes_dockerfile(notes)
                 _bool_extra_files = notes.get("extra_files") or None
                 _scf_bool = False
                 if not _bool_dockerfile and llm is not None:
@@ -16239,7 +16254,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                      "(Origin reflejado en Access-Control-Allow-Origin + Credentials)..." if es else
                      "attempting GENERIC DYNAMIC verification -- CORS reflection "
                      "(Origin reflected in Access-Control-Allow-Origin + Credentials)..."))
-                _cors_dockerfile = notes.get("dockerfile_body") or ""
+                _cors_dockerfile = _notes_dockerfile(notes)
                 _cors_extra_files = notes.get("extra_files") or None
                 _scf_cors = False
                 _cors_src = str(fr.local_path) if fr.local_path else ""
@@ -16310,7 +16325,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                       "(alg:none + clave debil)..." if es else
                       "attempting GENERIC DYNAMIC verification -- JWT bypass "
                       "(alg:none + weak secret)..."))
-                _jwt_dockerfile = notes.get("dockerfile_body") or ""
+                _jwt_dockerfile = _notes_dockerfile(notes)
                 _jwt_extra_files = notes.get("extra_files") or None
                 _scf_jwt = False
                 if not _jwt_dockerfile and llm is not None:
@@ -16363,7 +16378,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                       "(MongoDB operator bypass)..." if es else
                       "attempting GENERIC DYNAMIC verification -- NoSQL injection "
                       "(MongoDB operator bypass)..."))
-                _nosql_dockerfile  = notes.get("dockerfile_body") or ""
+                _nosql_dockerfile  = _notes_dockerfile(notes)
                 _nosql_extra_files = notes.get("extra_files") or None
                 _scf_nosql = False
                 if not _nosql_dockerfile and llm is not None:
@@ -16416,7 +16431,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                       "(state/CSRF confusion)..." if es else
                       "attempting GENERIC DYNAMIC verification -- OAuth bypass "
                       "(state/CSRF confusion)..."))
-                _oauth_dockerfile  = notes.get("dockerfile_body") or ""
+                _oauth_dockerfile  = _notes_dockerfile(notes)
                 _oauth_extra_files = notes.get("extra_files") or None
                 _scf_oauth = False
                 if not _oauth_dockerfile and llm is not None:
@@ -16473,7 +16488,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                       "(node-serialize IIFE / pickle)..." if es else
                       "attempting GENERIC DYNAMIC verification -- Deserialization "
                       "(node-serialize IIFE / pickle)..."))
-                _dser_dockerfile  = notes.get("dockerfile_body") or ""
+                _dser_dockerfile  = _notes_dockerfile(notes)
                 _dser_extra_files = notes.get("extra_files") or None
                 _scf_dser = False
                 if not _dser_dockerfile and llm is not None and not _dser_cs:
@@ -16529,7 +16544,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                       "(TOCTOU ventana de concurrencia)..." if es else
                       "attempting GENERIC DYNAMIC verification -- Race Condition "
                       "(TOCTOU concurrency window)..."))
-                _race_dockerfile  = notes.get("dockerfile_body") or ""
+                _race_dockerfile  = _notes_dockerfile(notes)
                 _race_extra_files = notes.get("extra_files") or None
                 _scf_race = False
                 if not _race_dockerfile and llm is not None:
@@ -16589,7 +16604,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                       "(middleware bypass via req.url)..." if es else
                       "attempting GENERIC DYNAMIC verification -- Path Confusion "
                       "(middleware bypass via req.url)..."))
-                _pconf_dockerfile  = notes.get("dockerfile_body") or ""
+                _pconf_dockerfile  = _notes_dockerfile(notes)
                 _pconf_extra_files = notes.get("extra_files") or None
                 _scf_pconf = False
                 if not _pconf_dockerfile and llm is not None:
@@ -16643,7 +16658,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                       "(invariante no validado)..." if es else
                       "attempting GENERIC DYNAMIC verification -- Business Logic "
                       "(invariant not validated)..."))
-                _biz_dockerfile  = notes.get("dockerfile_body") or ""
+                _biz_dockerfile  = _notes_dockerfile(notes)
                 _biz_extra_files = notes.get("extra_files") or None
                 _scf_biz = False
                 if not _biz_dockerfile and llm is not None:
@@ -16699,7 +16714,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                       "(peticion cross-origin sin token)..." if es else
                       "attempting GENERIC DYNAMIC verification -- CSRF "
                       "(cross-origin request without token)..."))
-                _csrf_dockerfile  = notes.get("dockerfile_body") or ""
+                _csrf_dockerfile  = _notes_dockerfile(notes)
                 _csrf_extra_files = notes.get("extra_files") or None
                 _scf_csrf = False
                 if not _csrf_dockerfile and llm is not None:
@@ -16754,7 +16769,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                       "(cabecera HTTP inyectada via \\r\\n)..." if es else
                       "attempting GENERIC DYNAMIC verification -- CRLF injection "
                       "(HTTP header injected via \\r\\n)..."))
-                _crlf_dockerfile  = notes.get("dockerfile_body") or ""
+                _crlf_dockerfile  = _notes_dockerfile(notes)
                 _crlf_extra_files = notes.get("extra_files") or None
                 _scf_crlf = False
                 if not _crlf_dockerfile and llm is not None:
@@ -16803,7 +16818,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                       "(extraccion de token + explotacion en cadena)..." if es else
                       "attempting GENERIC DYNAMIC verification -- MULTI-STEP CHAIN "
                       "(token extraction + chained exploitation)..."))
-                _ms_dockerfile  = notes.get("dockerfile_body") or ""
+                _ms_dockerfile  = _notes_dockerfile(notes)
                 _ms_extra_files = notes.get("extra_files") or None
                 _scf_ms = False
                 if not _ms_dockerfile and llm is not None:
@@ -16864,7 +16879,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                       "(inyeccion de campos privilegiados en registro/perfil)..." if es else
                       "attempting GENERIC DYNAMIC verification -- MASS ASSIGNMENT "
                       "(privileged field injection in registration/profile)..."))
-                _ma_dockerfile  = notes.get("dockerfile_body") or ""
+                _ma_dockerfile  = _notes_dockerfile(notes)
                 _ma_extra_files = notes.get("extra_files") or None
                 _scf_ma = False
                 if not _ma_dockerfile and llm is not None:
@@ -17352,7 +17367,7 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
     notes = inv.llm_notes  # guard: llm_notes is always {}, notes may be None if LLM failed
     _docker_img = (notes.get("docker_image") or "").strip()
     _poc_cmd = (notes.get("poc_cmd") or "").strip()
-    _dockerfile_body = (notes.get("dockerfile_body") or "").strip()
+    _dockerfile_body = (_notes_dockerfile(notes)).strip()
     if not has_bin and _dockerfile_body and _poc_cmd and not is_web_class(inv.vuln_class):
         from .binaryverify import verify_binary_crash_via_dockerfile
         step(("construyendo imagen Docker con binario vulnerable (Dockerfile personalizado)..."
