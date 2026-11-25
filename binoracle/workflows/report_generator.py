@@ -319,12 +319,30 @@ def _s_proof_of_concept(inv: Any, lang: str) -> str:
     es = lang == "es"
     hdr = "## Prueba de Concepto (PoC)" if es else "## Proof of Concept (PoC)"
     notes = (getattr(inv, "llm_notes", {}) or {})
-    method = notes.get("http_method", "POST")
-    endpoint = notes.get("endpoint", "/wp-admin/admin-ajax.php")
-    params = notes.get("parameters", [])
-    payload = (notes.get("payload_example") or notes.get("hueco_payload_hint") or
-               notes.get("sqli_payload") or notes.get("xss_payload") or "PAYLOAD")
-    custom_headers = notes.get("custom_headers", {}) or {}
+    verified = getattr(inv, "verified", False)
+    verified_ev = (getattr(inv, "verified_evidence", {}) or {})
+
+    # Prefer confirmed evidence from Docker lab over LLM hypothesis when verified
+    if verified and verified_ev:
+        method = verified_ev.get("metodo") or verified_ev.get("method") or notes.get("http_method", "GET")
+        endpoint = verified_ev.get("endpoint") or notes.get("endpoint", "/")
+        _param = (verified_ev.get("parametro_ganador") or verified_ev.get("path_param")
+                  or verified_ev.get("sqli_param") or "param")
+        _payload = verified_ev.get("payload_ganador") or verified_ev.get("payload") or "PAYLOAD"
+        params = [_param]
+        payload = _payload
+        custom_headers = notes.get("custom_headers", {}) or {}
+        _confirmed_note = ("\n> ✅ **PoC confirmado en laboratorio Docker** — payload verificado empíricamente." if es else
+                           "\n> ✅ **Lab-confirmed PoC** — payload verified empirically in isolated Docker sandbox.")
+    else:
+        method = notes.get("http_method", "POST")
+        endpoint = notes.get("endpoint", "/wp-admin/admin-ajax.php")
+        params = notes.get("parameters", [])
+        payload = (notes.get("payload_example") or notes.get("hueco_payload_hint") or
+                   notes.get("sqli_payload") or notes.get("xss_payload") or "PAYLOAD")
+        custom_headers = notes.get("custom_headers", {}) or {}
+        _confirmed_note = ""
+
     target = (notes.get("source_url") or "target.example.com").replace("https://", "").replace("http://", "").rstrip("/")
 
     headers_str = ""
@@ -363,7 +381,7 @@ def _s_proof_of_concept(inv: Any, lang: str) -> str:
                     f"\n> ⚠️ **No public PoC.** This PoC was derived by the LLM from {src_lbl} "
                     f"(confidence={conf:.0%}). Validate in lab before use.")
 
-    return f"{hdr}{gap_note}\n\n{http_block}\n\n```bash\n# curl equivalent\n{curl}\n```"
+    return f"{hdr}{_confirmed_note}{gap_note}\n\n{http_block}\n\n```bash\n# curl equivalent\n{curl}\n```"
 
 
 def _s_verification(inv: Any, lang: str) -> str:
