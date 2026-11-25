@@ -17624,7 +17624,18 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
     # 2c) CWE-based auto-classification — llena vuln_class si el LLM no lo hizo.
     # CWE IDs son mas fiables que keyword matching en descripcion libre (menos ambiguo).
     # Solo actua si el LLM no dio vuln_class O dio algo vago ("rce", "unknown").
-    _VAGUE_CLASSES = {"rce", "remote-code-execution", "unknown", "", None}
+    # Consequence classes (impact, not mechanism) that trigger auto-reclassification.
+    # The LLM often returns these when the description says "attacker can achieve X"
+    # but doesn't dig into the mechanism. CWE IDs and description keywords then try
+    # to find the real mechanism class (path-traversal, sqli, ssti, etc.).
+    # NOTE: information-disclosure, account-takeover etc. are intentionally NOT here —
+    # they're sometimes valid final classes (not just consequences). Only add a class
+    # here when it NEVER makes sense as a standalone mechanism.
+    _VAGUE_CLASSES = {
+        "rce", "remote-code-execution",
+        "privilege-escalation", "vertical-privilege-escalation", "horizontal-privilege-escalation",
+        "unknown", "", None,
+    }
     _llm_vc_raw = inv.llm_notes.get("vuln_class", "")
     if _llm_vc_raw in _VAGUE_CLASSES:
         _cwe_ids = getattr(info, "cwe_ids", None) or []
