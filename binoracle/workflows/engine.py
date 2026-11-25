@@ -1464,6 +1464,18 @@ class ExploitReasoningEngine:
          "WRONG_PARAM_TYPE", 0.72,
          "Python/Pydantic validation error — the field expects a different type; "
          "send the value as the correct Python/JSON type (int, str, bool, list)"),
+
+        # MISSING_TABLE — MySQL 'table doesn't exist' in response body (empty DB, plugin not activated)
+        # Signals that the endpoint hit a custom plugin table that hasn't been created yet.
+        # Fix: add CREATE TABLE + INSERT to seed_sql in the CVE JSON.
+        (r"\bTable\s+['\"]?[^\s'\"]+['\"]?\s+doesn['']t\s+exist\b"
+         r"|\bBase\s+table\s+or\s+view\s+not\s+found\b"
+         r"|\bUnknown\s+table\s+['\"]?[^\s'\"]+['\"]?\b"
+         r"|\bSQL.*[Tt]able.*doesn['']t\s+exist\b",
+         "RESOURCE_NOT_FOUND", 0.90,
+         "MySQL 'table doesn't exist' — the plugin custom table was never created (plugin not "
+         "activated or dbDelta never ran); add a CREATE TABLE IF NOT EXISTS + INSERT to seed_sql "
+         "in the CVE JSON to create and populate the table before the attack"),
     ]
 
     # Signals derived from HTTP status code alone
