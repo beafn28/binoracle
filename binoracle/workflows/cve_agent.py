@@ -3851,6 +3851,30 @@ _LAB_SCAFFOLD_BOOLEAN_ORACLE_SYS = (
     "\"server_port\": 3000}"
 )
 
+_LAB_SCAFFOLD_SQLI_SYS = (
+    "Eres un experto en seguridad. Genera un servidor Node.js+SQLite para un lab de SQL injection. "
+    "CRITICO bind: app.listen(3000, '0.0.0.0'). "
+    "CRITICO Dockerfile: NO hagas COPY package.json — usa RUN npm install express better-sqlite3 en su lugar. "
+    "REGLAS DEL LAB:\n"
+    "1. Base de datos SQLite en memoria con una tabla 'items' que tiene columnas id INTEGER, name TEXT, secret TEXT\n"
+    "2. Insertar al menos 3 filas; una de ellas tiene secret = CONFIRM_STRING\n"
+    "3. Endpoint GET /api/search?q=<input> construye la query con interpolacion directa:\n"
+    "   const sql = `SELECT * FROM items WHERE name LIKE '%${input}%'`\n"
+    "   (esto es el patron vulnerable — NO usar parametros preparados)\n"
+    "4. Con input normal devuelve {results: [...]} con los items encontrados\n"
+    "5. Con UNION SELECT injection (ej: ?q=' UNION SELECT 1,2,secret FROM items--) debe devolver el CONFIRM_STRING\n"
+    "6. El endpoint acepta tanto GET como POST para el parametro q\n"
+    "7. Registrar en consola la query ejecutada para debugging\n"
+    "IMPORTANTE: el nombre del endpoint y parametro vienen en el prompt del usuario (endpoint, inject_param).\n"
+    "Si el prompt especifica un endpoint diferente a /api/search, usar ese; si especifica un parametro diferente a 'q', usar ese.\n"
+    "Responde SOLO con JSON sin markdown: "
+    "{\"server_code\": \"...codigo completo del servidor...\", "
+    "\"dockerfile\": \"FROM node:18-alpine\\nWORKDIR /app\\nRUN npm install express better-sqlite3\\n"
+    "COPY server.js .\\nEXPOSE 3000\\nCMD ['node','server.js']\", "
+    "\"endpoint\": \"/api/search\", \"inject_param\": \"q\", "
+    "\"http_method\": \"GET\", \"confirm_string\": \"CONFIRM_STRING\", \"server_port\": 3000}"
+)
+
 _LAB_SCAFFOLD_MULTISTEP_SYS = (
     "Eres un experto en seguridad. Genera un servidor Node.js para un lab de multi-step auth bypass. "
     "CRITICO bind: app.listen(3000, '0.0.0.0'). "
@@ -10684,6 +10708,12 @@ _SCAFFOLD_SYS_FOR_CLASS = {
     "http-header-injection":       "_LAB_SCAFFOLD_HEADER_INJECTION_SYS",
     "crlf-injection":              "_LAB_SCAFFOLD_HEADER_INJECTION_SYS",
     "response-splitting":          "_LAB_SCAFFOLD_HEADER_INJECTION_SYS",
+    # SQL injection
+    "sqli":                        "_LAB_SCAFFOLD_SQLI_SYS",
+    "sql-injection":               "_LAB_SCAFFOLD_SQLI_SYS",
+    "sqli-union":                  "_LAB_SCAFFOLD_SQLI_SYS",
+    "sqli-blind":                  "_LAB_SCAFFOLD_SQLI_SYS",
+    "sqli-error":                  "_LAB_SCAFFOLD_SQLI_SYS",
     # NoSQL injection
     "nosql-injection":             "_LAB_SCAFFOLD_NOSQL_INJECTION_SYS",
     "nosql":                       "_LAB_SCAFFOLD_NOSQL_INJECTION_SYS",
@@ -11030,6 +11060,21 @@ def _scaffold_llm_lab_for_class(llm, source_dir: str, notes: dict, cve_id: str,
     _affected_ver = notes.get("affected_version") or notes.get("vuln_version") or ""
     _target_binary = notes.get("target_binary") or ""
     _vuln_fns_hint = notes.get("vulnerable_functions") or []
+
+    # Refine tech stack from docker_image when source dir is empty (avoids always defaulting to nodejs)
+    if tech == "nodejs" and not source_dir:
+        _docker_img = (notes.get("docker_image") or "").lower()
+        if any(x in _docker_img for x in ("python", "django", "flask", "fastapi", "uvicorn")):
+            tech = "python"
+        elif any(x in _docker_img for x in ("ruby", "rails", "sinatra")):
+            tech = "ruby"
+        elif any(x in _docker_img for x in ("golang", ":go-", "/go:")):
+            tech = "go"
+        elif any(x in _docker_img for x in ("java", "spring", "tomcat", "mvn")):
+            tech = "java"
+        elif any(x in _docker_img for x in ("php", "wordpress", "drupal", "laravel")):
+            tech = "php"
+        # Otherwise keep nodejs as default
 
     prompt = (
         f"CVE: {cve_id}\nClase de vulnerabilidad: {vuln_class}\nStack: {tech}\n"
