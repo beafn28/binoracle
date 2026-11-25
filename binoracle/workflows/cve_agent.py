@@ -5956,6 +5956,15 @@ def _synthesize_exploit_from_intel(
         _vc_normalized = "android-deeplink"
     elif _vc in ("k8s-ssrf", "kubernetes-ssrf", "imds-ssrf", "cloud-ssrf"):
         _vc_normalized = "k8s-ssrf"
+    elif _vc in ("werkzeug-debug", "flask-debug", "debug-console-rce", "debugger-rce"):
+        _vc_normalized = "werkzeug-debug"
+    elif _vc in ("broken-access-control", "bola", "bfla",
+                 "broken-object-level-authorization", "broken-function-level-authorization"):
+        _vc_normalized = "broken-access-control"
+    elif _vc in ("el-injection", "expression-language-injection",
+                 "thymeleaf-ssti", "freemarker-ssti", "velocity-ssti",
+                 "ognl-injection", "struts-rce"):
+        _vc_normalized = "el-injection"
 
     spec = _CLASS_SPECS.get(_vc_normalized, _CLASS_SPECS.get("sqli"))  # fallback to sqli spec
 
@@ -17866,6 +17875,158 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                              _lab_cfg_ma, es, progress_level=_prog)
                     else:
                         _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path), notes), "mass-assignment")] = _lab_cfg_ma
+                _apply_wpverify_result(inv, wr, es, llm)
+            # --- Information disclosure (exposed config, .env, debug endpoints) ---
+            elif (not plugin_dir and
+                  (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
+                  inv.vuln_class in ("information-disclosure", "sensitive-data-exposure",
+                                     "sensitive-info-exposure", "data-exposure", "file-read",
+                                     "arbitrary-file-read")):
+                from .genericverify import verify_generic_information_disclosure
+                step(("intentando verificacion DINAMICA GENERICA -- INFORMATION DISCLOSURE "
+                      "(ficheros config, .env, debug endpoints expuestos)..." if es else
+                      "attempting GENERIC DYNAMIC verification -- INFORMATION DISCLOSURE "
+                      "(exposed config files, .env, debug endpoints)..."))
+                _id_ep         = notes.get("endpoint") or ""
+                _id_method     = notes.get("http_method") or "GET"
+                _id_cs         = notes.get("confirm_string") or ""
+                _id_dockerfile = _notes_dockerfile(notes)
+                _id_extra      = notes.get("extra_files") or None
+                if not _id_dockerfile and llm is not None:
+                    _scf = _scaffold_llm_lab_for_class(
+                        llm, str(fr.local_path), notes, inv.cve_id,
+                        "information-disclosure", step, es,
+                        patch_diff=inv.llm_notes.get("patch_diff_analysis"))
+                    if _scf:
+                        _id_dockerfile = _scf["dockerfile_body"]
+                        _id_extra      = _scf["extra_files"]
+                        _id_ep         = _scf.get("endpoint") or _id_ep
+                        _id_cs         = _scf.get("confirm_string") or _id_cs
+                wr = verify_generic_information_disclosure(
+                    fr.local_path, _id_ep, _id_method, _id_cs,
+                    on_step=step, budget_s=budget_s,
+                    dockerfile_body=_id_dockerfile, extra_files=_id_extra)
+                _apply_wpverify_result(inv, wr, es, llm)
+            # --- Python deserialization (pickle/yaml.load RCE) ---
+            elif (not plugin_dir and
+                  (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
+                  inv.vuln_class in ("python-deserialization", "pickle", "yaml-deserialization",
+                                     "pickle-injection", "unsafe-deserialization-python")):
+                from .genericverify import verify_generic_python_deserialization
+                step(("intentando verificacion DINAMICA GENERICA -- PYTHON DESERIALIZATION "
+                      "(pickle/yaml.load RCE via payload canario)..." if es else
+                      "attempting GENERIC DYNAMIC verification -- PYTHON DESERIALIZATION "
+                      "(pickle/yaml.load RCE via canary payload)..."))
+                _pd_ep      = notes.get("endpoint") or "/api/data"
+                _pd_method  = notes.get("http_method") or "POST"
+                _pd_param   = notes.get("inject_param") or notes.get("sqli_param") or "data"
+                _pd_df      = _notes_dockerfile(notes)
+                _pd_extra   = notes.get("extra_files") or None
+                if not _pd_df and llm is not None:
+                    _scf = _scaffold_llm_lab_for_class(
+                        llm, str(fr.local_path), notes, inv.cve_id,
+                        "python-deserialization", step, es,
+                        patch_diff=inv.llm_notes.get("patch_diff_analysis"))
+                    if _scf:
+                        _pd_df    = _scf["dockerfile_body"]
+                        _pd_extra = _scf["extra_files"]
+                        _pd_ep    = _scf.get("endpoint") or _pd_ep
+                        _pd_param = _scf.get("inject_param") or _pd_param
+                wr = verify_generic_python_deserialization(
+                    fr.local_path, _pd_ep, _pd_method, _pd_param,
+                    on_step=step, budget_s=budget_s,
+                    dockerfile_body=_pd_df, extra_files=_pd_extra)
+                _apply_wpverify_result(inv, wr, es, llm)
+            # --- Werkzeug debugger RCE (exposed interactive console) ---
+            elif (not plugin_dir and
+                  (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
+                  inv.vuln_class in ("werkzeug-debug", "debug-console-rce", "flask-debug",
+                                     "debugger-rce")):
+                from .genericverify import verify_generic_werkzeug_debug_rce
+                step(("intentando verificacion DINAMICA -- WERKZEUG DEBUG RCE "
+                      "(consola interactiva expuesta, PIN bypass)..." if es else
+                      "attempting DYNAMIC verification -- WERKZEUG DEBUG RCE "
+                      "(exposed interactive console, PIN bypass)..."))
+                _wz_ep  = notes.get("endpoint") or "/__debugger__"
+                _wz_df  = _notes_dockerfile(notes)
+                _wz_ext = notes.get("extra_files") or None
+                if not _wz_df and llm is not None:
+                    _scf = _scaffold_llm_lab_for_class(
+                        llm, str(fr.local_path), notes, inv.cve_id,
+                        "werkzeug-debug", step, es,
+                        patch_diff=inv.llm_notes.get("patch_diff_analysis"))
+                    if _scf:
+                        _wz_df  = _scf["dockerfile_body"]
+                        _wz_ext = _scf["extra_files"]
+                        _wz_ep  = _scf.get("endpoint") or _wz_ep
+                wr = verify_generic_werkzeug_debug_rce(
+                    fr.local_path, _wz_ep,
+                    on_step=step, budget_s=budget_s,
+                    dockerfile_body=_wz_df, extra_files=_wz_ext)
+                _apply_wpverify_result(inv, wr, es, llm)
+            # --- Broken access control / BOLA (HTTP bypass headers, missing auth) ---
+            elif (not plugin_dir and
+                  (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
+                  inv.vuln_class in ("broken-access-control", "bola", "bfla",
+                                     "broken-object-level-authorization",
+                                     "broken-function-level-authorization")):
+                from .genericverify import verify_generic_broken_access_control
+                step(("intentando verificacion DINAMICA GENERICA -- BROKEN ACCESS CONTROL "
+                      "(HTTP method override, bypass headers, acceso no autenticado)..." if es else
+                      "attempting GENERIC DYNAMIC verification -- BROKEN ACCESS CONTROL "
+                      "(HTTP method override, bypass headers, unauthenticated access)..."))
+                _bac_ep    = notes.get("endpoint") or "/"
+                _bac_m     = notes.get("http_method") or "GET"
+                _bac_cs    = notes.get("confirm_string") or ""
+                _bac_adm   = notes.get("admin_endpoint") or ""
+                _bac_df    = _notes_dockerfile(notes)
+                _bac_extra = notes.get("extra_files") or None
+                if not _bac_df and llm is not None:
+                    _scf = _scaffold_llm_lab_for_class(
+                        llm, str(fr.local_path), notes, inv.cve_id,
+                        "broken-access-control", step, es,
+                        patch_diff=inv.llm_notes.get("patch_diff_analysis"))
+                    if _scf:
+                        _bac_df    = _scf["dockerfile_body"]
+                        _bac_extra = _scf["extra_files"]
+                        _bac_ep    = _scf.get("endpoint") or _bac_ep
+                        _bac_cs    = _scf.get("confirm_string") or _bac_cs
+                wr = verify_generic_broken_access_control(
+                    fr.local_path, _bac_ep, _bac_m, _bac_cs, _bac_adm,
+                    on_step=step, budget_s=budget_s,
+                    dockerfile_body=_bac_df, extra_files=_bac_extra)
+                _apply_wpverify_result(inv, wr, es, llm)
+            # --- Expression Language injection (Spring SpEL, JSP EL, Thymeleaf, Velocity) ---
+            elif (not plugin_dir and
+                  (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
+                  inv.vuln_class in ("spring-spel", "spel-injection", "spring-expression",
+                                     "el-injection", "expression-language-injection",
+                                     "thymeleaf-ssti", "freemarker-ssti", "velocity-ssti",
+                                     "ognl-injection", "struts-rce")):
+                from .genericverify import verify_generic_expression_language_injection
+                step(("intentando verificacion DINAMICA GENERICA -- EXPRESSION LANGUAGE "
+                      "INJECTION (Spring SpEL/JSP EL/Thymeleaf/Velocity/FreeMarker)..." if es else
+                      "attempting GENERIC DYNAMIC verification -- EXPRESSION LANGUAGE "
+                      "INJECTION (Spring SpEL/JSP EL/Thymeleaf/Velocity/FreeMarker)..."))
+                _el_ep    = notes.get("endpoint") or "/"
+                _el_m     = notes.get("http_method") or "POST"
+                _el_param = notes.get("inject_param") or notes.get("sqli_param") or "query"
+                _el_df    = _notes_dockerfile(notes)
+                _el_extra = notes.get("extra_files") or None
+                if not _el_df and llm is not None:
+                    _scf = _scaffold_llm_lab_for_class(
+                        llm, str(fr.local_path), notes, inv.cve_id,
+                        "spring-spel", step, es,
+                        patch_diff=inv.llm_notes.get("patch_diff_analysis"))
+                    if _scf:
+                        _el_df    = _scf["dockerfile_body"]
+                        _el_extra = _scf["extra_files"]
+                        _el_ep    = _scf.get("endpoint") or _el_ep
+                        _el_param = _scf.get("inject_param") or _el_param
+                wr = verify_generic_expression_language_injection(
+                    fr.local_path, _el_ep, _el_m, _el_param,
+                    on_step=step, budget_s=budget_s,
+                    dockerfile_body=_el_df, extra_files=_el_extra)
                 _apply_wpverify_result(inv, wr, es, llm)
         else:
             step(f"no se pudo obtener el codigo: {fr.note}" if es else

