@@ -821,6 +821,24 @@ def fetch_git_source(url: str, ref: str = "", dest_dir: str = "",
         res.note = "git no disponible"
         return res
     dest_dir = dest_dir or tempfile.mkdtemp(prefix="binoracle_git_")
+    # Quick existence check for GitHub repos to avoid a 90s git-clone timeout
+    # on repos that don't exist (hallucinated URLs from LLM).
+    _gh_match = re.match(r'https?://github\.com/([^/]+/[^/]+?)(?:\.git|/)?$', url)
+    if _gh_match:
+        import urllib.request as _ureq
+        import urllib.error as _uerr
+        _api_url = f"https://api.github.com/repos/{_gh_match.group(1)}"
+        try:
+            _req = _ureq.Request(_api_url,
+                                  headers={"Accept": "application/vnd.github+json",
+                                           "User-Agent": "binoracle/1.0"})
+            _ureq.urlopen(_req, timeout=6)
+        except _uerr.HTTPError as _he:
+            if _he.code == 404:
+                res.note = f"repo GitHub no existe (404): {url}"
+                return res
+        except Exception:
+            pass  # network issue — let git clone try anyway
     cmd = [git, "clone", "--depth", "1"]
     if ref:
         cmd += ["--branch", ref]
