@@ -3947,7 +3947,8 @@ _LAB_SCAFFOLD_MASS_ASSIGNMENT_SYS = (
     "{\"server_code\": \"...codigo completo...\", "
     "\"dockerfile\": \"FROM node:18-alpine\\nWORKDIR /app\\nRUN npm install express\\n"
     "COPY server.js .\\nEXPOSE 3000\\nCMD ['node','server.js']\", "
-    "\"endpoint\": \"/api/register\", \"http_method\": \"POST\", "
+    "\"endpoint\": \"/api/register\", \"profile_endpoint\": \"/api/profile\", "
+    "\"http_method\": \"POST\", "
     "\"confirm_string\": \"CONFIRM_STRING\", \"server_port\": 3000, "
     "\"parameters\": {\"username\": \"attacker\", \"password\": \"pass\", \"role\": \"admin\"}}"
 )
@@ -17423,6 +17424,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         _ma_extra_files = _scf["extra_files"]
                         _ma_ep          = _scf.get("endpoint") or _ma_ep
                         _ma_cs          = _scf.get("confirm_string") or _ma_cs
+                        # Scaffold may suggest a profile endpoint (GET /api/profile to verify role=admin)
+                        _ma_prof_ep     = _scf.get("profile_endpoint") or _scf.get("poll_endpoint") or _ma_prof_ep
                         _scf_ma         = True
                 wr = verify_generic_mass_assignment(
                     fr.local_path, _ma_ep,
