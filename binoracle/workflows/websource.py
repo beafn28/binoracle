@@ -4412,18 +4412,32 @@ _REDOS_PATTERNS = [
     ("nodejs", re.compile(r"req\.(body|query|params)\b", re.I),
      re.compile(r"\.test\(|\.match\(|\.exec\(|new\s+RegExp\(", re.I),
      (".js", ".ts")),
-    # Python: re.match/search/fullmatch on user input
-    ("python", re.compile(r"request\.(GET|POST|data|json)\b", re.I),
-     re.compile(r"re\.(match|search|fullmatch|findall|compile)\(", re.I),
+    # Python: re.match/search/fullmatch on user input (Django/Flask/FastAPI)
+    ("python", re.compile(r"request\.(GET|POST|data|json|args|form)\b|"
+                           r"request\.get\(\s*['\"]|"
+                           r"@app\.route|@router\.(get|post)\b", re.I),
+     re.compile(r"re\.(match|search|fullmatch|findall|compile)\s*\(|"
+                r"regex\.match\s*\(|"
+                r"import re\b", re.I),
      (".py",)),
     # PHP: preg_match/preg_replace on user input
     ("php", re.compile(r"\$_(?:GET|POST|REQUEST)\b", re.I),
      re.compile(r"preg_match\s*\(|preg_replace\s*\(|preg_split\s*\(", re.I),
      (".php",)),
     # Java: Pattern.matches / .matcher applied to user input
-    ("java", re.compile(r"request\.getParameter\(", re.I),
-     re.compile(r"Pattern\.compile\(|\.matches\(|\.matcher\(", re.I),
+    ("java", re.compile(r"request\.getParameter\(|@RequestParam\b", re.I),
+     re.compile(r"Pattern\.compile\(|\.matches\(|\.matcher\(|"
+                r"java\.util\.regex\b", re.I),
      (".java",)),
+    # Go: regexp.MatchString / regexp.MustCompile applied to user input
+    ("go", re.compile(r"r\.FormValue\(|c\.Query\(|c\.Param\(|"
+                       r"r\.URL\.Query\(\)\.Get\(", re.I),
+     re.compile(r"regexp\.(MatchString|Compile|MustCompile|Match)\s*\(", re.I),
+     (".go",)),
+    # Ruby: Regexp match applied to user input (Rails/Sinatra)
+    ("ruby", re.compile(r"params\[|request\.params|@params\b", re.I),
+     re.compile(r"\.match\s*\(|=~\s*\/|Regexp\.new\s*\(|\.scan\s*\(", re.I),
+     (".rb",)),
 ]
 
 def find_redos_sinks(local_path: str, tech: str = "auto") -> List[VulnSink]:
