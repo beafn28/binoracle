@@ -4448,6 +4448,7 @@ def find_file_upload_handlers(local_path: str) -> list:
         r"""(?:['"]([\w\\:]+)['"]|array\s*\([^)]{0,80}['\"]([\w\\:]+)['\"])""",
         re.S)
     _FILES_USE = re.compile(r'\$_FILES\b', re.I)
+    _FILES_KEY = re.compile(r"""\$_FILES\s*\[\s*['"]([A-Za-z0-9_\-]+)['"]\s*\]""", re.I)
     _UPLOAD_FNS = re.compile(
         r'\b(?:wp_handle_upload|move_uploaded_file|wp_handle_sideload'
         r'|media_handle_upload|is_uploaded_file)\s*\(', re.I)
@@ -4482,16 +4483,46 @@ def find_file_upload_handlers(local_path: str) -> list:
             if nopriv:
                 handlers[action]["nopriv"] = True
 
+    # Helper: extract the body of a named PHP function (up to 4 KB)
+    _FN_DEF = re.compile(
+        r'function\s+{fn}\s*\([^)]*\)\s*\{{'.format(fn=r'(?P<fn>[A-Za-z0-9_]+)'), re.S)
+    def _fn_body(text: str, fn_name: str) -> str:
+        """Return the first 4 KB of the named function's body, or '' if not found."""
+        # Strip class prefix: 'ClassName::method_name' → 'method_name'
+        bare = fn_name.split("::")[-1].split("->")[-1].strip()
+        m = re.search(r'function\s+' + re.escape(bare) + r'\s*\([^)]*\)\s*\{', text, re.S)
+        if not m:
+            return ""
+        start = m.end()
+        depth, pos, limit = 1, start, start + 4096
+        while pos < min(limit, len(text)) and depth > 0:
+            c = text[pos]
+            if c == '{':
+                depth += 1
+            elif c == '}':
+                depth -= 1
+            pos += 1
+        return text[start:pos]
+
     for action, info in handlers.items():
         handler_fn = info["handler_fn"]
         for fpath, text in all_texts.items():
-            if _FILES_USE.search(text) or _UPLOAD_FNS.search(text):
-                if handler_fn and handler_fn in text:
-                    info["has_upload"] = True
-                elif action in text and (_FILES_USE.search(text) or _UPLOAD_FNS.search(text)):
-                    info["has_upload"] = True
+            # Scope $_FILES check to the handler's function body when possible,
+            # to avoid false positives from sibling functions in the same file.
+            body = _fn_body(text, handler_fn) if handler_fn else ""
+            search_scope = body if body else (text if handler_fn and handler_fn in text else "")
+            if not search_scope and action in text:
+                # Handler function not found by name — fall back to scanning file for action string
+                search_scope = text
+            if _FILES_USE.search(search_scope) or _UPLOAD_FNS.search(search_scope):
+                info["has_upload"] = True
             if _AUTH_CHECK.search(text) and (handler_fn in text or action in text):
                 info["has_auth"] = True
+            # Extract $_FILES key name from the handler's scope
+            if not info.get("file_param") and info.get("has_upload"):
+                km = _FILES_KEY.search(search_scope or text)
+                if km:
+                    info["file_param"] = km.group(1)
 
     results = [h for h in handlers.values() if h["has_upload"]]
     # Sort: nopriv+no-auth first (most exploitable), then nopriv, then with auth
