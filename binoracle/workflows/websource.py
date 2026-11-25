@@ -2081,6 +2081,8 @@ def find_ajax_action_for_param(local_path: str, param_name: str) -> Optional[str
     param_pats = [
         re.compile(rf"\$_POST\s*\[\s*['\"]?{re.escape(top_key)}['\"]?\s*\]"),
         re.compile(rf"\$_REQUEST\s*\[\s*['\"]?{re.escape(top_key)}['\"]?\s*\]"),
+        # LFI parameters are often in $_GET (e.g. $_GET['file'], $_GET['path'])
+        re.compile(rf"\$_GET\s*\[\s*['\"]?{re.escape(top_key)}['\"]?\s*\]"),
     ]
     # registro de acciones AJAX: captura la accion y luego extrae el nombre del metodo/funcion
     # del segundo argumento, que puede ser:
