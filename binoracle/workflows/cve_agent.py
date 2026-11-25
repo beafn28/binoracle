@@ -8217,11 +8217,13 @@ _PLUGIN_NAME_PATTERNS = [
     re.compile(r"[Tt]his issue affects ([A-Za-z0-9][A-Za-z0-9 .\-]{1,60}?):"),
     re.compile(r"vulnerability in ([A-Za-z0-9][A-Za-z0-9 .\-]{1,60}?) allows"),
     re.compile(r"in the ([A-Za-z0-9][A-Za-z0-9 .\-]{1,60}?) WordPress plugin"),
-    re.compile(r"in the ([A-Za-z0-9][A-Za-z0-9 .\-]{1,60}?) plugin"),
     # otro fraseo muy comun de WPScan/Patchstack (confirmado en vivo: CVE-2024-3552 "The Web
     # Directory Free WordPress plugin before 1.7.0 does not sanitise...") -- "The <X> WordPress
     # plugin before/version <Y> ..." en vez de "vulnerability in X allows"/"This issue affects X:".
     re.compile(r"[Tt]he ([A-Za-z0-9][A-Za-z0-9 .\-]{1,60}?) WordPress plugin (?:before|versions?)"),
+    # "The PluginName – subtitle plugin for WordPress" -- GutenKit y otros plugins con nombre
+    # corto seguido de em-dash y descripcion larga. El nombre real (antes del "–") es el slug.
+    re.compile(r"[Tt]he ([A-Za-z0-9][A-Za-z0-9 .\-]{1,40}?) (?:–|—|-{1,2}) "),
     # WooCommerce/WooPayments style: "vulnerability exists in X, also known as Y" -- priorizamos
     # el alias (despues de "also known as") porque es el nombre largo que genera el slug correcto.
     # Confirmado en vivo: CVE-2023-28121 "in WooPayments, also known as WooCommerce Payments" →
@@ -8234,6 +8236,8 @@ _PLUGIN_NAME_PATTERNS = [
     re.compile(r"([A-Za-z0-9][A-Za-z0-9 .\-]{1,60}?)(?:\s*\([^)]{1,80}\))? plugin for (?:WordPress|WooCommerce)"),
     # "plugin X" – fraseo corto de NVD cuando el nombre es el sujeto directo
     re.compile(r"plugin\s+([A-Za-z0-9][A-Za-z0-9 .\-]{1,60}?)\s+(?:<=|before|through|version)"),
+    # "in the X plugin" -- broad, last resort (can grab component names like "Block Editor")
+    re.compile(r"in the ([A-Za-z0-9][A-Za-z0-9 .\-]{1,60}?) plugin"),
     # "PluginName <= X.Y.Z" o "PluginName < X.Y.Z" -- titulo de WPScan/RandomRobbieBF
     re.compile(r"^([A-Za-z0-9][A-Za-z0-9 .\-]{2,60}?)\s+(?:<=?|<|>=?)\s+[0-9]"),
     # "PluginName – X" o "PluginName - X" cuando el nombre precede a un guion y texto
