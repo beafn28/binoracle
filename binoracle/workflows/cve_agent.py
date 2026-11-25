@@ -14791,6 +14791,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         pkg_version=inv.llm_notes.get("vulnerable_version") or "",
                         on_step=step,
                         budget_s=budget_s,
+                        json_body=bool(notes.get("json_body")),
                     )
                     _apply_wpverify_result(inv, wr, es, llm)
             # Payload CMS: Node.js headless CMS with JWT admin auth

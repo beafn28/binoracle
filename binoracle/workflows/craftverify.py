@@ -25,14 +25,18 @@ _CRAFT_ADMIN_NAME = "binoracle"
 
 
 def detect_craft(source_dir: str) -> bool:
-    """Return True if source looks like a Craft CMS project."""
+    """Return True if source looks like a Craft CMS project OR library."""
     import json as _j
     composer = os.path.join(source_dir, "composer.json")
     if os.path.isfile(composer):
         try:
             data = _j.loads(open(composer).read())
+            # Craft CMS project: requires craftcms/cms
             reqs = {**data.get("require", {}), **data.get("require-dev", {})}
             if "craftcms/cms" in reqs:
+                return True
+            # Craft CMS library itself: name == "craftcms/cms"
+            if data.get("name") == "craftcms/cms":
                 return True
         except Exception:
             pass
@@ -41,6 +45,10 @@ def detect_craft(source_dir: str) -> bool:
         if os.path.isfile(os.path.join(source_dir, marker)):
             if os.path.isdir(os.path.join(source_dir, "config")):
                 return True
+    # Check for CraftCMS library source markers (src/Craft.php or src/console/)
+    if (os.path.isfile(os.path.join(source_dir, "src", "Craft.php"))
+            or os.path.isdir(os.path.join(source_dir, "src", "web"))):
+        return True
     return False
 
 
@@ -140,6 +148,7 @@ def verify_craft_web_cve(
     pkg_version: str = "",
     on_step: Optional[Callable] = None,
     budget_s: float = 240.0,
+    json_body: bool = False,
 ) -> WpVerifyResult:
     """Verify a Craft CMS CVE dynamically.
 
@@ -163,22 +172,49 @@ def verify_craft_web_cve(
             step("  craftverify: usando lab genérico PHP para Craft CMS")
 
             cookie = None
+            csrf_token = ""
             if auth_required:
                 cookie = _get_craft_session(base_url, step)
+            # Fetch CSRF token for POST endpoints (needed even without full auth login)
+            if http_method.upper() not in ("GET", "HEAD"):
+                try:
+                    _csrf_r = _http_request("GET", base_url + "/index.php?p=admin/dashboard",
+                                            timeout=5)
+                    m_csrf = re.search(r'name="CRAFT_CSRF_TOKEN"\s+value="([^"]+)"',
+                                       _csrf_r.body or "")
+                    if m_csrf:
+                        csrf_token = m_csrf.group(1)
+                    if not csrf_token:
+                        import json as _jcsrf
+                        _csrf_r2 = _http_request(
+                            "GET", base_url + "/index.php?p=actions/users/session-info",
+                            headers={"Accept": "application/json"}, timeout=5)
+                        csrf_token = (_jcsrf.loads(_csrf_r2.body or "{}").get(
+                            "csrfTokenValue") or "")
+                except Exception:
+                    pass
 
             target_url = base_url + endpoint
             headers = {}
             if cookie:
                 headers["Cookie"] = cookie
+            if csrf_token:
+                headers["X-CSRF-Token"] = csrf_token
 
             # Build request body/params from parameters (dict or list)
             body = None
             if isinstance(parameters, dict) and parameters:
-                from urllib.parse import urlencode as _urlencode
                 if http_method.upper() == "POST":
-                    body = _urlencode(parameters)
-                    headers["Content-Type"] = "application/x-www-form-urlencoded"
+                    if json_body:
+                        import json as _jb
+                        body = _jb.dumps(parameters)
+                        headers["Content-Type"] = "application/json"
+                    else:
+                        from urllib.parse import urlencode as _urlencode
+                        body = _urlencode(parameters)
+                        headers["Content-Type"] = "application/x-www-form-urlencoded"
                 else:
+                    from urllib.parse import urlencode as _urlencode
                     target_url += "?" + _urlencode(parameters)
             else:
                 param = (parameters or [None])[0] if parameters else None
@@ -239,22 +275,49 @@ def verify_craft_web_cve(
 
             base_url = f"http://{host}:{_CRAFT_PORT}"
             cookie = None
+            csrf_token = ""
             if auth_required:
                 cookie = _get_craft_session(base_url, step)
+            # Fetch CSRF token for POST endpoints (needed even without full auth login)
+            if http_method.upper() not in ("GET", "HEAD"):
+                try:
+                    _csrf_r = _http_request("GET", base_url + "/index.php?p=admin/dashboard",
+                                            timeout=5)
+                    m_csrf = re.search(r'name="CRAFT_CSRF_TOKEN"\s+value="([^"]+)"',
+                                       _csrf_r.body or "")
+                    if m_csrf:
+                        csrf_token = m_csrf.group(1)
+                    if not csrf_token:
+                        import json as _jcsrf
+                        _csrf_r2 = _http_request(
+                            "GET", base_url + "/index.php?p=actions/users/session-info",
+                            headers={"Accept": "application/json"}, timeout=5)
+                        csrf_token = (_jcsrf.loads(_csrf_r2.body or "{}").get(
+                            "csrfTokenValue") or "")
+                except Exception:
+                    pass
 
             target_url = base_url + endpoint
             headers = {}
             if cookie:
                 headers["Cookie"] = cookie
+            if csrf_token:
+                headers["X-CSRF-Token"] = csrf_token
 
             # Build request body/params from parameters (dict or list)
             body = None
             if isinstance(parameters, dict) and parameters:
-                from urllib.parse import urlencode as _urlencode
                 if http_method.upper() == "POST":
-                    body = _urlencode(parameters)
-                    headers["Content-Type"] = "application/x-www-form-urlencoded"
+                    if json_body:
+                        import json as _jb
+                        body = _jb.dumps(parameters)
+                        headers["Content-Type"] = "application/json"
+                    else:
+                        from urllib.parse import urlencode as _urlencode
+                        body = _urlencode(parameters)
+                        headers["Content-Type"] = "application/x-www-form-urlencoded"
                 else:
+                    from urllib.parse import urlencode as _urlencode
                     target_url += "?" + _urlencode(parameters)
             else:
                 param = (parameters or [None])[0] if parameters else None
