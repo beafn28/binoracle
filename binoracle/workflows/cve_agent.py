@@ -14770,8 +14770,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                   and inv.vuln_class in ("xss", "sqli", "sql-injection", "ssrf", "idor",
                                          "missing-authorization", "auth-bypass",
                                          "broken-access-control", "ssti", "rce",
-                                         "command-injection", "os-command-injection",
-                                         "path-traversal")
+                                         "code-injection", "command-injection",
+                                         "os-command-injection", "path-traversal")
                   and notes.get("endpoint")):
                 from .craftverify import detect_craft, verify_craft_web_cve
                 if detect_craft(str(fr.local_path)):
