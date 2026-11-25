@@ -5359,13 +5359,34 @@ def _seed_plugin_tables(lab: "_Lab", db_pw: str, tables: list, step,
                 pass
             if _existing_count == 0:
                 # Create one seed post per CPT (up to 3) so JOIN queries find rows
+                _post_id = 1
                 for _cpt_type in _cpts[:3]:
-                    lab.exec_mysql(
-                        f"INSERT IGNORE INTO wp_posts "
-                        f"(ID, post_title, post_status, post_type, post_name, guid) "
-                        f"VALUES (1, 'Seed {_cpt_type}', 'publish', '{_cpt_type}', "
-                        f"'seed-{_cpt_type}', 'seed-{_cpt_type}');", db_pw)
-                step(f"seed: WP posts creados para CPTs {_cpts[:3]} (JOIN FK seed)")
+                    _r_ins = lab.exec_mysql(
+                        f"INSERT INTO wp_posts "
+                        f"(post_title, post_status, post_type, post_name, guid, post_date, post_date_gmt, "
+                        f"post_modified, post_modified_gmt, to_ping, pinged, post_content_filtered) "
+                        f"VALUES ('Seed {_cpt_type}', 'publish', '{_cpt_type}', "
+                        f"'seed-{_cpt_type}', 'seed-{_cpt_type}', NOW(), NOW(), NOW(), NOW(), '', '', '');",
+                        db_pw) or ""
+                    # Retrieve the actual auto-increment ID assigned
+                    _id_r = lab.exec_mysql("SELECT LAST_INSERT_ID();", db_pw) or ""
+                    try:
+                        _post_id = int(_id_r.strip().split('\n')[-1])
+                    except (ValueError, IndexError):
+                        _post_id = 1
+                step(f"seed: WP posts creados para CPTs {_cpts[:3]} (ID={_post_id}, JOIN FK seed)")
+                # Update FK columns in plugin tables to reference the seeded post
+                # so queries like `WHERE post_id = X` find the row.
+                _fk_col_names = ("post_id", "event_id", "booking_id", "product_id",
+                                  "room_id", "course_id", "lesson_id", "item_id")
+                for _tbl_name in tables[:8]:
+                    _ft = f"wp_{_tbl_name}"
+                    for _fk in _fk_col_names:
+                        lab.exec_mysql(
+                            f"UPDATE {_ft} SET {_fk}={_post_id} "
+                            f"WHERE id=(SELECT MIN(id) FROM (SELECT id FROM {_ft} LIMIT 1) t) "
+                            f"AND {_fk}=0 OR {_fk} IS NULL;",
+                            db_pw)
 
     return seeded
 
