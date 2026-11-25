@@ -3784,6 +3784,24 @@ _XSS_PATTERNS = [
      re.compile(r"\bhtml_safe\b|\braw\s*\("
                 r"|\brender\s+(?:inline|html):", re.IGNORECASE),
      [".rb", ".erb"]),
+    ("go",
+     re.compile(r"r\.(?:FormValue|URL\.Query\(\)\.Get)\s*\(\s*[\"']([A-Za-z0-9_]+)[\"']"
+                r"|c\.Query\s*\(\s*[\"']([A-Za-z0-9_]+)[\"']"   # Gin
+                r"|c\.Param\s*\(\s*[\"']([A-Za-z0-9_]+)[\"']"),  # Gin path param
+     re.compile(r"fmt\.Fprintf\s*\(w"
+                r"|w\.Write\s*\(\s*\[\]byte"
+                r"|template\.HTML\s*\("
+                r"|html/template.*Funcs|\.ExecuteTemplate\s*\(w", re.IGNORECASE),
+     [".go"]),
+    ("java",
+     re.compile(r"request\.getParameter\s*\(\s*[\"']([A-Za-z0-9_]+)[\"']"
+                r"|@RequestParam[^)]*\bname\s*=\s*[\"']([A-Za-z0-9_]+)[\"']"
+                r"|@PathVariable[^)]*[\"']([A-Za-z0-9_]+)[\"']"),
+     re.compile(r"\.getWriter\(\)\.print\s*\("
+                r"|ResponseEntity\.ok\s*\(.*getParameter"
+                r"|PrintWriter.*println\s*\(.*getParameter"
+                r"|response\.setContentType.*text/html", re.IGNORECASE),
+     [".java"]),
 ]
 
 
