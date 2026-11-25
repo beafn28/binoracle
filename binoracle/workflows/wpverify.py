@@ -7202,7 +7202,7 @@ def verify_wordpress_sqli(
                 try:
                     _rt_exp = send(_exp_t); _rf_exp = send(_exp_f)
                     _lt_exp = len(_rt_exp.text or ""); _lf_exp = len(_rf_exp.text or "")
-                    if (_lt_exp > 10 and _lf_exp <= 10 and _lt_exp >= 20):
+                    if (_lt_exp > _lf_exp and _lt_exp >= 8 and (_lt_exp - _lf_exp) >= 6):
                         res.verified = True; res.ok = True
                         res.confidence = "probable"
                         res.evidence.update({

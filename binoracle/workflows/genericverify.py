@@ -3964,8 +3964,8 @@ def verify_generic_sqli_blind(
                     _t_len = _bool_send(_exp_t)
                     _f_len = _bool_send(_exp_f)
                     if (_t_len is not None and _f_len is not None
-                            and _t_len > 10 and _f_len <= 10
-                            and _t_len >= 20):
+                            and _t_len > _f_len and _t_len >= 8
+                            and (_t_len - _f_len) >= 6):
                         res.verified = True
                         res.ok = True
                         res.confidence = "probable"
