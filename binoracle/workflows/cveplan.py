@@ -314,6 +314,10 @@ def classify_cve(text: str) -> Optional[str]:
         return "nosql-injection"
     if has("authentication", "bypass") or has("auth", "bypass"):
         return "auth-bypass"
+    if ("oauth" in t and ("forge" in t or "bypass" in t or "tamper" in t or "token" in t or
+                          "redirect_uri" in t or "redirect" in t)) or \
+            has("oauth2", "bypass") or has("oidc", "bypass"):
+        return "oauth-bypass"
     if has("sql", "injection") or "sqli" in t:
         return "sqli"
     if has("cross-site", "scripting") or re.search(r"\bxss\b", t):
@@ -348,7 +352,9 @@ def classify_cve(text: str) -> Optional[str]:
         return "ssti"
     if has("cross-site", "request", "forgery") or re.search(r"\bcsrf\b", t):
         return "csrf"
-    if has("open", "redirect"):
+    if (has("open", "redirect") or has("url", "redirect") or has("redirect", "url") or
+            ("redirect" in t and ("domain" in t or "attacker" in t or "arbitrary" in t)) or
+            has("unvalidated", "redirect")):
         return "open-redirect"
     # --- arbitrary file read / write (ANTES de information-disclosure) ---
     # Si una descripcion dice "arbitrary file read...which can contain sensitive information",
@@ -365,18 +371,25 @@ def classify_cve(text: str) -> Optional[str]:
             (has("cache", "poison") or has("web", "cache", "deception")):
         return "information-disclosure"
     if (has("sensitive", "information", "exposure") or has("sensitive", "data", "exposure") or
-            has("information", "disclosure") or has("data", "exposure") or
+            has("information", "disclosure") or has("information", "exposure") or
+            has("data", "exposure") or
             has("hardcoded", "api", "key") or has("hardcoded", "credential") or
             has("api", "key", "exposed") or has("credentials", "exposed") or
             has("sensitive", "file") or has("info", "leak") or
             has("enumerat", "user") or has("enumerate", "email") or
-            has("enumerate", "address")):
+            has("enumerate", "address") or
+            "directory listing" in t or "reflected file download" in t or
+            has("verbose", "error") or has("error", "message", "exposure")):
         return "information-disclosure"
     # --- unauthorized access / privilege escalation ---
     if (has("unauthorized", "access") or has("unauthorized", "modification") or
             has("unauthorized", "read") or has("unauthorized", "file") or
             has("privilege", "escalation") or has("improper", "access", "control") or
-            has("insufficient", "authorization") or has("improper", "authorization")):
+            has("insufficient", "authorization") or has("improper", "authorization") or
+            has("escalate", "admin") or has("escalate", "role") or
+            ("escalate" in t and "privilege" in t) or
+            ("role" in t and ("bypass" in t or "escalat" in t)) or
+            has("broken", "authentication")):
         return "missing-authorization"
     if has("prototype", "pollution") or has("proto", "pollution"):
         return "prototype-pollution"
