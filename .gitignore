@@ -18,6 +18,10 @@ venv/
 # compiled practice binaries (sources + builder are versioned; binaries are not)
 samples/bin/
 
+# downloaded plugin source directories from CVE verification labs
+*-lms-learning-management-system/
+front-end-pm/
+
 # generated reports / scratch exploits
 binoracle_report.*
 
