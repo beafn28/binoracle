@@ -7278,11 +7278,28 @@ def _hueco_code_analysis(inv: "Investigation", fr: Any, llm: Any, step: Any, es:
                         inv.llm_notes["hueco_reasoning"] = hint["reasoning"]
 
     # ------------------------------------------------------------------ LFI / Path traversal
+    # Run LFI scanner even when endpoint is already known: we still need param discovery.
+    # The _apply_generic_sink will skip endpoint update if already set, but will fill in
+    # path_param if missing — which is the common failure for non-standard param names
+    # like 'source' (CVE-2024-10571 Chartify) or plugin-specific path params.
     elif vc in ("lfi", "path-traversal", "directory-traversal",
-                "file-inclusion", "local-file-inclusion") and not notes.get("endpoint"):
+                "file-inclusion", "local-file-inclusion"):
         lfi_hits = find_path_traversal_sinks(lpath, tech)
         if lfi_hits:
             _apply_generic_sink(lfi_hits, param_key="path_param")
+            # If taint scanner found a non-standard param (not generic like 'file','path','page')
+            # and the notes have a generic default, override with the specific scanner result.
+            _lfi_param = lfi_hits[0].param or ""
+            _generic_lfi_params = {"file", "path", "page", "url", "src"}
+            if (_lfi_param and
+                    _lfi_param not in _generic_lfi_params and
+                    notes.get("path_param", "").lower() in _generic_lfi_params):
+                inv.llm_notes["path_param"] = _lfi_param
+                notes["path_param"] = _lfi_param
+                step((f"[HUECO] param LFI especifico detectado por escaner: "
+                      f"'{_lfi_param}' (override '{notes.get('path_param')}')") if es else
+                     (f"[HUECO] specific LFI param detected by scanner: "
+                      f"'{_lfi_param}' (override '{notes.get('path_param')}')"))
             snippet = notes.get("_hueco_sink_snippet") or _read_snippet(
                 lfi_hits[0].file, lfi_hits[0].line, ctx=40)
             step((f"[HUECO] escaner LFI ({tech}): "
