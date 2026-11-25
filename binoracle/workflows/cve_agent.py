@@ -13482,7 +13482,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                   (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
                   inv.vuln_class in ("missing-authorization", "auth-bypass", "idor",
                                      "broken-access-control", "privilege-escalation",
-                                     "vertical-privilege-escalation", "unauthorized-access") and
+                                     "vertical-privilege-escalation", "unauthorized-access",
+                                     "session-fixation", "account-takeover") and
                   notes.get("endpoint")):
                 # Auto-inject common bypass header candidates when LLM didn't name one.
                 # For pure missing-authorization CVEs (no special header needed) this

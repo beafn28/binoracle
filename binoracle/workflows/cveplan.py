@@ -128,6 +128,15 @@ _CLASSES = [
     ("account-takeover", ("account takeover", "account hijack", "unauthorized account",
                           "user account takeover", "admin account creation"),
      "toma control de cuenta ajena via bug en reset/registro/sesion", []),
+    ("crlf-injection", ("crlf injection", "crlf", "http response splitting",
+                        "header injection", "carriage return"),
+     "inyecta CRLF en cabeceras HTTP para response splitting/cookie hijacking", []),
+    ("2fa-bypass", ("two-factor authentication bypass", "2fa bypass", "otp bypass",
+                    "mfa bypass", "totp bypass", "2-factor bypass"),
+     "evita el segundo factor de autenticacion (OTP/TOTP)", []),
+    ("session-fixation", ("session fixation", "session hijack", "session riding",
+                          "token fixation"),
+     "fija/hijack el ID de sesion antes del login para tomar control de la sesion", []),
 ]
 
 # clases que NO son corrupcion de memoria nativa: el PoC es una peticion HTTP (o una pagina para CSRF/
@@ -167,6 +176,9 @@ WEB_CLASSES = frozenset({
     "object-deserialization", "php-deserialization", "java-deserialization",
     "account-takeover", "user-enumeration", "password-reset",
     "mass-assignment", "bulk-assignment", "over-posting", "mass-attribute-assignment",
+    "crlf-injection", "http-response-splitting", "header-injection",
+    "2fa-bypass", "mfa-bypass", "otp-bypass", "totp-bypass",
+    "session-fixation", "session-hijacking", "token-fixation",
     "open-redirect", "unvalidated-redirect",
     "xml-injection", "html-injection", "template-injection",
     "cache-poisoning", "web-cache-poisoning", "request-smuggling",
