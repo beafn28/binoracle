@@ -4827,6 +4827,32 @@ def _infer_fix_type_and_class(added_lines: str, lang: str = "generic") -> tuple:
     if _re.search(r'autoescape|Environment.*autoescape|mark_safe.*removed|safe_string', a, I):
         return "template-autoescape", "ssti"
 
+    # JWT / auth token validation — missing or weak JWT verification
+    if _re.search(r'jwt\.verify\s*\(|JWTAuthentication|decode.*verify.*signature|algorithms=\[', a, I):
+        return "jwt-verify", "broken-authentication"
+    if _re.search(r'verify_signature|validate_token|token_required|@require_token', a, I):
+        return "token-validation", "broken-authentication"
+
+    # CORS misconfiguration — overly permissive Access-Control-Allow-Origin
+    if _re.search(r'Access-Control-Allow-Origin(?!.*\*)|cors.*origin.*whitelist|allowedOrigins', a, I):
+        return "cors-restrict", "cors-misconfiguration"
+
+    # Rate limiting / brute-force protection
+    if _re.search(r'RateLimit|rate_limit|express-rate-limit|throttle\(|throttle_classes', a, I):
+        return "rate-limit", "broken-authentication"
+
+    # Regex DoS (ReDoS) — replacing vulnerable regex with safe version
+    if _re.search(r're2\.|linear.*regex|safe_regex|backtrack.*limit|MAXREDOS', a, I):
+        return "redos-fix", "redos"
+
+    # Race condition fix — synchronization primitives
+    if _re.search(r'threading\.Lock\(\)|mutex\.|synchronized|atomic_|SELECT.*FOR UPDATE', a, I):
+        return "synchronization", "race-condition"
+
+    # Insecure direct object reference — ownership/ownership check added
+    if _re.search(r'user_id.*==.*request\.user|\.owner\s*==\s*request\.user|check_object_permission', a, I):
+        return "owner-check", "idor"
+
     # Sanitize generic (last resort — no strong class signal)
     if _re.search(r'sanitize_\w+\s*\(', a, I):
         return "sanitize", ""
