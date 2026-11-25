@@ -15070,39 +15070,30 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         "confirm_string":  _sqli_cs,
                         "parameters":      params if isinstance(params, dict) else {},
                     }
-                    _sqli_prev_err_cat = ""
-                    for _fb_i in range(4):
-                        _fb = _lab_debug_feedback(
-                            llm, getattr(wr, 'detail', '') or "",
-                            _lab_cfg, step, es, logs=getattr(wr, 'logs', None))
-                        if not _fb:
-                            break
-                        _sqli_df      = _fb["dockerfile_body"]
-                        _sqli_ef      = _fb["extra_files"]
-                        _genlab_ep    = _fb.get("endpoint") or _genlab_ep
-                        _genlab_param = _fb.get("sqli_param") or _genlab_param
-                        _sqli_cs      = _fb.get("confirm_string") or _sqli_cs
-                        if _fb.get("parameters"):
-                            params = _fb["parameters"]
-                        _lab_cfg = _fb
-                        wr_fb = verify_generic_sqli_blind(
-                            _sqli_local_path_str, _genlab_ep, notes.get("http_method") or "GET",
-                            params, sqli_param_hint=_genlab_param, on_step=step,
-                            budget_s=budget_s,
+
+                    def _sqli_fb_verifier(cfg):
+                        _ep_fb   = cfg.get("endpoint") or _genlab_ep
+                        _par_fb  = cfg.get("sqli_param") or _genlab_param
+                        _cs_fb   = cfg.get("confirm_string") or _sqli_cs
+                        _df_fb   = cfg.get("dockerfile_body") or _sqli_df
+                        _ef_fb   = cfg.get("extra_files") or _sqli_ef
+                        return verify_generic_sqli_blind(
+                            _sqli_local_path_str, _ep_fb,
+                            notes.get("http_method") or "GET", params,
+                            sqli_param_hint=_par_fb, on_step=step, budget_s=budget_s,
                             sqli_identifier_table_hint=id_table_hint,
                             custom_headers=_sqli_custom_hdrs,
                             setup_commands=_sqli_setup_cmds,
-                            dockerfile_body=_sqli_df, extra_files=_sqli_ef,
-                            confirm_string=_sqli_cs)
-                        wr = wr_fb
-                        if wr_fb.verified:
-                            break
-                        _sqli_curr_cat = _classify_pipeline_error(
-                            getattr(wr_fb, 'detail', '')).get("category", "")
-                        if _sqli_curr_cat == _sqli_prev_err_cat and _sqli_curr_cat not in ("", "unknown"):
-                            break
-                        _sqli_prev_err_cat = _sqli_curr_cat
-                    if not wr.verified:
+                            dockerfile_body=_df_fb, extra_files=_ef_fb,
+                            confirm_string=_cs_fb)
+
+                    wr, _lab_cfg = _feedback_loop(
+                        llm, _sqli_fb_verifier, wr, _lab_cfg, step, es,
+                        vuln_class=inv.vuln_class, cve_description=inv.description)
+                    if wr.verified:
+                        # Cache the working lab so future SQLi CVEs can use it as a hint
+                        _scaffold_cache[(_detect_lab_tech_stack(_sqli_local_path_str), "sqli")] = _lab_cfg
+                    else:
                         _escalate_to_analyst(inv, getattr(wr, 'detail', '') or "", _lab_cfg, es,
                                              progress_level=_infer_progress_level(getattr(wr, 'detail', '')))
                 def _attempt_sqli_blind_generic(ep, pr):
