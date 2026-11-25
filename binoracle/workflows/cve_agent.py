@@ -959,6 +959,11 @@ _HUECO_SQLI_SYS = (
     "sqli_technique (error-based | union-based | boolean-blind | time-based), "
     "payload_hint (payload minimo de prueba; para ORDER BY injection usa payload ORDER BY sin comillas), "
     "parameters (lista de TODOS los parametros que el handler lee de $_POST/$_GET/$_REQUEST), "
+    "required_extra_params (objeto JSON {nombre: valor_ejemplo} de los parametros que el "
+    "handler VALIDA o COMPRUEBA ANTES de llegar al codigo vulnerable — es decir, los que si "
+    "estan ausentes o invalidos hacen que el handler rechace la peticion con un error ANTES de "
+    "ejecutar el query SQL; el sqli_param no va aqui; solo incluye los que puedes deducir con "
+    "un valor real del codigo; vacio {} si no hay ningun parametro de este tipo), "
     "reasoning (una linea explicando por que la vulnerabilidad existe en este codigo)."
 )
 
@@ -6868,13 +6873,21 @@ def _hueco_code_analysis(inv: "Investigation", fr: Any, llm: Any, step: Any, es:
                     break
     # ---- end param hint extraction ----------------------------------------------
 
-    def _read_snippet(rel_file: str, line_no: int, ctx: int = 35) -> str:
-        """Lee ctx lineas alrededor de line_no en rel_file (ruta relativa a lpath)."""
+    def _read_snippet(rel_file: str, line_no: int, ctx: int = 50) -> str:
+        """Lee ctx lineas alrededor de line_no en rel_file (ruta relativa a lpath).
+        Retrocede hasta la definicion de funcion enclosing para dar al LLM contexto completo."""
         try:
             fp = os.path.join(lpath, rel_file)
             with open(fp, encoding="utf-8", errors="replace") as fh:
                 lines = fh.readlines()
+            # Walk backwards from line_no to find the enclosing function/method definition
             lo = max(0, line_no - 5)
+            for _back in range(line_no - 1, max(0, line_no - 80), -1):
+                _l = lines[_back] if _back < len(lines) else ""
+                if re.search(r'^\s*(?:function|public|private|protected|static|def\s|class\s)',
+                             _l):
+                    lo = _back
+                    break
             hi = min(len(lines), line_no + ctx)
             return f"# {rel_file} (linea {line_no})\n" + "".join(lines[lo:hi])
         except OSError:
@@ -6984,6 +6997,12 @@ def _hueco_code_analysis(inv: "Investigation", fr: Any, llm: Any, step: Any, es:
             inv.llm_notes["hueco_payload_hint"] = _ph
         if hint.get("parameters") and not notes.get("parameters"):
             inv.llm_notes["parameters"] = hint["parameters"]
+        # required_extra_params: parameters required BEFORE the vulnerable code (like directory_id
+        # in Ultimate Member). Store them so the verifier sends them alongside the sqli_param.
+        _rep = hint.get("required_extra_params")
+        if isinstance(_rep, dict) and _rep and not notes.get("required_extra_params"):
+            inv.llm_notes["required_extra_params"] = _rep
+            changed.append(f"required_extra={list(_rep.keys())}")
         _auth = (hint.get("auth_required") or "").strip()
         if _auth and not notes.get("auth_required"):
             inv.llm_notes["auth_required"] = _auth
@@ -14825,6 +14844,27 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 from .wpverify import verify_wordpress_sqli, _pick_param, _SQLI_HINTS
                 from .websource import find_shortcode_name, find_join_relationship_table
                 params = notes.get("parameters") or []
+                # Merge required_extra_params (from HUECO phase): parameters required BEFORE
+                # the vulnerable code that must be present for the endpoint to process the
+                # request. Example: Ultimate Member's 'directory_id' must be non-zero or the
+                # handler returns "Wrong member directory data" before reaching sqli code.
+                _extra_p = notes.get("required_extra_params")
+                if isinstance(_extra_p, dict) and _extra_p:
+                    if isinstance(params, list):
+                        # List of param names or {name: value} dicts — convert to dict first
+                        _params_d = {str(p): "" for p in params} if params else {}
+                        for _k, _v in _extra_p.items():
+                            if _k not in _params_d:
+                                _params_d[str(_k)] = str(_v)
+                        params = _params_d
+                    elif isinstance(params, dict):
+                        for _k, _v in _extra_p.items():
+                            if _k not in params:
+                                params[str(_k)] = str(_v)
+                    step((f"[extra params] {list(_extra_p.keys())} añadidos a base_params desde "
+                          f"HUECO required_extra_params") if es else
+                         (f"[extra params] {list(_extra_p.keys())} added to base_params from "
+                          f"HUECO required_extra_params"))
                 _raw_sqli = notes.get("sqli_param") or ""
                 # Si sqli_param es una clave simple ("order") pero los parametros refinados
                 # contienen un path de array mas especifico ("order[0][dir]"), usarlo -- esto
