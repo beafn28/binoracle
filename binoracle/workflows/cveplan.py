@@ -179,13 +179,25 @@ def classify_cve(text: str) -> Optional[str]:
     # atajo: slugs web conocidos que no pasan por _CLASSES (cors, etc.)
     if t in WEB_CLASSES:
         return t
+    # FILE-UPLOAD ANTES que _CLASSES["rce"]: "arbitrary file uploads...may make RCE possible"
+    # → el _CLASSES loop llega a "remote code execution" y devuelve "rce" sin alcanzar "file-upload".
+    # La clave diagnostica es "file upload" (mecanismo) + indicador de falta de validación.
+    if ("file upload" in t or "arbitrary file" in t) and (
+            "missing" in t or "unrestricted" in t or "insufficient" in t or "lack" in t):
+        return "file-upload"
     # LFI ANTES que _CLASSES: "including arbitrary files in PHP's execution context" llega
     # como "leads to RCE" y seria clasificado como rce si lo dejamos pasar al loop normal.
     # El mecanismo (file inclusion) importa mas que la consecuencia (rce) para el verificador.
+    # CUIDADO: "file upload...may make remote code execution possible" NO es LFI; "execution"
+    # como consecuencia secundaria no cuenta. Requerimos "execution context" o "php context"
+    # para el patron primario de LFI, no solo "execution" flotante.
     _incl = "includ" in t or "inclus" in t  # includes/including/inclusion
     if _incl and "file" in t and (
             "file inclus" in t or
-            ("arbitrary" in t and ("context" in t or "php" in t or "execution" in t)) or
+            ("inclus" in t and "php" in t) or  # "inclusion of PHP files" / "PHP file inclusion"
+            ("arbitrary" in t and
+             ("execution context" in t or "php context" in t or
+              ("context" in t and "php" in t))) or
             ("local" in t and ("path" in t or "php" in t))):
         return "lfi"
     for cls, kws, _prim, _refs in _CLASSES:
