@@ -5404,6 +5404,26 @@ def _synthesize_exploit_from_intel(
             "defaults": {"variant": "CL.TE", "frontend_behavior": "unknown",
                          "backend_behavior": "unknown"},
         },
+        # ── User / Account Enumeration ────────────────────────────────────────
+        "user-enumeration": {
+            "analysis": (
+                "Analyze: (1) which endpoint leaks user/email existence "
+                "(password reset / login / registration / account lookup), "
+                "(2) the observable difference between existing vs non-existing "
+                "accounts (response body / status code / response time), "
+                "(3) the per-request cost of probing (rate limiting present?), "
+                "(4) which user data is exposed beyond existence (email format / role)."),
+            "schema": (
+                '  "payload": "<request to probe user existence>",\n'
+                '  "probe_param": "<email|username|user_id>",\n'
+                '  "existing_indicator": "<response text that proves account exists>",\n'
+                '  "nonexistent_indicator": "<response text when account does not exist>",\n'
+                '  "confirm_string": "<the existing_indicator to look for in real response>",\n'
+                '  "rate_limit": "<none|present|unknown>",\n'
+                '  "expected_response_indicator": "<difference between valid and invalid accounts>",\n'
+            ),
+            "defaults": {"probe_param": "email", "rate_limit": "unknown"},
+        },
         # ── Host Header Injection ─────────────────────────────────────────────
         "host-header-injection": {
             "analysis": (
@@ -5974,6 +5994,12 @@ def _synthesize_exploit_from_intel(
     elif _vc in ("http-request-smuggling", "request-smuggling", "desync",
                  "cl-te", "te-cl", "te-te"):
         _vc_normalized = "request-smuggling"
+    elif _vc in ("user-enumeration", "username-enumeration", "email-enumeration",
+                 "account-enumeration", "user-discovery"):
+        _vc_normalized = "user-enumeration"
+    elif _vc in ("cache-poisoning", "web-cache-poisoning", "cache-deception",
+                 "web-cache-deception"):
+        _vc_normalized = "cache-poisoning"
 
     spec = _CLASS_SPECS.get(_vc_normalized, _CLASS_SPECS.get("sqli"))  # fallback to sqli spec
 
@@ -18120,6 +18146,36 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     confirm_string=_at_cs, login_endpoint=_at_login,
                     on_step=step, budget_s=budget_s,
                     dockerfile_body=_at_df, extra_files=_at_extra)
+                _apply_wpverify_result(inv, wr, es, llm)
+            # --- User / Email Enumeration (probe existing vs non-existing accounts) ---
+            elif (not plugin_dir and
+                  (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
+                  inv.vuln_class in ("user-enumeration", "username-enumeration",
+                                     "email-enumeration", "account-enumeration") and
+                  notes.get("endpoint")):
+                from .genericverify import verify_generic_user_enumeration
+                _ue_ep    = notes.get("endpoint") or "/"
+                _ue_m     = notes.get("http_method") or "POST"
+                _ue_df    = _notes_dockerfile(notes)
+                _ue_ext   = notes.get("extra_files") or None
+                _ue_sc    = notes.get("setup_cmds") or None
+                _ue_param = (notes.get("probe_param") or
+                             next((k for k in (notes.get("parameters") or {})
+                                   if k.lower() in ("email", "username", "user", "login")), ""))
+                _ue_cs    = notes.get("confirm_string") or notes.get("existing_indicator") or ""
+                _inject_custom_docker_lab(str(fr.local_path) if fr.local_path else "", notes, step)
+                step(("intentando verificacion DINAMICA GENERICA -- enumeracion de usuarios "
+                     "(probe existing vs non-existing accounts)..." if es else
+                     "attempting GENERIC DYNAMIC verification -- user enumeration "
+                     "(probing existing vs non-existing accounts)..."))
+                wr = verify_generic_user_enumeration(
+                    str(fr.local_path) if fr.local_path else "",
+                    _ue_ep, _ue_m,
+                    probe_param=_ue_param,
+                    confirm_string=_ue_cs,
+                    on_step=step, budget_s=budget_s,
+                    dockerfile_body=_ue_df, extra_files=_ue_ext,
+                    setup_commands=_ue_sc)
                 _apply_wpverify_result(inv, wr, es, llm)
             # --- HTTP Request Smuggling (CL.TE / TE.CL timing-based detection) ---
             elif (not plugin_dir and
