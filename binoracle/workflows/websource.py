@@ -3224,8 +3224,10 @@ def find_unsanitized_sqli_params(local_path: str) -> List[dict]:
             if orderby_array_params:
                 for arr_var, http_p in orderby_array_params:
                     # Match: ORDER BY ... {$arr_var[...]}  or  ORDER BY ... $arr_var[...]
+                    # Note: allow both string interpolation and concatenation contexts;
+                    # don't exclude quotes in the lookahead — $args['orderby'] has single quotes.
                     _arr_ob_re = re.compile(
-                        r"ORDER\s+BY\s+[^\n;\"']{0,80}" + re.escape("$" + arr_var),
+                        r"ORDER\s+BY\s+[^\n;]{0,120}" + re.escape("$" + arr_var),
                         re.I | re.S,
                     )
                     _found_ob = False
