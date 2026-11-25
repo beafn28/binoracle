@@ -5084,6 +5084,76 @@ def fetch_github_patch_diff(github_url: str, vuln_version: str, fixed_version: s
     return result
 
 
+def fetch_github_commit_diff(repo_path: str, commit_sha: str, timeout: int = 20) -> dict:
+    """Descarga el diff de un commit concreto de GitHub usando el endpoint .diff.
+
+    Útil cuando OSV proporciona el SHA del commit de fix pero no hay rango de versiones.
+    Devuelve el mismo esquema que fetch_github_patch_diff para ser intercambiable.
+    """
+    import urllib.request as _ur
+    import urllib.error as _ue
+    import re as _re
+
+    result: dict = {
+        "ok": False,
+        "diff_url": "",
+        "changed_files": [],
+        "vuln_functions": [],
+        "fix_type": "unknown",
+        "vuln_class_hint": "",
+        "raw_diff_snippet": "",
+    }
+
+    if not repo_path or not commit_sha:
+        return result
+
+    # Normalize if full GitHub URL is passed
+    _m = _re.search(r"github\.com/([^/]+/[^/.\s]+)", repo_path.rstrip("/"))
+    if _m:
+        repo_path = _m.group(1)
+
+    diff_url = f"https://github.com/{repo_path}/commit/{commit_sha}.diff"
+    result["diff_url"] = diff_url
+    try:
+        req = _ur.Request(diff_url, headers={"User-Agent": "binoracle/1.0"})
+        with _ur.urlopen(req, timeout=timeout) as resp:
+            if resp.status != 200:
+                return result
+            raw = resp.read(300_000).decode("utf-8", errors="replace")
+            if not raw.strip() or len(raw) < 50:
+                return result
+            result["raw_diff_snippet"] = raw[:2000]
+            result["ok"] = True
+
+            changed_files = []
+            for _fm in _re.finditer(
+                    r'^(?:\+\+\+|---)\s+(?:[ab]/)?(.+?)(?:\s|$)', raw, _re.MULTILINE):
+                _f = _fm.group(1).strip()
+                if _f not in changed_files and _f not in ("/dev/null", "b/"):
+                    changed_files.append(_f)
+            result["changed_files"] = changed_files[:20]
+
+            added = " ".join(
+                ln[1:] for ln in raw.splitlines()
+                if ln.startswith("+") and not ln.startswith("+++")
+            )
+            _ft, _vch = _infer_fix_type_and_class(added, lang="generic")
+            result["fix_type"] = _ft
+            result["vuln_class_hint"] = _vch
+
+            removed = [ln[1:] for ln in raw.splitlines() if ln.startswith("-") and not ln.startswith("---")]
+            vuln_fns = []
+            for ln in removed:
+                _fn = _re.search(r'(?:def |function |func )\s*(\w+)\s*\(', ln)
+                if _fn and _fn.group(1) not in vuln_fns:
+                    vuln_fns.append(_fn.group(1))
+            result["vuln_functions"] = vuln_fns[:10]
+    except (_ue.URLError, OSError):
+        pass
+
+    return result
+
+
 def fetch_wp_rest_routes(base_url: str, session=None, plugin_slug: str = "") -> list:
     """
     Hit /wp-json/ and return routes likely belonging to plugin_slug.

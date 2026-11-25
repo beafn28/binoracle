@@ -12127,6 +12127,32 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         _apply_patch_class_hint(inv, _vch, step, es)
                 except Exception:
                     pass
+            # Fallback: if no version-to-version diff succeeded, try fix commit SHAs from patch_intel
+            if not inv.llm_notes.get("patch_diff_analysis"):
+                try:
+                    from .patch_intel import fetch_patch_intel as _fpi
+                    from .websource import fetch_github_commit_diff as _fetch_gcd
+                    _pi = _fpi(cve_id)
+                    for _fc in (_pi.fix_commits or []):
+                        if not _fc.repo or not _fc.sha:
+                            continue
+                        step((f"patch-diff: intentando diff de commit {_fc.sha[:8]} en {_fc.repo}...") if es else
+                             (f"patch-diff: trying commit diff {_fc.sha[:8]} from {_fc.repo}..."))
+                        _cd = _fetch_gcd(_fc.repo, _fc.sha)
+                        if _cd.get("ok"):
+                            inv.llm_notes["patch_diff_analysis"] = _cd
+                            _vch = _cd.get("vuln_class_hint") or ""
+                            step((f"patch-diff (commit): fix_type={_cd['fix_type']} "
+                                  f"vuln_class_hint={_vch or '—'} "
+                                  f"archivos={_cd['changed_files'][:3]}") if es else
+                                 (f"patch-diff (commit): fix_type={_cd['fix_type']} "
+                                  f"vuln_class_hint={_vch or '—'} "
+                                  f"files={_cd['changed_files'][:3]}"))
+                            if _vch:
+                                _apply_patch_class_hint(inv, _vch, step, es)
+                            break
+                except Exception:
+                    pass
             # Recopilar inteligencia CVE multi-fuente (NVD + Wordfence + Patchstack + GitHub)
             # en paralelo antes de sintetizar el exploit. No bloquea si alguna fuente falla.
             # La intel enriquece los notes (param/endpoint) Y se pasa al synthesizer mas abajo.
