@@ -12862,7 +12862,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             # mismo mecanismo de laboratorio efimero, para path-traversal/LFI en Drupal (segunda
             # clase de Drupal, "poco a poco" -- ver drupalverify.py).
             elif (is_drupal and fr.kind in ("drupal-module", "local-zip", "zip-url") and plugin_dir
-                  and inv.vuln_class == "path-traversal" and notes.get("endpoint")):
+                  and inv.vuln_class in ("path-traversal", "lfi") and notes.get("endpoint")):
                 from .drupalverify import verify_drupal_path_traversal, _pick_param
                 from .wpverify import _PATH_HINTS
                 params = notes.get("parameters") or []
@@ -12888,7 +12888,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             # account-takeover por un segundo login, se planta un fichero canario con un secreto
             # aleatorio FUERA del volumen web y se confirma que el endpoint lo filtra literal.
             elif (not is_drupal and not is_joomla and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
-                  and inv.vuln_class == "path-traversal" and notes.get("endpoint")):
+                  and inv.vuln_class in ("path-traversal", "lfi") and notes.get("endpoint")):
                 from .wpverify import verify_wordpress_path_traversal, _pick_param, _PATH_HINTS
                 params = notes.get("parameters") or []
                 path_p = _notes_param("path_param", notes, params, _pick_param, _PATH_HINTS)
@@ -12989,7 +12989,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             # docker-compose.yml. Acepta source_dir aunque el LLM no haya dado endpoint: el
             # verificador escanea el codigo fuente para descubrir rutas (Rack::Static, Sinatra,
             # Flask) de forma autonoma (ver _scan_web_routes en genericverify.py).
-            elif (not plugin_dir and inv.vuln_class == "path-traversal" and
+            elif (not plugin_dir and inv.vuln_class in ("path-traversal", "lfi") and
                   (fr.local_path or notes.get("dockerfile_body")) and
                   (notes.get("endpoint") or (fr.local_path and os.path.isdir(str(fr.local_path))))):
                 from .genericverify import verify_generic_path_traversal, _pick_param
