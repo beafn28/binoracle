@@ -1339,14 +1339,43 @@ class ExploitReasoningEngine:
          "INJECTION_CONTEXT", 0.55,
          "Invalid input response — payload may have broken request parsing before reaching SQL; "
          "try URL-encoding or reducing payload complexity"),
+
+        # AUTH_GATE_FIRED — Django REST Framework / non-WP auth failures
+        (r"\b(?:authentication\s+credentials\s+were\s+not\s+provided|"
+         r"not_authenticated|authentication\s+failed|invalid\s+token|token\s+has\s+expired)\b",
+         "AUTH_GATE_FIRED", 0.85,
+         "DRF/JWT auth guard — provide a valid Bearer token or session cookie"),
+
+        # RESOURCE_NOT_FOUND — Express.js / Rails routing errors
+        (r"Cannot\s+(?:GET|POST|PUT|PATCH|DELETE)\s+/",
+         "RESOURCE_NOT_FOUND", 0.80,
+         "Express.js: route not registered — verify the HTTP method and URL path exactly"),
+
+        (r"No\s+route\s+matches\s+\[(?:GET|POST|PUT|PATCH|DELETE)\]",
+         "RESOURCE_NOT_FOUND", 0.80,
+         "Rails: no route matches — check routes.rb or the router for the correct path"),
+
+        # WRONG_PARAM_TYPE — FastAPI/Pydantic validation errors
+        (r'"(?:msg|message)":\s*"(?:field\s+required|value\s+is\s+not\s+a\s+valid|'
+         r'ensure\s+this\s+value)',
+         "WRONG_PARAM_TYPE", 0.70,
+         "FastAPI/Pydantic validation error — the parameter name or type is wrong; "
+         "check the endpoint's schema and send the correct field names"),
     ]
 
     # Signals derived from HTTP status code alone
     _STATUS_SIGNALS: Dict[int, Tuple[str, float, str]] = {
         200: ("INJECTION_CONTEXT", 0.10, "200 OK — baseline established, check body diff"),
+        301: ("AUTH_GATE_FIRED", 0.65, "permanent redirect — likely to login or canonical URL"),
         302: ("AUTH_GATE_FIRED", 0.70, "redirect likely to login — the endpoint requires auth"),
+        307: ("AUTH_GATE_FIRED", 0.65, "temporary redirect — likely auth gate or URL rewrite"),
+        308: ("AUTH_GATE_FIRED", 0.65, "permanent redirect — likely auth gate or canonical URL"),
         401: ("AUTH_GATE_FIRED", 0.90, "401 Unauthorized — missing or invalid credentials"),
         403: ("AUTH_GATE_FIRED", 0.90, "403 Forbidden — insufficient role or capability"),
+        404: ("RESOURCE_NOT_FOUND", 0.80,
+              "404 Not Found — endpoint or resource does not exist; verify URL path and ID"),
+        429: ("AUTH_GATE_FIRED", 0.65,
+              "429 Too Many Requests — rate-limited; slow down or rotate session"),
         500: ("INJECTION_CONTEXT", 0.60, "500 error — possible injection syntax error; "
               "check debug output for SQL trace"),
     }
