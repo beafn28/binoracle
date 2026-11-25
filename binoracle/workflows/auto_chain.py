@@ -4619,7 +4619,9 @@ def process_never_attempted_cves(
         # WP plugin slug: lowercase/digits/hyphens, no '=', no '/', no extension
         _is_wp_slug = bool(_src and not _src.startswith("http")
                            and not _re_na.search(r'[=./]', _src))
-        has_wp_source = _is_wp_slug
+        # WP.org plugin URL: https://wordpress.org/plugins/<slug>/
+        _is_wp_org_url = bool(_src and "wordpress.org/plugins/" in _src)
+        has_wp_source = _is_wp_slug or _is_wp_org_url
         if not has_docker and not has_wp_source:
             continue
         cvss = d.get("cvss_score") or 0.0
