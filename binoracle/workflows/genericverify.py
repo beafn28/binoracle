@@ -743,9 +743,27 @@ def _cms_dockerfile_lines(cms: str, source_dir: str,
             "sveltekit": "npm run build && node build",
             "astro": "npm run build && node dist/server/entry.mjs",
         }.get(cms, "npm start")
+        # h3 v1.x uses toNodeListener() — inject a base64-encoded fallback server.js when
+        # the CVE repo has no entry point (CVE-2026-86253 lab had no server.js/index.js).
+        # The fallback wires h3.createApp() → h3.serveStatic() → h3.toNodeListener() so
+        # static-file path traversal payloads reach the vulnerable code path.
+        _H3_FALLBACK_B64 = (
+            "Y29uc3QgaHR0cD1yZXF1aXJlKCJodHRwIik7Y29uc3QgaDM9cmVxdWlyZSgiaDMiKTtjb25zdCBhcHA"
+            "9aDMuY3JlYXRlQXBwKCk7aWYoaDMuc2VydmVTdGF0aWMpe2FwcC51c2UoaDMuZXZlbnRIYW5kbGVyKG"
+            "FzeW5jKGUpPT5oMy5zZXJ2ZVN0YXRpYyhlLHtyb290OnByb2Nlc3MuZW52LlNUQVRJQ19ST09UfHwiLi"
+            "J9KSkpO31jb25zdCBMPWgzLnRvTm9kZUxpc3RlbmVyP2gzLnRvTm9kZUxpc3RlbmVyKGFwcCk6bnVs"
+            "bDtpZighTCl7cHJvY2Vzcy5leGl0KDEpO31odHRwLmNyZWF0ZVNlcnZlcihMKS5saXN0ZW4oMzAwMCwi"
+            "MC4wLjAuMCIsKCk9PmNvbnNvbGUubG9nKCJoMzozMDAwIikpOw=="
+        )
+        _h3_inject = (
+            f"printf '%s' '{_H3_FALLBACK_B64}' | base64 -d > /app/_h3fb.js && "
+            f"([ -f server.js ] || [ -f index.js ] || "
+            f"[ -f server.ts ] || [ -f index.ts ] || cp /app/_h3fb.js server.js)"
+        )
         lines = (["WORKDIR /app", "COPY . ."] + proxy +
-                 [f"RUN npm install || npm install --legacy-peer-deps || true",
-                  f'CMD ["sh", "-c", "{_start_cmd}"]'])
+                 [f"RUN npm install || npm install --legacy-peer-deps || true"] +
+                 ([f"RUN {_h3_inject}"] if cms == "h3" else []) +
+                 [f'CMD ["sh", "-c", "{_start_cmd}"]'])
         return ("node:20-alpine", _port, lines)
 
     # Ruby frameworks
