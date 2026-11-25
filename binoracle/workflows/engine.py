@@ -1799,8 +1799,24 @@ class ExploitReasoningEngine:
                 ),
             }
 
-        # RESOURCE_NOT_FOUND and INJECTION_CONTEXT: LLM knows the specific
-        # resource ID scheme and endpoint — defer to it
+        if hyp.chain == "RESOURCE_NOT_FOUND":
+            # Provide a hint that the LLM should look up a real ID in the DB
+            # and use that as the value for the resource param (e.g. directory_id,
+            # event_id, post_id). The LLM retry system will include this in the
+            # evidence so the LLM knows to pivot to a valid ID value.
+            return {
+                "endpoint_alternativo": None,
+                "parametro_alternativo": None,
+                "razon": (
+                    f"ExploitReasoningEngine [{hyp.chain} "
+                    f"conf={hyp.confidence:.0%}]: {hyp.fix_hint}. "
+                    f"El endpoint requiere un ID de recurso REAL de la DB — "
+                    f"consulta las tablas del plugin (ej. SELECT MIN(id) FROM wp_<tabla>) "
+                    f"e inyecta ese valor como parametro."
+                ),
+            }
+
+        # INJECTION_CONTEXT: LLM knows the specific context — defer to it
         return None
 
 
