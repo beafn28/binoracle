@@ -13651,7 +13651,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             # verifica contra ese contenedor real -- ver genericverify.py. Mas limitado que los
             # verificadores CMS-especificos (sin login generico), asi que de momento solo cubre
             # las clases que no lo necesitan.
-            elif (not plugin_dir and fr.local_path and
+            elif (not plugin_dir and
+                  (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
                   inv.vuln_class in ("command-injection", "os-command-injection")
                   and notes.get("endpoint")):
                 from .genericverify import verify_generic_command_injection, _pick_param
@@ -13664,7 +13665,9 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     if _rce:
                         notes.setdefault("payload", _rce["payload"])
                         notes.setdefault("confirm_string", _rce["confirm_string"])
-                _inject_custom_docker_lab(str(fr.local_path), notes, step)
+                _cmdi_local_path_str = str(fr.local_path) if fr.local_path else ""
+                if fr.local_path:
+                    _inject_custom_docker_lab(_cmdi_local_path_str, notes, step)
                 step(("intentando verificacion DINAMICA GENERICA -- fichero canario via docker "
                      "exec, el objetivo se construye desde su propio Dockerfile/compose..." if es
                      else "attempting GENERIC DYNAMIC verification -- canary file via docker "
@@ -13676,7 +13679,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _scf_cmdi = False
                 if not _cmdi_dockerfile and llm is not None:
                     _scf = _scaffold_llm_lab_for_class(
-                        llm, str(fr.local_path), notes, inv.cve_id, "command-injection", step, es,
+                        llm, _cmdi_local_path_str, notes, inv.cve_id, "command-injection", step, es,
                             patch_diff=inv.llm_notes.get("patch_diff_analysis"))
                     if _scf:
                         _cmdi_dockerfile  = _scf["dockerfile_body"]
@@ -13688,7 +13691,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             params = _scf["parameters"]
                         _scf_cmdi = True
                 wr = verify_generic_command_injection(
-                    fr.local_path, _cmdi_ep, notes.get("http_method") or "GET",
+                    _cmdi_local_path_str, _cmdi_ep, notes.get("http_method") or "GET",
                     params, cmd_param_hint=cmd_p or "", on_step=step, budget_s=budget_s,
                     custom_headers=_cmdi_custom_hdrs,
                     dockerfile_body=_cmdi_dockerfile, extra_files=_cmdi_extra_files)
@@ -13715,7 +13718,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             params = _fb["parameters"]
                         _lab_cfg_cmdi = _fb
                         wr_fb = verify_generic_command_injection(
-                            fr.local_path, _cmdi_ep, notes.get("http_method") or "GET",
+                            _cmdi_local_path_str, _cmdi_ep, notes.get("http_method") or "GET",
                             params, cmd_param_hint=cmd_p or "", on_step=step, budget_s=budget_s,
                             custom_headers=_cmdi_custom_hdrs,
                             dockerfile_body=_cmdi_dockerfile, extra_files=_cmdi_extra_files)
@@ -13729,7 +13732,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         _cmdi_prev_err_cat = _cmdi_curr_cat
                 def _attempt_cmdi_generic(ep, pr):
                     return verify_generic_command_injection(
-                        fr.local_path, ep, notes.get("http_method") or "GET", params,
+                        _cmdi_local_path_str, ep, notes.get("http_method") or "GET", params,
                         cmd_param_hint=pr or "", on_step=step, budget_s=budget_s,
                         custom_headers=_cmdi_custom_hdrs,
                         dockerfile_body=_cmdi_dockerfile, extra_files=_cmdi_extra_files)
@@ -13738,7 +13741,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     _attempt_cmdi_generic, wr, _cmdi_ep, cmd_p,
                     technique_label="command injection generico")
                 if _scf_cmdi and wr.verified:
-                    _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path)), "command-injection")] = {
+                    _scaffold_cache[(_detect_lab_tech_stack(_cmdi_local_path_str), "command-injection")] = {
                         "dockerfile_body": _cmdi_dockerfile, "extra_files": _cmdi_extra_files,
                         "endpoint": _cmdi_ep, "confirm_string": notes.get("confirm_string") or "",
                         "parameters": params if isinstance(params, dict) else {},
@@ -15522,13 +15525,16 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         technique_label="open redirect WordPress", on_suggestion=_on_or_wp_suggestion))
                 _apply_wpverify_result(inv, wr, es, llm)
             # "cualquier entorno": fallback generico de open-redirect (ver genericverify.py).
-            elif (not plugin_dir and fr.local_path and
+            elif (not plugin_dir and
+                  (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
                   inv.vuln_class == "open-redirect" and notes.get("endpoint")):
                 from .genericverify import verify_generic_open_redirect, _pick_param
                 from .wpverify import _REDIRECT_HINTS
                 params = notes.get("parameters") or []
                 redir_p = _notes_param("redirect_param", notes, params, _pick_param, _REDIRECT_HINTS)
-                _inject_custom_docker_lab(str(fr.local_path), notes, step)
+                _or_local_path_str = str(fr.local_path) if fr.local_path else ""
+                if fr.local_path:
+                    _inject_custom_docker_lab(_or_local_path_str, notes, step)
                 step(("intentando verificacion DINAMICA GENERICA -- cabecera Location real sin "
                      "seguir redirects, el objetivo se construye desde su propio Dockerfile/"
                      "compose..." if es else "attempting GENERIC DYNAMIC verification -- real "
@@ -15541,7 +15547,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _scf_or = False
                 if not _or_dockerfile and llm is not None:
                     _scf = _scaffold_llm_lab_for_class(
-                        llm, str(fr.local_path), notes, inv.cve_id, "open-redirect", step, es,
+                        llm, _or_local_path_str, notes, inv.cve_id, "open-redirect", step, es,
                             patch_diff=inv.llm_notes.get("patch_diff_analysis"))
                     if _scf:
                         _or_dockerfile  = _scf["dockerfile_body"]
@@ -15553,7 +15559,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             params = _scf["parameters"]
                         _scf_or = True
                 wr = verify_generic_open_redirect(
-                    fr.local_path, _or_ep, notes.get("http_method") or "GET",
+                    _or_local_path_str, _or_ep, notes.get("http_method") or "GET",
                     params, redirect_param_hint=redir_p or "", on_step=step, budget_s=budget_s,
                     custom_headers=_or_custom_hdrs,
                     dockerfile_body=_or_dockerfile, extra_files=_or_extra_files)
@@ -15575,7 +15581,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         _or_ep          = _fb.get("endpoint") or _or_ep
                         _lab_cfg_or     = _fb
                         wr_fb = verify_generic_open_redirect(
-                            fr.local_path, _or_ep, notes.get("http_method") or "GET",
+                            _or_local_path_str, _or_ep, notes.get("http_method") or "GET",
                             params, redirect_param_hint=redir_p or "", on_step=step, budget_s=budget_s,
                             custom_headers=_or_custom_hdrs,
                             dockerfile_body=_or_dockerfile, extra_files=_or_extra_files)
@@ -15589,7 +15595,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         _or_prev_err_cat = _or_curr_cat
                 def _attempt_or_generic(ep, pr):
                     return verify_generic_open_redirect(
-                        fr.local_path, ep, notes.get("http_method") or "GET", params,
+                        _or_local_path_str, ep, notes.get("http_method") or "GET", params,
                         redirect_param_hint=pr or "", on_step=step, budget_s=budget_s,
                         custom_headers=_or_custom_hdrs,
                         dockerfile_body=_or_dockerfile, extra_files=_or_extra_files)
@@ -15598,7 +15604,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     _attempt_or_generic, wr, _or_ep, redir_p,
                     technique_label="open redirect generico")
                 if _scf_or and wr.verified:
-                    _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path)), "open-redirect")] = {
+                    _scaffold_cache[(_detect_lab_tech_stack(_or_local_path_str), "open-redirect")] = {
                         "dockerfile_body": _or_dockerfile, "extra_files": _or_extra_files,
                         "endpoint": _or_ep, "confirm_string": notes.get("confirm_string") or "",
                         "parameters": params if isinstance(params, dict) else {},
