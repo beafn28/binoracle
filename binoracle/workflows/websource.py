@@ -1377,6 +1377,37 @@ def fetch_source(target: str, version: str = "", on_step: Optional[Callable[[str
         if r.ok:
             return r
         step(f"RubyGems fallo ({r.note}) -- continuando...")
+    # cms_hint="ghost"/"strapi"/"craft"/"directus"/"wagtail" → versioned GitHub release tarball
+    # When the LLM gives only the app name (not a full URL) and we know the CMS, try to pull
+    # the exact vulnerable version from the official GitHub releases before falling back to
+    # a generic git clone (which would pull latest/patched code).
+    _GITHUB_CMS_REPOS: dict = {
+        "ghost":    "TryGhost/Ghost",
+        "strapi":   "strapi/strapi",
+        "craft":    "craftcms/cms",
+        "directus": "directus/directus",
+        "wagtail":  "wagtail/wagtail",
+        "keystone": "keystonejs/keystone",
+        "payload":  "payloadcms/payload",
+    }
+    if cms_hint in _GITHUB_CMS_REPOS and not target.startswith(("http://", "https://", "git://")):
+        step = on_step or (lambda _m: None)
+        _gh_repo = _GITHUB_CMS_REPOS[cms_hint]
+        _gh_ver  = version.lstrip("v") if version else ""
+        if _gh_ver:
+            _tarball = f"https://github.com/{_gh_repo}/archive/refs/tags/v{_gh_ver}.tar.gz"
+            step(f"[cms:{cms_hint}] descargando release v{_gh_ver} desde GitHub ({_gh_repo})...")
+            r = fetch_zip_url(_tarball, on_step=on_step, timeout=timeout)
+            if r.ok:
+                return r
+            # Try without 'v' prefix (some repos tag as X.Y.Z not vX.Y.Z)
+            _tarball2 = f"https://github.com/{_gh_repo}/archive/refs/tags/{_gh_ver}.tar.gz"
+            r2 = fetch_zip_url(_tarball2, on_step=on_step, timeout=timeout)
+            if r2.ok:
+                return r2
+            step(f"[cms:{cms_hint}] tarball v{_gh_ver} no disponible — clonando latest como fallback")
+        # Fall through: clone full repo (latest) if no version or tarball failed
+        target = f"https://github.com/{_gh_repo}"
     # Gap confirmado con CVE-2024-23334: un directorio LOCAL (ya clonado/preparado por el analista)
     # caia en el camino de "ni URL git ni zip" y se rechazaba como "slug no reconocido". Se trata
     # directamente como fuente lista para usar: local_path apunta al directorio tal cual.

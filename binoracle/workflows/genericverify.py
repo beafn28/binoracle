@@ -301,6 +301,12 @@ def _detect_cms_fingerprint(source_dir: str) -> Optional[str]:
             # Payload CMS: dep "payload"
             if "payload" in deps_all and "payload" in (pkg.get("description", "") + name).lower():
                 return "payload"
+            # Directus: dep "directus" or "@directus/api"
+            if "directus" in deps_all or "@directus/api" in deps_all or "directus" in name:
+                return "directus"
+            # Keystone: dep "@keystone-6/core" or "@keystonejs/keystone"
+            if any(k.startswith(("@keystone-6/", "@keystonejs/")) for k in deps_all):
+                return "keystone"
         except (OSError, ValueError, KeyError):
             pass
     # Craft CMS: composer.json con craftcms/cms
@@ -486,6 +492,58 @@ def _cms_dockerfile_lines(cms: str, source_dir: str,
                   "ENV MM_SQLSETTINGS_DATASOURCE=/mattermost/data/mattermost.db",
                   "ENV MM_SERVICESETTINGS_SITEURL=http://localhost:8065"])
         return (_base, 8065, lines)
+
+    if cms == "craft":
+        # Craft CMS 4.x — PHP 8.2 + MariaDB in a single fat container.
+        # Uses the official php:8.2-apache base and bootstraps MariaDB inside.
+        lines = (["WORKDIR /app", "COPY . ."] + proxy +
+                 ["RUN apt-get update -qq && apt-get install -y --no-install-recommends "
+                  "mariadb-server libpng-dev libjpeg-dev libwebp-dev libzip-dev unzip curl "
+                  "libonig-dev && rm -rf /var/lib/apt/lists/*",
+                  "RUN docker-php-ext-install pdo pdo_mysql zip gd mbstring bcmath intl",
+                  "RUN curl -sS https://getcomposer.org/installer | php -- "
+                  "--install-dir=/usr/local/bin --filename=composer",
+                  "RUN composer install --no-interaction --prefer-dist 2>/dev/null || true",
+                  # Initialise MariaDB and create craft DB
+                  "RUN mysqld_safe --skip-networking & sleep 4 && "
+                  "mysql -u root -e \"CREATE DATABASE IF NOT EXISTS craft; "
+                  "CREATE USER IF NOT EXISTS 'craft'@'localhost' IDENTIFIED BY 'craft'; "
+                  "GRANT ALL ON craft.* TO 'craft'@'localhost';\"",
+                  "ENV CRAFT_ENVIRONMENT=dev",
+                  "ENV DB_DRIVER=mysql",
+                  "ENV DB_SERVER=127.0.0.1",
+                  "ENV DB_PORT=3306",
+                  "ENV DB_DATABASE=craft",
+                  "ENV DB_USER=craft",
+                  "ENV DB_PASSWORD=craft",
+                  "ENV SECURITY_KEY=binoracle_dev_security_key_32chXX",
+                  "ENV CRAFT_ALLOW_ADMIN_CHANGES=true",
+                  "ENV ALLOW_IFRAMES=true",
+                  'CMD ["sh", "-c", "mysqld_safe --skip-networking & sleep 3 '
+                  '&& php craft install/check 2>/dev/null; apache2-foreground"]'])
+        return ("php:8.2-apache", 80, lines)
+
+    if cms == "directus":
+        lines = (["WORKDIR /directus", "COPY . ."] + proxy +
+                 ["ENV NODE_ENV=production",
+                  "ENV DB_CLIENT=sqlite3",
+                  "ENV DB_FILENAME=/directus/database/database.db",
+                  "ENV SECRET=binoracle_directus_secret_32ch",
+                  "ENV ADMIN_EMAIL=admin@binoracle.local",
+                  "ENV ADMIN_PASSWORD=binoracle_admin",
+                  "ENV PUBLIC_URL=http://localhost:8055",
+                  "RUN npm install || npm install --legacy-peer-deps || true",
+                  'CMD ["npx", "directus", "start"]'])
+        return ("node:18-alpine", 8055, lines)
+
+    if cms == "keystone":
+        lines = (["WORKDIR /app", "COPY . ."] + proxy +
+                 ["ENV NODE_ENV=development",
+                  "ENV SESSION_SECRET=binoracle_keystone_session_32ch",
+                  "ENV DATABASE_URL=file:./keystone.db",
+                  "RUN npm install || npm install --legacy-peer-deps || true",
+                  'CMD ["sh", "-c", "npm run dev || npm start || npx keystone dev"]'])
+        return ("node:18-alpine", 3000, lines)
 
     return None
 

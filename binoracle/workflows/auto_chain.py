@@ -1629,7 +1629,9 @@ def _run_web_stage(cve_id: str, cve_info, llm_notes: dict,
             skip_source_download=skip_source_download,
             hints=hints or None,
         )
-        result.verified = getattr(inv, "verified", False)
+        _dv = getattr(inv, "dynamic_verify", None)
+        result.verified = (getattr(inv, "verified", False) or
+                           bool(_dv and getattr(_dv, "verified", False)))
         result.findings = getattr(inv, "findings", [])
         result.inv      = inv
         status = "VERIFICADO" if result.verified else "no confirmado"
@@ -3231,7 +3233,8 @@ def run_full_chain(
     # Fires once when Stage 5 did not verify the CVE and the failure was
     # actionable (403/404/wrong_body) — not for binary/native paths where
     # Stage 5 did not run _run_web_stage at all.
-    _actionable_failures = {"403", "404", "wrong_body", "server_error"}
+    _actionable_failures = {"403", "404", "wrong_body", "server_error",
+                            "container_crash", "timeout"}
     if (not result.verified
             and not binary
             and result.cve_class in ("web", "unknown", "cli")
@@ -3381,8 +3384,10 @@ def run_full_chain(
     # - OR result IS verified but we want irrefutable differential evidence
     # - A patch URL exists (we have the patched version to compare against)
     # - Budget remaining ≥ 90s (needs to spin up 2 containers)
-    # - BINORACLE_DIFFTEST=1 (opt-in, disabled by default — costly)
-    if (os.environ.get("BINORACLE_DIFFTEST") == "1" and
+    # - BINORACLE_DIFFTEST=1 (opt-in) OR auto when patch_summary available + not verified + budget
+    _diff_auto = (not result.verified and bool(result.patch_summary)
+                  and bool(llm_notes.get("endpoint")) and _budget_ok(min_s=90.0))
+    if ((os.environ.get("BINORACLE_DIFFTEST") == "1" or _diff_auto) and
             result.patch_summary and _budget_ok(min_s=90.0) and
             cve_info and llm_notes.get("endpoint")):
         _banner(step, "[5.5/8] DIFFERENTIAL TEST — vuln vs patched")
@@ -3441,15 +3446,17 @@ def run_full_chain(
     # - Vuln class is fuzzable (sqli, xss, ssti, lfi, rce, command-injection)
     # - An endpoint was identified (need somewhere to fuzz)
     # - Budget remaining ≥ 45s
-    # - BINORACLE_FUZZ=1 (opt-in, disabled by default to avoid noise)
+    # - BINORACLE_FUZZ=1 (opt-in) OR auto-activated when Stage 5 gave wrong_body + budget > 90s
     _FUZZABLE_CLASSES = {
         "sqli", "sql-injection", "xss", "reflected-xss", "stored-xss",
         "ssti", "template-injection", "lfi", "path-traversal",
         "rce", "command-injection", "open-redirect",
     }
     _cve_class_low = (result.cve_class or "").lower().replace(" ", "-")
+    _s5_fail_reason = _extract_failure_context(result, llm_notes).get("failure_reason", "")
+    _fuzz_auto = (_s5_fail_reason in {"wrong_body", "403"} and _budget_ok(min_s=90.0))
     if (not result.verified and
-            os.environ.get("BINORACLE_FUZZ") == "1" and
+            (os.environ.get("BINORACLE_FUZZ") == "1" or _fuzz_auto) and
             _cve_class_low in _FUZZABLE_CLASSES and
             llm_notes.get("endpoint") and
             _budget_ok(min_s=45.0)):
