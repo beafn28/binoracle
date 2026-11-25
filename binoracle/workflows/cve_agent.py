@@ -8248,7 +8248,12 @@ _PLUGIN_NAME_PATTERNS = [
 # Slugs that are NVD phrasing artifacts, not real product names.
 # "an-issue-in-X" comes from "This issue affects an-issue-in-X:" in some NVD records.
 _SLUG_REJECT_PREFIXES = ("an-issue-in-", "this-issue-", "the-issue-", "an-auth-",
-                          "a-vuln-", "the-vuln-", "affected-", "the-")
+                          "a-vuln-", "the-vuln-", "affected-", "the-",
+                          # NVD descriptions sometimes say "This issue affects
+                          # unauthenticated-X-in-Y:" or "authenticated-X-in-Y:" --
+                          # strip these attack-class prefixes to get to the real slug.
+                          "unauthenticated-", "authenticated-", "unauthorized-",
+                          "sql-injection-in-", "sqli-in-", "xss-in-", "rce-in-")
 
 
 def _guess_wp_slug_from_description(description: str) -> Optional[str]:
@@ -10703,6 +10708,12 @@ def _fix_dockerfile_debian_compat(dockerfile: str) -> str:
     dentro de una imagen PHP, simplemente php esta disponible como /usr/local/bin/php."""
     if not dockerfile:
         return dockerfile
+    # Strip pinned SHA256 digests from FROM lines: "FROM wordpress@sha256:abc..." → "FROM wordpress:latest"
+    # Pinned digests expire/rotate; the LLM sometimes generates them from known-good images.
+    dockerfile = re.sub(
+        r'^(FROM\s+\S+?)@sha256:[0-9a-f]{64}([^\S\n]|$)',
+        lambda m: m.group(1) + ":latest" + m.group(2),
+        dockerfile, flags=re.MULTILINE | re.IGNORECASE)
     # En imagenes FROM wordpress:* o FROM php:*, PHP ya esta instalado; 'php-cli' en
     # apt-get install es redundante Y rompe el build en Trixie. Quitarlo.
     _WP_OR_PHP_BASE = re.compile(
