@@ -3871,7 +3871,7 @@ _LAB_SCAFFOLD_SQLI_SYS = (
     "{\"server_code\": \"...codigo completo del servidor...\", "
     "\"dockerfile\": \"FROM node:18-alpine\\nWORKDIR /app\\nRUN npm install express better-sqlite3\\n"
     "COPY server.js .\\nEXPOSE 3000\\nCMD ['node','server.js']\", "
-    "\"endpoint\": \"/api/search\", \"inject_param\": \"q\", "
+    "\"endpoint\": \"/api/search\", \"sqli_param\": \"q\", "
     "\"http_method\": \"GET\", \"confirm_string\": \"CONFIRM_STRING\", \"server_port\": 3000}"
 )
 
