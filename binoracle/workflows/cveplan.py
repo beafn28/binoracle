@@ -122,6 +122,12 @@ _CLASSES = [
     ("boolean-oracle", ("boolean oracle", "data leak", "boolean injection", "blind data",
                         "where clause injection", "filter bypass", "boolean-based"),
      "exfiltra datos via diferencia TRUE/FALSE en respuestas (oracle booleano)", []),
+    ("mass-assignment", ("mass assignment", "bulk assignment", "parameter pollution",
+                         "unprotected parameters", "over-posting", "mass attribute"),
+     "asigna atributos protegidos via JSON body (p.ej. role=admin)", []),
+    ("account-takeover", ("account takeover", "account hijack", "unauthorized account",
+                          "user account takeover", "admin account creation"),
+     "toma control de cuenta ajena via bug en reset/registro/sesion", []),
 ]
 
 # clases que NO son corrupcion de memoria nativa: el PoC es una peticion HTTP (o una pagina para CSRF/
@@ -160,6 +166,7 @@ WEB_CLASSES = frozenset({
     "arbitrary-file-move", "file-read", "file-write", "file-delete",
     "object-deserialization", "php-deserialization", "java-deserialization",
     "account-takeover", "user-enumeration", "password-reset",
+    "mass-assignment", "bulk-assignment", "over-posting", "mass-attribute-assignment",
     "open-redirect", "unvalidated-redirect",
     "xml-injection", "html-injection", "template-injection",
     "cache-poisoning", "web-cache-poisoning", "request-smuggling",

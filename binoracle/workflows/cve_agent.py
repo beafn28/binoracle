@@ -12897,7 +12897,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 # respuesta no-auth devuelve contenido no trivial (no 403/401/empty).
                 if wr is None and inv.vuln_class in (
                     "information-disclosure", "missing-authorization", "idor",
-                    "sensitive-info-exposure", "data-exposure", "unauthorized-read"
+                    "sensitive-info-exposure", "data-exposure", "unauthorized-read",
+                    "account-takeover", "privilege-escalation"
                 ) and notes.get("endpoint") and plugin_dir:
                     from .wpverify import verify_wordpress_missing_auth_probe
                     _probe_params = notes.get("parameters") or []
