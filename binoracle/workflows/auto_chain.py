@@ -1560,9 +1560,15 @@ def _run_web_stage(cve_id: str, cve_info, llm_notes: dict,
         if wrapper_url:
             wrapper_container = f"bo_wrapper_{cve_id.replace('-', '_').lower()}"
             # Inject the wrapper URL into config so investigate_cve targets it
+            # config may be a Config dataclass or None — convert to plain dict safely
             if config is None:
                 config = {}
-            config = dict(config)
+            elif not isinstance(config, dict):
+                config = {k: getattr(config, k)
+                          for k in dir(config)
+                          if not k.startswith("_") and not callable(getattr(config, k, None))}
+            else:
+                config = dict(config)
             config["target_url"] = wrapper_url
             step(f"  target inyectado: {wrapper_url}")
             result.add_step("wrapper_app", "ok", wrapper_url)
