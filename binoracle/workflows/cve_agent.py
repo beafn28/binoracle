@@ -11272,6 +11272,7 @@ def _feedback_loop(llm, verifier_fn, initial_wr, lab_cfg: dict,
     cfg = dict(lab_cfg)
     _prev_cat = _classify_pipeline_error(getattr(wr, 'detail', '')).get("category", "")
     _progress_level = _infer_progress_level(getattr(wr, 'detail', ''))
+    _prev_endpoint = cfg.get("endpoint", "")
 
     for _i in range(max_rounds):
         _fb = _lab_feedback_for_class(llm, getattr(wr, 'detail', '') or "", cfg, step, es,
@@ -11286,13 +11287,19 @@ def _feedback_loop(llm, verifier_fn, initial_wr, lab_cfg: dict,
         if wr.verified:
             break
         _curr_cat = _classify_pipeline_error(getattr(wr, 'detail', '')).get("category", "")
-        if _curr_cat == _prev_cat and _curr_cat not in ("", "unknown"):
+        _curr_endpoint = cfg.get("endpoint", "")
+        # Break only when BOTH the error category AND the endpoint are identical —
+        # if the LLM changed the endpoint (or server code), that IS progress even
+        # when the error class stays "wrong_endpoint" / "auth_required".
+        if (_curr_cat == _prev_cat and _curr_cat not in ("", "unknown")
+                and _curr_endpoint == _prev_endpoint):
             step(("feedback atascado en la misma categoria de error "
-                  f"({_curr_cat}) — escalando a analista" if es else
+                  f"({_curr_cat}) y mismo endpoint — escalando a analista" if es else
                   f"feedback stuck on same error category ({_curr_cat}) "
-                  "— escalating to analyst"))
+                  "and same endpoint — escalating to analyst"))
             break
         _prev_cat = _curr_cat
+        _prev_endpoint = _curr_endpoint
 
     return wr, cfg, _progress_level
 
