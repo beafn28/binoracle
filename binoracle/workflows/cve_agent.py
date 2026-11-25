@@ -11221,7 +11221,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
 
     # Si el source_url es un placeholder o está ausente, consulta el advisory (OSV)
     # para obtener el repo real — sin tablas hardcodeadas.
-    if not source or _is_placeholder_source(source):
+    _source_was_placeholder = _is_placeholder_source(source)
+    if not source or _source_was_placeholder:
         try:
             from .cvelookup import fetch_source_repo_from_advisory
             _advisory_repo = fetch_source_repo_from_advisory(inv.cve_id)
@@ -11233,6 +11234,12 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             guessed_source = True
             step((f"source_url '{_old_src}' era placeholder/ausente — repo obtenido del advisory OSV: {_advisory_repo}") if es else
                  (f"source_url '{_old_src}' was placeholder/missing — repo resolved from OSV advisory: {_advisory_repo}"))
+        elif _source_was_placeholder:
+            # Advisory lookup failed but source was a placeholder — clear it to avoid
+            # git-cloning "https://github.com/your-cms-repo/" etc.
+            step((f"source_url '{source}' era placeholder y el advisory no resolvió un repo real — omitiendo descarga") if es else
+                 (f"source_url '{source}' was placeholder and advisory returned no real repo — skipping source download"))
+            source = ""
 
     if source and skip_source_download:
         step(("skip_source_download=True — descarga de fuente omitida (error previo de acceso)")
