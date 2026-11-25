@@ -290,6 +290,34 @@ def _docker_daemon_ok(timeout: float = 8.0) -> bool:
         return False
 
 
+def _detect_lfi_param_from_source(plugin_source_dir: str) -> Optional[str]:
+    """Scan PHP source for the first user-controlled parameter passed to a file-read sink.
+
+    Returns the HTTP param name (e.g. 'source', 'file', 'path') or None if not found.
+    Used as a last resort when _PATH_HINTS and the LLM params list don't identify
+    the vulnerable parameter — covers non-standard names like sogrid, wp-umbrella.
+    """
+    import glob as _glf, re as _relf
+    _SINKS_RE = _relf.compile(
+        r"""(?:file_get_contents|readfile|file|fopen|include|require|
+            include_once|require_once|highlight_file|show_source|
+            file_exists|is_file|is_readable)\s*\(\s*
+            (?:sanitize_file_name\s*\(\s*|wp_unslash\s*\(\s*|esc_attr\s*\(\s*)?
+            (?:\$_(?:GET|POST|REQUEST|FILES)\[['"]([a-zA-Z0-9_\-]+)['"]\]|
+               intval\s*\(\s*\$_(?:GET|POST|REQUEST)\[['"]([a-zA-Z0-9_\-]+)['"]\]\))""",
+        _relf.VERBOSE | _relf.IGNORECASE)
+    for _f in _glf.glob(str(plugin_source_dir) + "/**/*.php", recursive=True):
+        try:
+            _src = open(_f, encoding="utf-8", errors="replace").read(100_000)
+        except OSError:
+            continue
+        for _m in _SINKS_RE.finditer(_src):
+            _param = _m.group(1) or _m.group(2)
+            if _param:
+                return _param
+    return None
+
+
 def _pick_param(params, hints) -> Optional[str]:
     """Elige el nombre de parametro mas probable para un rol (id/email/password) entre los que
     cito el LLM, por coincidencia de substring contra una lista de pistas ordenada por prioridad.
@@ -3899,7 +3927,10 @@ def verify_wordpress_path_traversal(
             path_param = _non_infra[0]
         elif _params_list:
             path_param = _params_list[0]
-        else:
+        # Last resort: static analysis of PHP source for file-read sinks
+        if not path_param and plugin_source_dir:
+            path_param = _detect_lfi_param_from_source(plugin_source_dir) or ""
+        if not path_param:
             res.detail = "no se identifico el parametro que lleva la ruta/fichero objetivo"
             res.limitations.append("la verificacion de path-traversal necesita saber que parametro "
                                    "lleva la ruta/nombre de fichero; afina 'parameters' en la "
@@ -4354,7 +4385,10 @@ def verify_wordpress_lfi(
             path_param = _non_infra[0]
         elif _params_list:
             path_param = _params_list[0]
-        else:
+        # Last resort: static analysis of PHP source for file-read sinks
+        if not path_param and plugin_source_dir:
+            path_param = _detect_lfi_param_from_source(plugin_source_dir) or ""
+        if not path_param:
             res.detail = "no se identifico el parametro que lleva la ruta/fichero a incluir"
             res.limitations.append(
                 "la verificacion de LFI necesita saber que parametro lleva la ruta; "
