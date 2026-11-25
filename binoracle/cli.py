@@ -2283,7 +2283,8 @@ def cmd_reanalyze_failed(args, config):
 def cmd_nvd_watch(args, config):
     """Fully autonomous mode: polls NVD API for new high-severity CVEs and investigates each."""
     import time as _time
-    from .workflows.auto_chain import auto_queue_nvd, retry_failed_cves, process_never_attempted_cves
+    from .workflows.auto_chain import (auto_queue_nvd, retry_failed_cves,
+                                       process_never_attempted_cves, reanalyze_failed_cves)
 
     days_back  = int(getattr(args, "days_back", 2) or 2)
     min_cvss   = float(getattr(args, "min_cvss", 7.0) or 7.0)
@@ -2294,8 +2295,9 @@ def cmd_nvd_watch(args, config):
     priority   = getattr(args, "priority", "cvss") or "cvss"
     budget_s   = float(getattr(args, "budget", 300) or 300)
     lang       = getattr(args, "lang", "es") or "es"
-    do_retry           = bool(getattr(args, "retry", False))
-    do_never_attempted = bool(getattr(args, "never_attempted", False))
+    do_retry              = bool(getattr(args, "retry", False))
+    do_never_attempted    = bool(getattr(args, "never_attempted", False))
+    do_reanalyze_failed   = bool(getattr(args, "re_analyze_failed", False))
 
     def _step(msg):
         print(msg, flush=True)
@@ -2339,6 +2341,15 @@ def cmd_nvd_watch(args, config):
                 max_cves=5, min_cvss=min_cvss, lang=lang,
                 budget_s=budget_s, on_step=_step)
             _step(f"nvd-watch: {len(_na_results)} CVEs nunca intentados procesados")
+
+        if do_reanalyze_failed:
+            _step("nvd-watch: re-analizando CVEs fallidos con LLM...")
+            _raf_results = reanalyze_failed_cves(
+                max_cves=5, min_cvss=min_cvss, lang=lang,
+                budget_s=budget_s, on_step=_step)
+            _raf_fixed = sum(1 for r in _raf_results if r.verified)
+            _step(f"nvd-watch: {len(_raf_results)} CVEs fallidos re-analizados, "
+                  f"{_raf_fixed} verificados tras reparación")
 
         # Send Telegram cycle summary if BINORACLE_TELEGRAM_TOKEN + CHAT_ID are set
         import os as _os_tg, json as _json_tg
@@ -3307,6 +3318,9 @@ def build_parser() -> argparse.ArgumentParser:
                       help="also retry previously failed CVEs from the retry queue")
     nvdw.add_argument("--never-attempted", dest="never_attempted", action="store_true",
                       help="also process CVEs in batch reports that were investigated but never verified")
+    nvdw.add_argument("--re-analyze-failed", dest="re_analyze_failed", action="store_true",
+                      help="also re-analyze CVEs with attempt_evidence but verified=False, using LLM "
+                           "to repair the hypothesis from real HTTP response data")
     nvdw.set_defaults(func=cmd_nvd_watch)
 
     sc2 = sub.add_parser("scan", help="static security scan + dependency audit + CVE test strategies "
