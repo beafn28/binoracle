@@ -11002,6 +11002,55 @@ def _scaffold_llm_lab_for_class(llm, source_dir: str, notes: dict, cve_id: str,
         "_LAB_SCAFFOLD_MULTISTEP_SYS":           _LAB_SCAFFOLD_MULTISTEP_SYS,
     }
     sys_key = _SCAFFOLD_SYS_FOR_CLASS.get(vuln_class)
+    if sys_key is None and vuln_class:
+        # Fallback: infer the closest scaffold from semantic substrings in the class name.
+        # This handles aliases and sub-classes that aren't in the dict without requiring
+        # a giant mapping table — reason from the class name, not a lookup.
+        _vc = vuln_class.lower()
+        if any(x in _vc for x in ("sqli", "sql-inj", "sql injection")):
+            sys_key = "_LAB_SCAFFOLD_SQLI_SYS"
+        elif any(x in _vc for x in ("nosql", "mongo", "nosqli")):
+            sys_key = "_LAB_SCAFFOLD_NOSQL_INJECTION_SYS"
+        elif any(x in _vc for x in ("deser", "pickle", "yaml-dese", "object-inject")):
+            sys_key = "_LAB_SCAFFOLD_DESERIALIZATION_SYS"
+        elif any(x in _vc for x in ("race", "concurrent", "toctou", "time-of-check")):
+            sys_key = "_LAB_SCAFFOLD_RACE_CONDITION_SYS"
+        elif any(x in _vc for x in ("proto", "prototype")):
+            sys_key = "_LAB_SCAFFOLD_PROTOTYPE_POLLUTION_SYS"
+        elif any(x in _vc for x in ("jwt", "token-forg")):
+            sys_key = "_LAB_SCAFFOLD_JWT_BYPASS_SYS"
+        elif any(x in _vc for x in ("oauth", "oidc", "redirect-uri")):
+            sys_key = "_LAB_SCAFFOLD_OAUTH_SYS"
+        elif any(x in _vc for x in ("2fa", "mfa", "otp", "totp", "multistep",
+                                      "password-reset", "account-take")):
+            sys_key = "_LAB_SCAFFOLD_MULTISTEP_SYS"
+        elif any(x in _vc for x in ("path-trav", "dir-trav", "file-read", "arbitrary-file-read",
+                                      "lfi", "local-file")):
+            sys_key = "_LAB_SCAFFOLD_PATH_TRAVERSAL_SYS"
+        elif any(x in _vc for x in ("ssrf", "server-side-request")):
+            sys_key = "_LAB_SCAFFOLD_SSRF_SYS"
+        elif any(x in _vc for x in ("crlf", "header-inject", "response-split")):
+            sys_key = "_LAB_SCAFFOLD_HEADER_INJECTION_SYS"
+        elif any(x in _vc for x in ("ssti", "template-inject")):
+            sys_key = "_LAB_SCAFFOLD_SSTI_SYS"
+        elif any(x in _vc for x in ("command-inject", "os-command", "rce", "code-exec")):
+            sys_key = "_LAB_SCAFFOLD_CMDI_SYS"
+        elif any(x in _vc for x in ("xxe", "xml-")):
+            sys_key = "_LAB_SCAFFOLD_XXE_SYS"
+        elif any(x in _vc for x in ("cors")):
+            sys_key = "_LAB_SCAFFOLD_CORS_SYS"
+        elif any(x in _vc for x in ("xss", "cross-site-scr", "html-inject")):
+            sys_key = "_LAB_SCAFFOLD_XSS_SYS"
+        elif any(x in _vc for x in ("redirect", "open-redir")):
+            sys_key = "_LAB_SCAFFOLD_OPEN_REDIRECT_SYS"
+        elif any(x in _vc for x in ("graphql")):
+            sys_key = "_LAB_SCAFFOLD_GRAPHQL_SYS"
+        elif any(x in _vc for x in ("idor", "unauth", "unprotect", "broken-access",
+                                      "privilege", "auth", "access-control", "file-upload",
+                                      "arbitrary-file", "file-write", "file-delete")):
+            sys_key = "_LAB_SCAFFOLD_MISSING_AUTH_SYS"
+        elif any(x in _vc for x in ("boolean", "data-leak", "info", "exposure")):
+            sys_key = "_LAB_SCAFFOLD_BOOLEAN_ORACLE_SYS"
     sys_prompt = _SYS_MAP.get(sys_key) if sys_key else None
     if sys_prompt is None or llm is None:
         return None
