@@ -4703,11 +4703,15 @@ def find_web_routes(local_path: str, tech: str = "auto", max_routes: int = 40) -
             _re.compile(r'@Route\s*\(\s*[\'"]([^\'"]+)[\'"]', _re.IGNORECASE),
         ]
 
-    elif _tech in ("ruby", "rails"):
+    elif _tech in ("ruby", "rails", "sinatra", "rack"):
         _extensions = (".rb",)
         _patterns = [
             # Rails routes.rb: get '/path', to: 'controller#action'
             _re.compile(r'^\s*(get|post|put|patch|delete|resources?)\s+[\'"]([^\'"]+)[\'"]', _re.IGNORECASE | _re.MULTILINE),
+            # Sinatra: get '/path' do ... end
+            _re.compile(r'^\s*(get|post|put|patch|delete)\s+[\'"]([^\'"]+)[\'"]', _re.IGNORECASE | _re.MULTILINE),
+            # Rack::Static: use Rack::Static, urls: ["/static"]
+            _re.compile(r'Rack::Static\b[^\n]{0,200}:urls\s*=>\s*\[([^\]]+)\]', _re.IGNORECASE),
         ]
 
     elif _tech in ("go", "golang"):
