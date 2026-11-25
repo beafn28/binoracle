@@ -4950,6 +4950,10 @@ def find_web_routes(local_path: str, tech: str = "auto", max_routes: int = 40) -
             _re.compile(r'Route\s*::\s*(get|post|put|patch|delete|any)\s*\(\s*[\'"]([^\'"]+)[\'"]', _re.IGNORECASE),
             # Symfony annotations: @Route("/path", methods={"GET"})
             _re.compile(r'@Route\s*\(\s*[\'"]([^\'"]+)[\'"]', _re.IGNORECASE),
+            # WordPress REST API: register_rest_route('namespace/v1', '/endpoint', ...)
+            _re.compile(r'register_rest_route\s*\(\s*[\'"]([^\'"]+)[\'"],\s*[\'"]([^\'"]+)[\'"]', _re.IGNORECASE),
+            # WordPress AJAX: add_action('wp_ajax_action_name', ...) / add_action('wp_ajax_nopriv_action_name', ...)
+            _re.compile(r'add_action\s*\(\s*[\'"]wp_ajax(?:_nopriv)?_([^\'"]+)[\'"]', _re.IGNORECASE),
         ]
 
     elif _tech in ("ruby", "rails", "sinatra", "rack"):
@@ -5035,6 +5039,22 @@ def find_web_routes(local_path: str, tech: str = "auto", max_routes: int = 40) -
                             _path = g0
                     elif len(_groups) == 1:
                         _path = (_groups[0] or "").strip()
+
+                    # WordPress REST API: register_rest_route('ns/v1', '/endpoint')
+                    # group[0]=namespace, group[1]=endpoint → /wp-json/ns/v1/endpoint
+                    if (len(_groups) == 2 and "register_rest_route" in _pat.pattern
+                            and _groups[0] and _groups[1]):
+                        _ns = (_groups[0] or "").strip().strip("'\"").rstrip("/")
+                        _ep = (_groups[1] or "").strip().strip("'\"")
+                        if not _ep.startswith("/"):
+                            _ep = "/" + _ep
+                        _path = f"/wp-json/{_ns}{_ep}"
+                    # WordPress AJAX: add_action('wp_ajax(_nopriv)?_action_name')
+                    # → POST to /wp-admin/admin-ajax.php with action=action_name
+                    elif (len(_groups) == 1 and "wp_ajax" in _pat.pattern and _groups[0]):
+                        _action = (_groups[0] or "").strip().strip("'\"")
+                        _path = f"/wp-admin/admin-ajax.php?action={_action}"
+                        _method = "POST"
 
                     _path = _path.strip()
                     if not _path or len(_path) > 200:

@@ -1438,6 +1438,32 @@ class ExploitReasoningEngine:
          "RESOURCE_NOT_FOUND", 0.75,
          "h3/Nitro route not found — check serveStatic mount path; "
          "for CVE-2026-86253 (%2e%2e traversal), the path must be under the static root"),
+
+        # RESOURCE_NOT_FOUND — WordPress REST "rest_no_route" / "rest_forbidden" error codes
+        (r'\b(?:rest_no_route|rest_forbidden|rest_invalid_param|rest_missing_callback_param|'
+         r'rest_cannot_view|rest_invalid_handler)\b',
+         "RESOURCE_NOT_FOUND", 0.85,
+         "WordPress REST error code — 'rest_no_route': endpoint path is wrong, verify the "
+         "namespace and route (e.g. /wp-json/plugin/v1/endpoint); 'rest_forbidden': "
+         "correct endpoint but requires higher privileges or nonce"),
+
+        # RESOURCE_NOT_FOUND — WP plugin "wrong" data / config not set response
+        (r'\b(?:wrong\s+(?:member|directory|user|post)\s+(?:data|id|type)|'
+         r'invalid\s+(?:directory|member|post)\s+(?:data|id)|'
+         r'directory\s+not\s+(?:found|configured)|member\s+directory.*error)\b',
+         "RESOURCE_NOT_FOUND", 0.75,
+         "plugin returned 'wrong data' error — the resource ID or configuration parameter "
+         "is invalid; verify the directory_id/member_id/post_id passed matches an existing "
+         "record in the DB, and that required plugin options are set"),
+
+        # WRONG_PARAM_TYPE — Python/Django/FastAPI Pydantic/marshmallow validation error
+        (r'\b(?:value\s+is\s+not\s+a\s+valid\s+(?:integer|string|float|boolean)|'
+         r'field\s+required|ensure\s+this\s+value\s+has|'
+         r'Input\s+should\s+be\s+a\s+valid\s+(?:integer|string)|'
+         r'ValidationError|pydantic.*validation.*error)\b',
+         "WRONG_PARAM_TYPE", 0.72,
+         "Python/Pydantic validation error — the field expects a different type; "
+         "send the value as the correct Python/JSON type (int, str, bool, list)"),
     ]
 
     # Signals derived from HTTP status code alone

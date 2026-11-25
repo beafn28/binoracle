@@ -2506,7 +2506,12 @@ def verify_generic_path_traversal(
             attempts += [("%252e%252e%252f" * n) + _etc for n in (2, 4, 6, 8)]
             attempts += [("%2e%2e/" * n) + _etc for n in (2, 4, 6, 8)]
             attempts += [(".%2e/" * n) + _etc for n in (2, 4, 6, 8)]
-            attempts += ["//" + _etc_abs, "/" + _etc_abs]
+            attempts += [("//" + _etc_abs), ("/" + _etc_abs)]
+            # audiobookshelf %2F..%2F and Etherpad %5C..%5C encodings in passwd mode
+            _etc_2f = _etc.replace("/", "%2F")
+            attempts += [("%2F.." * n) + "%2F" + _etc_2f for n in (2, 4, 6, 8)]
+            _etc_bs = _etc.replace("/", "%5C")
+            attempts += [("%5C.." * n) + "%5C" + _etc_bs for n in (2, 4, 6, 8)]
 
         found = False
         tried_all: list = []
