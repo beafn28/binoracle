@@ -12749,6 +12749,37 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                  if k in notes})
                             step((f"route discovery: endpoint={notes.get('endpoint')}") if es
                                  else (f"route discovery: endpoint={notes.get('endpoint')}"))
+                # For non-WP/non-PHP source: scan real routes as alt_endpoints candidates
+                # so the 404-pivot loop can try them when the primary endpoint is wrong
+                if (fr.local_path and not plugin_dir and not is_drupal and not is_joomla
+                        and not notes.get("alt_endpoints")):
+                    _tech_routes = inv.tech or "auto"
+                    try:
+                        from .websource import find_web_routes as _find_web_routes_inv
+                        _all_routes = _find_web_routes_inv(str(fr.local_path),
+                                                            tech=_tech_routes, max_routes=20)
+                        # Only routes that are likely API endpoints (not static assets)
+                        _api_routes = [
+                            r for r in _all_routes
+                            if not any(x in r["path"] for x in (".css", ".js", ".png", ".ico", "/static"))
+                        ]
+                        if _api_routes:
+                            _curr_ep = (notes.get("endpoint") or "").rstrip("/")
+                            # Build alt_endpoints from routes that differ from the current endpoint
+                            _alts = [
+                                {"endpoint": r["path"], "method": r["method"]}
+                                for r in _api_routes
+                                if r["path"].rstrip("/") != _curr_ep
+                            ][:8]
+                            if _alts:
+                                inv.llm_notes["alt_endpoints"] = _alts
+                                step((f"[routes] {len(_alts)} rutas reales registradas como "
+                                      f"alt_endpoints para pivote 404") if es else
+                                     (f"[routes] {len(_alts)} real routes registered as "
+                                      f"alt_endpoints for 404 pivot"))
+                    except Exception:
+                        pass
+
             # Synthesis mode: dado el código fuente vulnerable + toda la inteligencia CVE,
             # pedir al LLM que sintetice el payload EXACTO para esta vulnerabilidad concreta.
             # El resultado propaga sql_context, bypass_needed y setup_steps a notes para que
