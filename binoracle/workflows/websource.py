@@ -1441,6 +1441,18 @@ def fetch_source(target: str, version: str = "", on_step: Optional[Callable[[str
         "grafana":       "grafana/grafana",
         "gitlab":        "gitlab-org/gitlab",
         "discourse":     "discourse/discourse",
+        # Modern Node.js frameworks (UnJS / meta-frameworks)
+        "h3":            "unjs/h3",
+        "nitro":         "unjs/nitro",
+        "nuxt":          "nuxt/nuxt",
+        "hono":          "honojs/hono",
+        "elysia":        "elysiajs/elysia",
+        "astro":         "withastro/astro",
+        "remix":         "remix-run/remix",
+        "sveltekit":     "sveltejs/kit",
+        # Ruby web frameworks
+        "sinatra":       "sinatra/sinatra",
+        "rack":          "rack/rack",
     }
     if cms_hint in _GITHUB_CMS_REPOS and not target.startswith(("http://", "https://", "git://")):
         step = on_step or (lambda _m: None)
@@ -3119,6 +3131,7 @@ def find_unsanitized_sqli_params(local_path: str) -> List[dict]:
                                 "line": line_no,
                                 "fn": f"filter->{list(filter_props.keys())[0]} → ORDER BY sink",
                                 "note": "cross-file: filter prop → ORDER BY interpolation",
+                                "injection_type": "orderby",
                             })
 
             # Paso 2: buscar queries que contienen esas variables tainted
@@ -3234,18 +3247,24 @@ def find_unsanitized_sqli_params(local_path: str) -> List[dict]:
                                 "fn": _containing_fn,
                             })
 
-    # Ordenar: hooks conocidos primero (admin-ajax, wp-json), luego template_redirect, luego vacíos
-    def _hook_rank(r: dict) -> int:
+    # Ordenar: ORDER BY hits primero (injection_type=orderby), luego por hook quality.
+    # Rationale: ORDER BY injection bypasses sanitize_text_field (strips SQL chars but not
+    # column-name-safe strings), while WHERE clause params are often sanitized/escaped.
+    # Putting ORDER BY hits first ensures the HUECO LLM receives the correct primary target.
+    def _hit_rank(r: dict) -> tuple:
+        injection_type_rank = 0 if r.get("injection_type") == "orderby" else 1
         h = r.get("hook", "")
         if "admin-ajax" in h:
-            return 0
-        if "wp-json" in h:
-            return 1
-        if "template_redirect" in h:
-            return 2
-        return 3
+            hook_rank = 0
+        elif "wp-json" in h:
+            hook_rank = 1
+        elif "template_redirect" in h:
+            hook_rank = 2
+        else:
+            hook_rank = 3
+        return (injection_type_rank, hook_rank)
 
-    results.sort(key=_hook_rank)
+    results.sort(key=_hit_rank)
     return results
 
 

