@@ -3483,6 +3483,29 @@ def _classify_pipeline_error(error_text: str) -> dict:
         result["remediation_hint"] = (
             "permisos denegados — verificar que el directorio del lab sea escribible, "
             "o añadir USER en Dockerfile para evitar conflictos de permisos")
+    elif "confirm_string not found" in err or "not found in response" in err or "secret not in" in err:
+        result["category"] = "exploit_payload_miss"
+        result["stage"] = "verification"
+        result["remediation_hint"] = (
+            "el servidor respondio pero el confirm_string NO esta en el cuerpo -- el "
+            "exploit no funciona todavia: revisar el endpoint (parametro correcto, metodo "
+            "HTTP, path exacto) o el payload (el servidor no ejecuta el codigo enviado). "
+            "El Dockerfile puede estar bien -- el problema es la logica del exploit")
+    elif _re.search(r"\b403\b|\bforbidden\b|\bauthentication required\b|\bunauthorized\b", err):
+        result["category"] = "auth_required"
+        result["stage"] = "verification"
+        result["remediation_hint"] = (
+            "el servidor devuelve 403/401 -- el endpoint requiere autenticacion. "
+            "Opciones: (1) el endpoint real es distinto (buscar uno que no requiera auth), "
+            "(2) añadir cabecera de bypass al lab (X-WP-Nonce, Authorization), "
+            "(3) la vuln requiere una sesion previa que el lab no establece")
+    elif _re.search(r"\b404\b|\bnot found\b|\bno such", err) and result["stage"] != "build":
+        result["category"] = "wrong_endpoint"
+        result["stage"] = "verification"
+        result["remediation_hint"] = (
+            "el servidor devuelve 404 -- el endpoint es incorrecto. "
+            "Revisar el endpoint en las notas del CVE, "
+            "o añadir una ruta alternativa al servidor generado (p.ej. /api/v2/... vs /api/...)")
     else:
         result["category"] = "generic_lab_failure"
         result["remediation_hint"] = (
@@ -12972,7 +12995,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 if wr is None and inv.vuln_class in (
                     "information-disclosure", "missing-authorization", "idor",
                     "sensitive-info-exposure", "data-exposure", "unauthorized-read",
-                    "account-takeover", "privilege-escalation"
+                    "account-takeover", "privilege-escalation",
+                    "stored-xss",
                 ) and notes.get("endpoint") and plugin_dir:
                     from .wpverify import verify_wordpress_missing_auth_probe
                     _probe_params = notes.get("parameters") or []
