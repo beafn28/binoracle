@@ -3026,6 +3026,17 @@ def find_unsanitized_sqli_params(local_path: str) -> List[dict]:
         r"""[^"\']{0,800}\{\s*\$([A-Za-z_]\w*)\s*\}""",
         re.S,
     )
+    # Patron 1e: array-key assignment of orderby/sort: $args['orderby'] = $request['sorting']
+    # Covers Ultimate Member pattern where HTTP param feeds an array key used in ORDER BY.
+    _ORDERBY_ARRAY_ASSIGN = re.compile(
+        r"""\$([A-Za-z_]\w*)\s*\[\s*['"](?:orderby|order_by|sort|sorting|order)['"]"""
+        r"""\s*\]\s*=\s*"""
+        r"""(?:[A-Za-z_][\w\\]*(?:::[A-Za-z_]\w*)?\s*\([^)]{0,80})?\s*"""
+        r"""(?:\$request\s*\[\s*['"]([\w\-]+)['"]\s*\]"""
+        r"""|\$_(?:GET|POST|REQUEST)\s*\[\s*['"]([\w\-]+)['"]\s*\]"""
+        r"""|\$request\s*->\s*get_param\s*\(\s*['"]([\w\-]+)['"]\s*\))""",
+        re.S | re.I,
+    )
     # Patron 2c: ORDER BY .{$var} en cualquier string (dentro o fuera de prepare)
     _ORDERBY_INTERP = re.compile(
         r"""ORDER\s+BY\s+[^"\';\n]{0,40}\{\s*\$([A-Za-z_]\w*)\s*\}""",
@@ -3092,7 +3103,17 @@ def find_unsanitized_sqli_params(local_path: str) -> List[dict]:
                 if prop and param:
                     filter_props[prop] = param
 
-            if not tainted and not filter_props:
+            # Paso 1e: $args['orderby'] = $request['sorting'] — array key taint
+            # Detecta el patron Ultimate Member: HTTP param → array key → ORDER BY interpolation.
+            # Registra (array_var, http_param) para buscar el array en ORDER BY sinks del mismo archivo.
+            orderby_array_params: list = []  # lista de (array_var_name, http_param_name)
+            for m in _ORDERBY_ARRAY_ASSIGN.finditer(text):
+                arr_var = m.group(1)
+                http_p = m.group(2) or m.group(3) or m.group(4) or ""
+                if arr_var and http_p:
+                    orderby_array_params.append((arr_var, http_p))
+
+            if not tainted and not filter_props and not orderby_array_params:
                 continue
 
             # Paso 1d: buscar ORDER BY {$prop} donde prop está en filter_props
@@ -3133,6 +3154,44 @@ def find_unsanitized_sqli_params(local_path: str) -> List[dict]:
                                 "note": "cross-file: filter prop → ORDER BY interpolation",
                                 "injection_type": "orderby",
                             })
+
+            # Paso 1f: buscar ORDER BY sinks donde aparece $args['orderby'] o $args[$orderby_key]
+            # que fue tainted por el Paso 1e.
+            if orderby_array_params:
+                for arr_var, http_p in orderby_array_params:
+                    # Match: ORDER BY ... {$arr_var[...]}  or  ORDER BY ... $arr_var[...]
+                    _arr_ob_re = re.compile(
+                        r"ORDER\s+BY\s+[^\n;\"']{0,80}" + re.escape("$" + arr_var),
+                        re.I | re.S,
+                    )
+                    _found_ob = False
+                    for _sfp, _stext in all_texts.items():
+                        for _m_ob in _arr_ob_re.finditer(_stext):
+                            line_no = _stext.count('\n', 0, _m_ob.start()) + 1
+                            _ep_hook = ""
+                            for _m_hook in _AJAX_HOOK.finditer(text):
+                                _ep_hook = f"wp_ajax_{_m_hook.group(1)}"
+                                break
+                            if not _ep_hook:
+                                for _m_rr in _REST_HOOK.finditer(text):
+                                    _ep_hook = f"/wp-json/{_m_rr.group(1).lstrip('/')}"
+                                    break
+                            pair_key = (fp, http_p)
+                            if pair_key not in seen_pairs:
+                                seen_pairs.add(pair_key)
+                                results.append({
+                                    "param": http_p,
+                                    "hook": _ep_hook,
+                                    "file": os.path.relpath(_sfp, local_path),
+                                    "line": line_no,
+                                    "fn": f"${arr_var}['orderby'] → ORDER BY sink",
+                                    "note": f"array key taint: ${arr_var}['orderby']={http_p}",
+                                    "injection_type": "orderby",
+                                })
+                            _found_ob = True
+                            break
+                        if _found_ob:
+                            break
 
             # Paso 2: buscar queries que contienen esas variables tainted
             for m_q in _WPDB_QUERY.finditer(text):
