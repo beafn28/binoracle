@@ -8146,3 +8146,106 @@ def _ssrf_cloud_escalate(send_ssrf_fn, step, result_evidence: dict) -> dict:
     if findings:
         result_evidence["ssrf_cloud_escalation"] = findings
     return findings
+
+
+# ---------------------------------------------------------------------------
+# ReDoS / algorithmic-complexity verifier
+# ---------------------------------------------------------------------------
+
+def verify_generic_redos(
+    source_dir: str,
+    endpoint: str,
+    http_method: str = "POST",
+    inject_param: str = "input",
+    redos_payload: str = "",
+    confirm_string: str = "",
+    on_step: Optional[Callable[[str], None]] = None,
+    budget_s: float = 900.0,
+    dockerfile_body: str = "", extra_files: Optional[dict] = None,
+) -> WpVerifyResult:
+    """Verifica ReDoS (Regular Expression Denial of Service) midiendo la diferencia de tiempo
+    de respuesta entre un input benigno y un input que causa backtracking catastrofico.
+
+    Estrategia:
+    1. Arranca el lab efimero.
+    2. Envia input benigno ('aaaa') → mide T_safe.
+    3. Envia redos_payload (o patron por defecto con backtracking catastrofico) → mide T_malicious.
+    4. CONFIRMADO si T_malicious > 5 * T_safe Y T_malicious > 1.5s.
+       PROBABLE si T_malicious > 2 * T_safe Y T_malicious > 0.5s (server timeout sin confirmar).
+    """
+    import time as _time
+
+    step = on_step or (lambda _m: None)
+    res = WpVerifyResult()
+    if not _docker_daemon_ok():
+        res.available = False
+        res.detail = "sin daemon Docker alcanzable"
+        res.limitations.append("verificacion dinamica NO intentada: sin daemon Docker")
+        return res
+
+    boot = _bootstrap_generic_lab(source_dir, step, res, budget_s,
+                                   dockerfile_body=dockerfile_body, extra_files=extra_files)
+    if boot is None:
+        return res
+    lab, base_url, container = boot
+    try:
+        m = (http_method or "POST").upper()
+        # Default ReDoS payload: evil regex trigger for (a+)+ / (a|aa)+ patterns
+        _evil = redos_payload or ("a" * 30 + "!")
+        _safe = "hello"
+        url = base_url + (endpoint or "/")
+        step(f"probando ReDoS: enviando input benigno ({len(_safe)} chars) a {endpoint}")
+
+        def _timed_request(payload: str) -> tuple:
+            t0 = _time.monotonic()
+            try:
+                if m == "GET":
+                    r = _http_request(m, url, params={inject_param: payload}, timeout=20)
+                else:
+                    r = _http_request(m, url, data={inject_param: payload}, timeout=20)
+                elapsed = _time.monotonic() - t0
+                st = getattr(r, "status_code", 0)
+                body = (getattr(r, "text", "") or "")[:200]
+                return elapsed, st, body, None
+            except Exception as exc:
+                elapsed = _time.monotonic() - t0
+                return elapsed, 0, "", str(exc)
+
+        t_safe, _st_s, _body_s, _err_s = _timed_request(_safe)
+        step(f"input benigno: {t_safe:.2f}s (status={_st_s})")
+
+        step(f"probando ReDoS: enviando payload malicioso ({len(_evil)} chars)")
+        t_evil, _st_e, _body_e, _err_e = _timed_request(_evil)
+        step(f"input malicioso: {t_evil:.2f}s (status={_st_e})")
+
+        ratio = t_evil / t_safe if t_safe > 0.01 else t_evil / 0.05
+        res.evidence.update({
+            "endpoint": endpoint, "param": inject_param,
+            "t_safe": round(t_safe, 3), "t_evil": round(t_evil, 3),
+            "ratio": round(ratio, 1), "payload": _evil,
+        })
+
+        if t_evil > 1.5 and ratio >= 5:
+            res.verified = True
+            res.ok = True
+            res.detail = (f"REDOS CONFIRMADO: ratio={ratio:.1f}x — el input malicioso tardo "
+                          f"{t_evil:.2f}s vs {t_safe:.2f}s para el input benigno en '{endpoint}' "
+                          f"(parametro '{inject_param}'). Backtracking catastrofico verificado.")
+            res.confidence = "confirmed"
+        elif t_evil > 0.5 and ratio >= 2:
+            res.ok = True
+            res.detail = (f"REDOS PROBABLE: ratio={ratio:.1f}x — {t_evil:.2f}s vs {t_safe:.2f}s. "
+                          f"Diferencial de tiempo presente pero por debajo del umbral de confirmacion "
+                          f"(necesita ratio>=5 y >1.5s). Puede ser lentitud del lab, no ReDoS real.")
+            res.confidence = "probable"
+        else:
+            res.ok = True
+            res.detail = (f"ReDoS no detectado: ratio={ratio:.1f}x, t_evil={t_evil:.2f}s — "
+                          f"no hay diferencial de tiempo significativo entre input benigno y malicioso")
+        return res
+    except Exception as e:
+        res.detail = f"error inesperado en verify_generic_redos: {e}"
+        return res
+    finally:
+        step("desmontando el laboratorio generico...")
+        lab.teardown()

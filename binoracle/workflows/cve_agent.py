@@ -16987,6 +16987,43 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     else:
                         _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path)), "nosql-injection")] = _lab_cfg_nosql
                 _apply_wpverify_result(inv, wr, es, llm)
+            # ReDoS / algorithmic complexity — timing-based verification
+            elif (not plugin_dir and
+                  (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
+                  inv.vuln_class in ("redos", "regex-dos", "algorithmic-complexity",
+                                     "regular-expression-denial-of-service",
+                                     "catastrophic-backtracking")):
+                from .genericverify import verify_generic_redos
+                _rdos_ep      = notes.get("endpoint") or "/"
+                _rdos_method  = notes.get("http_method") or "POST"
+                _rdos_param   = notes.get("redos_param") or notes.get("inject_param") or "input"
+                _rdos_payload = notes.get("redos_payload") or notes.get("payload_example") or ""
+                _rdos_cs      = notes.get("confirm_string") or ""
+                step(("intentando verificacion DINAMICA GENERICA -- ReDoS "
+                      "(diferencial de tiempo entre input benigno y malicioso)..." if es else
+                      "attempting GENERIC DYNAMIC verification -- ReDoS "
+                      "(timing differential between safe and malicious input)..."))
+                _rdos_dockerfile  = _notes_dockerfile(notes)
+                _rdos_extra_files = notes.get("extra_files") or None
+                if not _rdos_dockerfile and llm is not None:
+                    _scf = _scaffold_llm_lab_for_class(
+                        llm, str(fr.local_path) if fr.local_path else "", notes, inv.cve_id,
+                        "redos", step, es,
+                        patch_diff=inv.llm_notes.get("patch_diff_analysis"))
+                    if _scf:
+                        _rdos_dockerfile  = _scf["dockerfile_body"]
+                        _rdos_extra_files = _scf["extra_files"]
+                        _rdos_ep          = _scf.get("endpoint") or _rdos_ep
+                        _rdos_param       = _scf.get("inject_param") or _rdos_param
+                wr = verify_generic_redos(
+                    str(fr.local_path) if fr.local_path else "",
+                    _rdos_ep, _rdos_method,
+                    inject_param=_rdos_param,
+                    redos_payload=_rdos_payload,
+                    on_step=step, budget_s=budget_s,
+                    dockerfile_body=_rdos_dockerfile or "",
+                    extra_files=_rdos_extra_files)
+                _apply_wpverify_result(inv, wr, es, llm)
             # OAuth bypass / OIDC state confusion
             elif (not plugin_dir and
                   (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
