@@ -68,7 +68,7 @@ _CLASSES = [
      "confusion de tipos -> control de vtable/punteros de funcion", ["uaf-typeconfusion", "browser-v8"]),
     ("integer-overflow", ("integer overflow", "desbordamiento de entero", "integer underflow", "signedness"),
      "tamano/indice erroneo -> overflow o OOB secundario", ["integer-bugs"]),
-    ("race", ("race condition", "toctou", "time-of-check", "condicion de carrera", "double fetch"),
+    ("race-condition", ("race condition", "toctou", "time-of-check", "condicion de carrera", "double fetch"),
      "ventana de carrera -> estado inconsistente (p.ej. escalada/ficheros)", ["race-conditions"]),
     ("command-injection", ("command injection", "os command injection", "inyeccion de comandos",
                           "shell command"),
@@ -189,6 +189,16 @@ def classify_cve(text: str) -> Optional[str]:
     # "stored XSS via settings page" devolveria "xss" sin llegar a "stored-xss".
     if ("stored" in t or "persistent" in t) and ("xss" in t or "cross-site scripting" in t):
         return "stored-xss"
+    # JWT-BYPASS ANTES que _CLASSES: "authentication bypass via JWT" → _CLASSES["auth-bypass"] gana.
+    if "jwt" in t and ("bypass" in t or "none" in t or "algorithm" in t or "secret" in t or "forge" in t):
+        return "jwt-bypass"
+    # NOSQL-INJECTION ANTES que _CLASSES: "NoSQL injection...authentication bypass" → auth-bypass.
+    # EXCEPCION: "SQL injection...nosql operator" es sqli, no nosql. "nosql injection" contiene
+    # "sql injection" como substring, asi que usamos \bsql\b para detectar SQL independiente.
+    _is_standalone_sql = bool(re.search(r'\bsql\b', t)) and not re.search(r'\bnosql\b', t)
+    if not _is_standalone_sql and ("nosql injection" in t or "nosql inject" in t or
+            ("nosql" in t and "auth" in t) or ("mongodb" in t and "inject" in t)):
+        return "nosql-injection"
     # PATH-TRAVERSAL ANTES que _CLASSES: descripciones que dicen "path traversal"/"traversal" pero
     # luego mencionan "code execution" como consecuencia → _CLASSES["code-injection"] puede ganar.
     # El mecanismo es path traversal; el verificador leera /etc/passwd, no inyectara codigo.
@@ -251,6 +261,13 @@ def classify_cve(text: str) -> Optional[str]:
         return "missing-authorization"
     if has("insecure", "direct", "object") or has("idor"):
         return "idor"
+    # JWT/NoSQL ANTES que auth-bypass: "authentication bypass via JWT" / "NoSQL injection...auth bypass"
+    # tendrian como resultado "auth-bypass" sin estas comprobaciones previas mas especificas.
+    if "jwt" in t and ("bypass" in t or "none" in t or "algorithm" in t or "secret" in t):
+        return "jwt-bypass"
+    if ("nosql" in t or "mongodb" in t or "mongo" in t) and \
+            ("injection" in t or "inject" in t or "auth" in t):
+        return "nosql-injection"
     if has("authentication", "bypass") or has("auth", "bypass"):
         return "auth-bypass"
     if has("sql", "injection") or "sqli" in t:
@@ -258,7 +275,9 @@ def classify_cve(text: str) -> Optional[str]:
     if has("cross-site", "scripting") or re.search(r"\bxss\b", t):
         return "xss"
     if ("cors" in t and ("misconfigur" in t or "bypass" in t or "origin" in t or "header" in t)) or \
-            ("access-control-allow-origin" in t and "access-control-allow-credentials" in t):
+            ("access-control-allow-origin" in t and
+             ("access-control-allow-credentials" in t or "reflect" in t or "arbitrary" in t or
+              "without" in t or "allowlist" in t or "whitelist" in t)):
         return "cors-misconfiguration"
     if has("server-side", "request", "forgery") or re.search(r"\bssrf\b", t):
         return "ssrf"
@@ -311,6 +330,12 @@ def classify_cve(text: str) -> Optional[str]:
             has("privilege", "escalation") or has("improper", "access", "control") or
             has("insufficient", "authorization") or has("improper", "authorization")):
         return "missing-authorization"
+    if has("prototype", "pollution") or has("proto", "pollution"):
+        return "prototype-pollution"
+    if has("race", "condition") or re.search(r"\btoctou\b", t):
+        return "race-condition"
+    if "nosql" in t or ("mongodb" in t and "inject" in t):
+        return "nosql-injection"
     return None
 
 
