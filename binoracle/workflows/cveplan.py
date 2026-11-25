@@ -142,10 +142,10 @@ _CLASSES = [
 # clases que NO son corrupcion de memoria nativa: el PoC es una peticion HTTP (o una pagina para CSRF/
 # XSS), nunca un script pwntools contra un proceso local. Ver workflows/webexploit.py.
 WEB_CLASSES = frozenset({
-    "missing-authorization", "idor", "auth-bypass", "sqli", "xss", "ssrf", "command-injection",
-    "rce", "code-injection", "arbitrary-file-upload", "path-traversal", "lfi", "file-upload",
-    "deserialization", "xxe", "ssti", "csrf", "open-redirect", "php-object-injection",
-    "graphql-bypass", "boolean-oracle",
+    "missing-authorization", "idor", "auth-bypass", "sqli", "xss", "stored-xss", "ssrf",
+    "command-injection", "rce", "code-injection", "arbitrary-file-upload", "path-traversal",
+    "lfi", "file-upload", "deserialization", "xxe", "ssti", "csrf", "open-redirect",
+    "php-object-injection", "graphql-bypass", "boolean-oracle",
     "cors", "cors-misconfiguration", "cors-misconfig", "cors-reflection",
     # New classes added in architecture v2
     "jwt-bypass", "jwt", "jwt-weakness", "jwt-vulnerability", "jwt-none-algorithm",
@@ -203,7 +203,12 @@ def classify_cve(text: str) -> Optional[str]:
     # → el _CLASSES loop llega a "remote code execution" y devuelve "rce" sin alcanzar "file-upload".
     # La clave diagnostica es "file upload" (mecanismo) + indicador de falta de validación.
     if ("file upload" in t or "arbitrary file" in t) and (
-            "missing" in t or "unrestricted" in t or "insufficient" in t or "lack" in t):
+            "missing" in t or "unrestricted" in t or "insufficient" in t or "lack" in t
+            or "without" in t or "no validation" in t or "bypass" in t or "unauthenticated" in t
+            or "extension" in t or "type validation" in t or "mime" in t):
+        return "file-upload"
+    # También captura "unauthenticated file upload" y "arbitrary file upload" sin modificador
+    if "unauthenticated file upload" in t or "arbitrary file upload" in t:
         return "file-upload"
     # STORED-XSS ANTES que _CLASSES: "stored xss" y "xss" estan ambos en _CLASSES["xss"] →
     # "stored XSS via settings page" devolveria "xss" sin llegar a "stored-xss".
