@@ -5325,6 +5325,48 @@ def _seed_plugin_tables(lab: "_Lab", db_pw: str, tables: list, step,
         step(f"seed data: INSERT en {full} {'OK' if inserted else 'SKIP'} "
              f"(diferencial booleano en DB vacia)")
         seeded += 1
+
+    # Bidirectional seed: if the plugin table has a FK column (post_id / event_id / etc.)
+    # that links to wp_posts, create a WP post of the matching CPT type so queries that
+    # JOIN against wp_posts find a real row. This fixes the empty-DB problem for plugins
+    # like Events Manager (em_events.post_id → wp_posts) and WP Hotel Booking (hb_room).
+    # Only attempt when we inserted at least one plugin-table row AND have source dir.
+    if seeded > 0 and plugin_source_dir:
+        import glob as _glob_bds
+        import re as _re_bds
+        _cpt_re2 = _re_bds.compile(
+            r"register_post_type\s*\(\s*['\"]([a-z0-9_\-]{3,40})['\"]", _re_bds.I)
+        _cpts: list = []
+        for _phpf3 in _glob_bds.glob(str(plugin_source_dir) + "/**/*.php", recursive=True):
+            try:
+                _phpc3 = open(_phpf3, encoding="utf-8", errors="replace").read(60_000)
+            except OSError:
+                continue
+            for _m3 in _cpt_re2.finditer(_phpc3):
+                _ct3 = _m3.group(1)
+                if _ct3 not in _cpts and _ct3 != "attachment":
+                    _cpts.append(_ct3)
+        if _cpts:
+            # Check if we already created seed posts (via wp_posts rows in DB)
+            _existing_posts = lab.exec_mysql(
+                f"SELECT COUNT(*) FROM wp_posts WHERE post_type IN ("
+                + ", ".join(f"'{c}'" for c in _cpts[:6])
+                + ") AND post_status='publish';", db_pw) or ""
+            _existing_count = 0
+            try:
+                _existing_count = int(_existing_posts.strip().split('\n')[-1])
+            except (ValueError, IndexError):
+                pass
+            if _existing_count == 0:
+                # Create one seed post per CPT (up to 3) so JOIN queries find rows
+                for _cpt_type in _cpts[:3]:
+                    lab.exec_mysql(
+                        f"INSERT IGNORE INTO wp_posts "
+                        f"(ID, post_title, post_status, post_type, post_name, guid) "
+                        f"VALUES (1, 'Seed {_cpt_type}', 'publish', '{_cpt_type}', "
+                        f"'seed-{_cpt_type}', 'seed-{_cpt_type}');", db_pw)
+                step(f"seed: WP posts creados para CPTs {_cpts[:3]} (JOIN FK seed)")
+
     return seeded
 
 
