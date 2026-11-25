@@ -1470,7 +1470,10 @@ class _GenericLab:
         import urllib.request
         # CMSs con arranque largo (bootstrap DB incluido): 90 tries × 3s = 4.5 min máximo
         heavy_cms = {"ghost", "strapi", "payload", "drupal", "joomla", "craft",
-                     "typo3", "contao", "prestashop"}
+                     "typo3", "contao", "prestashop",
+                     # Ruby/Python heavy-boot: Rails runs db:migrate at startup; Django
+                     # may run migrations; Gradio downloads model weights on first run
+                     "rails", "django", "gradio"}
         if cms and cms.lower() in heavy_cms and tries < 90:
             tries = 90
         ready_signals = self._CMS_READY_SIGNALS.get((cms or "").lower(), [])
