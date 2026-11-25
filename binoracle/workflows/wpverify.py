@@ -4070,6 +4070,22 @@ def verify_wordpress_path_traversal(
             # adivinarlo desde fuera.
             _resp_text = resp.text or ""
             _hit_secret = next((s for s in _all_secrets if s in _resp_text), None)
+            # Base64 detection: some plugins return file contents base64-encoded in a JSON field.
+            # Decode any base64-looking values in the response and check for the secret there.
+            if not _hit_secret and _resp_text:
+                import base64 as _b64_pt
+                import re as _re_pt
+                for _b64_cand in _re_pt.findall(r'[A-Za-z0-9+/]{24,}={0,2}', _resp_text):
+                    try:
+                        _decoded = _b64_pt.b64decode(_b64_cand + '==').decode('utf-8', errors='ignore')
+                        _b64_hit = next((s for s in _all_secrets if s in _decoded), None)
+                        if _b64_hit:
+                            _hit_secret = _b64_hit
+                            step(f"  secreto encontrado en contenido base64 decodificado "
+                                 f"(candidato: {_b64_cand[:20]}...)")
+                            break
+                    except Exception:
+                        continue
             tried.append({"payload": payload_value, "status": resp.status_code,
                           "secret_presente": bool(_hit_secret),
                           "respuesta_cuerpo_recorte": _resp_text[:300]})

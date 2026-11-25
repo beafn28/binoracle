@@ -2557,6 +2557,17 @@ def verify_generic_path_traversal(
                     present = bool(_PASSWD_RE.search(_resp_body))
                 else:
                     present = secret in _resp_body
+                    # Base64 detection: some frameworks return file contents base64-encoded.
+                    if not present and _resp_body:
+                        import base64 as _b64_gen
+                        for _b64c in re.findall(r'[A-Za-z0-9+/]{24,}={0,2}', _resp_body):
+                            try:
+                                _dec = _b64_gen.b64decode(_b64c + '==').decode('utf-8', errors='ignore')
+                                if secret in _dec:
+                                    present = True
+                                    break
+                            except Exception:
+                                continue
                 tried.append({"payload": payload_value, "status": resp.status_code,
                               "secreto_presente": present,
                               "respuesta_cuerpo_recorte": _resp_body[:300]})
