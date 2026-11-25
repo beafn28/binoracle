@@ -3928,6 +3928,30 @@ _LAB_SCAFFOLD_CRLF_SYS = (
     "\"parameters\": {\"url\": \"https://example.com\"}}"
 )
 
+_LAB_SCAFFOLD_MASS_ASSIGNMENT_SYS = (
+    "Eres un experto en seguridad. Genera un servidor Node.js para un lab de mass assignment. "
+    "CRITICO bind: app.listen(3000, '0.0.0.0'). "
+    "CRITICO Dockerfile: NO hagas COPY package.json — "
+    "usa RUN npm install express en su lugar. REGLAS DEL LAB:\n"
+    "1. Endpoint POST /api/register con JSON body {username, password} — crea un usuario\n"
+    "2. El registro acepta y persiste TODOS los campos del body, incluidos los protegidos como "
+    "'role', 'isAdmin', 'confirmed', 'active'. NO hay whitelist de campos (esto es el patron vulnerable)\n"
+    "3. Endpoint GET /api/profile con query ?username=X — devuelve el perfil del usuario\n"
+    "   Si el usuario tiene role=admin (o isAdmin=true), incluir el CONFIRM_STRING en la respuesta\n"
+    "4. El exploit: registrar con {username, password, role:'admin'} → GET /api/profile → "
+    "la respuesta contiene CONFIRM_STRING porque el campo 'role' se guardo sin filtrar\n"
+    "5. Usar un Map o array en memoria para almacenar usuarios (sin DB externa)\n"
+    "IMPORTANTE: el nombre del campo protegido viene en el prompt del usuario. "
+    "Si el prompt especifica un campo diferente a 'role', usar ese campo para devolver el CONFIRM_STRING.\n"
+    "Responde SOLO con JSON sin markdown: "
+    "{\"server_code\": \"...codigo completo...\", "
+    "\"dockerfile\": \"FROM node:18-alpine\\nWORKDIR /app\\nRUN npm install express\\n"
+    "COPY server.js .\\nEXPOSE 3000\\nCMD ['node','server.js']\", "
+    "\"endpoint\": \"/api/register\", \"http_method\": \"POST\", "
+    "\"confirm_string\": \"CONFIRM_STRING\", \"server_port\": 3000, "
+    "\"parameters\": {\"username\": \"attacker\", \"password\": \"pass\", \"role\": \"admin\"}}"
+)
+
 _LAB_SCAFFOLD_OAUTH_SYS = (
     "Eres un experto en seguridad. Genera un servidor para un lab de OAuth bypass. "
     "El servidor tiene un flujo OAuth simplificado con un bypass de state/redirect_uri. REGLAS:\n"
@@ -10843,10 +10867,10 @@ _SCAFFOLD_SYS_FOR_CLASS = {
     "crlf":                        "_LAB_SCAFFOLD_CRLF_SYS",
     "http-response-splitting":     "_LAB_SCAFFOLD_CRLF_SYS",
     # Mass assignment / parameter pollution
-    "mass-assignment":             "_LAB_SCAFFOLD_MULTISTEP_SYS",
-    "bulk-assignment":             "_LAB_SCAFFOLD_MULTISTEP_SYS",
-    "over-posting":                "_LAB_SCAFFOLD_MULTISTEP_SYS",
-    "mass-attribute-assignment":   "_LAB_SCAFFOLD_MULTISTEP_SYS",
+    "mass-assignment":             "_LAB_SCAFFOLD_MASS_ASSIGNMENT_SYS",
+    "bulk-assignment":             "_LAB_SCAFFOLD_MASS_ASSIGNMENT_SYS",
+    "over-posting":                "_LAB_SCAFFOLD_MASS_ASSIGNMENT_SYS",
+    "mass-attribute-assignment":   "_LAB_SCAFFOLD_MASS_ASSIGNMENT_SYS",
     # Multi-step chain (2FA bypass, token-based flows)
     "2fa-bypass":                  "_LAB_SCAFFOLD_MULTISTEP_SYS",
     "two-factor-bypass":           "_LAB_SCAFFOLD_MULTISTEP_SYS",
@@ -11099,6 +11123,8 @@ def _scaffold_llm_lab_for_class(llm, source_dir: str, notes: dict, cve_id: str,
         "_LAB_SCAFFOLD_BUSINESS_LOGIC_SYS":      _LAB_SCAFFOLD_BUSINESS_LOGIC_SYS,
         "_LAB_SCAFFOLD_CRLF_SYS":                _LAB_SCAFFOLD_CRLF_SYS,
         "_LAB_SCAFFOLD_MULTISTEP_SYS":           _LAB_SCAFFOLD_MULTISTEP_SYS,
+        "_LAB_SCAFFOLD_SQLI_SYS":                _LAB_SCAFFOLD_SQLI_SYS,
+        "_LAB_SCAFFOLD_MASS_ASSIGNMENT_SYS":     _LAB_SCAFFOLD_MASS_ASSIGNMENT_SYS,
     }
     sys_key = _SCAFFOLD_SYS_FOR_CLASS.get(vuln_class)
     if sys_key is None and vuln_class:
