@@ -5889,7 +5889,21 @@ def verify_wordpress_sqli(
             # WP Hotel Booking (hb_room posts), Events Manager (em_events), etc.
             # All statements run in a SINGLE mysql -e call so session vars (@room_id) persist.
             if seed_sql:
-                _all_seed = "\n".join(s.rstrip(";").strip() + ";" for s in seed_sql if s.strip())
+                # Fix INSERT IGNORE + LAST_INSERT_ID pattern for CPT/wp_posts rows:
+                # INSERT IGNORE returns LAST_INSERT_ID()=0 when the row already exists.
+                # Converting to ON DUPLICATE KEY UPDATE ID=LAST_INSERT_ID(ID) ensures
+                # LAST_INSERT_ID() always returns the row's real ID (new or existing).
+                import re as _re_seed
+                _seed_fixed = []
+                for _ss in seed_sql:
+                    _ss_up = _ss.upper()
+                    if (_re_seed.search(r'INSERT\s+IGNORE\s+INTO\s+wp_posts\b', _ss, _re_seed.I)
+                            and 'ON DUPLICATE KEY' not in _ss_up):
+                        _ss = _re_seed.sub(r'INSERT\s+IGNORE\s+INTO', 'INSERT INTO', _ss,
+                                           count=1, flags=_re_seed.I)
+                        _ss = _ss.rstrip(';').rstrip() + ' ON DUPLICATE KEY UPDATE ID=LAST_INSERT_ID(ID)'
+                    _seed_fixed.append(_ss)
+                _all_seed = "\n".join(s.rstrip(";").strip() + ";" for s in _seed_fixed if s.strip())
                 _ssql_r = lab.exec_mysql(_all_seed, boot.db_pw)
                 step(f"seed_sql: {len(seed_sql)} statements → {'OK' if _ssql_r is not None else 'ERROR'}")
                 if _ssql_r is None:

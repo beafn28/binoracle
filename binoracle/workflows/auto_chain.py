@@ -1256,6 +1256,12 @@ def _generate_compose_lab(cve_id: str, cve_info, llm_notes: dict,
             if not ln.startswith("```")
         ).strip()
 
+    # Remove obsolete top-level 'version:' field (deprecated since Compose v2)
+    compose_yaml = "\n".join(
+        ln for ln in compose_yaml.splitlines()
+        if not ln.strip().startswith("version:")
+    )
+
     lab_dir = os.path.join(tmpdir, "compose_lab")
     os.makedirs(lab_dir, exist_ok=True)
 
