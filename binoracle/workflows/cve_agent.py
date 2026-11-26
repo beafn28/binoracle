@@ -14250,6 +14250,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             # verificador escanea el codigo fuente para descubrir rutas (Rack::Static, Sinatra,
             # Flask) de forma autonoma (ver _scan_web_routes en genericverify.py).
             elif (not plugin_dir and inv.vuln_class in ("path-traversal", "lfi") and
+                  not notes.get("json_body") and  # POST JSON body → use generic http_confirm instead
                   (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
                   (notes.get("endpoint") or (fr.local_path and os.path.isdir(str(fr.local_path))))):
                 from .genericverify import verify_generic_path_traversal, _pick_param
@@ -15935,6 +15936,19 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _sqli_df = _notes_dockerfile(notes)
                 _sqli_ef = notes.get("extra_files") or None
                 _sqli_cs = notes.get("confirm_string") or ""
+                # Default confirm strings per vuln class — only when none set by analyst or LLM
+                if not _sqli_cs:
+                    _vc_lower = (inv.vuln_class or "").lower()
+                    if _vc_lower in ("sqli", "sql-injection", "blind-sqli", "sqli-time", "sqli-boolean"):
+                        _sqli_cs = "SQL syntax"
+                    elif _vc_lower in ("lfi", "path-traversal", "directory-traversal", "arbitrary-file-read"):
+                        _sqli_cs = "root:"
+                    elif _vc_lower in ("rce", "command-injection", "ssti", "code-injection"):
+                        _sqli_cs = "uid="
+                    elif _vc_lower in ("xxe",):
+                        _sqli_cs = "root:"
+                    elif _vc_lower in ("ssrf",):
+                        _sqli_cs = ""  # SSRF often needs port-specific evidence
                 # Motor autonomo: si no hay Dockerfile, Qwen diseña el lab desde el codigo fuente
                 _scaffolded = False
                 if not _sqli_df and llm is not None:
@@ -16246,10 +16260,20 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                      f"(buscando {_hc_confirm_short!r} en {_hc_ep})..." if es else
                      "attempting GENERIC DYNAMIC verification -- HTTP confirm "
                      f"(looking for {_hc_confirm_short!r} in {_hc_ep})..."))
+                # Pass POST parameters as post_data (supports json_body=True payloads)
+                _hc_params = notes.get("parameters") or None
+                _hc_post_data = (
+                    _hc_params if (notes.get("json_body") and isinstance(_hc_params, dict)) else None
+                )
+                # Ensure JSON content type when json_body is set
+                if _hc_post_data and notes.get("json_body"):
+                    _hc_hdrs = dict(_hc_hdrs or {})
+                    _hc_hdrs.setdefault("Content-Type", "application/json")
                 wr = verify_generic_http_confirm(
                     _hc_local_path_str, _hc_ep, _hc_method,
                     confirm_string=_hc_confirm, patched_patterns=_hc_patched,
                     on_step=step, budget_s=budget_s, custom_headers=_hc_hdrs,
+                    post_data=_hc_post_data,
                     dockerfile_body=_hc_df, extra_files=_hc_ef,
                     docker_image=(notes.get("docker_image") or ""))
                 _apply_wpverify_result(inv, wr, es, llm)
