@@ -3346,6 +3346,7 @@ def _try_acquire_app_token(base_url: str, step) -> Optional[str]:
     ]
     _login_endpoints = [
         "/auth/login",             # Directus
+        "/ghost/api/admin/session", # Ghost CMS admin session
         "/api/auth/login",
         "/api/v1/auth/login",
         "/api/users/login",
@@ -3359,7 +3360,10 @@ def _try_acquire_app_token(base_url: str, step) -> Optional[str]:
                 r = _http_request("POST", base_url + ep, timeout=10, json=cred,
                                   headers={"Content-Type": "application/json"})
                 if r.status_code in (200, 201):
-                    body = r.json() if hasattr(r, "json") else {}
+                    try:
+                        body = r.json() if callable(getattr(r, "json", None)) else {}
+                    except Exception:
+                        body = {}
                     # Directus: {"data": {"access_token": "..."}}
                     _tok = (body.get("data", {}) or {}).get("access_token")
                     if not _tok:
