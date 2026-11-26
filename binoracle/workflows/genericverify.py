@@ -1560,6 +1560,18 @@ class _GenericLab:
         "craft":      ["apache2-foreground", "AH00558: apache2"],
     }
 
+    def _container_ip(self, container: str, timeout=10.0) -> Optional[str]:
+        """IP interna del contenedor dentro de su red Docker — útil cuando no hay puertos
+        publicados (Dockerfile sin EXPOSE). Devuelve None si no se puede determinar."""
+        try:
+            r = self.sh("inspect",
+                        "--format", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}",
+                        container, timeout=timeout)
+            ip = (r.stdout or "").strip().split("\n")[0].strip()
+            return ip if ip else None
+        except Exception:
+            return None
+
     def discover_http(self, tries: int = 60, delay: float = 3.0,
                       cms: Optional[str] = None) -> Optional[tuple]:
         """Prueba TODOS los puertos publicados de TODOS los contenedores levantados hasta que uno
@@ -1614,24 +1626,35 @@ class _GenericLab:
             _FALLBACK_PROBE_PATHS = ["/info", "/health", "/queue/status", "/api/health"]
             for c in self.running_containers():
                 ports = self.published_ports(c)
+                # Cuando el Dockerfile no tiene EXPOSE (o el run no usó -P), `docker port` devuelve
+                # nada — sondear puertos comunes directamente sobre la IP del contenedor.
+                if not ports:
+                    _ip = self._container_ip(c)
+                    if _ip:
+                        _probe_host = _ip
+                        ports = [str(p) for p in _COMMON_PORTS]
+                    else:
+                        continue
+                else:
+                    _probe_host = host
                 for port in ports:
                     _root_gave_5xx = False
                     try:
-                        with urllib.request.urlopen(f"http://{host}:{port}/", timeout=4) as r:
+                        with urllib.request.urlopen(f"http://{_probe_host}:{port}/", timeout=4) as r:
                             if r.status < 500:
                                 # Si hay señal de CMS: solo aceptar si ya aparece en logs
                                 if ready_signals:
                                     logs_text = self.logs_tail(c, lines=30)
                                     if not any(sig.lower() in logs_text.lower() for sig in ready_signals):
                                         continue  # HTTP arriba pero CMS aún inicializando
-                                return (c, port)
+                                return (c, port, _probe_host)
                     except urllib.error.HTTPError as e:
                         if e.code < 500:
                             if ready_signals:
                                 logs_text = self.logs_tail(c, lines=30)
                                 if not any(sig.lower() in logs_text.lower() for sig in ready_signals):
                                     continue
-                            return (c, port)
+                            return (c, port, _probe_host)
                         _root_gave_5xx = True
                     except Exception:
                         continue
@@ -1640,12 +1663,12 @@ class _GenericLab:
                         for _probe in _FALLBACK_PROBE_PATHS:
                             try:
                                 with urllib.request.urlopen(
-                                        f"http://{host}:{port}{_probe}", timeout=3) as r:
+                                        f"http://{_probe_host}:{port}{_probe}", timeout=3) as r:
                                     if r.status < 500:
-                                        return (c, port)
+                                        return (c, port, _probe_host)
                             except urllib.error.HTTPError as e:
                                 if e.code < 500:
-                                    return (c, port)
+                                    return (c, port, _probe_host)
                             except Exception:
                                 continue
             time.sleep(delay)
@@ -2009,6 +2032,24 @@ def _bootstrap_generic_lab(source_dir: str, step, res: WpVerifyResult,
     if dockerfile_body:
         # Analyst-provided Dockerfile takes priority over anything in source_dir
         import tempfile
+        # Garantizar EXPOSE: sin él `-P` no publica ningún puerto y discover_http agota reintentos.
+        # Escaneamos el Dockerfile y los extra_files en busca de puertos; si no encontramos nada
+        # usamos los más comunes (5000, 8080, 3000, 80).
+        if "EXPOSE" not in dockerfile_body.upper():
+            import re as _re_df_expose
+            _port_hits: set = set()
+            for _src in [dockerfile_body] + list((extra_files or {}).values()):
+                for _m in _re_df_expose.findall(
+                        r'(?:port|PORT|listen|LISTEN)[=:\s]+(\d{2,5})', _src, _re_df_expose.IGNORECASE):
+                    if _m and 79 < int(_m) <= 65535:
+                        _port_hits.add(int(_m))
+                # también "0.0.0.0:PORT" y ":PORT" patterns
+                for _m in _re_df_expose.findall(r':(\d{2,5})\b', _src):
+                    if _m and 79 < int(_m) <= 65535:
+                        _port_hits.add(int(_m))
+            _expose_ports = sorted(_port_hits) if _port_hits else [5000, 8080, 3000, 80]
+            dockerfile_body = dockerfile_body.rstrip() + \
+                f"\nEXPOSE {' '.join(str(p) for p in _expose_ports)}\n"
         ctx_dir = tempfile.mkdtemp(prefix="binoracle_analyst_ctx_")
         df_path = os.path.join(ctx_dir, "Dockerfile")
         with open(df_path, "w") as f:
@@ -2068,8 +2109,9 @@ def _bootstrap_generic_lab(source_dir: str, step, res: WpVerifyResult,
             for c in lab.running_containers():
                 res.logs.append(f"docker logs ({c}):\n" + lab.logs_tail(c))
             return None
-        container, port = found_http
-        base_url = f"http://{_lab_host()}:{port}"
+        container, port = found_http[:2]
+        _found_host = found_http[2] if len(found_http) > 2 else _lab_host()
+        base_url = f"http://{_found_host}:{port}"
         step(f"objetivo arriba: {base_url} (contenedor '{container}')")
 
         # Store discovered OpenAPI routes on res so callers can seed endpoint candidates
