@@ -4047,6 +4047,7 @@ def verify_generic_sqli_blind(
     confirm_string: str = "",
     _tried_params_set: Optional[frozenset] = None,
     sqli_header_hint: str = "",
+    auth_required: bool = False,
 ) -> WpVerifyResult:
     """SQL injection ciega por TIEMPO contra cualquier objetivo con su propio Dockerfile/compose.
     Deliberadamente mas limitada que verify_wordpress_sqli: sin saber el motor real de BD (puede
@@ -4099,6 +4100,17 @@ def verify_generic_sqli_blind(
         return res
     lab, base_url, container = boot
     try:
+        # Auth acquisition for APIs that require a bearer token (Mattermost, Directus, etc.)
+        if auth_required:
+            _auth_res = _try_acquire_app_token(base_url, step)
+            if _auth_res:
+                custom_headers = dict(custom_headers or {})
+                if _auth_res.startswith("cookie:"):
+                    custom_headers.setdefault("Cookie", _auth_res[7:])
+                else:
+                    custom_headers.setdefault("Authorization", f"Bearer {_auth_res}")
+            else:
+                step("WARN: auth_required pero no se pudo autenticar — continuando sin auth")
         m = (http_method or "GET").upper().split("/")[0].split("|")[0].strip() or "GET"
         # Strip the query string from the endpoint: params are always passed separately as a
         # dict via 'params=' in GET requests. If the endpoint includes '?k=<placeholder>' (a

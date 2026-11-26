@@ -15575,6 +15575,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _genlab_param = sqli_p or ""
                 _is_local_lab = (fr.kind == "local-dir")
                 _sqli_custom_hdrs = notes.get("custom_headers") or None
+                _sqli_auth_req = bool(notes.get("auth_required"))
                 _sqli_setup_cmds = notes.get("setup_cmds") or None
                 _sqli_df = _notes_dockerfile(notes)
                 _sqli_ef = notes.get("extra_files") or None
@@ -15601,7 +15602,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     custom_headers=_sqli_custom_hdrs,
                     setup_commands=_sqli_setup_cmds,
                     dockerfile_body=_sqli_df, extra_files=_sqli_ef,
-                    confirm_string=_sqli_cs)
+                    confirm_string=_sqli_cs,
+                    auth_required=_sqli_auth_req)
                 # Bucle de feedback: si Qwen scaffoldeo y fallo, que diagnostique y regenere
                 if _scaffolded and not wr.verified:
                     _lab_cfg = {
