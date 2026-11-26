@@ -106,12 +106,14 @@ def verify_ghost_cve(
     payload: str = "",
     confirm_string: str = "",
     auth_required: bool = True,
+    docker_image: str = "",
     on_step: Optional[Callable] = None,
-    budget_s: float = 180.0,
+    budget_s: float = 240.0,
 ) -> WpVerifyResult:
     """Verify a Ghost CMS CVE dynamically.
 
-    Spins up Ghost 5 in Docker, sets up admin, fires PoC, checks confirm_string.
+    Spins up Ghost in Docker (uses docker_image if given, else _GHOST_IMAGE),
+    sets up admin, fires PoC, checks confirm_string.
     """
     step = on_step or print
     res = WpVerifyResult()
@@ -120,6 +122,7 @@ def verify_ghost_cve(
         res.detail = "Docker no disponible"
         return res
 
+    _image = docker_image if docker_image else _GHOST_IMAGE
     container = f"bo_ghost_{os.urandom(4).hex()}"
     network = f"bo_ghost_net_{os.urandom(4).hex()}"
 
@@ -128,8 +131,8 @@ def verify_ghost_cve(
         subprocess.run(["docker", "network", "create", network],
                        capture_output=True, timeout=10)
 
-        step(f"  ghost: arrancando {_GHOST_IMAGE} en puerto {_GHOST_PORT}…")
-        # Ghost 5 with SQLite (no MySQL needed for testing)
+        step(f"  ghost: arrancando {_image} en puerto {_GHOST_PORT}…")
+        # Ghost with SQLite (no MySQL needed for testing)
         _run(["docker", "run", "-d", "--rm", "--name", container,
               "--network", network,
               "-p", f"{_GHOST_PORT}:{_GHOST_PORT}",
@@ -137,12 +140,14 @@ def verify_ghost_cve(
               "-e", "database__client=sqlite3",
               "-e", "database__connection__filename=/var/lib/ghost/content/data/ghost.db",
               "-e", "NODE_ENV=development",
-              _GHOST_IMAGE], timeout=30)
+              _image], timeout=30)
 
         host = _lab_host()
         base_url = f"http://{host}:{_GHOST_PORT}"
 
-        if not _ghost_wait_ready(base_url, timeout=60, step=step):
+        # Ghost 6 is heavier — allow up to 120s startup
+        _ghost_start_timeout = 120 if ("ghost:6" in _image or "ghost:7" in _image) else 90
+        if not _ghost_wait_ready(base_url, timeout=_ghost_start_timeout, step=step):
             res.detail = "Ghost no arrancó a tiempo"
             return res
 

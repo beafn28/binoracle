@@ -15436,20 +15436,28 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     )
                     _apply_wpverify_result(inv, wr, es, llm)
             # Directus headless CMS: Node.js with Bearer JWT auth and REST/GraphQL API.
-            elif (not plugin_dir and fr.local_path and
+            # Accepts: local source path OR docker_image "directus/directus:..." OR target_binary "directus"
+            elif (not plugin_dir and
+                  (fr.local_path or "directus" in (notes.get("docker_image") or "").lower()
+                   or "directus" in (notes.get("target_binary") or "").lower()) and
                   (any(w in (getattr(inv, "cms", "") or "").lower() for w in ("directus",))
-                   or any(w in (notes.get("cms") or "").lower() for w in ("directus",)))
+                   or any(w in (notes.get("cms") or "").lower() for w in ("directus",))
+                   or "directus" in (notes.get("docker_image") or "").lower()
+                   or "directus" in (notes.get("target_binary") or "").lower())
                   and inv.vuln_class in ("xss", "sqli", "sql-injection", "ssrf", "idor",
                                          "missing-authorization", "auth-bypass",
                                          "broken-access-control", "ssti", "rce",
                                          "path-traversal")
                   and notes.get("endpoint")):
                 from .directusverify import detect_directus, verify_directus_web_cve
-                if detect_directus(str(fr.local_path)):
+                _directus_path = str(fr.local_path) if fr.local_path else ""
+                if (not _directus_path) or detect_directus(_directus_path):
                     step(("  directusverify: Directus detectado — iniciando lab" if es else
                           "  directusverify: Directus detected — starting lab"))
+                    _directus_ver = (notes.get("affected_version") or
+                                     inv.llm_notes.get("vulnerable_version") or "")
                     wr = verify_directus_web_cve(
-                        str(fr.local_path),
+                        _directus_path,
                         endpoint=notes.get("endpoint") or "/",
                         vuln_class=inv.vuln_class,
                         http_method=notes.get("http_method") or "GET",
@@ -15457,11 +15465,41 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         payload=notes.get("payload") or "",
                         confirm_string=notes.get("confirm_string") or "",
                         auth_required=bool(notes.get("auth_required") or notes.get("authenticated")),
-                        pkg_version=inv.llm_notes.get("vulnerable_version") or "",
+                        pkg_version=_directus_ver,
                         on_step=step,
                         budget_s=budget_s,
                     )
                     _apply_wpverify_result(inv, wr, es, llm)
+            # Ghost CMS: Node.js with Admin/Content APIs and SQLite — SSE, SSRF, XSS
+            elif (not plugin_dir and
+                  ("ghost" in (notes.get("docker_image") or "").lower()
+                   or "ghost" in (notes.get("target_binary") or "").lower()
+                   or any(w in (getattr(inv, "cms", "") or "").lower() for w in ("ghost",))
+                   or any(w in (notes.get("cms") or "").lower() for w in ("ghost",))) and
+                  inv.vuln_class in ("xss", "sqli", "sql-injection", "ssrf", "idor",
+                                     "missing-authorization", "auth-bypass",
+                                     "broken-access-control", "ssti", "rce",
+                                     "path-traversal", "information-disclosure") and
+                  notes.get("endpoint")):
+                from .ghostverify import verify_ghost_cve
+                step(("  ghostverify: Ghost detectado — iniciando lab" if es else
+                      "  ghostverify: Ghost detected — starting lab"))
+                _ghost_docker_img = notes.get("docker_image") or ""
+                _ghost_ver = notes.get("affected_version") or inv.llm_notes.get("vulnerable_version") or ""
+                wr = verify_ghost_cve(
+                    str(fr.local_path) if fr.local_path else "",
+                    endpoint=notes.get("endpoint") or "/",
+                    vuln_class=inv.vuln_class,
+                    http_method=notes.get("http_method") or "GET",
+                    parameters=notes.get("parameters") or [],
+                    payload=notes.get("payload") or "",
+                    confirm_string=notes.get("confirm_string") or "",
+                    auth_required=bool(notes.get("auth_required") or notes.get("authenticated")),
+                    docker_image=_ghost_docker_img,
+                    on_step=step,
+                    budget_s=budget_s,
+                )
+                _apply_wpverify_result(inv, wr, es, llm)
             # Concrete CMS: PHP CMS (formerly concrete5) — CSRF session auth
             elif (not plugin_dir and fr.local_path and
                   (("concrete" in (notes.get("cms") or "").lower() or
@@ -16831,22 +16869,48 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                   not any(w in (getattr(inv, "cms", "") or notes.get("cms") or "").lower()
                           for w in ("craft", "craftcms", "payload", "payloadcms", "ghost", "strapi"))):
                 from .genericverify import verify_generic_ssti, _pick_param
-                from .wpverify import _XSS_HINTS
+                from .wpverify import _XSS_HINTS, WpVerifyResult
                 params = notes.get("parameters") or []
                 ssti_p = _notes_param("ssti_param", notes, params, _pick_param, _XSS_HINTS)
                 _inject_custom_docker_lab(str(fr.local_path), notes, step)
-                step(("intentando verificacion DINAMICA GENERICA -- aritmetica calculada por el "
-                     "motor de plantillas, el objetivo se construye desde su propio Dockerfile/"
-                     "compose..." if es else "attempting GENERIC DYNAMIC verification -- "
-                     "arithmetic computed by the template engine, the target is built from its "
-                     "own Dockerfile/compose..."))
                 _ssti_custom_hdrs = notes.get("custom_headers") or None
                 _ssti_ep = notes.get("endpoint")
                 _ssti_dockerfile = _notes_dockerfile(notes)
                 _ssti_extra_files = notes.get("extra_files") or None
                 _ssti_setup_cmds = notes.get("setup_cmds") or None
+                # Fast-path: si el analista ya sabe endpoint+confirm_string+dockerfile,
+                # probar confirm directamente primero (mucho más rápido que arithmetic scan)
+                _ssti_cs = notes.get("confirm_string") or ""
+                if _ssti_cs and _ssti_ep and _ssti_dockerfile:
+                    from .genericverify import verify_generic_http_confirm
+                    step(("SSTI: fast-path confirm_string — endpoint y dockerfile conocidos" if es else
+                          "SSTI: fast-path confirm_string — known endpoint and dockerfile"))
+                    _params_dict = params if isinstance(params, dict) else (params[0] if params and isinstance(params, list) and isinstance(params[0], dict) else {})
+                    wr = verify_generic_http_confirm(
+                        str(fr.local_path) if fr.local_path else "",
+                        _ssti_ep, notes.get("http_method") or "GET",
+                        _params_dict, _ssti_cs,
+                        auth_required=False, on_step=step,
+                        budget_s=min(budget_s, 300),
+                        custom_headers=_ssti_custom_hdrs,
+                        dockerfile_body=_ssti_dockerfile,
+                        extra_files=_ssti_extra_files,
+                        setup_commands=_ssti_setup_cmds)
+                    if wr.verified:
+                        _apply_wpverify_result(inv, wr, es, llm)
+                        # skip the slow arithmetic SSTI scan if already confirmed
+                        # (fall through to end of elif block)
+                else:
+                    wr = WpVerifyResult()
+                # Si el fast-path no verificó, continuar con arithmetic scan
+                if not (notes.get("confirm_string") and _ssti_ep and _ssti_dockerfile and wr.verified):
+                    step(("intentando verificacion DINAMICA GENERICA -- aritmetica calculada por el "
+                         "motor de plantillas, el objetivo se construye desde su propio Dockerfile/"
+                         "compose..." if es else "attempting GENERIC DYNAMIC verification -- "
+                         "arithmetic computed by the template engine, the target is built from its "
+                         "own Dockerfile/compose..."))
                 _scf_ssti = False
-                if not _ssti_dockerfile and llm is not None:
+                if not wr.verified and not _ssti_dockerfile and llm is not None:
                     _scf = _scaffold_llm_lab_for_class(
                         llm, str(fr.local_path), notes, inv.cve_id, "ssti", step, es,
                             patch_diff=inv.llm_notes.get("patch_diff_analysis"))
@@ -16859,12 +16923,13 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         if _scf.get("parameters"):
                             params = _scf["parameters"]
                         _scf_ssti = True
-                wr = verify_generic_ssti(
-                    fr.local_path, _ssti_ep, notes.get("http_method") or "GET",
-                    params, ssti_param_hint=ssti_p or "", on_step=step, budget_s=budget_s,
-                    custom_headers=_ssti_custom_hdrs,
-                    dockerfile_body=_ssti_dockerfile, extra_files=_ssti_extra_files,
-                    setup_commands=_ssti_setup_cmds)
+                if not wr.verified:
+                    wr = verify_generic_ssti(
+                        fr.local_path, _ssti_ep, notes.get("http_method") or "GET",
+                        params, ssti_param_hint=ssti_p or "", on_step=step, budget_s=budget_s,
+                        custom_headers=_ssti_custom_hdrs,
+                        dockerfile_body=_ssti_dockerfile, extra_files=_ssti_extra_files,
+                        setup_commands=_ssti_setup_cmds)
                 if _scf_ssti and not wr.verified:
                     _lab_cfg_ssti = {
                         "dockerfile_body": _ssti_dockerfile,
