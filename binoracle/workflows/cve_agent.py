@@ -2743,13 +2743,24 @@ def _set_endpoint_with_confidence(notes: dict, new_ep: str, source: str,
     new_conf = _ENDPOINT_CONFIDENCE.get(source, 0.15)
     cur_conf = notes.get("_ep_confidence", 0.0)
 
+    # analyst_endpoint_lock es ABSOLUTO: ninguna fuente exterior puede sobreescribirlo,
+    # incluyendo poc_raw_http (confidence 1.0 == analyst_lock). El analista proporcionó
+    # el endpoint correcto después de investigación manual; la lectura automática de un
+    # PoC puede leer el PoC equivocado (p.ej. CVE-2024-1561: el PoC de /file= no es el
+    # exploit correcto, que usa component_server → move_resource_to_block_cache).
+    if notes.get("analyst_endpoint_lock"):
+        if step:
+            cur_src = notes.get("_ep_source", "analyst")
+            step((f"endpoint bloqueado por analyst_endpoint_lock — descartando {new_ep!r} "
+                  f"(fuente={source!r}), manteniendo "
+                  f"'{notes.get('endpoint')}'"))
+        return False
+
     # Los locks manuales siguen tomando precedencia completa
     if notes.get("poc_raw_http_lock"):
         cur_conf = max(cur_conf, _ENDPOINT_CONFIDENCE["poc_raw_http"])
     if notes.get("poc_llm_endpoint_lock"):
         cur_conf = max(cur_conf, _ENDPOINT_CONFIDENCE["poc_llm_extract"])
-    if notes.get("analyst_endpoint_lock"):
-        cur_conf = max(cur_conf, _ENDPOINT_CONFIDENCE["analyst_lock"])
 
     if new_conf < cur_conf:
         if step:
