@@ -660,6 +660,8 @@ _LIBRARY_PACKAGES = [
     "numpy", "pandas", "scipy", "scikit",
     "sqlalchemy", "peewee", "tortoise",
     "celery", "kombu", "redis-py", "pymongo",
+    # Frameworks that can appear as library CVEs (ORM/middleware bugs with no endpoint)
+    "gradio", "rack", "django",
 ]
 # Signals that imply NO direct HTTP endpoint on the vulnerable component
 _LIBRARY_SIGNALS = [
@@ -1467,16 +1469,297 @@ def _detect_wrapper_stack(cve_info, llm_notes: dict) -> str:
     return "python"
 
 
-def _generate_wrapper_app(cve_id: str, cve_info, llm_notes: dict,
-                           tmpdir: str, step: Callable, llm=None) -> str | None:
-    """Generate a minimal Flask app that exposes the vulnerable library over HTTP.
+_DETERMINISTIC_WRAPPERS: dict[str, dict] = {
+    # Jinja2 sandbox SSTI: minimal Flask app exposing SandboxedEnvironment rendering
+    "jinja2": {
+        "_meta": {"endpoint": "/render", "param": "t", "method": "GET",
+                  "confirm_prefix": "output:"},
+        "app.py": """\
+import os
+from flask import Flask, request
+from jinja2.sandbox import SandboxedEnvironment
 
-    Returns the URL the target is reachable at (e.g. 'http://localhost:5001'),
-    or None if generation/startup failed.
+app = Flask(__name__)
+
+@app.route("/render")
+def render_tpl():
+    tpl = request.args.get("t", "")
+    try:
+        result = SandboxedEnvironment().from_string(tpl).render()
+        return f"output:{result}", 200
+    except Exception as e:
+        return f"error:{type(e).__name__}:{e}", 500
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000, debug=False)
+""",
+        "requirements.txt": "flask\njinja2",
+    },
+    # aiohttp static file serving path traversal
+    "aiohttp": {
+        "_meta": {"endpoint": "/files/", "param": None, "method": "GET",
+                  "path_traversal_prefix": "/files/"},
+        "app.py": """\
+import os, asyncio
+from aiohttp import web
+
+STATIC_DIR = "/app/static"
+os.makedirs(STATIC_DIR, exist_ok=True)
+with open(os.path.join(STATIC_DIR, "test.txt"), "w") as f:
+    f.write("aiohttp static ok")
+
+async def serve(request):
+    path = request.match_info.get("path", "")
+    full = os.path.join(STATIC_DIR, path)
+    try:
+        return web.Response(text=open(full).read())
+    except Exception as e:
+        return web.Response(text=f"error:{e}", status=404)
+
+app = web.Application()
+app.router.add_static("/files", STATIC_DIR, follow_symlinks=True)
+app.router.add_get("/file/{path:.+}", serve)
+
+if __name__ == "__main__":
+    web.run_app(app, port=5000)
+""",
+        "requirements.txt": "aiohttp",
+    },
+    # Gradio path traversal via /file= endpoint
+    "gradio": {
+        "_meta": {"endpoint": "/file=", "param": None, "method": "GET",
+                  "path_traversal_prefix": "/file="},
+        "app.py": """\
+import gradio as gr
+import os
+
+os.makedirs("/app/static", exist_ok=True)
+with open("/app/static/test.txt", "w") as f:
+    f.write("gradio static ok")
+
+def echo(x):
+    return x
+
+iface = gr.Interface(fn=echo, inputs="text", outputs="text")
+iface.launch(server_name="0.0.0.0", server_port=5000, share=False)
+""",
+        "requirements.txt": "gradio",
+    },
+    # Rack path traversal via Rack::Static
+    "rack": {
+        "_meta": {"endpoint": "/files/", "param": None, "method": "GET",
+                  "path_traversal_prefix": "/files/"},
+        "config.ru": """\
+require "rack"
+require "rack/static"
+
+use Rack::Static, urls: ["/files"], root: "/app/static"
+
+run lambda { |env|
+  req = Rack::Request.new(env)
+  [200, {"Content-Type" => "text/plain"}, ["path:#{req.path}"]]
+}
+""",
+        "Gemfile": """\
+source 'https://rubygems.org'
+gem 'rack'
+gem 'puma'
+""",
+        "Dockerfile": """\
+FROM ruby:3.2-slim
+WORKDIR /app
+RUN mkdir -p /app/static && echo "rack static ok" > /app/static/test.txt
+COPY Gemfile .
+RUN bundle install
+COPY config.ru .
+EXPOSE 5000
+CMD ["bundle", "exec", "rackup", "--host", "0.0.0.0", "-p", "5000", "config.ru"]
+""",
+    },
+    # Django QuerySet SQLi (CVE-2024-42005, CVE-2025-64459)
+    "django": {
+        "_meta": {"endpoint": "/query", "param": "field", "method": "GET",
+                  "extra_params": {"connector": "OR"}},
+        "app.py": """\
+import os, sys, django
+from django.conf import settings
+from django.core.wsgi import get_wsgi_application
+
+if not settings.configured:
+    settings.configure(
+        DATABASES={"default": {"ENGINE": "django.db.backends.sqlite3", "NAME": "/app/db.sqlite3"}},
+        INSTALLED_APPS=["django.contrib.contenttypes", "django.contrib.auth"],
+        ROOT_URLCONF=__name__,
+        ALLOWED_HOSTS=["*"],
+    )
+    django.setup()
+    from django.contrib.auth.models import User
+    try:
+        from django.db import connection
+        with connection.schema_editor() as se:
+            se.create_model(User)
+    except Exception:
+        pass
+    for i in range(3):
+        try:
+            User.objects.create_user(f"user{i}", password="x")
+        except Exception:
+            pass
+
+from django.http import HttpResponse
+from django.urls import path as url_path
+
+def query_view(request):
+    field = request.GET.get("field", "username")
+    connector = request.GET.get("connector", "OR")
+    try:
+        from django.contrib.auth.models import User
+        from django.db.models import Q
+        if connector.upper() in ("AND", "OR", "XOR"):
+            qs = User.objects.filter(Q(username="x") | Q(**{f"username___{connector}": "y"}))
+        else:
+            qs = User.objects.values(field)
+        result = str(list(qs.values_list(field, flat=True)))
+        return HttpResponse(f"result:{result}")
+    except Exception as e:
+        return HttpResponse(f"error:{type(e).__name__}:{e}", status=500)
+
+urlpatterns = [url_path("query", query_view)]
+application = get_wsgi_application()
+
+from wsgiref.simple_server import make_server
+if __name__ == "__main__":
+    httpd = make_server("0.0.0.0", 5000, application)
+    httpd.serve_forever()
+""",
+        "requirements.txt": "django",
+    },
+}
+
+_DETERMINISTIC_WRAPPER_TRIGGERS: dict[str, list[str]] = {
+    "jinja2": ["jinja", "jinja2", "jinja 2", "templating engine"],
+    "aiohttp": ["aiohttp", "aio-http"],
+    "gradio": ["gradio"],
+    "rack": ["rack ", "rack::", "rack web"],
+    "django": ["django"],
+}
+
+
+def _detect_deterministic_wrapper(cve_info, source_dir: str) -> str | None:
+    """Return the library key if a deterministic no-LLM wrapper is available."""
+    desc = (getattr(cve_info, "description", "") or "").lower()
+    # Check source directory for library markers
+    if source_dir and os.path.isdir(source_dir):
+        def _has(*paths):
+            return any(os.path.exists(os.path.join(source_dir, p)) for p in paths)
+        if _has("src/jinja2", "jinja2/__init__.py", "jinja2/sandbox.py"):
+            return "jinja2"
+        if _has("aiohttp/__init__.py", "setup.cfg") and "aiohttp" in desc:
+            return "aiohttp"
+        if _has("gradio/__init__.py", "gradio/blocks.py") or "gradio" in desc:
+            return "gradio"
+        if _has("rack.gemspec", "lib/rack.rb") or "rack" in desc:
+            return "rack"
+        if _has("django/__init__.py", "django/core/wsgi.py") or "django" in desc:
+            return "django"
+    # Fallback: description-based detection
+    for lib, triggers in _DETERMINISTIC_WRAPPER_TRIGGERS.items():
+        if any(t in desc for t in triggers):
+            return lib
+    return None
+
+
+def _build_deterministic_wrapper(lib_key: str, source_dir: str,
+                                  tmpdir: str, step: Callable,
+                                  cve_version: str = "") -> tuple[str | None, dict]:
+    """Build and start a deterministic wrapper app for a library CVE without LLM.
+
+    Returns (base_url, meta_dict) where meta_dict has endpoint/param hints,
+    or (None, {}) on failure.
     """
+    files = _DETERMINISTIC_WRAPPERS.get(lib_key)
+    if not files:
+        return None, {}
+    meta = {k: v for k, v in files.items() if k == "_meta"}
+    meta = meta.get("_meta", {})
+
+    app_dir = os.path.join(tmpdir, f"wrapper_{lib_key}")
+    os.makedirs(app_dir, exist_ok=True)
+
+    for fname, content in files.items():
+        fpath = os.path.join(app_dir, fname)
+        os.makedirs(os.path.dirname(fpath), exist_ok=True)
+        with open(fpath, "w") as fh:
+            fh.write(content)
+
+    # Pin to vulnerable version in requirements.txt if known
+    if cve_version and "requirements.txt" in files:
+        req_path = os.path.join(app_dir, "requirements.txt")
+        with open(req_path) as fh:
+            reqs = fh.read()
+        # Pin the library to the vulnerable version
+        pinned = reqs.replace(f"\n{lib_key}\n", f"\n{lib_key}=={cve_version}\n")
+        pinned = pinned.replace(f"{lib_key}\n", f"{lib_key}=={cve_version}\n")
+        with open(req_path, "w") as fh:
+            fh.write(pinned)
+        step(f"  wrapper: pinned {lib_key}=={cve_version}")
+
+    # Use custom Dockerfile if provided; otherwise use the Python default
+    if "Dockerfile" not in files:
+        with open(os.path.join(app_dir, "Dockerfile"), "w") as fh:
+            fh.write(_WRAPPER_DOCKERFILES["python"])
+
+    import socket
+    with socket.socket() as s:
+        s.bind(("", 0))
+        port = s.getsockname()[1]
+
+    container_name = f"bo_det_{lib_key}_{port}"
+    step(f"  wrapper-det: construyendo imagen {lib_key} en puerto {port}…")
+    try:
+        import subprocess
+        subprocess.run(
+            ["docker", "build", "-t", container_name, "."],
+            cwd=app_dir, capture_output=True, timeout=180, check=True,
+        )
+        subprocess.run(
+            ["docker", "run", "-d", "--rm",
+             "-p", f"{port}:5000",
+             "--name", container_name, container_name],
+            capture_output=True, timeout=30, check=True,
+        )
+        import time
+        time.sleep(3)
+        step(f"  wrapper-det: {lib_key} arrancado → http://localhost:{port}")
+        return f"http://localhost:{port}", meta
+    except subprocess.CalledProcessError as e:
+        stderr = e.stderr.decode()[:300] if e.stderr else str(e)
+        step(f"  wrapper-det: fallo Docker — {stderr}")
+        return None, {}
+
+
+def _generate_wrapper_app(cve_id: str, cve_info, llm_notes: dict,
+                           tmpdir: str, step: Callable, llm=None,
+                           source_dir: str = "") -> tuple[str | None, dict]:
+    """Generate a minimal app that exposes the vulnerable library over HTTP.
+
+    Returns (url, meta_dict) where url is the base URL and meta_dict has
+    endpoint/param hints, or (None, {}) on failure.
+
+    Priority: (1) deterministic no-LLM wrapper if library detected, (2) LLM-generated.
+    """
+    # Try deterministic wrapper first (no LLM needed)
+    lib_key = _detect_deterministic_wrapper(cve_info, source_dir or "")
+    if lib_key:
+        cve_version = llm_notes.get("vulnerable_version") or llm_notes.get("affected_version") or ""
+        url, meta = _build_deterministic_wrapper(lib_key, source_dir or "", tmpdir, step, cve_version)
+        if url:
+            return url, meta
+        step(f"  wrapper-det: fallo — intentando con LLM")
+
     if llm is None:
         step("  wrapper: sin LLM — no se puede generar app demo")
-        return None
+        return None, {}
 
     desc = getattr(cve_info, "description", "") or ""
     exploit_hint = llm_notes.get("exploitation_steps", "") or llm_notes.get("payload", "")
@@ -1499,7 +1782,7 @@ def _generate_wrapper_app(cve_id: str, cve_info, llm_notes: dict,
         ]).strip()
     except Exception as e:
         step(f"  wrapper LLM error: {e}")
-        return None
+        return None, {}
 
     # Strip markdown fences if the LLM added them anyway
     if code.startswith("```"):
@@ -1569,10 +1852,10 @@ def _generate_wrapper_app(cve_id: str, cve_info, llm_notes: dict,
         import time
         time.sleep(3)  # wait for Flask to start
         step(f"  wrapper: container arrancado → http://localhost:{port}")
-        return f"http://localhost:{port}"
+        return f"http://localhost:{port}", {}
     except Exception as e:
         step(f"  wrapper: fallo Docker — {e}")
-        return None
+        return None, {}
 
 
 # ── Web investigation stage ───────────────────────────────────────────────────
@@ -1622,10 +1905,17 @@ def _run_web_stage(cve_id: str, cve_info, llm_notes: dict,
                         "wrapper app needed — no direct HTTP endpoint on library")
         import tempfile as _tf
         wrapper_tmpdir = _tf.mkdtemp(prefix="bo_wrapper_")
-        wrapper_url = _generate_wrapper_app(
-            cve_id, cve_info, llm_notes, wrapper_tmpdir, step, llm=llm)
+        _src_dir = getattr(cve_info, "source_dir", "") or ""
+        wrapper_url, wrapper_meta = _generate_wrapper_app(
+            cve_id, cve_info, llm_notes, wrapper_tmpdir, step, llm=llm,
+            source_dir=_src_dir)
         if wrapper_url:
-            wrapper_container = f"bo_wrapper_{cve_id.replace('-', '_').lower()}"
+            lib_key = _detect_deterministic_wrapper(cve_info, _src_dir)
+            wrapper_container = (
+                f"bo_det_{lib_key}_{wrapper_url.split(':')[-1]}"
+                if lib_key else
+                f"bo_wrapper_{cve_id.replace('-', '_').lower()}"
+            )
             # Inject the wrapper URL into config so investigate_cve targets it
             # config may be a Config dataclass or None — convert to plain dict safely
             if config is None:
@@ -1639,6 +1929,16 @@ def _run_web_stage(cve_id: str, cve_info, llm_notes: dict,
             config["target_url"] = wrapper_url
             step(f"  target inyectado: {wrapper_url}")
             result.add_step("wrapper_app", "ok", wrapper_url)
+            # Wire deterministic wrapper endpoint/param hints into llm_notes
+            # so verifiers (SSTI, path-traversal, etc.) know where to probe
+            if wrapper_meta:
+                if wrapper_meta.get("endpoint") and not (llm_notes.get("endpoint") or "").strip():
+                    llm_notes["endpoint"] = wrapper_meta["endpoint"]
+                if wrapper_meta.get("param") and not (llm_notes.get("parameters") or "").strip():
+                    extra = wrapper_meta.get("extra_params", {})
+                    llm_notes["parameters"] = {wrapper_meta["param"]: "", **extra}
+                if wrapper_meta.get("path_traversal_prefix"):
+                    llm_notes.setdefault("path_traversal_prefix", wrapper_meta["path_traversal_prefix"])
         else:
             step("  wrapper app falló — continuando sin target HTTP")
             result.add_step("wrapper_app", "warn", "generation failed")
