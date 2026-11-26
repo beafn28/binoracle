@@ -4713,8 +4713,15 @@ def process_never_attempted_cves(
                         _existing = _j.load(fh)
                     _existing["verified"] = r.verified
                     _existing["engine_confidence"] = r.engine_confidence
-                    if r.evidence:
-                        _existing["attempt_evidence"] = r.evidence
+                    # Always record attempt_evidence so the CVE is not retried in every batch;
+                    # use a sentinel when evidence is empty (craftverify, timeout, etc.)
+                    _existing["attempt_evidence"] = r.evidence if r.evidence else {
+                        "attempted": True, "source": "auto_chain"}
+                    if r.verified and r.evidence:
+                        _existing["dynamic_verify"] = {
+                            "verified": True,
+                            "evidence": r.evidence,
+                        }
                     with open(_out_path, "w", encoding="utf-8") as fh:
                         _j.dump(_existing, fh, indent=2, ensure_ascii=False, default=str)
                     step(f"  {cve_id}: batch JSON actualizado ({_out_path})")
