@@ -14400,7 +14400,9 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 # El verificador construye sus propios payloads -- el endpoint base (terminado
                 # en '/') es lo que necesita para activar URL_PATH mode.
                 if not _pt_ep.endswith('/'):
-                    _trav_m = _re_pt.search(r'(?i)(?:/\.%2e|/%2e%2e|/\.\./)', _pt_ep)
+                    _trav_m = _re_pt.search(
+                        r'(?i)(?:/\.%2e|/%2e%2e|/\.\./|/\.\.%2[Ff]|/\.\.%5[Cc]|/\.\.\.\.)',
+                        _pt_ep)
                     if _trav_m:
                         _pt_ep = _pt_ep[:_trav_m.start() + 1]
                 # Endpoints adicionales a probar cuando el LLM saco el endpoint de un PoC con
