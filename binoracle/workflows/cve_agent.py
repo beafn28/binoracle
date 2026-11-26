@@ -15309,6 +15309,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     or "%2527" in (notes.get("poc_notes") or "").lower()
                 )
                 _via_orderby = bool(notes.get("sqli_via_orderby"))
+                extra_nonce_pages: List[str] = list(notes.get("nonce_pages") or [])
+                extra_setup_trigger_paths: List[str] = list(notes.get("setup_trigger_paths") or [])
                 wr = verify_wordpress_sqli(
                     fr.local_path, plugin_dir, _sqli_ep,
                     _sqli_http_method, params,
@@ -15348,8 +15350,6 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 # ExploitReasoningEngine actua como primera capa de diagnostico (~100ms, sin LLM)
                 # para señales de alta confianza (Wrong Nonce, auth gate); el LLM se reserva para
                 # casos ambiguos.
-                extra_nonce_pages: List[str] = list(notes.get("nonce_pages") or [])
-                extra_setup_trigger_paths: List[str] = list(notes.get("setup_trigger_paths") or [])
                 def _on_sqli_suggestion(sug):
                     _apply_generic_wp_suggestion(sug, extra_nonce_pages,
                                                  extra_setup_trigger_paths, params)
