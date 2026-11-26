@@ -19118,6 +19118,15 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
     # El LLM analizo la causa raiz especifica (p.ej. "path-traversal"); la descripcion puede
     # mencionar la CONSECUENCIA (p.ej. "remote code execution"). La hipotesis del LLM gana
     # sobre la clasificacion por keyword en la descripcion cuando el LLM fue consultado.
+    # EXCEPCION: si el analista fijo el endpoint (analyst_endpoint_lock=True), respetamos
+    # tambien el vuln_class del JSON — el analista sabe mejor que el LLM que verificador usar.
+    _analyst_owns_class = bool(inv.llm_notes.get("analyst_endpoint_lock") and inv.vuln_class)
+    if _analyst_owns_class:
+        step((f"[ANALYST-LOCK] preservando vuln_class del analista: {inv.vuln_class}" if es else
+              f"[ANALYST-LOCK] preserving analyst vuln_class: {inv.vuln_class}"))
+        notes = inv.llm_notes
+    else:
+        pass  # will fall through to classification below
     _llm_raw_class = inv.llm_notes.get("vuln_class", "") or ""
     _llm_class = classify_cve(_llm_raw_class)
     _desc_class = classify_cve(inv.description)
@@ -19129,7 +19138,9 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
     # (confirmado en vivo con CVE-2025-27516: LLM retorno "deserialization" pero la descripcion
     # dice "templating engine" -> classify_cve da "ssti" -> el lab correcto es el Jinja2 SSTI).
     _UPLOAD_OVERRIDE = {"ssti", "path-traversal", "command-injection", "xxe", "sqli", "ssrf"}
-    if _llm_class in ("file-upload", "deserialization") and _desc_class in _UPLOAD_OVERRIDE:
+    if _analyst_owns_class:
+        pass  # analyst lock: inv.vuln_class already set from JSON, skip classification
+    elif _llm_class in ("file-upload", "deserialization") and _desc_class in _UPLOAD_OVERRIDE:
         inv.vuln_class = _desc_class
     elif _llm_class:
         inv.vuln_class = _llm_class
