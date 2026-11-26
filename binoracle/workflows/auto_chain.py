@@ -5159,7 +5159,13 @@ def process_never_attempted_cves(
         # Supported CMSes that have their own verifier (craftverify, etc.)
         _cms = (n.get("cms") or "").lower()
         has_cms_verifier = _cms in ("craft", "craftcms")
-        if not has_docker and not has_wp_source and not has_cms_verifier:
+        # GitHub/GitLab source URL: engine can download + deterministic wrapper handles Docker setup
+        # (e.g. Gradio, aiohttp, Werkzeug -- library CVEs with no docker_image in llm_notes)
+        _is_code_url = bool(_src and n.get("endpoint") and (
+            _src.startswith("https://github.com/")
+            or _src.startswith("https://gitlab.com/")
+        ))
+        if not has_docker and not has_wp_source and not has_cms_verifier and not _is_code_url:
             continue
         # Endpoint is required for Docker CVEs (engine can't derive it from a container).
         # WP plugin and CMS CVEs can derive it from PHP source hooks — skip the gate for them.
