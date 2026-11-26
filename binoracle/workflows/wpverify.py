@@ -10994,6 +10994,7 @@ def verify_wordpress_missing_auth_probe(
     post_verify_wp_option: Optional[str] = None,
     post_verify_expected: Optional[str] = None,
     setup_wp_options: Optional[list] = None,
+    setup_wp_commands: Optional[list] = None,
 ) -> WpVerifyResult:
     """Sonda no-autenticada para information-disclosure / missing-authorization.
 
@@ -11030,6 +11031,15 @@ def verify_wordpress_missing_auth_probe(
                 _opt_val = (opt or {}).get("value", "1")
                 step(f"probe: activando opcion pre-ataque '{_opt_name}'={_opt_val!r}...")
                 lab.wp_cli("option", "update", _opt_name, str(_opt_val), timeout=30)
+
+        # Pre-attack arbitrary WP CLI commands (e.g., seed plugin DB tables)
+        if setup_wp_commands:
+            for cmd in setup_wp_commands:
+                if not cmd:
+                    continue
+                _cmd_args = cmd if isinstance(cmd, list) else str(cmd).split()
+                step(f"probe: ejecutando comando pre-ataque: {_cmd_args[:3]}...")
+                lab.wp_cli(*_cmd_args, timeout=60)
 
         m = (http_method or "POST").upper()
         params_dict = (parameters if isinstance(parameters, dict)

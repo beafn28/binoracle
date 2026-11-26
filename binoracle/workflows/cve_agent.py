@@ -14076,7 +14076,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         json_body=bool(notes.get("json_body")),
                         post_verify_wp_option=notes.get("post_verify_wp_option") or None,
                         post_verify_expected=notes.get("post_verify_expected") or None,
-                        setup_wp_options=notes.get("setup_wp_options") or None)
+                        setup_wp_options=notes.get("setup_wp_options") or None,
+                        setup_wp_commands=notes.get("setup_wp_commands") or None)
                 if wr is None:
                     inv.blockers.append(("verificacion dinamica no intentada: la hipotesis no trae "
                                          "ni un parametro de email/password ni uno de ID "
