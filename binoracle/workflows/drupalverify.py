@@ -132,7 +132,7 @@ class _Lab:
         for _ in range(tries):
             try:
                 with urllib.request.urlopen(url, timeout=5) as r:
-                    if r.status < 500:
+                    if r.status_code < 500:
                         return True
             except Exception:
                 pass
@@ -272,8 +272,8 @@ def _try_drupal_oauth(base_url: str, step: Callable) -> Optional[str]:
                     r = _http_request("POST", url, data=body,
                                       headers={"Content-Type": "application/x-www-form-urlencoded"},
                                       timeout=8)
-                    if r.status == 200:
-                        data = _j.loads(r.body or "{}")
+                    if r.status_code == 200:
+                        data = _j.loads(r.text or "{}")
                         t = data.get("access_token") or ""
                         if t:
                             step(f"  drupalverify: OAuth2 Bearer token (client_credentials, {cid})")
@@ -289,8 +289,8 @@ def _try_drupal_oauth(base_url: str, step: Callable) -> Optional[str]:
                 r = _http_request("POST", url, data=body,
                                   headers={"Content-Type": "application/x-www-form-urlencoded"},
                                   timeout=8)
-                if r.status == 200:
-                    data = _j.loads(r.body or "{}")
+                if r.status_code == 200:
+                    data = _j.loads(r.text or "{}")
                     t = data.get("access_token") or ""
                     if t:
                         step(f"  drupalverify: OAuth2 Bearer token (password grant, {cid})")

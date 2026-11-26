@@ -2041,6 +2041,7 @@ def _run_web_stage(cve_id: str, cve_info, llm_notes: dict,
 
         # Persist source_dir in evidence for Stage 4c source grep
         _sf = getattr(inv, "source_fetch", {}) or {}
+        _sf = _sf if isinstance(_sf, dict) else {}
         _lp = str(_sf.get("local_path", "") or "")
         if _lp and os.path.isdir(_lp) and "source_dir" not in result.evidence:
             result.evidence["source_dir"] = _lp

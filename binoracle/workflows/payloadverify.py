@@ -58,8 +58,8 @@ def _get_payload_token(base_url: str, step: Callable) -> Optional[str]:
     # Try direct login first
     try:
         r = _http_request("POST", login_url, data=body, headers=headers, timeout=10)
-        if r.status in (200, 201):
-            data = json.loads(r.body or "{}")
+        if r.status_code in (200, 201):
+            data = json.loads(r.text or "{}")
             token = data.get("token") or (data.get("user") or {}).get("token") or ""
             if token:
                 step("  payloadverify: JWT obtenido via /api/users/login")
@@ -139,18 +139,18 @@ def verify_payload_web_cve(
         step(f"  payloadverify: {http_method} {target_url}")
         r = _http_request(http_method.upper(), target_url,
                           data=body_data, headers=headers, timeout=15)
-        res.evidence["status"] = r.status
-        res.evidence["body_snippet"] = (r.body or "")[:300]
+        res.evidence["status"] = r.status_code
+        res.evidence["body_snippet"] = (r.text or "")[:300]
         res.evidence["endpoint"] = target_url
 
-        if r.status in (200, 201):
-            if confirm_string and confirm_string in (r.body or ""):
+        if r.status_code in (200, 201):
+            if confirm_string and confirm_string in (r.text or ""):
                 res.verified = True
                 res.ok = True
                 res.confidence = "confirmed"
                 res.detail = f"VERIFICADO: '{confirm_string}' en respuesta Payload"
                 step("  payloadverify: VERIFICADO")
-            elif not confirm_string and payload and payload in (r.body or ""):
+            elif not confirm_string and payload and payload in (r.text or ""):
                 res.verified = True
                 res.ok = True
                 res.confidence = "probable"
@@ -159,7 +159,7 @@ def verify_payload_web_cve(
                 res.ok = True
                 res.detail = "HTTP 200 — confirm_string no encontrado"
         else:
-            res.detail = f"HTTP {r.status}"
+            res.detail = f"HTTP {r.status_code}"
 
     except Exception as e:
         res.detail = f"Error: {e}"

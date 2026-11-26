@@ -73,7 +73,7 @@ def _strapi_register_admin(base_url: str, username: str, firstname: str,
     try:
         r = _http_request("POST", url, data=payload,
                           headers={"Content-Type": "application/json"}, timeout=15)
-        body = json.loads(r.body or "{}")
+        body = json.loads(r.text or "{}")
         token = (body.get("data") or {}).get("token") or ""
         if token:
             step("  strapiverify: admin registrado — Bearer token obtenido")
@@ -94,7 +94,7 @@ def _strapi_login(base_url: str, email: str, password: str,
     try:
         r = _http_request("POST", url, data=payload,
                           headers={"Content-Type": "application/json"}, timeout=15)
-        body = json.loads(r.body or "{}")
+        body = json.loads(r.text or "{}")
         token = (body.get("data") or {}).get("token") or ""
         if token:
             step("  strapiverify: login Admin API OK — Bearer token obtenido")

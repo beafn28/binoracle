@@ -86,12 +86,12 @@ def _get_statamic_session(base_url: str, step: Callable) -> Optional[str]:
     try:
         r = _http_request("GET", login_url, timeout=12)
         csrf = ""
-        m = re.search(r'name="_token"\s+value="([^"]+)"', r.body or "")
+        m = re.search(r'name="_token"\s+value="([^"]+)"', r.text or "")
         if m:
             csrf = m.group(1)
         # Also try meta tag
         if not csrf:
-            m = re.search(r'<meta\s+name="csrf-token"\s+content="([^"]+)"', r.body or "")
+            m = re.search(r'<meta\s+name="csrf-token"\s+content="([^"]+)"', r.text or "")
             if m:
                 csrf = m.group(1)
         # Collect session cookie from initial GET

@@ -38,7 +38,7 @@ def _ghost_wait_ready(base_url: str, timeout: int = 60, step=None) -> bool:
     for _i in range(timeout):
         try:
             r = _http_request("GET", health_url, timeout=3)
-            if r.status in (200, 401, 403):
+            if r.status_code in (200, 401, 403):
                 _step("  ghost: servidor listo")
                 return True
         except Exception:
@@ -63,10 +63,10 @@ def _ghost_setup(container: str, base_url: str, step) -> bool:
                           headers={"Content-Type": "application/json",
                                    "Origin": base_url},
                           timeout=15)
-        if r.status in (200, 201):
+        if r.status_code in (200, 201):
             step("  ghost: admin setup OK")
             return True
-        if r.status == 403:
+        if r.status_code == 403:
             # Already set up — try to get a session directly
             step("  ghost: ya configurado, intentando login directo")
             return True
@@ -85,7 +85,7 @@ def _ghost_get_token(base_url: str, step) -> str:
                           headers={"Content-Type": "application/json",
                                    "Origin": base_url},
                           timeout=10)
-        if r.status in (200, 201):
+        if r.status_code in (200, 201):
             # Ghost session uses cookies; extract ghost-admin-api-session
             cookie_hdr = r.headers.get("set-cookie", "")
             m = re.search(r"ghost-admin-api-session=([^;]+)", cookie_hdr)
@@ -171,18 +171,18 @@ def verify_ghost_cve(
         step(f"  ghost: {http_method} {target_url}")
         r = _http_request(http_method.upper(), target_url,
                           data=body, headers=headers, timeout=15)
-        res.evidence["status"] = r.status
-        res.evidence["body_snippet"] = (r.body or "")[:300]
+        res.evidence["status"] = r.status_code
+        res.evidence["body_snippet"] = (r.text or "")[:300]
         res.evidence["endpoint"] = target_url
 
-        if r.status in (200, 201):
-            if confirm_string and confirm_string in (r.body or ""):
+        if r.status_code in (200, 201):
+            if confirm_string and confirm_string in (r.text or ""):
                 res.verified = True
                 res.ok = True
                 res.confidence = "confirmed"
                 res.detail = f"VERIFICADO: '{confirm_string}' en respuesta Ghost"
                 step("  ghost: VERIFICADO")
-            elif not confirm_string and payload and payload in (r.body or ""):
+            elif not confirm_string and payload and payload in (r.text or ""):
                 res.verified = True
                 res.ok = True
                 res.confidence = "probable"
@@ -192,7 +192,7 @@ def verify_ghost_cve(
                 res.ok = True
                 res.detail = "HTTP 200 — confirm_string no encontrado"
         else:
-            res.detail = f"HTTP {r.status} — endpoint no accesible"
+            res.detail = f"HTTP {r.status_code} — endpoint no accesible"
 
     except subprocess.CalledProcessError as e:
         res.detail = f"Docker error: {e}"

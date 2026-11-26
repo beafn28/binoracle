@@ -51,14 +51,14 @@ def _get_directus_token(base_url: str, step) -> Optional[str]:
             headers={"Content-Type": "application/json"},
             timeout=10,
         )
-        if r.status in (200, 201):
-            body = json.loads(r.body or "{}")
+        if r.status_code in (200, 201):
+            body = json.loads(r.text or "{}")
             token = ((body.get("data") or {}).get("access_token") or
                      body.get("access_token") or "")
             if token:
                 step("  directus: Bearer token obtenido")
                 return f"Bearer {token}"
-        step(f"  directus: login falló — HTTP {r.status}")
+        step(f"  directus: login falló — HTTP {r.status_code}")
     except Exception as e:
         step(f"  directus: login error — {e}")
     return None
@@ -138,27 +138,27 @@ def verify_directus_web_cve(
         step(f"  directus: {http_method} {target_url}")
         r = _http_request(http_method.upper(), target_url,
                           data=body, headers=headers, timeout=15)
-        res.evidence["status"] = r.status
-        res.evidence["body_snippet"] = (r.body or "")[:300]
+        res.evidence["status"] = r.status_code
+        res.evidence["body_snippet"] = (r.text or "")[:300]
         res.evidence["endpoint"] = target_url
 
-        if r.status in (200, 201, 204):
-            if confirm_string and confirm_string in (r.body or ""):
+        if r.status_code in (200, 201, 204):
+            if confirm_string and confirm_string in (r.text or ""):
                 res.verified = True
                 res.ok = True
                 res.confidence = "confirmed"
                 res.detail = f"VERIFICADO: '{confirm_string}' en respuesta Directus"
                 step("  directus: VERIFICADO")
-            elif not confirm_string and payload and payload in (r.body or ""):
+            elif not confirm_string and payload and payload in (r.text or ""):
                 res.verified = True
                 res.ok = True
                 res.confidence = "probable"
                 res.detail = "VERIFICADO (probable): payload reflejado"
             else:
                 res.ok = True
-                res.detail = f"HTTP {r.status} — confirm_string no encontrado"
+                res.detail = f"HTTP {r.status_code} — confirm_string no encontrado"
         else:
-            res.detail = f"HTTP {r.status} — endpoint no accesible"
+            res.detail = f"HTTP {r.status_code} — endpoint no accesible"
 
     except subprocess.CalledProcessError as e:
         res.detail = f"Docker error: {e}"

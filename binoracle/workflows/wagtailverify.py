@@ -163,18 +163,18 @@ def verify_wagtail_web_cve(
         step(f"  wagtail: {http_method} {target_url}")
         r = _http_request(http_method.upper(), target_url,
                           data=body, headers=headers, timeout=15)
-        res.evidence["status"] = r.status
-        res.evidence["body_snippet"] = (r.body or "")[:300]
+        res.evidence["status"] = r.status_code
+        res.evidence["body_snippet"] = (r.text or "")[:300]
         res.evidence["endpoint"] = target_url
 
-        if r.status == 200:
-            if confirm_string and confirm_string in (r.body or ""):
+        if r.status_code == 200:
+            if confirm_string and confirm_string in (r.text or ""):
                 res.verified = True
                 res.ok = True
                 res.confidence = "confirmed"
                 res.detail = f"VERIFICADO: '{confirm_string}' en respuesta Wagtail"
                 step("  wagtail: VERIFICADO")
-            elif not confirm_string and payload and payload in (r.body or ""):
+            elif not confirm_string and payload and payload in (r.text or ""):
                 res.verified = True
                 res.ok = True
                 res.confidence = "probable"
@@ -183,7 +183,7 @@ def verify_wagtail_web_cve(
                 res.ok = True
                 res.detail = "HTTP 200 — confirm_string no encontrado"
         else:
-            res.detail = f"HTTP {r.status} — endpoint no accesible"
+            res.detail = f"HTTP {r.status_code} — endpoint no accesible"
 
     except subprocess.CalledProcessError as e:
         res.detail = f"Docker error: {e}"

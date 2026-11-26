@@ -117,7 +117,7 @@ def _get_craft_session(base_url: str, step: Callable) -> Optional[str]:
     try:
         r = _http_request("GET", login_url, timeout=10)
         csrf = ""
-        m = re.search(r'name="CRAFT_CSRF_TOKEN"\s+value="([^"]+)"', r.body or "")
+        m = re.search(r'name="CRAFT_CSRF_TOKEN"\s+value="([^"]+)"', r.text or "")
         if m:
             csrf = m.group(1)
         else:
@@ -284,13 +284,13 @@ def verify_craft_web_cve(
             step(f"  craftverify: {http_method} {target_url}")
             r = _http_request(http_method.upper(), target_url,
                               data=body, headers=headers, timeout=15)
-            res.evidence["status"] = r.status
-            res.evidence["body_snippet"] = (r.body or "")[:300]
+            res.evidence["status"] = r.status_code
+            res.evidence["body_snippet"] = (r.text or "")[:300]
             res.evidence["endpoint"] = target_url
 
-            body_text = r.body or ""
+            body_text = r.text or ""
             _effective_confirm = confirm_string or _nonce_confirm
-            if r.status in (200, 201, 500):
+            if r.status_code in (200, 201, 500):
                 if _effective_confirm and _effective_confirm in body_text:
                     res.verified = True
                     res.ok = True
@@ -310,9 +310,9 @@ def verify_craft_web_cve(
                     step("  craftverify: VERIFICADO (mkdir fallback)")
                 else:
                     res.ok = True
-                    res.detail = "HTTP %d — confirm_string no encontrado" % r.status
+                    res.detail = "HTTP %d — confirm_string no encontrado" % r.status_code
             else:
-                res.detail = f"HTTP {r.status} — endpoint no accesible"
+                res.detail = f"HTTP {r.status_code} — endpoint no accesible"
             return res
     except Exception as e:
         step(f"  craftverify: generic lab error — {e}, trying Craft-specific lab")
@@ -425,12 +425,12 @@ def verify_craft_web_cve(
             step(f"  craftverify: {http_method} {target_url}")
             r = _http_request(http_method.upper(), target_url,
                               data=body, headers=headers, timeout=15)
-            res.evidence["status"] = r.status
-            res.evidence["body_snippet"] = (r.body or "")[:300]
+            res.evidence["status"] = r.status_code
+            res.evidence["body_snippet"] = (r.text or "")[:300]
 
-            body_text = r.body or ""
+            body_text = r.text or ""
             _effective_confirm = confirm_string or _nonce_confirm
-            if r.status in (200, 201, 500):
+            if r.status_code in (200, 201, 500):
                 if _effective_confirm and _effective_confirm in body_text:
                     res.verified = True
                     res.ok = True
@@ -450,9 +450,9 @@ def verify_craft_web_cve(
                     step("  craftverify: VERIFICADO (mkdir fallback)")
                 else:
                     res.ok = True
-                    res.detail = "HTTP %d — confirm_string no encontrado" % r.status
+                    res.detail = "HTTP %d — confirm_string no encontrado" % r.status_code
             else:
-                res.detail = f"HTTP {r.status}"
+                res.detail = f"HTTP {r.status_code}"
     except Exception as e:
         res.detail = f"Error: {e}"
     finally:

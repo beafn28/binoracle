@@ -169,7 +169,7 @@ class _Lab:
         for _ in range(tries):
             try:
                 with urllib.request.urlopen(url, timeout=5) as r:
-                    if r.status < 500:
+                    if r.status_code < 500:
                         return True
             except Exception:
                 pass

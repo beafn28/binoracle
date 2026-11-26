@@ -51,9 +51,9 @@ def _get_concrete_session(base_url: str, step: Callable) -> Optional[str]:
     try:
         r = _http_request("GET", login_url, timeout=10)
         csrf_token = ""
-        m = re.search(r'ccm_token["\s]+value=["\']([^"\']+)', r.body or "")
+        m = re.search(r'ccm_token["\s]+value=["\']([^"\']+)', r.text or "")
         if not m:
-            m = re.search(r'name=["\']ccm_token["\'][^>]+value=["\']([^"\']+)', r.body or "")
+            m = re.search(r'name=["\']ccm_token["\'][^>]+value=["\']([^"\']+)', r.text or "")
         if m:
             csrf_token = m.group(1)
         cookies_hdr = ""
@@ -132,18 +132,18 @@ def verify_concrete_web_cve(
         step(f"  concreteverify: {http_method} {target_url}")
         r = _http_request(http_method.upper(), target_url,
                           data=body, headers=headers, timeout=15)
-        res.evidence["status"] = r.status
-        res.evidence["body_snippet"] = (r.body or "")[:300]
+        res.evidence["status"] = r.status_code
+        res.evidence["body_snippet"] = (r.text or "")[:300]
         res.evidence["endpoint"] = target_url
 
-        if r.status in (200, 201):
-            if confirm_string and confirm_string in (r.body or ""):
+        if r.status_code in (200, 201):
+            if confirm_string and confirm_string in (r.text or ""):
                 res.verified = True
                 res.ok = True
                 res.confidence = "confirmed"
                 res.detail = f"VERIFICADO: '{confirm_string}' en respuesta Concrete CMS"
                 step("  concreteverify: VERIFICADO")
-            elif not confirm_string and payload and payload in (r.body or ""):
+            elif not confirm_string and payload and payload in (r.text or ""):
                 res.verified = True
                 res.ok = True
                 res.confidence = "probable"
@@ -151,10 +151,10 @@ def verify_concrete_web_cve(
             else:
                 res.ok = True
                 res.detail = "HTTP 200 — confirm_string no encontrado"
-        elif r.status in (401, 403):
-            res.detail = f"HTTP {r.status} — acceso denegado (auth requerida?)"
+        elif r.status_code in (401, 403):
+            res.detail = f"HTTP {r.status_code} — acceso denegado (auth requerida?)"
         else:
-            res.detail = f"HTTP {r.status}"
+            res.detail = f"HTTP {r.status_code}"
     except Exception as e:
         res.detail = f"Error: {e}"
 

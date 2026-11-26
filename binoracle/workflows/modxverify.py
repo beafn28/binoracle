@@ -79,7 +79,7 @@ def _get_modx_session(base_url: str, step: Callable) -> Optional[str]:
             headers["Cookie"] = cookies_hdr.strip("; ")
 
         r = _http_request("POST", connector_url, data=body, headers=headers, timeout=12)
-        if r.status in (200, 302):
+        if r.status_code in (200, 302):
             session_cookie = ""
             if r.headers:
                 for h, v in r.headers:
@@ -92,7 +92,7 @@ def _get_modx_session(base_url: str, step: Callable) -> Optional[str]:
                 session_cookie = cookies_hdr
             # Try to parse JSON response for success
             try:
-                resp_json = json.loads(r.body or "{}")
+                resp_json = json.loads(r.text or "{}")
                 if resp_json.get("success") or resp_json.get("code") == 1:
                     step("  modxverify: sesión admin obtenida (connector)")
                     return session_cookie.strip("; ") if session_cookie else None
@@ -111,7 +111,7 @@ def _get_modx_session(base_url: str, step: Callable) -> Optional[str]:
                 "&login_context=mgr&f=1")
         headers = {"Content-Type": "application/x-www-form-urlencoded"}
         r = _http_request("POST", login_url, data=body, headers=headers, timeout=12)
-        if r.status in (200, 302):
+        if r.status_code in (200, 302):
             cookie_str = ""
             if r.headers:
                 for h, v in r.headers:
@@ -175,18 +175,18 @@ def verify_modx_web_cve(
         step(f"  modxverify: {http_method} {target_url}")
         r = _http_request(http_method.upper(), target_url,
                           data=body, headers=headers, timeout=15)
-        res.evidence["status"] = r.status
-        res.evidence["body_snippet"] = (r.body or "")[:300]
+        res.evidence["status"] = r.status_code
+        res.evidence["body_snippet"] = (r.text or "")[:300]
         res.evidence["endpoint"] = target_url
 
-        if r.status in (200, 201):
-            if confirm_string and confirm_string in (r.body or ""):
+        if r.status_code in (200, 201):
+            if confirm_string and confirm_string in (r.text or ""):
                 res.verified = True
                 res.ok = True
                 res.confidence = "confirmed"
                 res.detail = f"VERIFICADO: '{confirm_string}' en respuesta MODX"
                 step("  modxverify: VERIFICADO")
-            elif not confirm_string and payload and payload in (r.body or ""):
+            elif not confirm_string and payload and payload in (r.text or ""):
                 res.verified = True
                 res.ok = True
                 res.confidence = "probable"
@@ -194,10 +194,10 @@ def verify_modx_web_cve(
             else:
                 res.ok = True
                 res.detail = "HTTP 200 — confirm_string no encontrado"
-        elif r.status in (401, 403):
-            res.detail = f"HTTP {r.status} — acceso denegado (auth requerida?)"
+        elif r.status_code in (401, 403):
+            res.detail = f"HTTP {r.status_code} — acceso denegado (auth requerida?)"
         else:
-            res.detail = f"HTTP {r.status}"
+            res.detail = f"HTTP {r.status_code}"
     except Exception as e:
         res.detail = f"Error: {e}"
 

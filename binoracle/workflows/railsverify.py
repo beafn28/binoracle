@@ -64,7 +64,7 @@ def _get_rails_csrf_token(base_url: str, path: str, session_cookie: str = "",
         if session_cookie:
             hdrs["Cookie"] = session_cookie
         r = _http_request("GET", base_url + path, headers=hdrs, timeout=8)
-        body = r.body or ""
+        body = r.text or ""
         # <meta name="csrf-token" content="...">
         m = re.search(r'<meta[^>]+name=["\']csrf-token["\'][^>]+content=["\']([^"\']+)["\']',
                       body, re.IGNORECASE)
@@ -160,8 +160,8 @@ def _get_rails_token_auth(base_url: str, step: Callable) -> Optional[str]:
                               data=_j.dumps({"email": _RAILS_ADMIN_EMAIL,
                                              "password": _RAILS_ADMIN_PASSWORD}),
                               headers={"Content-Type": "application/json"}, timeout=8)
-            if r.status in (200, 201):
-                body = _j.loads(r.body or "{}")
+            if r.status_code in (200, 201):
+                body = _j.loads(r.text or "{}")
                 token = (body.get("token") or
                          (body.get("data") or {}).get("token") or
                          body.get("auth_token") or "")
@@ -271,18 +271,18 @@ def verify_rails_web_cve(
         step(f"  rails: {http_method} {target_url}")
         r = _http_request(http_method.upper(), target_url,
                           data=body, headers=headers, timeout=15)
-        res.evidence["status"] = r.status
-        res.evidence["body_snippet"] = (r.body or "")[:300]
+        res.evidence["status"] = r.status_code
+        res.evidence["body_snippet"] = (r.text or "")[:300]
         res.evidence["endpoint"] = target_url
 
-        if r.status in (200, 201):
-            if confirm_string and confirm_string in (r.body or ""):
+        if r.status_code in (200, 201):
+            if confirm_string and confirm_string in (r.text or ""):
                 res.verified = True
                 res.ok = True
                 res.confidence = "confirmed"
                 res.detail = f"VERIFICADO: '{confirm_string}' en respuesta Rails"
                 step("  rails: VERIFICADO")
-            elif not confirm_string and payload and payload in (r.body or ""):
+            elif not confirm_string and payload and payload in (r.text or ""):
                 res.verified = True
                 res.ok = True
                 res.confidence = "probable"
@@ -290,10 +290,10 @@ def verify_rails_web_cve(
             else:
                 res.ok = True
                 res.detail = "HTTP 200 — confirm_string no encontrado"
-        elif r.status in (401, 403):
-            res.detail = f"HTTP {r.status} — acceso denegado (auth insuficiente)"
+        elif r.status_code in (401, 403):
+            res.detail = f"HTTP {r.status_code} — acceso denegado (auth insuficiente)"
         else:
-            res.detail = f"HTTP {r.status}"
+            res.detail = f"HTTP {r.status_code}"
 
     except subprocess.CalledProcessError as e:
         res.detail = f"Docker build/run error: {e}"
