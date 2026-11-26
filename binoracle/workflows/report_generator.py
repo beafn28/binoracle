@@ -423,6 +423,20 @@ def _s_verification(inv: Any, lang: str) -> str:
         for s in steps[:5]:
             lines.append(f"- {s}")
 
+    # Weaponization evidence — concrete post-verification impact extracted
+    _wep = dv.get("weaponization") or (getattr(inv, "verified_evidence", {}) or {}).get("weaponization")
+    if _wep and _wep.get("impact"):
+        lines.append("")
+        lines.append("**" + ("Impacto extraído (post-verificación):" if es else "Extracted Impact (post-verification):") + "**")
+        lines.append(f"> {_wep['impact']}")
+        _wdata = _wep.get("data") or {}
+        if _wdata:
+            lines.append("")
+            lines.append("```json")
+            import json as _jw
+            lines.append(_jw.dumps(_wdata, ensure_ascii=False, indent=2)[:600])
+            lines.append("```")
+
     return "\n".join(lines)
 
 
