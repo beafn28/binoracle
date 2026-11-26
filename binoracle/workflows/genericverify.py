@@ -2135,7 +2135,8 @@ def _bootstrap_generic_lab(source_dir: str, step, res: WpVerifyResult,
     r = lab.build_and_run(target)
     if r.returncode != 0:
         res.detail = f"fallo al construir/arrancar el objetivo: {(r.stderr or r.stdout or '')[:2000]}"
-        lab.teardown()
+        if lab is not None:
+            lab.teardown()
         return None
 
     # Wrap the post-build steps in a try/finally so that any unexpected exception
@@ -2222,7 +2223,8 @@ def _bootstrap_generic_lab(source_dir: str, step, res: WpVerifyResult,
     finally:
         if not _lab_ok:
             try:
-                lab.teardown()
+                if lab is not None:
+                    lab.teardown()
             except Exception:
                 pass
 
@@ -2253,6 +2255,7 @@ def verify_generic_command_injection(
     if boot is None:
         return res
     lab, base_url, container = boot
+    lab = None
     try:
         # Auth acquisition (pgAdmin, Django admin, Flask-Login, etc.)
         if auth_required:
@@ -2496,7 +2499,8 @@ def verify_generic_command_injection(
         return res
     finally:
         step("desmontando el laboratorio generico (contenedores/red/imagen)...")
-        lab.teardown()
+        if lab is not None:
+            lab.teardown()
 
 
 def verify_generic_path_traversal(
@@ -2614,6 +2618,7 @@ def verify_generic_path_traversal(
     if boot is None:
         return res
     lab, base_url, container = boot
+    lab = None
     try:
         # Auth acquisition before traversal attempts
         if auth_required:
@@ -3035,7 +3040,8 @@ def verify_generic_path_traversal(
         return res
     finally:
         step("desmontando el laboratorio generico (contenedores/red/imagen)...")
-        lab.teardown()
+        if lab is not None:
+            lab.teardown()
 
 
 def verify_generic_lfi_rce(
@@ -3088,6 +3094,7 @@ def verify_generic_lfi_rce(
     if boot is None:
         return res
     lab, base_url, container = boot
+    lab = None
     try:
         marker = f"binoracle_lfi_rce_{_token()}"
         poison_ua = f"<?php system('echo {marker}'); ?>"
@@ -3225,7 +3232,8 @@ def verify_generic_lfi_rce(
         return res
     finally:
         step("desmontando el laboratorio generico (contenedores/red/imagen)...")
-        lab.teardown()
+        if lab is not None:
+            lab.teardown()
 
 
 def verify_generic_idor(
@@ -3266,6 +3274,7 @@ def verify_generic_idor(
     if boot is None:
         return res
     lab, base_url, container = boot
+    lab = None
     try:
         m = (http_method or "GET").upper().split("/")[0].split("|")[0].strip() or "GET"
         base_params = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
@@ -3339,7 +3348,8 @@ def verify_generic_idor(
         return res
     finally:
         step("desmontando el laboratorio generico (contenedores/red/imagen)...")
-        lab.teardown()
+        if lab is not None:
+            lab.teardown()
 
 
 def verify_generic_file_upload(
@@ -3372,6 +3382,7 @@ def verify_generic_file_upload(
         return res
     lab, base_url, container = boot
     m = "POST"
+    lab = None
     try:
         secret = _token() * 4
         file_param = file_param_hint or _pick_param(other_parameters, _FILE_UPLOAD_HINTS) or "file"
@@ -3500,7 +3511,8 @@ def verify_generic_file_upload(
         return res
     finally:
         step("desmontando el laboratorio generico (contenedores/red/imagen)...")
-        lab.teardown()
+        if lab is not None:
+            lab.teardown()
 
 
 def _try_acquire_app_token(base_url: str, step) -> Optional[str]:
@@ -3650,6 +3662,7 @@ def verify_generic_ssrf(
     if boot is None:
         return res
     lab, base_url, container = boot
+    lab = None
     try:
         if setup_wait_extra_s > 0:
             import time as _time
@@ -3865,7 +3878,8 @@ def verify_generic_ssrf(
         return res
     finally:
         step("desmontando el laboratorio generico (contenedores/red/imagen)...")
-        lab.teardown()
+        if lab is not None:
+            lab.teardown()
 
 
 # SLEEP() (MySQL/MariaDB/SQLite con create_function propio), pg_sleep() (PostgreSQL) -- el motor
@@ -4268,6 +4282,7 @@ def verify_generic_sqli_blind(
     if boot is None:
         return res
     lab, base_url, container = boot
+    lab = None
     try:
         # Auth acquisition for APIs that require a bearer token (Mattermost, Directus, etc.)
         if auth_required:
@@ -5095,7 +5110,8 @@ def verify_generic_sqli_blind(
         return res
     finally:
         step("desmontando el laboratorio generico (contenedores/red/imagen)...")
-        lab.teardown()
+        if lab is not None:
+            lab.teardown()
 
 
 def verify_generic_xxe(
@@ -5125,6 +5141,7 @@ def verify_generic_xxe(
     if boot is None:
         return res
     lab, base_url, container = boot
+    lab = None
     try:
         secret = secrets.token_hex(16)
         canary_path = f"/tmp/binoracle_canary_{_token()}.txt"
@@ -5259,7 +5276,8 @@ def verify_generic_xxe(
         return res
     finally:
         step("desmontando el laboratorio generico (contenedores/red/imagen)...")
-        lab.teardown()
+        if lab is not None:
+            lab.teardown()
 
 
 def verify_generic_open_redirect(
@@ -5296,6 +5314,7 @@ def verify_generic_open_redirect(
     if boot is None:
         return res
     lab, base_url, container = boot
+    lab = None
     try:
         token = _token()
         evil_host = f"binoracle-lab-redirect-{token}.invalid"
@@ -5388,7 +5407,8 @@ def verify_generic_open_redirect(
         return res
     finally:
         step("desmontando el laboratorio generico (contenedores/red/imagen)...")
-        lab.teardown()
+        if lab is not None:
+            lab.teardown()
 
 
 def verify_generic_xss(
@@ -5419,6 +5439,7 @@ def verify_generic_xss(
                                "afina 'parameters' o pasalo a mano (xss_param_hint)")
         return res
 
+    lab = None
     try:
         from playwright.sync_api import sync_playwright  # noqa: F401
     except Exception:
@@ -5540,7 +5561,8 @@ def verify_generic_xss(
         return res
     finally:
         step("desmontando el laboratorio generico (contenedores/red/imagen)...")
-        lab.teardown()
+        if lab is not None:
+            lab.teardown()
 
 
 def verify_generic_ssti(
@@ -5602,6 +5624,7 @@ def verify_generic_ssti(
     if boot is None:
         return res
     lab, base_url, container = boot
+    lab = None
     try:
         a, b = secrets.randbelow(90) + 10, secrets.randbelow(90) + 10
         expected = a * b
@@ -5866,7 +5889,8 @@ def verify_generic_ssti(
         return res
     finally:
         step("desmontando el laboratorio generico (contenedores/red/imagen)...")
-        lab.teardown()
+        if lab is not None:
+            lab.teardown()
 
 
 def verify_generic_header_bypass(
@@ -5920,6 +5944,7 @@ def verify_generic_header_bypass(
     if boot is None:
         return res
     lab, base_url, container = boot
+    lab = None
     try:
         m = (http_method or "GET").upper().split("/")[0].split("|")[0].strip() or "GET"
         url = base_url + endpoint
@@ -6075,7 +6100,8 @@ def verify_generic_header_bypass(
         return res
     finally:
         step("desmontando el laboratorio generico (contenedores/red/imagen)...")
-        lab.teardown()
+        if lab is not None:
+            lab.teardown()
 
 
 def _analyze_response_body(
@@ -6580,7 +6606,8 @@ def verify_stored_xss(
         return res
     finally:
         step("desmontando laboratorio (stored-xss)...")
-        lab.teardown()
+        if lab is not None:
+            lab.teardown()
 
 
 def run_request_chain(
@@ -6841,7 +6868,8 @@ def run_request_chain(
         return res
     finally:
         _step("desmontando laboratorio (request-chain)...")
-        lab.teardown()
+        if lab is not None:
+            lab.teardown()
 
 
 def verify_generic_header_bypass_candidates(
@@ -6903,6 +6931,7 @@ def verify_generic_header_bypass_candidates(
         return res
     lab, base_url, container = boot
 
+    lab = None
     try:
         m = (http_method or "GET").upper().split("/")[0].strip() or "GET"
         url = base_url + endpoint
@@ -7016,7 +7045,8 @@ def verify_generic_header_bypass_candidates(
         return res
     finally:
         step("desmontando el laboratorio generico (bypass candidatos)...")
-        lab.teardown()
+        if lab is not None:
+            lab.teardown()
 
 
 # ── GraphQL helpers ───────────────────────────────────────────────────────────
@@ -7222,6 +7252,7 @@ def verify_generic_graphql_bypass(
         return res
     lab, base_url, container = tup
 
+    lab = None
     try:
         endpoint_url = base_url.rstrip("/") + "/" + graphql_endpoint.lstrip("/")
         gql_headers = {"Content-Type": "application/json", "Accept": "application/json"}
@@ -7305,7 +7336,8 @@ def verify_generic_graphql_bypass(
         return res
     finally:
         step("desmontando el laboratorio generico...")
-        lab.teardown()
+        if lab is not None:
+            lab.teardown()
 
 
 # ── Boolean oracle / data-leak verifier ───────────────────────────────────────
@@ -7355,6 +7387,7 @@ def verify_generic_boolean_oracle(
         return res
     lab, base_url, container = tup
 
+    lab = None
     try:
         hdrs = dict(extra_headers or {})
         hdrs.setdefault("Accept", "application/json")
@@ -7419,7 +7452,8 @@ def verify_generic_boolean_oracle(
     finally:
         if lab is not None:
             step("desmontando el laboratorio generico...")
-            lab.teardown()
+            if lab is not None:
+                lab.teardown()
 
 
 def verify_generic_cors_misconfig(
@@ -7454,6 +7488,7 @@ def verify_generic_cors_misconfig(
     if boot is None:
         return res
     lab, base_url, container = boot
+    lab = None
     try:
         m = (http_method or "GET").upper().split("/")[0].strip() or "GET"
         cors_token = f"http://binoracle-cors-{_token()}.invalid"
@@ -7574,7 +7609,8 @@ def verify_generic_cors_misconfig(
         return res
     finally:
         step("desmontando el laboratorio generico...")
-        lab.teardown()
+        if lab is not None:
+            lab.teardown()
 
 
 # ---------------------------------------------------------------------------
@@ -7814,6 +7850,7 @@ def verify_generic_http_confirm(
     if boot is None:
         return res
     lab, base_url, container = boot
+    lab = None
     try:
         if setup_wait_extra_s > 0:
             step(f"esperando {setup_wait_extra_s:.0f}s adicionales para que el lab este listo...")
@@ -7950,7 +7987,8 @@ def verify_generic_http_confirm(
         return res
     finally:
         step("desmontando el laboratorio generico...")
-        lab.teardown()
+        if lab is not None:
+            lab.teardown()
 
 
 def verify_generic_prototype_pollution(
@@ -7984,6 +8022,7 @@ def verify_generic_prototype_pollution(
     if boot is None:
         return res
     lab, base_url, container = boot
+    lab = None
     try:
         import json as _json
         token = _token()
@@ -8032,7 +8071,8 @@ def verify_generic_prototype_pollution(
         return res
     finally:
         step("desmontando el laboratorio generico...")
-        lab.teardown()
+        if lab is not None:
+            lab.teardown()
 
 
 # ---------------------------------------------------------------------------
@@ -8314,6 +8354,7 @@ def verify_generic_jwt_bypass(
     if boot is None:
         return res
     lab, base_url, container = boot
+    lab = None
     try:
         def _make_jwt_none(payload: dict) -> str:
             header = _b64.urlsafe_b64encode(
@@ -8415,7 +8456,8 @@ def verify_generic_jwt_bypass(
         return res
     finally:
         step("desmontando el laboratorio generico...")
-        lab.teardown()
+        if lab is not None:
+            lab.teardown()
 
 
 # ---------------------------------------------------------------------------
@@ -8453,6 +8495,7 @@ def verify_generic_nosql_injection(
     if boot is None:
         return res
     lab, base_url, container = boot
+    lab = None
     try:
         token_id = _token()
         payloads = [
@@ -8515,7 +8558,8 @@ def verify_generic_nosql_injection(
         return res
     finally:
         step("desmontando el laboratorio generico...")
-        lab.teardown()
+        if lab is not None:
+            lab.teardown()
 
 
 # ---------------------------------------------------------------------------
@@ -8553,6 +8597,7 @@ def verify_generic_csrf(
     if boot is None:
         return res
     lab, base_url, container = boot
+    lab = None
     try:
         params = dict(parameters or {})
         body_data = "&".join(f"{k}={v}" for k, v in params.items()) if params else ""
@@ -8600,7 +8645,8 @@ def verify_generic_csrf(
         return res
     finally:
         step("desmontando el laboratorio generico...")
-        lab.teardown()
+        if lab is not None:
+            lab.teardown()
 
 
 # ---------------------------------------------------------------------------
@@ -8636,6 +8682,7 @@ def verify_generic_crlf_injection(
     if boot is None:
         return res
     lab, base_url, container = boot
+    lab = None
     try:
         params = dict(parameters or {})
         param = inject_param or _pick_param(params, ["url", "redirect", "next", "return",
@@ -8698,7 +8745,8 @@ def verify_generic_crlf_injection(
         return res
     finally:
         step("desmontando el laboratorio generico...")
-        lab.teardown()
+        if lab is not None:
+            lab.teardown()
 
 
 def verify_generic_multistep(
@@ -8747,6 +8795,7 @@ def verify_generic_multistep(
         return res
 
     lab = _GenericLab(_token())
+    lab = None
     try:
         lab_cfg = _bootstrap_generic_lab(
             lab, source_dir, step, res, t0, budget_s,
@@ -8883,7 +8932,8 @@ def verify_generic_multistep(
         return res
     finally:
         step("desmontando el laboratorio generico (multistep)...")
-        lab.teardown()
+        if lab is not None:
+            lab.teardown()
 
 
 # ---------------------------------------------------------------------------
@@ -8968,6 +9018,7 @@ def verify_generic_mass_assignment(
         return res
     lab, base_url, container = boot
 
+    lab = None
     try:
         token_id = _token()
         base_email = f"binoracle-{token_id}@test.local"
@@ -9170,7 +9221,8 @@ def verify_generic_mass_assignment(
         return res
     finally:
         step("desmontando el laboratorio generico (mass-assignment)...")
-        lab.teardown()
+        if lab is not None:
+            lab.teardown()
 
 
 # ---------------------------------------------------------------------------
@@ -9274,6 +9326,7 @@ def verify_generic_php_object_injection(
         return res
     lab, base_url, container = boot
 
+    lab = None
     try:
         m = (http_method or "POST").upper().strip() or "POST"
         full_url = base_url.rstrip("/") + endpoint
@@ -9468,7 +9521,8 @@ def verify_generic_php_object_injection(
         return res
     finally:
         step("desmontando el laboratorio generico (php-object-injection)...")
-        lab.teardown()
+        if lab is not None:
+            lab.teardown()
 
 
 # ── C13: WAF / rate-limit detection ──────────────────────────────────────────
@@ -9658,6 +9712,7 @@ def verify_generic_redos(
     if boot is None:
         return res
     lab, base_url, container = boot
+    lab = None
     try:
         m = (http_method or "POST").upper()
         # Default ReDoS payload: evil regex trigger for (a+)+ / (a|aa)+ patterns
@@ -9718,7 +9773,8 @@ def verify_generic_redos(
         return res
     finally:
         step("desmontando el laboratorio generico...")
-        lab.teardown()
+        if lab is not None:
+            lab.teardown()
 
 
 # ---------------------------------------------------------------------------
@@ -9785,6 +9841,7 @@ def verify_generic_information_disclosure(
     _db_key = "BINORACLE_DB_URL"
     _db_val = f"postgres://binoracle:{_canary_val}@db/binoracle"
 
+    lab = None
     try:
         from .wpverify import _DockerLab
         _df = dockerfile_body or ""
@@ -9864,7 +9921,8 @@ def verify_generic_information_disclosure(
         return res
     finally:
         step("desmontando el laboratorio (information-disclosure)...")
-        lab.teardown()
+        if lab is not None:
+            lab.teardown()
 
 
 # ---------------------------------------------------------------------------
@@ -9929,6 +9987,7 @@ def verify_generic_python_deserialization(
         ("yaml-unsafe",   _yaml_payload.encode(),         "application/yaml"),
     ]
 
+    lab = None
     try:
         from .wpverify import _DockerLab
         lab = _DockerLab(source_dir, dockerfile_body or None,
@@ -9984,7 +10043,8 @@ def verify_generic_python_deserialization(
         return res
     finally:
         step("desmontando el laboratorio (python-deserialization)...")
-        lab.teardown()
+        if lab is not None:
+            lab.teardown()
 
 
 # ---------------------------------------------------------------------------
@@ -10023,6 +10083,7 @@ def verify_generic_werkzeug_debug_rce(
 
     _canary = _sec.token_hex(10)
 
+    lab = None
     try:
         from .wpverify import _DockerLab
         lab = _DockerLab(source_dir, dockerfile_body or None,
@@ -10156,7 +10217,8 @@ def verify_generic_werkzeug_debug_rce(
         return res
     finally:
         step("desmontando el laboratorio (werkzeug-debug)...")
-        lab.teardown()
+        if lab is not None:
+            lab.teardown()
 
 
 # ---------------------------------------------------------------------------
@@ -10213,6 +10275,7 @@ def verify_generic_broken_access_control(
     if admin_endpoint:
         _target_endpoints.append(admin_endpoint)
 
+    lab = None
     try:
         from .wpverify import _DockerLab
         lab = _DockerLab(source_dir, dockerfile_body or None,
@@ -10262,7 +10325,8 @@ def verify_generic_broken_access_control(
         return res
     finally:
         step("desmontando el laboratorio (broken-access-control)...")
-        lab.teardown()
+        if lab is not None:
+            lab.teardown()
 
 
 # ---------------------------------------------------------------------------
@@ -10325,6 +10389,7 @@ def verify_generic_expression_language_injection(
     ]
     _pat = re.compile(rf"(?<!\d){_expected}(?!\d)")
 
+    lab = None
     try:
         from .wpverify import _DockerLab
         lab = _DockerLab(source_dir, dockerfile_body or None,
@@ -10370,7 +10435,8 @@ def verify_generic_expression_language_injection(
         return res
     finally:
         step("desmontando el laboratorio (EL injection)...")
-        lab.teardown()
+        if lab is not None:
+            lab.teardown()
 
 
 # ---------------------------------------------------------------------------
@@ -10411,6 +10477,7 @@ def verify_generic_race_condition(
     _results: list = []
     _lock = _thr.Lock()
 
+    lab = None
     try:
         from .wpverify import _DockerLab
         lab = _DockerLab(source_dir, dockerfile_body or None,
@@ -10480,7 +10547,8 @@ def verify_generic_race_condition(
         return res
     finally:
         step("desmontando el laboratorio (race-condition)...")
-        lab.teardown()
+        if lab is not None:
+            lab.teardown()
 
 
 # ---------------------------------------------------------------------------
@@ -10536,6 +10604,7 @@ def verify_generic_account_takeover(
         _ts[:-2],
     ]
 
+    lab = None
     try:
         from .wpverify import _DockerLab
         lab = _DockerLab(source_dir, dockerfile_body or None,
@@ -10609,7 +10678,8 @@ def verify_generic_account_takeover(
         return res
     finally:
         step("desmontando el laboratorio (account-takeover)...")
-        lab.teardown()
+        if lab is not None:
+            lab.teardown()
 
 
 # ---------------------------------------------------------------------------
@@ -10648,6 +10718,7 @@ def verify_generic_http_request_smuggling(
         res.limitations.append("verificacion dinamica NO intentada: sin daemon Docker")
         return res
 
+    lab = None
     try:
         from .wpverify import _DockerLab
         lab = _DockerLab(source_dir, dockerfile_body or None,
@@ -10760,7 +10831,8 @@ def verify_generic_http_request_smuggling(
         return res
     finally:
         step("desmontando el laboratorio (http-request-smuggling)...")
-        lab.teardown()
+        if lab is not None:
+            lab.teardown()
 
 
 # ---------------------------------------------------------------------------
@@ -10808,6 +10880,7 @@ def verify_generic_missing_authorization(
         f"Bearer {_sec.token_hex(32)}",  # random token
     ]
 
+    lab = None
     try:
         from .wpverify import _DockerLab
         lab = _DockerLab(source_dir, dockerfile_body or None,
@@ -10890,7 +10963,8 @@ def verify_generic_missing_authorization(
         return res
     finally:
         step("desmontando el laboratorio (missing-authorization)...")
-        lab.teardown()
+        if lab is not None:
+            lab.teardown()
 
 
 def verify_generic_user_enumeration(
