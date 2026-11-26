@@ -15,6 +15,7 @@ import time
 from typing import Callable, Optional
 
 from .wpverify import WpVerifyResult, _docker_daemon_ok, _http_request, _run, _lab_host
+from .genericverify import _build_http_params
 
 
 # ── Framework detection ───────────────────────────────────────────────────────
@@ -145,9 +146,9 @@ def _get_fastapi_token(base_url: str, username: str, password: str,
                               data=f"username={username}&password={password}&grant_type=password",
                               headers={"Content-Type": "application/x-www-form-urlencoded"},
                               timeout=8)
-            if r.status in (200, 201):
+            if r.status_code in (200, 201):
                 import json as _j
-                body = _j.loads(r.body or "{}")
+                body = _j.loads(r.text or "{}")
                 token = (body.get("access_token") or body.get("token") or
                          body.get("jwt") or "")
                 if token:
@@ -164,8 +165,8 @@ def _get_fastapi_token(base_url: str, username: str, password: str,
                                   "email": f"{username}@binoracle.dev"})
             r = _http_request("POST", url, data=body_str,
                               headers={"Content-Type": "application/json"}, timeout=8)
-            if r.status in (200, 201):
-                body = _j.loads(r.body or "{}")
+            if r.status_code in (200, 201):
+                body = _j.loads(r.text or "{}")
                 token = (body.get("access_token") or body.get("token") or
                          (body.get("data") or {}).get("token") or "")
                 if token:
@@ -184,7 +185,7 @@ def _get_django_session(base_url: str, username: str, password: str,
     try:
         r = _http_request("GET", login_url, timeout=10)
         csrf = ""
-        m = re.search(r'csrfmiddlewaretoken.*?value=["\']([^"\']+)', r.body or "")
+        m = re.search(r'csrfmiddlewaretoken.*?value=["\']([^"\']+)', r.text or "")
         if m:
             csrf = m.group(1)
         cookies = r.headers.get("set-cookie", "")
@@ -251,8 +252,8 @@ def _get_drf_token(base_url: str, username: str, password: str,
         url = base_url.rstrip("/") + ep
         try:
             r = _http_request("POST", url, data=payload_body, headers=hdrs, timeout=8)
-            if r.status in (200, 201):
-                body = _j.loads(r.body or "{}")
+            if r.status_code in (200, 201):
+                body = _j.loads(r.text or "{}")
                 token = (body.get("token") or body.get("key") or
                          body.get("access_token") or "")
                 if token:
@@ -274,7 +275,8 @@ def verify_python_web_cve(source_path: str, endpoint: str,
                           auth_required: bool = False,
                           pkg_version: str = "",
                           on_step: Optional[Callable] = None,
-                          budget_s: float = 180.0) -> WpVerifyResult:
+                          budget_s: float = 180.0,
+                          notes: Optional[dict] = None) -> WpVerifyResult:
     """Generic verifier for Django/FastAPI/Flask CVEs.
 
     Auto-detects framework, builds Docker container with the vulnerable version,
@@ -289,6 +291,23 @@ def verify_python_web_cve(source_path: str, endpoint: str,
 
     framework = detect_python_framework(source_path)
     step(f"  pythonverify: framework={framework}, vuln_class={vuln_class}")
+
+    # Prefer notes-provided Dockerfile over source or generated one:
+    # analyst has provided a custom lab (dockerfile_body + extra_files).
+    _notes_df = (notes or {}).get("dockerfile_body") or ""
+    _notes_ef = (notes or {}).get("extra_files") or {}
+    _notes_scmds = (notes or {}).get("setup_cmds") or []
+
+    if _notes_df and source_path and os.path.isdir(source_path):
+        df_path_n = os.path.join(source_path, "Dockerfile")
+        with open(df_path_n, "w") as fh:
+            fh.write(_notes_df)
+        for _ef_name, _ef_body in (_notes_ef or {}).items():
+            _ef_full = os.path.join(source_path, _ef_name)
+            os.makedirs(os.path.dirname(_ef_full), exist_ok=True) if "/" in _ef_name else None
+            with open(_ef_full, "w") as efh:
+                efh.write(_ef_body)
+        step(f"  pythonverify: usando Dockerfile del analista ({len(_notes_ef)} extra files)")
 
     # Write Dockerfile if none exists
     dockerfile_path = os.path.join(source_path, "Dockerfile")
@@ -369,17 +388,17 @@ def verify_python_web_cve(source_path: str, endpoint: str,
         step(f"  pythonverify: {http_method} {target_url}")
         r = _http_request(http_method.upper(), target_url,
                           data=body, headers=headers, timeout=15)
-        res.evidence["status"] = r.status
-        res.evidence["body_snippet"] = (r.body or "")[:300]
+        res.evidence["status"] = r.status_code
+        res.evidence["body_snippet"] = (r.text or "")[:300]
 
-        if r.status == 200:
-            if confirm_string and confirm_string in (r.body or ""):
+        if r.status_code == 200:
+            if confirm_string and confirm_string in (r.text or ""):
                 res.verified = True
                 res.ok = True
                 res.confidence = "confirmed"
                 res.detail = f"VERIFICADO: confirm_string '{confirm_string}' en respuesta"
                 step("  pythonverify: VERIFICADO")
-            elif not confirm_string and payload and payload in (r.body or ""):
+            elif not confirm_string and payload and payload in (r.text or ""):
                 res.verified = True
                 res.ok = True
                 res.confidence = "probable"
@@ -389,7 +408,7 @@ def verify_python_web_cve(source_path: str, endpoint: str,
                 res.ok = True
                 res.detail = "Endpoint accesible (200) — confirm_string no encontrado"
         else:
-            res.detail = f"HTTP {r.status} — endpoint no accesible"
+            res.detail = f"HTTP {r.status_code} — endpoint no accesible"
         res.evidence["endpoint"] = target_url
 
     except subprocess.CalledProcessError as e:

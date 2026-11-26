@@ -15186,7 +15186,10 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             # Node.js web frameworks (Express/Fastify/NestJS/Koa): verificacion especializada
             # con auto-deteccion via package.json, JWT auto-auth y dispatcher principal
             # verify_node_web_cve() -- ver jsverify.py.
+            # package.json guard: sin este check el elif consume el chain para proyectos Python
+            # (django, flask, etc.) donde detect_js_framework devuelve "unknown" y no se verifica nada.
             elif (not plugin_dir and fr.local_path and
+                  os.path.isfile(os.path.join(str(fr.local_path), "package.json")) and
                   inv.vuln_class in ("xss", "sqli", "sql-injection", "ssrf", "idor",
                                      "missing-authorization", "auth-bypass",
                                      "broken-access-control", "ssti", "rce",
@@ -15245,7 +15248,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             elif (not plugin_dir and fr.local_path and
                   inv.vuln_class in ("xss", "sqli", "sql-injection", "ssrf", "idor",
                                      "missing-authorization", "auth-bypass",
-                                     "broken-access-control", "ssti")
+                                     "broken-access-control")
                   and notes.get("endpoint")):
                 from .pythonverify import detect_python_framework, verify_python_web_cve
                 _py_fw = detect_python_framework(str(fr.local_path))
@@ -15264,7 +15267,52 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         pkg_version=inv.llm_notes.get("vulnerable_version") or "",
                         on_step=step,
                         budget_s=budget_s,
+                        notes=notes,
                     )
+                    _apply_wpverify_result(inv, wr, es, llm)
+                elif (_py_fw == "generic"
+                      and not inv.verified
+                      and notes.get("confirm_string")
+                      and (notes.get("docker_image") or notes.get("dockerfile_body"))):
+                    # Scaffolded lab (no detectable framework signals) but analyst has
+                    # provided a Dockerfile + confirm_string — fall through to generic verifier.
+                    from .genericverify import verify_generic_http_confirm
+                    _hc_local_path_str = str(fr.local_path)
+                    _hc_ep = notes.get("endpoint") or "/"
+                    _hc_method = notes.get("http_method") or "GET"
+                    _hc_confirm = notes.get("confirm_string") or ""
+                    _hc_df = _notes_dockerfile(notes)
+                    _hc_ef = notes.get("extra_files") or None
+                    _hc_setup_cmds = notes.get("setup_cmds") or None
+                    _hc_docker_image = notes.get("docker_image") or ""
+                    _hc_post_data: Optional[dict] = None
+                    _hc_query_params: Optional[dict] = None
+                    _hc_params_raw = notes.get("parameters")
+                    if isinstance(_hc_params_raw, dict) and _hc_params_raw:
+                        if _hc_method.upper() in ("POST", "PUT", "PATCH"):
+                            _hc_post_data = _hc_params_raw
+                        else:
+                            _hc_query_params = _hc_params_raw
+                    _hc_auth_required = bool(notes.get("auth_required", True))
+                    _hc_extra_wait = float(notes.get("setup_wait_extra_s") or 0.0)
+                    if fr.local_path:
+                        _inject_custom_docker_lab(_hc_local_path_str, notes, step)
+                    step(("intentando verificacion DINAMICA GENERICA (Python/generic) -- HTTP confirm "
+                         f"(buscando {_hc_confirm[:40]!r} en {_hc_ep})..." if es else
+                         "attempting GENERIC DYNAMIC verification (Python/generic) -- HTTP confirm "
+                         f"(looking for {_hc_confirm[:40]!r} in {_hc_ep})..."))
+                    wr = verify_generic_http_confirm(
+                        _hc_local_path_str, _hc_ep, _hc_method,
+                        confirm_string=_hc_confirm,
+                        on_step=step, budget_s=budget_s,
+                        custom_headers=notes.get("custom_headers") or None,
+                        post_data=_hc_post_data, query_params=_hc_query_params,
+                        dockerfile_body=_hc_df, extra_files=_hc_ef,
+                        setup_commands=_hc_setup_cmds,
+                        docker_image=_hc_docker_image,
+                        setup_wait_extra_s=_hc_extra_wait,
+                        vuln_class=inv.vuln_class or "",
+                        auth_required=_hc_auth_required)
                     _apply_wpverify_result(inv, wr, es, llm)
             # Strapi headless CMS: especializado con JWT Admin API auth y lab SQLite.
             # Se activa cuando el CMS detectado es Strapi (via package.json) y hay endpoint.
