@@ -16416,6 +16416,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     _hc_hdrs.setdefault("Content-Type", "application/json")
                 _hc_docker_image = notes.get("docker_image") or ""
                 _hc_extra_wait = _auto_setup_wait_s(_hc_docker_image, _hc_df)
+                _hc_auth_required = bool(notes.get("auth_required", True))
                 wr = verify_generic_http_confirm(
                     _hc_local_path_str, _hc_ep, _hc_method,
                     confirm_string=_hc_confirm, patched_patterns=_hc_patched,
@@ -16425,7 +16426,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     setup_commands=_hc_setup_cmds,
                     docker_image=_hc_docker_image,
                     setup_wait_extra_s=_hc_extra_wait,
-                    vuln_class=inv.vuln_class or "")
+                    vuln_class=inv.vuln_class or "",
+                    auth_required=_hc_auth_required)
                 # Retry loop: if first attempt failed, let LLM suggest endpoint/param changes
                 if not wr.verified and llm is not None and getattr(llm, "available", lambda: False)():
                     def _attempt_hc_retry(ep: str, _param: str) -> Any:
@@ -16440,7 +16442,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             setup_commands=_hc_setup_cmds,
                             docker_image=_hc_docker_image,
                             setup_wait_extra_s=_hc_extra_wait,
-                            vuln_class=inv.vuln_class or "")
+                            vuln_class=inv.vuln_class or "",
+                            auth_required=_hc_auth_required)
                     wr = _run_evidence_retry_loop(
                         llm, step, es, _GENERIC_RETRY_SYS,
                         _RESPUESTA_CUERPO_EVIDENCE_KEYS,

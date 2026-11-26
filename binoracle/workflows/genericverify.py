@@ -1970,9 +1970,9 @@ def _discover_routes_from_openapi(base_url: str, step) -> List[str]:
         url = base_url.rstrip("/") + sp
         try:
             r = _http_request("GET", url, timeout=5)
-            if r.status != 200 or not r.body:
+            if r.status_code != 200 or not r.text:
                 continue
-            spec = json.loads(r.body)
+            spec = json.loads(r.text)
             paths = list((spec.get("paths") or {}).keys())
             if paths:
                 step(f"  openapi: {len(paths)} rutas descubiertas desde {sp}")
@@ -1980,6 +1980,70 @@ def _discover_routes_from_openapi(base_url: str, step) -> List[str]:
         except Exception:
             continue
     return []
+
+
+class _DockerLab:
+    """Context-manager wrapper around _bootstrap_generic_lab for specialized verifiers
+    (info-disclosure, CORS, user-enum, etc.) that need exec_in_container().
+    Previously imported from wpverify as _DockerLab (which never existed there).
+    """
+    def __init__(self, source_dir: str, dockerfile_body: Optional[str] = None,
+                 extra_files: Optional[dict] = None,
+                 setup_commands: Optional[List[str]] = None,
+                 on_step=None):
+        self._source_dir = source_dir or ""
+        self._df = dockerfile_body or ""
+        self._extra_files = extra_files or {}
+        self._setup_cmds = setup_commands or []
+        self._step = on_step or (lambda _m: None)
+        self._lab: Optional["_GenericLab"] = None
+        self._container: str = ""
+        self.base_url: str = ""
+
+    def running(self):
+        """Context manager: bootstrap lab, yield self (with .base_url set), teardown on exit."""
+        import contextlib
+
+        @contextlib.contextmanager
+        def _ctx():
+            _res = WpVerifyResult()
+            _boot = _bootstrap_generic_lab(
+                self._source_dir, self._step, _res, 900.0,
+                dockerfile_body=self._df,
+                extra_files=self._extra_files,
+                setup_commands=self._setup_cmds,
+            )
+            if _boot is None:
+                raise RuntimeError(f"_DockerLab bootstrap failed: {_res.detail}")
+            _lab, _base_url, _container = _boot
+            self._lab = _lab
+            self._container = _container
+            self.base_url = _base_url
+
+            class _Boot:
+                pass
+            b = _Boot()
+            b.base_url = _base_url
+            try:
+                yield b
+            finally:
+                if _lab:
+                    try:
+                        _lab.teardown()
+                    except Exception:
+                        pass
+
+        return _ctx()
+
+    def exec_in_container(self, cmd: str) -> bool:
+        """Run cmd via docker exec in the main container. Returns True on success."""
+        if not self._lab or not self._container:
+            return False
+        try:
+            r = self._lab.sh("exec", self._container, "sh", "-c", cmd, timeout=30)
+            return r.returncode == 0
+        except Exception:
+            return False
 
 
 def _bootstrap_generic_lab(source_dir: str, step, res: WpVerifyResult,
@@ -3684,7 +3748,6 @@ def verify_generic_ssrf(
     if boot is None:
         return res
     lab, base_url, container = boot
-    lab = None
     try:
         if setup_wait_extra_s > 0:
             import time as _time
@@ -4357,6 +4420,40 @@ def verify_generic_sqli_blind(
             except Exception as _ne:
                 step(f"WARN: fallo extraccion de nonce desde {nonce_endpoint!r}: {_ne}")
         m = (http_method or "GET").upper().split("/")[0].split("|")[0].strip() or "GET"
+        # Fast-path: if confirm_string is set and parameters already contain a ready-to-send
+        # payload (e.g. Django _connector=OR 1=1), try a direct HTTP request first.
+        # This avoids using time-based blind SQLi for CVEs where the response leaks data directly.
+        if confirm_string and isinstance(parameters, dict) and parameters:
+            try:
+                _ep_fast = endpoint.split("?")[0] if endpoint and "?" in endpoint else endpoint
+                _hdrs_fast = dict(custom_headers or {})
+                if m == "GET":
+                    _r_fast = _http_request(m, base_url + _ep_fast, timeout=15,
+                                             params=parameters, headers=_hdrs_fast or None)
+                else:
+                    _r_fast = _http_request(m, base_url + _ep_fast, timeout=15,
+                                             data=parameters, headers=_hdrs_fast or None)
+                _body_fast = getattr(_r_fast, "text", "") or ""
+                if confirm_string.lower() in _body_fast.lower():
+                    res.verified = True
+                    res.ok = True
+                    res.confidence = "confirmed"
+                    res.evidence.update({
+                        "fast_path": True,
+                        "respuesta_cuerpo_recorte": _body_fast[:600],
+                        "confirm_string": confirm_string,
+                        "status_code": getattr(_r_fast, "status_code", 0),
+                        "url": base_url + _ep_fast,
+                        "metodo": m,
+                    })
+                    res.detail = (f"SQLi CONFIRMADO (fast-path): confirm_string "
+                                  f"'{confirm_string}' en respuesta directa — "
+                                  f"payload inyectado produjo datos en respuesta")
+                    step(f"VERIFICADO (fast-path): confirm_string '{confirm_string}' presente")
+                    return res
+            except Exception:
+                pass  # Fall through to time-based verification
+
         # Strip the query string from the endpoint: params are always passed separately as a
         # dict via 'params=' in GET requests. If the endpoint includes '?k=<placeholder>' (a
         # common LLM output pattern), appending it to base_url while ALSO passing the same key
@@ -7928,6 +8025,7 @@ def verify_generic_http_confirm(
     setup_commands: Optional[List[str]] = None,
     docker_image: str = "",
     vuln_class: str = "",
+    auth_required: bool = True,
 ) -> WpVerifyResult:
     """Verificador generico de string de confirmacion en respuesta HTTP.
 
@@ -7977,7 +8075,8 @@ def verify_generic_http_confirm(
 
         # Auto-auth: if no Authorization/Cookie header was supplied and we know the image,
         # attempt a login using image-specific credentials from app_auth.login_to_app().
-        if docker_image and not any(k.lower() in ("authorization", "cookie") for k in hdrs):
+        # Skip when auth_required=False (e.g. unauthenticated path traversal — CVE-2026-71209).
+        if auth_required and docker_image and not any(k.lower() in ("authorization", "cookie") for k in hdrs):
             try:
                 from binoracle.workflows.app_auth import login_to_app as _login_to_app
                 _auth_hdrs = _login_to_app(base_url, docker_image, on_step=step)
@@ -8229,8 +8328,8 @@ def _try_gitea_auth(base_url: str, on_step=None) -> dict:
                 headers={"Content-Type": "application/json",
                          "Authorization": f"Basic {_creds}"},
                 timeout=8)
-            if _r.status in (200, 201):
-                _d = _j.loads(_r.body or "{}")
+            if _r.status_code in (200, 201):
+                _d = _j.loads(_r.text or "{}")
                 _tok = _d.get("sha1") or _d.get("token") or ""
                 if _tok:
                     step(f"  gitea-auth: token via {_ep} → {_tok[:8]}...")
@@ -8260,7 +8359,7 @@ def _try_nextcloud_auth(base_url: str, on_step=None) -> dict:
             headers={"Authorization": f"Basic {_creds}",
                      "OCS-APIRequest": "true"},
             timeout=8)
-        if _r.status == 200 and "ocs" in (_r.body or "").lower():
+        if _r.status_code == 200 and "ocs" in (_r.text or "").lower():
             step(f"  nextcloud-auth: Basic auth confirmed for {_user}")
             return {"headers": {"Authorization": f"Basic {_creds}",
                                 "OCS-APIRequest": "true"}}
@@ -8287,13 +8386,13 @@ def _try_mattermost_auth(base_url: str, on_step=None) -> dict:
                 data=_j.dumps({"login_id": _user, "password": _pwd}),
                 headers={"Content-Type": "application/json"},
                 timeout=8)
-            if _r.status == 200:
+            if _r.status_code == 200:
                 # Token is in Token response header, not body
                 _tok = (_r.headers or {}).get("Token", "") or \
                        (_r.headers or {}).get("token", "")
                 if not _tok:
                     # Some versions include it in the body
-                    _d = _j.loads(_r.body or "{}")
+                    _d = _j.loads(_r.text or "{}")
                     _tok = _d.get("token") or ""
                 if _tok:
                     step(f"  mattermost-auth: token via {_ep} → {_tok[:8]}...")
@@ -8339,7 +8438,7 @@ def _try_auto_auth(base_url: str, source_dir: str = "", on_step=None) -> dict:
     ]:
         try:
             _probe_r = _http_request("GET", _base_check + _cms_probe, timeout=4)
-            if _probe_r.status in (200, 401, 403):  # any response = this CMS is here
+            if _probe_r.status_code in (200, 401, 403):  # any response = this CMS is here
                 _cms_result = _cms_fn(base_url, on_step=on_step)
                 if _cms_result.get("headers"):
                     result.update(_cms_result)
@@ -8356,8 +8455,8 @@ def _try_auto_auth(base_url: str, source_dir: str = "", on_step=None) -> dict:
                               data=f"username={_user}&password={_pwd}&grant_type=password",
                               headers={"Content-Type": "application/x-www-form-urlencoded"},
                               timeout=5)
-            if r.status in (200, 201):
-                body = _j.loads(r.body or "{}")
+            if r.status_code in (200, 201):
+                body = _j.loads(r.text or "{}")
                 tok = body.get("access_token") or body.get("token") or ""
                 if tok:
                     step(f"  auto-auth: Bearer token via {_ep}")
@@ -8375,8 +8474,8 @@ def _try_auto_auth(base_url: str, source_dir: str = "", on_step=None) -> dict:
                               data=_j.dumps({"username": _user, "password": _pwd,
                                              "email": _email}),
                               headers={"Content-Type": "application/json"}, timeout=5)
-            if r.status in (200, 201):
-                body = _j.loads(r.body or "{}")
+            if r.status_code in (200, 201):
+                body = _j.loads(r.text or "{}")
                 tok = (body.get("access_token") or body.get("token") or
                        (body.get("data") or {}).get("token") or "")
                 if tok:
@@ -8401,8 +8500,8 @@ def _try_auto_auth(base_url: str, source_dir: str = "", on_step=None) -> dict:
     for _ep in ["/api/key", "/api/apikey", "/admin/key", "/api/admin/key"]:
         try:
             r = _http_request("GET", base_url.rstrip("/") + _ep, timeout=5)
-            if r.status == 200:
-                body = _j.loads(r.body or "{}")
+            if r.status_code == 200:
+                body = _j.loads(r.text or "{}")
                 key = body.get("key") or body.get("api_key") or body.get("apiKey") or ""
                 if key and len(key) > 8:
                     step(f"  auto-auth: API key via {_ep}")
@@ -8441,7 +8540,7 @@ def _try_auto_auth(base_url: str, source_dir: str = "", on_step=None) -> dict:
     for _ep in ["/api/", "/api", "/api/v1/", "/"]:
         try:
             r = _http_request("GET", base_url.rstrip("/") + _ep, timeout=5)
-            if r.status == 200:
+            if r.status_code == 200:
                 step(f"  auto-auth: no auth needed ({_ep} → 200)")
                 return result  # empty headers = unauthenticated
         except Exception:
@@ -8922,21 +9021,20 @@ def verify_generic_multistep(
         res.limitations.append("Docker daemon no encontrado o no arrancado")
         return res
 
-    lab = _GenericLab(_token())
     lab = None
     try:
-        lab_cfg = _bootstrap_generic_lab(
-            lab, source_dir, step, res, t0, budget_s,
+        _boot = _bootstrap_generic_lab(
+            source_dir, step, res, budget_s,
             dockerfile_body=dockerfile_body,
             extra_files=extra_files,
         )
-        if not lab_cfg:
+        if _boot is None:
             return res
+        lab, base_url, _container = _boot
 
         import requests as _rq
         sess = _rq.Session()
         sess.verify = False
-        base_url = lab_cfg["base_url"]
         ctx: dict = {}  # extracted variables from previous steps
 
         def _interpolate(val):
@@ -9971,7 +10069,6 @@ def verify_generic_information_disclosure(
 
     lab = None
     try:
-        from .wpverify import _DockerLab
         _df = dockerfile_body or ""
         # Inject canary env var if Dockerfile exists
         if _df and "ENV " not in _df:
@@ -10117,7 +10214,7 @@ def verify_generic_python_deserialization(
 
     lab = None
     try:
-        from .wpverify import _DockerLab
+        pass  # _DockerLab is defined in this file
         lab = _DockerLab(source_dir, dockerfile_body or None,
                          extra_files=extra_files or {},
                          setup_commands=setup_commands or [], on_step=step)
@@ -10213,7 +10310,7 @@ def verify_generic_werkzeug_debug_rce(
 
     lab = None
     try:
-        from .wpverify import _DockerLab
+        pass  # _DockerLab is defined in this file
         lab = _DockerLab(source_dir, dockerfile_body or None,
                          extra_files=extra_files or {},
                          setup_commands=setup_commands or [], on_step=step)
@@ -10405,7 +10502,7 @@ def verify_generic_broken_access_control(
 
     lab = None
     try:
-        from .wpverify import _DockerLab
+        pass  # _DockerLab is defined in this file
         lab = _DockerLab(source_dir, dockerfile_body or None,
                          extra_files=extra_files or {},
                          setup_commands=setup_commands or [], on_step=step)
@@ -10535,7 +10632,7 @@ def verify_generic_expression_language_injection(
 
     lab = None
     try:
-        from .wpverify import _DockerLab
+        pass  # _DockerLab is defined in this file
         lab = _DockerLab(source_dir, dockerfile_body or None,
                          extra_files=extra_files or {},
                          setup_commands=setup_commands or [], on_step=step)
@@ -10623,7 +10720,7 @@ def verify_generic_race_condition(
 
     lab = None
     try:
-        from .wpverify import _DockerLab
+        pass  # _DockerLab is defined in this file
         lab = _DockerLab(source_dir, dockerfile_body or None,
                          extra_files=extra_files or {},
                          setup_commands=setup_commands or [], on_step=step)
@@ -10750,7 +10847,7 @@ def verify_generic_account_takeover(
 
     lab = None
     try:
-        from .wpverify import _DockerLab
+        pass  # _DockerLab is defined in this file
         lab = _DockerLab(source_dir, dockerfile_body or None,
                          extra_files=extra_files or {},
                          setup_commands=setup_commands or [], on_step=step)
@@ -10864,7 +10961,7 @@ def verify_generic_http_request_smuggling(
 
     lab = None
     try:
-        from .wpverify import _DockerLab
+        pass  # _DockerLab is defined in this file
         lab = _DockerLab(source_dir, dockerfile_body or None,
                          extra_files=extra_files or {},
                          setup_commands=setup_commands or [], on_step=step)
@@ -11026,7 +11123,7 @@ def verify_generic_missing_authorization(
 
     lab = None
     try:
-        from .wpverify import _DockerLab
+        pass  # _DockerLab is defined in this file
         lab = _DockerLab(source_dir, dockerfile_body or None,
                          extra_files=extra_files or {},
                          setup_commands=setup_commands or [], on_step=step)
@@ -11146,7 +11243,7 @@ def verify_generic_user_enumeration(
     _probe_param = probe_param or "email"
 
     try:
-        from .wpverify import _DockerLab
+        pass  # _DockerLab is defined in this file
         lab = _DockerLab(source_dir, dockerfile_body or None,
                          extra_files=extra_files or {},
                          setup_commands=setup_commands or [], on_step=step)

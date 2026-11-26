@@ -142,8 +142,8 @@ def _try_generic_jwt_auth(base_url: str, step: Callable) -> Optional[str]:
                               data=json.dumps(_JWT_CREDS),
                               headers={"Content-Type": "application/json"},
                               timeout=8)
-            if r.status in range(200, 300):
-                token = _extract_token(r.body or "")
+            if r.status_code in range(200, 300):
+                token = _extract_token(r.text or "")
                 if token:
                     step(f"  goverify: JWT obtenido via {login_path}")
                     return f"Bearer {token}"
@@ -185,7 +185,7 @@ def _try_api_key_auth(source_dir: str, base_url: str, step: Callable) -> Optiona
     # Try unauthenticated status endpoint — maybe no auth needed
     try:
         r = _http_request("GET", base_url.rstrip("/") + "/api/status", timeout=6)
-        if r.status == 200:
+        if r.status_code == 200:
             step("  goverify: /api/status responde 200 — app puede estar sin auth")
     except Exception:
         pass
@@ -333,19 +333,19 @@ def verify_go_web_cve(source_path: str, endpoint: str,
         step(f"  goverify: {http_method} {target_url}")
         r = _http_request(http_method.upper(), target_url,
                           data=body, headers=headers, timeout=15)
-        res.evidence["status"] = r.status
-        res.evidence["body_snippet"] = (r.body or "")[:300]
+        res.evidence["status"] = r.status_code
+        res.evidence["body_snippet"] = (r.text or "")[:300]
         res.evidence["endpoint"] = target_url
         res.evidence["framework"] = framework
 
-        if r.status in range(200, 300):
-            if confirm_string and confirm_string in (r.body or ""):
+        if r.status_code in range(200, 300):
+            if confirm_string and confirm_string in (r.text or ""):
                 res.verified = True
                 res.ok = True
                 res.confidence = "confirmed"
                 res.detail = f"VERIFICADO: confirm_string '{confirm_string}' en respuesta"
                 step("  goverify: VERIFICADO")
-            elif not confirm_string and payload and payload in (r.body or ""):
+            elif not confirm_string and payload and payload in (r.text or ""):
                 res.verified = True
                 res.ok = True
                 res.confidence = "probable"
@@ -353,13 +353,13 @@ def verify_go_web_cve(source_path: str, endpoint: str,
                 step("  goverify: payload reflejado")
             else:
                 res.ok = True
-                res.detail = f"Endpoint accesible ({r.status}) — confirm_string no encontrado"
-        elif r.status == 401 and auth_required and not auth_headers:
+                res.detail = f"Endpoint accesible ({r.status_code}) — confirm_string no encontrado"
+        elif r.status_code == 401 and auth_required and not auth_headers:
             res.detail = "HTTP 401 — auth requerida pero no se pudo obtener token"
-        elif r.status == 403:
+        elif r.status_code == 403:
             res.detail = "HTTP 403 — endpoint bloqueado (posible bypass fallido)"
         else:
-            res.detail = f"HTTP {r.status} — endpoint no accesible"
+            res.detail = f"HTTP {r.status_code} — endpoint no accesible"
 
     except Exception as e:
         res.detail = f"Error: {e}"
