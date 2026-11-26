@@ -79,14 +79,21 @@ RUN apt-get update -qq && apt-get install -y -qq \\
     && a2enmod rewrite \\
     && rm -rf /var/lib/apt/lists/*
 RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
-# Enable register_argc_argv (required for CVE-2024-56145 and similar argv-injection CVEs)
+# Enable register_argc_argv (CVE-2024-56145 and similar argv-injection CVEs) + display errors
 RUN echo "register_argc_argv = On" >> /usr/local/etc/php/php.ini-development \\
+    && echo "display_errors = On" >> /usr/local/etc/php/php.ini-development \\
+    && echo "display_startup_errors = On" >> /usr/local/etc/php/php.ini-development \\
+    && echo "error_reporting = E_ALL" >> /usr/local/etc/php/php.ini-development \\
     && cp /usr/local/etc/php/php.ini-development /usr/local/etc/php/php.ini
 WORKDIR /var/www/html
 RUN composer create-project {_create_proj} craft --no-interaction --prefer-dist \\
     || (echo "craft download failed" && exit 1)
 WORKDIR /var/www/html/craft
 {_pin_step}
+# Configure Apache DocumentRoot to point at Craft's web/ directory
+RUN sed -i 's|DocumentRoot /var/www/html|DocumentRoot /var/www/html/craft/web|g' /etc/apache2/sites-available/000-default.conf \\
+    && sed -i 's|<Directory /var/www/html>|<Directory /var/www/html/craft/web>|g' /etc/apache2/apache2.conf \\
+    && echo '<Directory /var/www/html/craft/web>\\n    Options Indexes FollowSymLinks\\n    AllowOverride All\\n    Require all granted\\n</Directory>' >> /etc/apache2/sites-available/000-default.conf
 # Configure SQLite
 ENV CRAFT_DB_DRIVER=sqlite \\
     CRAFT_DB_DATABASE=/var/www/html/craft/storage/craft.db \\
