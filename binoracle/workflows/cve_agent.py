@@ -12758,9 +12758,23 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                 r"add_action\s*\(\s*['\"]wp_ajax_([^'\"]+)['\"]", _php)
                             _action_name = (_np or _pr)
                             if _action_name:
+                                # Also grep handler function body for $_REQUEST/$_POST/$_GET params
+                                _handler_params = {"action": _action_name[0]}
+                                _handler_m = _re_ep.findall(
+                                    r"add_action\s*\(\s*['\"]wp_ajax_(?:nopriv_)?" + _re_ep.escape(_action_name[0])
+                                    + r"['\"][^,]*,\s*['\"]?([^'\")\s]+)['\"]?\s*\)",
+                                    _php,
+                                )
+                                if _handler_m:
+                                    _hfn = _handler_m[0].strip()
+                                    _req_params = _re_ep.findall(
+                                        r'\$_(?:REQUEST|POST|GET)\s*\[\s*[\'"]([^\'"]+)[\'"]\s*\]', _php)
+                                    for _rp in _req_params:
+                                        if _rp.lower() not in ("action", "nonce", "_wpnonce"):
+                                            _handler_params[_rp] = ""
                                 _ep_derived = {
                                     "endpoint": "/wp-admin/admin-ajax.php",
-                                    "parameters": {"action": _action_name[0]},
+                                    "parameters": _handler_params,
                                     "source": "wp_ajax_nopriv" if _np else "wp_ajax",
                                 }
                                 break
