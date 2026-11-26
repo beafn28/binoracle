@@ -12502,6 +12502,16 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         # Treat as a WP plugin for downstream dispatch
                         fr.kind = "wordpress-plugin"
                         fr.plugin_dir = _slug_from_mirror
+                        # GitHub mirror clones files at repo root (no {slug}/ subdir).
+                        # _check_prereqs expects {local_path}/{slug}/ to exist.
+                        # Create a symlink so the verifier can find the plugin.
+                        import os as _os_sym
+                        _sym_target = _os_sym.path.join(fr.local_path, _slug_from_mirror)
+                        if not _os_sym.path.exists(_sym_target):
+                            try:
+                                _os_sym.symlink(".", _sym_target)
+                            except Exception:
+                                pass
             inv.source_fetch["plugin_dir"] = plugin_dir
             is_drupal = fr.kind == "drupal-module" or (
                 fr.kind in ("local-zip", "zip-url") and _looks_like_drupal_module(fr.local_path, plugin_dir))
