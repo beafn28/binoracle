@@ -4682,8 +4682,16 @@ def process_never_attempted_cves(
                 d = _j.load(fh)
         except Exception:
             continue
-        if d.get("verified") or d.get("attempt_evidence"):
+        if d.get("verified"):
             continue
+        # Skip only if a real attempt was made (not just intel enrichment/patch analysis)
+        # attempt_evidence with just patch data (raw_patch_text, patch_analysis) is intel
+        # enrichment, not a verification attempt — only skip if "attempted": True is set
+        _ae = d.get("attempt_evidence")
+        if isinstance(_ae, dict) and _ae.get("attempted"):
+            continue
+        elif _ae and not isinstance(_ae, dict):
+            continue  # Non-dict truthy sentinel → skip
         n = d.get("llm_notes") or {}
         # Must have at minimum an endpoint to attack
         if not n.get("endpoint"):
