@@ -15256,7 +15256,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     # SOLO para métodos que llevan body (POST/PUT/PATCH).
                     # GET/HEAD no tienen body — sus parámetros van en query string.
                     _sqli_ep_norm = (notes.get("endpoint") or "").lower()
-                    _sqli_http_method_norm = (_sqli_http_method or "GET").upper()
+                    _sqli_http_method_norm = (notes.get("http_method") or "GET").upper()
                     if not notes.get("json_body") and (
                             "/wp-json/" in _sqli_ep_norm
                             or _sqli_ep_norm.startswith("wp-json/")):
