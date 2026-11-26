@@ -1919,20 +1919,27 @@ def _run_web_stage(cve_id: str, cve_info, llm_notes: dict,
             result.add_step("compose_lab", "warn", "generation failed")
 
     # ── Library CVE detection: generate wrapper app as the target ─────────────
+    # Two paths trigger the wrapper:
+    # 1. _is_library_cve: conservative generic check (no endpoint, not a CMS)
+    # 2. _detect_deterministic_wrapper: a known library wrapper exists (safe even when
+    #    endpoint is already set, since compose_lab_url check prevents WP/CMS false positives)
     wrapper_url = None
     wrapper_container = None
-    if not compose_lab_url and _is_library_cve(cve_info, llm_notes):
+    _src_for_wrapper = getattr(cve_info, "source_dir", "") or ""
+    _det_wrapper = _detect_deterministic_wrapper(cve_info, _src_for_wrapper)
+    if not compose_lab_url and (
+        _is_library_cve(cve_info, llm_notes) or bool(_det_wrapper)
+    ):
         step("  LIBRARY CVE detectado — inyectando Dockerfile/archivos del wrapper en llm_notes…")
         result.add_step("library_detection", "ok",
                         "wrapper app needed — no direct HTTP endpoint on library")
         import tempfile as _tf
         wrapper_tmpdir = _tf.mkdtemp(prefix="bo_wrapper_")
-        _src_dir = getattr(cve_info, "source_dir", "") or ""
         # _generate_wrapper_app now injects dockerfile_body/extra_files into llm_notes
         # (no URL returned — verifiers build their own container from those files)
         _wrapper_url_unused, wrapper_meta = _generate_wrapper_app(
             cve_id, cve_info, llm_notes, wrapper_tmpdir, step, llm=llm,
-            source_dir=_src_dir)
+            source_dir=_src_for_wrapper)
         wrapper_injected = bool(llm_notes.get("dockerfile_body"))
         if wrapper_injected:
             result.add_step("wrapper_app", "ok",
@@ -1940,14 +1947,20 @@ def _run_web_stage(cve_id: str, cve_info, llm_notes: dict,
             # Wire deterministic wrapper endpoint/param hints into llm_notes
             # so verifiers (SSTI, path-traversal, etc.) know where to probe
             if wrapper_meta:
-                if wrapper_meta.get("endpoint") and not (llm_notes.get("endpoint") or "").strip():
+                # Deterministic wrappers define canonical endpoints — always set them
+                # (overrides any stale endpoint from a previous LLM hypothesis)
+                if wrapper_meta.get("endpoint"):
                     llm_notes["endpoint"] = wrapper_meta["endpoint"]
-                if wrapper_meta.get("param") and not (llm_notes.get("parameters") or "").strip():
+                if wrapper_meta.get("param"):
                     extra = wrapper_meta.get("extra_params", {})
                     llm_notes["parameters"] = {wrapper_meta["param"]: "", **extra}
+                elif wrapper_meta.get("extra_params") and not llm_notes.get("parameters"):
+                    llm_notes["parameters"] = wrapper_meta["extra_params"]
                 if wrapper_meta.get("path_traversal_prefix"):
-                    llm_notes.setdefault("path_traversal_prefix",
-                                         wrapper_meta["path_traversal_prefix"])
+                    llm_notes["path_traversal_prefix"] = wrapper_meta["path_traversal_prefix"]
+                if wrapper_meta.get("path_traversal_prefix_alt"):
+                    llm_notes.setdefault("path_traversal_prefix_alt",
+                                         wrapper_meta["path_traversal_prefix_alt"])
         else:
             step("  wrapper app falló — continuando sin lab propio")
             result.add_step("wrapper_app", "warn", "generation failed")
