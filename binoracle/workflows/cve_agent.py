@@ -4690,6 +4690,35 @@ def _run_evidence_retry_loop(llm, step, es: bool, system_prompt: str, evidence_k
             suggestion = _llm_suggest_retry_from_evidence(
                 llm, system_prompt, wr, evidence_keys,
                 technique_label=technique_label, inv=inv)
+        # Cheerleader fallback: when narrow LLM finds no suggestion, run the deeper
+        # post-failure analysis (binchomp-style "between retries" cheerleader).
+        # Only on attempt 2+ — first failure may just need a corrected endpoint.
+        if not suggestion and attempt_n >= 2 and inv is not None:
+            try:
+                _cheer = _cheerleader_analysis(llm, inv, wr, es)
+                _sf = (_cheer.get("suggested_fix") or {}) if _cheer else {}
+                _conf = float(_cheer.get("confidence", 0) or 0) if _cheer else 0
+                if _conf > 0.5 and _sf and any(_sf.get(k) for k in
+                                               ("endpoint", "param", "sqli_param",
+                                                "parameters", "http_method")):
+                    _cheer_ep = (_sf.get("endpoint") or retry_endpoint)
+                    _cheer_param = (_sf.get("param") or _sf.get("sqli_param") or retry_param)
+                    if (_cheer_ep, _cheer_param or "") not in _tried_pairs:
+                        suggestion = {
+                            "tiene_sugerencia": True,
+                            "endpoint_alternativo": _cheer_ep,
+                            "parametro_alternativo": _cheer_param,
+                            "razon": (f"[cheerleader] {_cheer.get('failure_reason','')[:80]} "
+                                      f"→ {_cheer.get('retry_hypothesis','')[:80]}"),
+                        }
+                        step((f"cheerleader mid-retry (intento {attempt_n + 1}): "
+                              f"{_cheer.get('failure_reason','')[:60]} → "
+                              f"sugerencia {_cheer_ep!r}") if es else
+                             (f"cheerleader mid-retry (attempt {attempt_n + 1}): "
+                              f"{_cheer.get('failure_reason','')[:60]} → "
+                              f"suggestion {_cheer_ep!r}"))
+            except Exception:
+                pass
         if not suggestion:
             break
         if on_suggestion is not None:
