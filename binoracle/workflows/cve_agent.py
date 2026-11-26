@@ -15777,12 +15777,13 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         if _scf.get("parameters"):
                             params = _scf["parameters"]
                         _scf_ssrf = True
+                _ssrf_auth_req = bool(notes.get("auth_required"))
                 wr = verify_generic_ssrf(
                     fr.local_path, _ssrf_ep, notes.get("http_method") or "GET",
                     params, url_param_hint=url_p or "", on_step=step, budget_s=budget_s,
                     custom_headers=_ssrf_custom_hdrs,
                     dockerfile_body=_ssrf_dockerfile, extra_files=_ssrf_extra_files,
-                    setup_commands=_ssrf_setup_cmds)
+                    setup_commands=_ssrf_setup_cmds, auth_required=_ssrf_auth_req)
                 if _scf_ssrf and not wr.verified:
                     _lab_cfg_ssrf = {
                         "dockerfile_body": _ssrf_dockerfile,
@@ -15810,7 +15811,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             params, url_param_hint=url_p or "", on_step=step, budget_s=budget_s,
                             custom_headers=_ssrf_custom_hdrs,
                             dockerfile_body=_ssrf_dockerfile, extra_files=_ssrf_extra_files,
-                            setup_commands=_ssrf_setup_cmds)
+                            setup_commands=_ssrf_setup_cmds, auth_required=_ssrf_auth_req)
                         wr = wr_fb
                         if wr_fb.verified:
                             break

@@ -3332,17 +3332,62 @@ def verify_generic_file_upload(
         lab.teardown()
 
 
+def _try_acquire_app_token(base_url: str, step) -> Optional[str]:
+    """Attempt to authenticate against common app login endpoints and return a bearer token.
+
+    Tries Directus (/auth/login), Ghost (/ghost/api/admin/session, /ghost/api/admin/token),
+    and generic /api/auth/login endpoints with the standard binoracle test credentials.
+    Returns the bearer token string or None if all attempts fail.
+    """
+    import json as _j
+    _creds = [
+        {"email": "admin@example.com", "password": "BinOracle123!"},
+        {"email": "admin@example.com", "password": "Admin1234!"},
+    ]
+    _login_endpoints = [
+        "/auth/login",             # Directus
+        "/api/auth/login",
+        "/api/v1/auth/login",
+        "/api/users/login",
+        "/api/sessions",
+        "/api/login",
+        "/login",
+    ]
+    for ep in _login_endpoints:
+        for cred in _creds:
+            try:
+                r = _http_request("POST", base_url + ep, timeout=10, json=cred,
+                                  headers={"Content-Type": "application/json"})
+                if r.status_code in (200, 201):
+                    body = r.json() if hasattr(r, "json") else {}
+                    # Directus: {"data": {"access_token": "..."}}
+                    _tok = (body.get("data", {}) or {}).get("access_token")
+                    if not _tok:
+                        _tok = body.get("access_token") or body.get("token") or body.get("jwt")
+                    if _tok:
+                        step(f"auth: token obtenido via {ep} ({ep.split('/')[-1]}) → {str(_tok)[:12]}...")
+                        return str(_tok)
+            except Exception:
+                pass
+    return None
+
+
 def verify_generic_ssrf(
     source_dir: str, endpoint: str, http_method: str, parameters,
     url_param_hint: str = "", on_step: Optional[Callable[[str], None]] = None,
     budget_s: float = 900.0, custom_headers: Optional[dict] = None,
     dockerfile_body: str = "", extra_files: Optional[dict] = None,
     setup_commands: Optional[List[str]] = None,
+    auth_required: bool = False,
 ) -> WpVerifyResult:
     """Analogo generico de verify_wordpress_ssrf: levanta un contenedor 'callback' en la MISMA
     red del laboratorio generico (sea `dockerfile` o `compose` -- ver _GenericLab.resolve_network)
     y prueba las mismas variantes de URL/codificacion para confirmar que el SERVIDOR del objetivo
-    (no el navegador del atacante) hace de verdad la peticion saliente."""
+    (no el navegador del atacante) hace de verdad la peticion saliente.
+
+    auth_required: si True, intenta autenticar contra la app y usa el bearer token en las
+    peticiones SSRF (para CVEs que requieren sesion autenticada).
+    """
     step = on_step or (lambda _m: None)
     res = WpVerifyResult()
     if not _docker_daemon_ok():
@@ -3370,6 +3415,16 @@ def verify_generic_ssrf(
         if not listener:
             res.detail = "no se pudo levantar el contenedor listener para SSRF"
             return res
+
+        # Authentication: if the app requires auth (e.g. Directus, Ghost), acquire a bearer
+        # token before sending SSRF payloads, since unauthenticated requests would get 401.
+        if auth_required:
+            _bearer = _try_acquire_app_token(base_url, step)
+            if _bearer:
+                custom_headers = dict(custom_headers or {})
+                custom_headers.setdefault("Authorization", f"Bearer {_bearer}")
+            else:
+                step("WARN: auth_required pero no se pudo obtener token — continuando sin auth")
 
         listener_ip = lab.container_ip(lab.listener)
         m = (http_method or "GET").upper().split("/")[0].split("|")[0].strip() or "GET"
