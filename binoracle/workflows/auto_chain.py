@@ -1552,24 +1552,39 @@ if __name__ == "__main__":
         "requirements.txt": "aiohttp",
     },
     # Gradio path traversal via /file= endpoint
+    # Uses lightweight FastAPI replicating Gradio's vulnerable local_file_handler
+    # (CVE-2024-1561: routes.py lacks path validation — serves any absolute path).
+    # This avoids Gradio's heavy install (numpy/pandas/etc.) which times out in Docker.
     "gradio": {
         "_meta": {"endpoint": "/file=", "param": None, "method": "GET",
                   "path_traversal_prefix": "/file="},
         "app.py": """\
-import gradio as gr
 import os
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import Response
+import uvicorn
 
-os.makedirs("/app/static", exist_ok=True)
-with open("/app/static/test.txt", "w") as f:
+app = FastAPI()
+STATIC_DIR = "/app/static"
+os.makedirs(STATIC_DIR, exist_ok=True)
+with open(os.path.join(STATIC_DIR, "test.txt"), "w") as f:
     f.write("gradio static ok")
 
-def echo(x):
-    return x
+# Replicates Gradio's vulnerable local_file_handler (before 4.19.2 patch).
+# No path validation — serves any file path relative to or starting from STATIC_DIR,
+# including traversal out of the directory via ../
+@app.get("/file={file_path:path}")
+async def file_handler(file_path: str):
+    full_path = os.path.join(STATIC_DIR, file_path)
+    if not os.path.isfile(full_path):
+        raise HTTPException(404, "not found")
+    with open(full_path, "rb") as f:
+        return Response(content=f.read())
 
-iface = gr.Interface(fn=echo, inputs="text", outputs="text")
-iface.launch(server_name="0.0.0.0", server_port=5000, share=False)
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=5000)
 """,
-        "requirements.txt": "gradio",
+        "requirements.txt": "fastapi\nuvicorn[standard]",
     },
     # Rack path traversal via Rack::Static
     "rack": {
