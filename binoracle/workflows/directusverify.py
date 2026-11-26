@@ -18,6 +18,7 @@ import time
 from typing import Callable, Optional
 
 from .wpverify import WpVerifyResult, _docker_daemon_ok, _http_request, _run, _lab_host
+from .genericverify import _build_json_params
 
 _DIRECTUS_PORT = 8055
 _DIRECTUS_ADMIN_EMAIL = "admin@binoracle.dev"

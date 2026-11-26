@@ -21,6 +21,7 @@ import time
 from typing import Callable, List, Optional
 
 from .wpverify import WpVerifyResult, _docker_daemon_ok, _http_request, _lab_host, _token
+from .genericverify import _build_json_params
 
 
 def detect_strapi(source_dir: str) -> bool:

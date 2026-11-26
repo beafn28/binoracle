@@ -284,7 +284,7 @@ def verify_go_web_cve(source_path: str, endpoint: str,
             step(f"  goverify: endpoint seed desde source scanner: {endpoint} "
                  f"({len(_candidate_endpoints)} candidatos)")
 
-    from .genericverify import _bootstrap_generic_lab
+    from .genericverify import _bootstrap_generic_lab, _build_json_params
     boot = _bootstrap_generic_lab(source_path, step, res, budget_s)
     if boot is None:
         return res

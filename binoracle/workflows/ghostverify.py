@@ -22,6 +22,7 @@ import time
 from typing import Callable, Optional
 
 from .wpverify import WpVerifyResult, _docker_daemon_ok, _http_request, _run, _lab_host
+from .genericverify import _build_json_params
 
 _GHOST_IMAGE = "ghost:5-alpine"
 _GHOST_PORT = 2368
