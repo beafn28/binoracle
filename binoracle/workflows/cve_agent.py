@@ -17007,11 +17007,14 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     from .genericverify import verify_generic_http_confirm
                     step(("SSTI: fast-path confirm_string — endpoint y dockerfile conocidos" if es else
                           "SSTI: fast-path confirm_string — known endpoint and dockerfile"))
+                    _ssti_method = (notes.get("http_method") or "GET").upper()
                     _params_dict = params if isinstance(params, dict) else (params[0] if params and isinstance(params, list) and isinstance(params[0], dict) else {})
                     wr = verify_generic_http_confirm(
                         str(fr.local_path) if fr.local_path else "",
-                        _ssti_ep, notes.get("http_method") or "GET",
-                        _params_dict, _ssti_cs,
+                        _ssti_ep, _ssti_method,
+                        confirm_string=_ssti_cs,
+                        query_params=_params_dict if _ssti_method in ("GET", "HEAD") else None,
+                        post_data=_params_dict if _ssti_method not in ("GET", "HEAD") else None,
                         auth_required=False, on_step=step,
                         budget_s=min(budget_s, 300),
                         custom_headers=_ssti_custom_hdrs,

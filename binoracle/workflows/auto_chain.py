@@ -2088,6 +2088,7 @@ def _run_web_stage(cve_id: str, cve_info, llm_notes: dict,
         _tb = traceback.format_exc()
         result.add_step("web_investigation", "error", str(e)[:120])
         step(f"  error: {e}")
+        step(f"  traceback: {_tb[:800]}")
         return None
     finally:
         # Clean up wrapper container if we started one
