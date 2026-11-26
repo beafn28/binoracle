@@ -648,6 +648,16 @@ def _finalize_lab(lab: "_Lab", boot: Optional["_LabSession"], res: WpVerifyResul
             f"laboratorio dejado VIVO a proposito (keep_lab_on_failure) para inspeccion manual "
             f"-- desmontalo tu mismo cuando termines (tag Docker: '{lab.tag}')")
     else:
+        # Post-verification weaponization (binchomp Phase 03) — runs before teardown so the
+        # lab session is still alive. Best-effort: failure never affects the verify verdict.
+        if res.verified and boot is not None and not res.evidence.get("weaponization"):
+            try:
+                from .weaponize import run_weaponization
+                _wep = run_weaponization(boot, res, step=step)
+                if _wep and _wep.get("technique") not in ("not_applicable", "error", None, ""):
+                    res.evidence["weaponization"] = _wep
+            except Exception:
+                pass
         step("desmontando el laboratorio (contenedores/red/volumen)...")
         lab.teardown()
 

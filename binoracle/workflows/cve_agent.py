@@ -266,6 +266,7 @@ class Investigation:
                                                              # informe
     reproduce_sh: str = ""  # script reproduce.sh generado tras verified=True, listo para correr
     confidence: str = "none"  # confirmed | probable | inconclusive | not_reproducible | none
+    static_analysis: dict = field(default_factory=dict)  # deterministic pre-LLM static analysis results
 
 
 # Historial local de resultados por CVE -- confirmado en vivo esta misma sesion: reinvestigar la
@@ -2997,6 +2998,71 @@ _GENERIC_PATH_TRAVERSAL_RETRY_EVIDENCE_KEYS = {
     "respuesta_cuerpo_recorte": "respuesta_muestra_primer_intento",
     "endpoints_probados": "endpoints_probados"}
 
+# Cheerleader agent system prompt — post-failure mandatory analysis (binchomp-inspired).
+# Called after EVERY failed dynamic verify to reason about WHY it failed before retry.
+_CHEERLEADER_SYS = (
+    "Eres un agente de analisis post-fallo OBLIGATORIO. Un intento de verificacion dinamica en un "
+    "laboratorio Docker FALLO. Tu trabajo es razonar sobre POR QUE fallo, cuestionar cada suposicion, "
+    "y generar UNA hipotesis especifica para el siguiente reintento. "
+    "DEBES analizar:\n"
+    "1. Codigos HTTP observados — devolvio 404? 200 vacio? 403? 500? 503?\n"
+    "2. Era un error de infraestructura (Docker, red, timeout) o de logica de la aplicacion?\n"
+    "3. Estaba el endpoint realmente registrado? (404 = no existe; verificar si es REST API o query var)\n"
+    "4. Se requeria autenticacion que no se proporciono?\n"
+    "5. Era el payload correcto para el contexto de inyeccion real (WHERE vs ORDER BY, GET vs POST)?\n"
+    "6. Aparecio el canario/error XPATH/output UNION en la respuesta? Si no, por que?\n"
+    "7. Era el parametro vulnerable realmente el que se probo?\n"
+    "Solo razona desde la evidencia proporcionada. Nunca inventes. "
+    "Si la evidencia no da pistas concretas, dilo honestamente (confidence=0.0). "
+    "Responde SOLO con JSON valido:\n"
+    "{\"failure_reason\": \"razon exacta del fallo\", "
+    "\"retry_hypothesis\": \"accion especifica a probar en el siguiente intento\", "
+    "\"confidence\": 0.0-1.0, "
+    "\"assumption_challenged\": \"que suposicion era incorrecta\", "
+    "\"suggested_fix\": {\"endpoint\": \"...\", \"param\": \"...\", \"auth_required\": true/false}}"
+    "\nSolo incluye campos en suggested_fix en los que tengas certeza. "
+    "Devuelve {} para suggested_fix si no tienes evidencia suficiente."
+)
+
+
+def _cheerleader_analysis(llm, inv, wr, es: bool) -> dict:
+    """Mandatory post-failure analysis before giving up. Inspired by binchomp's cheerleader agent.
+
+    When dynamic verify fails, instead of silently retrying, the LLM must reason about WHY
+    it failed, challenge every assumption, and generate a specific retry hypothesis.
+    Returns a dict written to attempt_evidence["cheerleader"].
+    """
+    if llm is None or not getattr(llm, "available", lambda: False)():
+        return {}
+    try:
+        from ..llm.base import Message
+        failure_trace = getattr(wr, "failure_trace", [])
+        logs_tail = (getattr(wr, "logs", []) or [])[-5:]
+        evidence_summary = {
+            k: v for k, v in (getattr(wr, "evidence", {}) or {}).items()
+            if k not in ("screenshots", "http_captures") and not k.startswith("_")
+        }
+        context = {
+            "cve_id": getattr(inv, "cve_id", ""),
+            "vuln_class": getattr(inv, "vuln_class", ""),
+            "detail": getattr(wr, "detail", ""),
+            "failure_trace": failure_trace[-5:] if failure_trace else [],
+            "logs_tail": [entry[:300] for entry in logs_tail],
+            "evidence": {k: str(v)[:200] for k, v in list(evidence_summary.items())[:15]},
+        }
+        import json
+        prompt = f"Evidencia real del intento fallido:\n{json.dumps(context, ensure_ascii=False)[:3000]}"
+        raw = llm.chat([Message("system", _CHEERLEADER_SYS), Message("user", prompt)], json_mode=True)
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            return {}
+        if data.get("confidence", 0) < 0.1 and not data.get("failure_reason"):
+            return {}
+        return data
+    except Exception:
+        return {}
+
+
 # mapeo de evidencia compartido por cualquier verify_* que ya capture un recorte REAL del cuerpo
 # de la respuesta bajo la clave "respuesta_cuerpo_recorte" (command injection, SSTI, XXE, file
 # upload... -- ver wpverify.py/genericverify.py) pero que todavia no tiene su propio prompt a
@@ -4832,6 +4898,10 @@ def _apply_wpverify_result(inv, wr, es: bool, llm=None) -> None:
         inv.verified_detail = wr.detail
         inv.verified_evidence = wr.evidence
         inv.confidence = getattr(wr, "confidence", "confirmed")
+        # Persist weaponization data if the lab ran it before teardown
+        _wep = (wr.evidence or {}).get("weaponization")
+        if _wep and _wep.get("technique") not in ("not_applicable", "error", None):
+            inv.dynamic_verify["weaponization"] = _wep
         # Generate reproduce.sh when exploit_poc is available; if the verifier
         # did not generate a PoC dict (genericverify doesn't), synthesize one from evidence
         poc = getattr(wr, "exploit_poc", {})
@@ -4883,6 +4953,20 @@ def _apply_wpverify_result(inv, wr, es: bool, llm=None) -> None:
                 trimmed = "\n".join(body.splitlines()[:30])
                 inv.blockers.append(f"{head}:\n```\n{trimmed}\n```")
         _attach_grounded_source_snippets(inv, es)
+        # Cheerleader agent: mandatory post-failure analysis (binchomp-inspired).
+        # Runs AFTER every failed Docker verify to reason about WHY and generate retry hypothesis.
+        _cheer = _cheerleader_analysis(llm, inv, wr, es)
+        if _cheer:
+            if not isinstance(inv.attempt_evidence, dict):
+                inv.attempt_evidence = {}
+            inv.attempt_evidence["cheerleader"] = _cheer
+            _hypothesis = _cheer.get("retry_hypothesis", "")
+            _reason = _cheer.get("failure_reason", "")
+            if _hypothesis:
+                inv.blockers.append(
+                    (f"[cheerleader] fallo: {_reason} — hipotesis: {_hypothesis}" if es else
+                     f"[cheerleader] failure: {_reason} — hypothesis: {_hypothesis}")
+                )
 
 
 def _tech_code_fence(tech: str) -> str:
@@ -6876,6 +6960,23 @@ def _hueco_code_analysis(inv: "Investigation", fr: Any, llm: Any, step: Any, es:
         return
     if llm is None or not getattr(llm, "available", lambda: False)():
         return
+
+    # Deterministic static analysis before LLM RCA (binchomp-inspired: Binary Ninja headless first).
+    # Runs semgrep (if available) + regex taint, feeds top candidates into LLM context.
+    try:
+        from .static_analysis import run_static_analysis, format_for_llm_context as _fmt_sa
+        _sa = run_static_analysis(
+            fr.local_path,
+            inv.vuln_class or "",
+            getattr(inv, "target_binary", "") or (inv.llm_notes or {}).get("target_binary", ""),
+        )
+        if _sa.get("top_candidates"):
+            inv.static_analysis = _sa
+            _sa_ctx = _fmt_sa(_sa)
+            if _sa_ctx:
+                step(_sa_ctx[:200] + "..." if len(_sa_ctx) > 200 else _sa_ctx)
+    except Exception:
+        pass
 
     from .websource import (find_unsanitized_sqli_params, find_stored_xss_endpoint,
                              find_ajax_handler_function,

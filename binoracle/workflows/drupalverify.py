@@ -559,6 +559,15 @@ def verify_drupal_account_takeover(
         res.detail = f"error inesperado: {e}"
         return res
     finally:
+        _boot_wep = locals().get("boot")
+        if _boot_wep is not None and res.verified and not res.evidence.get("weaponization"):
+            try:
+                from .weaponize import run_weaponization
+                _wep = run_weaponization(_boot_wep, res, step=step)
+                if _wep and _wep.get("technique") not in ("not_applicable", "error", None, ""):
+                    res.evidence["weaponization"] = _wep
+            except Exception:
+                pass
         step("desmontando el laboratorio (contenedores/red)...")
         lab.teardown()
 
@@ -679,6 +688,15 @@ def verify_drupal_path_traversal(
         res.detail = f"error inesperado: {e}"
         return res
     finally:
+        _boot_wep = locals().get("boot")
+        if _boot_wep is not None and res.verified and not res.evidence.get("weaponization"):
+            try:
+                from .weaponize import run_weaponization
+                _wep = run_weaponization(_boot_wep, res, step=step)
+                if _wep and _wep.get("technique") not in ("not_applicable", "error", None, ""):
+                    res.evidence["weaponization"] = _wep
+            except Exception:
+                pass
         step("desmontando el laboratorio (contenedores/red)...")
         lab.teardown()
 
@@ -939,6 +957,15 @@ def verify_drupal_command_injection(
         res.detail = f"error inesperado: {e}"
         return res
     finally:
+        _boot_wep = locals().get("boot")
+        if _boot_wep is not None and res.verified and not res.evidence.get("weaponization"):
+            try:
+                from .weaponize import run_weaponization
+                _wep = run_weaponization(_boot_wep, res, step=step)
+                if _wep and _wep.get("technique") not in ("not_applicable", "error", None, ""):
+                    res.evidence["weaponization"] = _wep
+            except Exception:
+                pass
         step("desmontando el laboratorio (contenedores/red)...")
         lab.teardown()
 
@@ -1306,6 +1333,15 @@ def verify_drupal_sqli(
         res.detail = f"error inesperado: {e}"
         return res
     finally:
+        _boot_wep = locals().get("boot")
+        if _boot_wep is not None and res.verified and not res.evidence.get("weaponization"):
+            try:
+                from .weaponize import run_weaponization
+                _wep = run_weaponization(_boot_wep, res, step=step)
+                if _wep and _wep.get("technique") not in ("not_applicable", "error", None, ""):
+                    res.evidence["weaponization"] = _wep
+            except Exception:
+                pass
         step("desmontando el laboratorio (contenedores/red)...")
         lab.teardown()
 
@@ -1427,6 +1463,15 @@ def verify_drupal_ssrf(
         res.detail = f"error inesperado: {e}"
         return res
     finally:
+        _boot_wep = locals().get("boot")
+        if _boot_wep is not None and res.verified and not res.evidence.get("weaponization"):
+            try:
+                from .weaponize import run_weaponization
+                _wep = run_weaponization(_boot_wep, res, step=step)
+                if _wep and _wep.get("technique") not in ("not_applicable", "error", None, ""):
+                    res.evidence["weaponization"] = _wep
+            except Exception:
+                pass
         step("desmontando el laboratorio (contenedores/red)...")
         lab.teardown()
 
@@ -1544,6 +1589,15 @@ def verify_drupal_xss(
         res.detail = f"error inesperado: {e}"
         return res
     finally:
+        _boot_wep = locals().get("boot")
+        if _boot_wep is not None and res.verified and not res.evidence.get("weaponization"):
+            try:
+                from .weaponize import run_weaponization
+                _wep = run_weaponization(_boot_wep, res, step=step)
+                if _wep and _wep.get("technique") not in ("not_applicable", "error", None, ""):
+                    res.evidence["weaponization"] = _wep
+            except Exception:
+                pass
         step("desmontando el laboratorio (contenedores/red)...")
         lab.teardown()
 
@@ -1651,6 +1705,15 @@ def verify_drupal_ssti(
         res.detail = f"error inesperado: {e}"
         return res
     finally:
+        _boot_wep = locals().get("boot")
+        if _boot_wep is not None and res.verified and not res.evidence.get("weaponization"):
+            try:
+                from .weaponize import run_weaponization
+                _wep = run_weaponization(_boot_wep, res, step=step)
+                if _wep and _wep.get("technique") not in ("not_applicable", "error", None, ""):
+                    res.evidence["weaponization"] = _wep
+            except Exception:
+                pass
         step("desmontando el laboratorio (contenedores/red)...")
         lab.teardown()
 
@@ -1802,6 +1865,15 @@ def verify_drupal_xxe(
         res.detail = f"error inesperado: {e}"
         return res
     finally:
+        _boot_wep = locals().get("boot")
+        if _boot_wep is not None and res.verified and not res.evidence.get("weaponization"):
+            try:
+                from .weaponize import run_weaponization
+                _wep = run_weaponization(_boot_wep, res, step=step)
+                if _wep and _wep.get("technique") not in ("not_applicable", "error", None, ""):
+                    res.evidence["weaponization"] = _wep
+            except Exception:
+                pass
         step("desmontando el laboratorio (contenedores/red)...")
         lab.teardown()
 
@@ -1916,6 +1988,15 @@ def verify_drupal_open_redirect(
         res.detail = f"error inesperado: {e}"
         return res
     finally:
+        _boot_wep = locals().get("boot")
+        if _boot_wep is not None and res.verified and not res.evidence.get("weaponization"):
+            try:
+                from .weaponize import run_weaponization
+                _wep = run_weaponization(_boot_wep, res, step=step)
+                if _wep and _wep.get("technique") not in ("not_applicable", "error", None, ""):
+                    res.evidence["weaponization"] = _wep
+            except Exception:
+                pass
         step("desmontando el laboratorio (contenedores/red)...")
         lab.teardown()
 
@@ -2052,6 +2133,15 @@ def verify_drupal_file_upload(
         res.detail = f"error inesperado: {e}"
         return res
     finally:
+        _boot_wep = locals().get("boot")
+        if _boot_wep is not None and res.verified and not res.evidence.get("weaponization"):
+            try:
+                from .weaponize import run_weaponization
+                _wep = run_weaponization(_boot_wep, res, step=step)
+                if _wep and _wep.get("technique") not in ("not_applicable", "error", None, ""):
+                    res.evidence["weaponization"] = _wep
+            except Exception:
+                pass
         step("desmontando el laboratorio (contenedores/red)...")
         lab.teardown()
 
@@ -2196,6 +2286,15 @@ def verify_drupal_csrf(
         res.detail = f"error inesperado: {e}"
         return res
     finally:
+        _boot_wep = locals().get("boot")
+        if _boot_wep is not None and res.verified and not res.evidence.get("weaponization"):
+            try:
+                from .weaponize import run_weaponization
+                _wep = run_weaponization(_boot_wep, res, step=step)
+                if _wep and _wep.get("technique") not in ("not_applicable", "error", None, ""):
+                    res.evidence["weaponization"] = _wep
+            except Exception:
+                pass
         step("desmontando el laboratorio (contenedores/red)...")
         lab.teardown()
 
@@ -2323,5 +2422,14 @@ def verify_drupal_deserialization(
         res.detail = f"error inesperado: {e}"
         return res
     finally:
+        _boot_wep = locals().get("boot")
+        if _boot_wep is not None and res.verified and not res.evidence.get("weaponization"):
+            try:
+                from .weaponize import run_weaponization
+                _wep = run_weaponization(_boot_wep, res, step=step)
+                if _wep and _wep.get("technique") not in ("not_applicable", "error", None, ""):
+                    res.evidence["weaponization"] = _wep
+            except Exception:
+                pass
         step("desmontando el laboratorio (contenedores/red)...")
         lab.teardown()
