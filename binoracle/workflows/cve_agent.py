@@ -11761,6 +11761,23 @@ def _feedback_loop(llm, verifier_fn, initial_wr, lab_cfg: dict,
     return wr, cfg, _progress_level
 
 
+def _lab_should_abort_retries(err_history: list, curr_cat: str) -> bool:
+    """Return True when the rebuild loop should stop early.
+
+    Two strategies:
+    - Same error category appeared >= 2 times in total (LLM is not making progress).
+    - Error history has >= 3 non-empty categories (exhausted diversity of fixes).
+    """
+    if not curr_cat or curr_cat == "unknown":
+        return False
+    err_history.append(curr_cat)
+    if err_history.count(curr_cat) >= 2:
+        return True
+    if len([c for c in err_history if c and c != "unknown"]) >= 3:
+        return True
+    return False
+
+
 def _lab_feedback_for_class(llm, fail_reason: str, lab_config: dict,
                              step, es: bool, logs: Optional[list] = None,
                              vuln_class: str = "",
@@ -14051,7 +14068,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         "url_suffix":      _pt_url_suffix,
                         "query_suffix":    _pt_query_suffix,
                     }
-                    _pt_prev_err_cat = ""
+                    _pt_err_history: list = []
                     for _fb_i in range(4):
                         _fb = _lab_feedback_for_class(
                             llm, getattr(wr, 'detail', '') or "", _lab_cfg_pt, step, es,
@@ -14081,9 +14098,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             break
                         _pt_curr_cat = _classify_pipeline_error(
                             getattr(wr_fb, 'detail', '')).get("category", "")
-                        if _pt_curr_cat == _pt_prev_err_cat and _pt_curr_cat not in ("", "unknown"):
+                        if _lab_should_abort_retries(_pt_err_history, _pt_curr_cat):
                             break
-                        _pt_prev_err_cat = _pt_curr_cat
                 # aprendizaje y reintento, version GENERICA (cualquier tecnologia, no solo
                 # WordPress) -- mismo bucle acotado que el SQLi de WordPress: el LLM lee el
                 # cuerpo real del primer intento y solo sugiere un reintento con una pista
@@ -14393,7 +14409,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         "endpoint": _auth_ep, "confirm_string": _auth_confirm,
                         "parameters": {},
                     }
-                    _auth_prev_err_cat = ""
+                    _auth_err_history: list = []
                     for _fb_i in range(4):
                         _fb = _lab_feedback_for_class(
                             llm, getattr(wr, 'detail', '') or "", _lab_cfg_auth, step, es,
@@ -14421,9 +14437,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             break
                         _auth_curr_cat = _classify_pipeline_error(
                             getattr(wr_fb, 'detail', '')).get("category", "")
-                        if _auth_curr_cat == _auth_prev_err_cat and _auth_curr_cat not in ("", "unknown"):
+                        if _lab_should_abort_retries(_auth_err_history, _auth_curr_cat):
                             break
-                        _auth_prev_err_cat = _auth_curr_cat
                 if _scf_auth and wr.verified:
                     _scaffold_cache[(_detect_lab_tech_stack(_auth_local_path_str, notes), inv.vuln_class or "missing-authorization")] = {
                         "dockerfile_body": _auth_dockerfile, "extra_files": _auth_extra_files,
@@ -14623,7 +14638,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         "parameters":      params if isinstance(params, dict) else {},
                         "cmd_param":       cmd_p or "",
                     }
-                    _cmdi_prev_err_cat = ""
+                    _cmdi_err_history: list = []
                     for _fb_i in range(4):
                         _fb = _lab_feedback_for_class(
                             llm, getattr(wr, 'detail', '') or "", _lab_cfg_cmdi, step, es,
@@ -14647,9 +14662,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             break
                         _cmdi_curr_cat = _classify_pipeline_error(
                             getattr(wr_fb, 'detail', '')).get("category", "")
-                        if _cmdi_curr_cat == _cmdi_prev_err_cat and _cmdi_curr_cat not in ("", "unknown"):
+                        if _lab_should_abort_retries(_cmdi_err_history, _cmdi_curr_cat):
                             break
-                        _cmdi_prev_err_cat = _cmdi_curr_cat
                 def _attempt_cmdi_generic(ep, pr):
                     return verify_generic_command_injection(
                         _cmdi_local_path_str, ep, notes.get("http_method") or "GET", params,
@@ -15778,7 +15792,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         "parameters":      params if isinstance(params, dict) else {},
                         "url_param":       url_p or "",
                     }
-                    _ssrf_prev_err_cat = ""
+                    _ssrf_err_history: list = []
                     for _fb_i in range(4):
                         _fb = _lab_feedback_for_class(
                             llm, getattr(wr, 'detail', '') or "", _lab_cfg_ssrf, step, es,
@@ -15802,9 +15816,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             break
                         _ssrf_curr_cat = _classify_pipeline_error(
                             getattr(wr_fb, 'detail', '')).get("category", "")
-                        if _ssrf_curr_cat == _ssrf_prev_err_cat and _ssrf_curr_cat not in ("", "unknown"):
+                        if _lab_should_abort_retries(_ssrf_err_history, _ssrf_curr_cat):
                             break
-                        _ssrf_prev_err_cat = _ssrf_curr_cat
                 def _attempt_ssrf_generic(ep, pr):
                     return verify_generic_ssrf(
                         fr.local_path, ep, notes.get("http_method") or "GET", params,
@@ -16079,7 +16092,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         "endpoint": _xss_ep, "confirm_string": notes.get("confirm_string") or "",
                         "parameters": params if isinstance(params, dict) else {},
                     }
-                    _xss_prev_err_cat = ""
+                    _xss_err_history: list = []
                     for _fb_i in range(4):
                         _fb = _lab_feedback_for_class(
                             llm, getattr(wr, 'detail', '') or "", _lab_cfg_xss, step, es,
@@ -16102,9 +16115,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             break
                         _xss_curr_cat = _classify_pipeline_error(
                             getattr(wr_fb, 'detail', '')).get("category", "")
-                        if _xss_curr_cat == _xss_prev_err_cat and _xss_curr_cat not in ("", "unknown"):
+                        if _lab_should_abort_retries(_xss_err_history, _xss_curr_cat):
                             break
-                        _xss_prev_err_cat = _xss_curr_cat
                 def _attempt_xss_generic(ep, pr):
                     return verify_generic_xss(
                         fr.local_path, ep, notes.get("http_method") or "GET", params,
@@ -16233,7 +16245,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         "parameters":      params if isinstance(params, dict) else {},
                         "ssti_param":      ssti_p or "",
                     }
-                    _ssti_prev_err_cat = ""
+                    _ssti_err_history: list = []
                     for _fb_i in range(4):
                         _fb = _lab_feedback_for_class(
                             llm, getattr(wr, 'detail', '') or "", _lab_cfg_ssti, step, es,
@@ -16257,9 +16269,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             break
                         _ssti_curr_cat = _classify_pipeline_error(
                             getattr(wr_fb, 'detail', '')).get("category", "")
-                        if _ssti_curr_cat == _ssti_prev_err_cat and _ssti_curr_cat not in ("", "unknown"):
+                        if _lab_should_abort_retries(_ssti_err_history, _ssti_curr_cat):
                             break
-                        _ssti_prev_err_cat = _ssti_curr_cat
                 def _attempt_ssti_generic(ep, pr):
                     return verify_generic_ssti(
                         fr.local_path, ep, notes.get("http_method") or "GET", params,
@@ -16432,7 +16443,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         "endpoint": _xxe_ep, "confirm_string": notes.get("confirm_string") or "",
                         "parameters": params if isinstance(params, dict) else {},
                     }
-                    _xxe_prev_err_cat = ""
+                    _xxe_err_history: list = []
                     for _fb_i in range(4):
                         _fb = _lab_feedback_for_class(
                             llm, getattr(wr, 'detail', '') or "", _lab_cfg_xxe, step, es,
@@ -16452,9 +16463,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             break
                         _xxe_curr_cat = _classify_pipeline_error(
                             getattr(wr_fb, 'detail', '')).get("category", "")
-                        if _xxe_curr_cat == _xxe_prev_err_cat and _xxe_curr_cat not in ("", "unknown"):
+                        if _lab_should_abort_retries(_xxe_err_history, _xxe_curr_cat):
                             break
-                        _xxe_prev_err_cat = _xxe_curr_cat
                 def _attempt_xxe_generic(ep, pr):
                     return verify_generic_xxe(
                         fr.local_path, ep, notes.get("http_method") or "GET", params,
@@ -16573,7 +16583,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         "endpoint": _or_ep, "confirm_string": notes.get("confirm_string") or "",
                         "parameters": params if isinstance(params, dict) else {},
                     }
-                    _or_prev_err_cat = ""
+                    _or_err_history: list = []
                     for _fb_i in range(4):
                         _fb = _lab_feedback_for_class(
                             llm, getattr(wr, 'detail', '') or "", _lab_cfg_or, step, es,
@@ -16595,9 +16605,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             break
                         _or_curr_cat = _classify_pipeline_error(
                             getattr(wr_fb, 'detail', '')).get("category", "")
-                        if _or_curr_cat == _or_prev_err_cat and _or_curr_cat not in ("", "unknown"):
+                        if _lab_should_abort_retries(_or_err_history, _or_curr_cat):
                             break
-                        _or_prev_err_cat = _or_curr_cat
                 def _attempt_or_generic(ep, pr):
                     return verify_generic_open_redirect(
                         _or_local_path_str, ep, notes.get("http_method") or "GET", params,
@@ -16810,7 +16819,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         "endpoint": _fu_ep, "confirm_string": notes.get("confirm_string") or "",
                         "parameters": params if isinstance(params, dict) else {},
                     }
-                    _fu_prev_err_cat = ""
+                    _fu_err_history: list = []
                     for _fb_i in range(4):
                         _fb = _lab_feedback_for_class(
                             llm, getattr(wr, 'detail', '') or "", _lab_cfg_fu, step, es,
@@ -16830,9 +16839,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             break
                         _fu_curr_cat = _classify_pipeline_error(
                             getattr(wr_fb, 'detail', '')).get("category", "")
-                        if _fu_curr_cat == _fu_prev_err_cat and _fu_curr_cat not in ("", "unknown"):
+                        if _lab_should_abort_retries(_fu_err_history, _fu_curr_cat):
                             break
-                        _fu_prev_err_cat = _fu_curr_cat
                 if _scf_fu and wr.verified:
                     _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path), notes), "file-upload")] = {
                         "dockerfile_body": _fu_dockerfile, "extra_files": _fu_extra_files,
@@ -17040,7 +17048,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         "endpoint": gql_ep, "confirm_string": confirm_f,
                         "graphql_query": forbidden_q,
                     }
-                    _gql_prev_err_cat = ""
+                    _gql_err_history: list = []
                     for _fb_i in range(4):
                         _fb = _lab_feedback_for_class(
                             llm, getattr(wr, 'detail', '') or "", _lab_cfg_gql, step, es,
@@ -17060,9 +17068,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             break
                         _gql_curr_cat = _classify_pipeline_error(
                             getattr(wr_fb, 'detail', '')).get("category", "")
-                        if _gql_curr_cat == _gql_prev_err_cat and _gql_curr_cat not in ("", "unknown"):
+                        if _lab_should_abort_retries(_gql_err_history, _gql_curr_cat):
                             break
-                        _gql_prev_err_cat = _gql_curr_cat
                 if _scf_gql and wr.verified:
                     _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path), notes), "graphql")] = {
                         "dockerfile_body": _gql_dockerfile, "extra_files": _gql_extra_files,
@@ -17107,7 +17114,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         "endpoint": _pp_ep, "confirm_string": notes.get("confirm_string") or "",
                         "parameters": {},
                     }
-                    _pp_prev_err_cat = ""
+                    _pp_err_history: list = []
                     for _fb_i in range(4):
                         _fb = _lab_feedback_for_class(
                             llm, getattr(wr, 'detail', '') or "", _lab_cfg_pp, step, es,
@@ -17128,9 +17135,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             break
                         _pp_curr_cat = _classify_pipeline_error(
                             getattr(wr_fb, 'detail', '')).get("category", "")
-                        if _pp_curr_cat == _pp_prev_err_cat and _pp_curr_cat not in ("", "unknown"):
+                        if _lab_should_abort_retries(_pp_err_history, _pp_curr_cat):
                             break
-                        _pp_prev_err_cat = _pp_curr_cat
                 if _scf_pp and wr.verified:
                     _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path), notes), "prototype-pollution")] = {
                         "dockerfile_body": _pp_dockerfile, "extra_files": _pp_extra_files,
@@ -17191,7 +17197,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         "endpoint": bool_ep, "confirm_string": confirm_f or "",
                         "parameters": {"true_param": true_p, "false_param": false_p},
                     }
-                    _bool_prev_err_cat = ""
+                    _bool_err_history: list = []
                     for _fb_i in range(4):
                         _fb = _lab_feedback_for_class(
                             llm, getattr(wr, 'detail', '') or "", _lab_cfg_bool, step, es,
@@ -17213,9 +17219,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             break
                         _bool_curr_cat = _classify_pipeline_error(
                             getattr(wr_fb, 'detail', '')).get("category", "")
-                        if _bool_curr_cat == _bool_prev_err_cat and _bool_curr_cat not in ("", "unknown"):
+                        if _lab_should_abort_retries(_bool_err_history, _bool_curr_cat):
                             break
-                        _bool_prev_err_cat = _bool_curr_cat
                     if not wr.verified:
                         _escalate_to_analyst(inv, getattr(wr, 'detail', '') or "", _lab_cfg_bool, es,
                                                        progress_level=_infer_progress_level(getattr(wr, 'detail', '')))
@@ -17267,7 +17272,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         "endpoint": cors_ep, "confirm_string": notes.get("confirm_string") or "",
                         "parameters": {},
                     }
-                    _cors_prev_err_cat = ""
+                    _cors_err_history: list = []
                     for _fb_i in range(4):
                         _fb = _lab_feedback_for_class(
                             llm, getattr(wr, 'detail', '') or "", _lab_cfg_cors, step, es,
@@ -17287,9 +17292,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             break
                         _cors_curr_cat = _classify_pipeline_error(
                             getattr(wr_fb, 'detail', '')).get("category", "")
-                        if _cors_curr_cat == _cors_prev_err_cat and _cors_curr_cat not in ("", "unknown"):
+                        if _lab_should_abort_retries(_cors_err_history, _cors_curr_cat):
                             break
-                        _cors_prev_err_cat = _cors_curr_cat
                 if _scf_cors and wr.verified:
                     _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path), notes), "cors")] = {
                         "dockerfile_body": _cors_dockerfile, "extra_files": _cors_extra_files,
