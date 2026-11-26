@@ -7520,7 +7520,11 @@ def verify_generic_http_confirm(
             if m == "GET" and query_params:
                 _req_kwargs["params"] = query_params
             elif post_data:
-                _req_kwargs["data"] = post_data
+                _ct = (hdrs.get("Content-Type") or hdrs.get("content-type") or "").lower()
+                if "application/json" in _ct:
+                    _req_kwargs["json"] = post_data
+                else:
+                    _req_kwargs["data"] = post_data
             resp = _http_request(m, url, **_req_kwargs)
         except Exception as e:
             res.detail = f"peticion HTTP fallida: {e}"

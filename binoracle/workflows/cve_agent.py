@@ -16275,13 +16275,13 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                      f"(buscando {_hc_confirm_short!r} en {_hc_ep})..." if es else
                      "attempting GENERIC DYNAMIC verification -- HTTP confirm "
                      f"(looking for {_hc_confirm_short!r} in {_hc_ep})..."))
-                # Route parameters to query_params (GET) or post_data (POST+json_body)
+                # Route parameters: GET→query_params, POST+json_body→JSON, POST→form-encoded
                 _hc_params = notes.get("parameters") or None
                 _hc_is_get = (_hc_method or "GET").upper() == "GET"
-                _hc_post_data = (
-                    _hc_params if (not _hc_is_get and notes.get("json_body") and isinstance(_hc_params, dict)) else None
-                )
                 _hc_query_params = _hc_params if (_hc_is_get and isinstance(_hc_params, dict)) else None
+                _hc_post_data = (
+                    _hc_params if (not _hc_is_get and isinstance(_hc_params, dict)) else None
+                )
                 # Ensure JSON content type when json_body is set for POST
                 if _hc_post_data and notes.get("json_body"):
                     _hc_hdrs = dict(_hc_hdrs or {})
