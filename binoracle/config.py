@@ -18,6 +18,10 @@ class Config:
     # llama.cpp --server, LM Studio, vLLM).
     backend: str = field(default_factory=lambda: _env("BINORACLE_BACKEND", "ollama"))
     model: str = field(default_factory=lambda: _env("BINORACLE_MODEL", "qwen2.5-coder:7b"))
+    # Faster/cheaper model for lightweight tasks (classification, screening, grading).
+    # Defaults to the main model so the system works without change when only one model is available.
+    # Set BINORACLE_FAST_MODEL=qwen2.5-coder:1.5b to enable tiered inference.
+    fast_model: str = field(default_factory=lambda: _env("BINORACLE_FAST_MODEL", ""))
     base_url: str = field(default_factory=lambda: _env("BINORACLE_BASE_URL", ""))
     api_key: str = field(default_factory=lambda: _env("BINORACLE_API_KEY", "local"))
     temperature: float = field(default_factory=lambda: float(_env("BINORACLE_TEMPERATURE", "0.1")))

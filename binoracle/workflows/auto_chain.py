@@ -5201,12 +5201,16 @@ def process_never_attempted_cves(
         _shared_config = _lc()
     except Exception:
         _shared_config = {}
+    _shared_fast_llm = None
     try:
-        from ..llm import make_backend as _mb
+        from ..llm import make_backend as _mb, make_fast_backend as _mbf
         _shared_llm = _mb(_shared_config)
         _llm_model_name = (getattr(_shared_llm, "model", None)
                            or getattr(getattr(_shared_llm, "config", None), "model", "?"))
-        step(f"process_never_attempted_cves: LLM={_llm_model_name}")
+        _shared_fast_llm = _mbf(_shared_config)
+        _fast_model_name = (getattr(_shared_fast_llm, "model", None)
+                            or getattr(getattr(_shared_fast_llm, "config", None), "model", "?"))
+        step(f"process_never_attempted_cves: LLM={_llm_model_name} fast={_fast_model_name}")
     except Exception as _e:
         step(f"process_never_attempted_cves: LLM no disponible ({_e}) — modo determinístico")
 

