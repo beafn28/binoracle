@@ -12658,7 +12658,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             # Git fetches from common-repository/* (GitHub WP mirror) should behave as WP plugins
             if not plugin_dir and fr.kind == "git" and fr.ok and fr.local_path:
                 _fr_src = fr.source or ""
-                if "common-repository/" in _fr_src or "plugins.svn.wordpress.org/" in _fr_src:
+                if ("common-repository/" in _fr_src or "plugins.svn.wordpress.org/" in _fr_src
+                        or "wp-plugins/" in _fr_src):
                     # For SVN versioned URLs like .../debug-tool/tags/2.2/, the slug
                     # is the component AFTER plugins.svn.wordpress.org/, not the last one.
                     if "plugins.svn.wordpress.org/" in _fr_src:
@@ -12668,7 +12669,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             _fr_src, _re_svn_slug.IGNORECASE)
                         _slug_from_mirror = _m_svn.group(1).lower() if _m_svn else _fr_src.rstrip("/").split("/")[-1]
                     else:
-                        _slug_from_mirror = _fr_src.rstrip("/").split("/")[-1]
+                        _slug_from_mirror = _fr_src.rstrip("/").split("/")[-1].removesuffix(".git")
                     if _slug_from_mirror:
                         plugin_dir = _slug_from_mirror
                         # Treat as a WP plugin for downstream dispatch
@@ -14622,7 +14623,11 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             # Multi-step request chain: when the LLM provides a 'request_chain' list
             # (or the CVE is stored-XSS / CSRF / privilege-escalation that needs
             # create→view or login→elevate→verify patterns), use run_request_chain().
+            # ANALYST-LOCK: skip request_chain when analyst locked the endpoint — the
+            # LLM-generated chain may reference a completely wrong endpoint, overriding
+            # the analyst's precise endpoint+params which the per-class verifier handles.
             elif (not plugin_dir and
+                  not notes.get("analyst_endpoint_lock") and
                   (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
                   notes.get("request_chain") and
                   isinstance(notes.get("request_chain"), list)):
