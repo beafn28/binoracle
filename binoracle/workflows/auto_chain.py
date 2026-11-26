@@ -683,6 +683,13 @@ def _is_library_cve(cve_info, llm_notes: dict) -> bool:
     """
     desc = ((getattr(cve_info, "description", "") or "") + " " + str(llm_notes)).lower()
 
+    # If a concrete HTTP endpoint is known, there IS an HTTP layer → not a library CVE.
+    # This check must come first so that a known endpoint short-circuits all signal matching,
+    # even when the LLM-generated strategy text contains the word "library".
+    _ep = (llm_notes.get("endpoint", "") or "").strip()
+    if _ep and _ep not in ("?", "unknown", "n/a"):
+        return False
+
     # If the target is a WordPress/Drupal/CMS plugin or theme → definitely NOT a library CVE
     _cms_ctx = any(tok in desc for tok in (
         "wordpress", "wp-", "plugin for wordpress", "drupal", "ghost cms",
@@ -1578,7 +1585,12 @@ def _run_web_stage(cve_id: str, cve_info, llm_notes: dict,
         if compose_lab_url:
             if config is None:
                 config = {}
-            config = dict(config)
+            elif not isinstance(config, dict):
+                config = {k: getattr(config, k)
+                          for k in dir(config)
+                          if not k.startswith("_") and not callable(getattr(config, k, None))}
+            else:
+                config = dict(config)
             config["target_url"] = compose_lab_url
             step(f"  compose lab listo: {compose_lab_url}")
             result.add_step("compose_lab", "ok", compose_lab_url)
