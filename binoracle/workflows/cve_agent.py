@@ -15272,48 +15272,85 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     _apply_wpverify_result(inv, wr, es, llm)
                 elif (_py_fw == "generic"
                       and not inv.verified
-                      and notes.get("confirm_string")
-                      and (notes.get("docker_image") or notes.get("dockerfile_body"))):
-                    # Scaffolded lab (no detectable framework signals) but analyst has
-                    # provided a Dockerfile + confirm_string — fall through to generic verifier.
-                    from .genericverify import verify_generic_http_confirm
-                    _hc_local_path_str = str(fr.local_path)
-                    _hc_ep = notes.get("endpoint") or "/"
-                    _hc_method = notes.get("http_method") or "GET"
-                    _hc_confirm = notes.get("confirm_string") or ""
-                    _hc_df = _notes_dockerfile(notes)
-                    _hc_ef = notes.get("extra_files") or None
-                    _hc_setup_cmds = notes.get("setup_cmds") or None
-                    _hc_docker_image = notes.get("docker_image") or ""
-                    _hc_post_data: Optional[dict] = None
-                    _hc_query_params: Optional[dict] = None
-                    _hc_params_raw = notes.get("parameters")
-                    if isinstance(_hc_params_raw, dict) and _hc_params_raw:
-                        if _hc_method.upper() in ("POST", "PUT", "PATCH"):
-                            _hc_post_data = _hc_params_raw
-                        else:
-                            _hc_query_params = _hc_params_raw
-                    _hc_auth_required = bool(notes.get("auth_required", True))
-                    _hc_extra_wait = float(notes.get("setup_wait_extra_s") or 0.0)
+                      and (notes.get("docker_image") or notes.get("dockerfile_body"))
+                      and notes.get("endpoint")):
+                    # Scaffolded lab (no detectable framework signals) — route to right verifier.
+                    _gen_lp = str(fr.local_path)
+                    _gen_ep = notes.get("endpoint") or "/"
+                    _gen_m  = notes.get("http_method") or "GET"
+                    _gen_df = _notes_dockerfile(notes)
+                    _gen_ef = notes.get("extra_files") or None
+                    _gen_sc = notes.get("setup_cmds") or None
+                    _gen_di = notes.get("docker_image") or ""
+                    _gen_hdrs = notes.get("custom_headers") or None
+                    _gen_auth = bool(notes.get("auth_required", True))
+                    _gen_params = notes.get("parameters") or []
                     if fr.local_path:
-                        _inject_custom_docker_lab(_hc_local_path_str, notes, step)
-                    step(("intentando verificacion DINAMICA GENERICA (Python/generic) -- HTTP confirm "
-                         f"(buscando {_hc_confirm[:40]!r} en {_hc_ep})..." if es else
-                         "attempting GENERIC DYNAMIC verification (Python/generic) -- HTTP confirm "
-                         f"(looking for {_hc_confirm[:40]!r} in {_hc_ep})..."))
-                    wr = verify_generic_http_confirm(
-                        _hc_local_path_str, _hc_ep, _hc_method,
-                        confirm_string=_hc_confirm,
-                        on_step=step, budget_s=budget_s,
-                        custom_headers=notes.get("custom_headers") or None,
-                        post_data=_hc_post_data, query_params=_hc_query_params,
-                        dockerfile_body=_hc_df, extra_files=_hc_ef,
-                        setup_commands=_hc_setup_cmds,
-                        docker_image=_hc_docker_image,
-                        setup_wait_extra_s=_hc_extra_wait,
-                        vuln_class=inv.vuln_class or "",
-                        auth_required=_hc_auth_required)
-                    _apply_wpverify_result(inv, wr, es, llm)
+                        _inject_custom_docker_lab(_gen_lp, notes, step)
+                    if inv.vuln_class in ("sqli", "sql-injection"):
+                        from .genericverify import verify_generic_sqli_blind, _pick_param
+                        from .wpverify import _SQLI_HINTS
+                        _sqli_p_gen = _notes_param("sqli_param", notes, _gen_params,
+                                                   _pick_param, _SQLI_HINTS)
+                        step(("intentando verificacion DINAMICA GENERICA (Python/generic) -- SQLi ciega..."
+                              if es else
+                              "attempting GENERIC DYNAMIC verification (Python/generic) -- blind SQLi..."))
+                        wr = verify_generic_sqli_blind(
+                            _gen_lp, _gen_ep, _gen_m, _gen_params,
+                            sqli_param_hint=_sqli_p_gen or "",
+                            on_step=step, budget_s=budget_s,
+                            custom_headers=_gen_hdrs,
+                            dockerfile_body=_gen_df, extra_files=_gen_ef,
+                            setup_commands=_gen_sc,
+                            docker_image=_gen_di,
+                            confirm_string=notes.get("confirm_string") or "",
+                            auth_required=_gen_auth)
+                        _apply_wpverify_result(inv, wr, es, llm)
+                    elif inv.vuln_class == "ssrf":
+                        from .genericverify import verify_generic_ssrf, _pick_param
+                        from .wpverify import _URL_HINTS
+                        _url_p_gen = (_notes_param("url_param", notes, _gen_params,
+                                                   _pick_param, _URL_HINTS)
+                                      or _notes_param("ssrf_param", notes, _gen_params,
+                                                      _pick_param, _URL_HINTS))
+                        step(("intentando verificacion DINAMICA GENERICA (Python/generic) -- SSRF..."
+                              if es else
+                              "attempting GENERIC DYNAMIC verification (Python/generic) -- SSRF..."))
+                        wr = verify_generic_ssrf(
+                            _gen_lp, _gen_ep, _gen_m, _gen_params,
+                            url_param_hint=_url_p_gen or "",
+                            on_step=step, budget_s=budget_s,
+                            custom_headers=_gen_hdrs,
+                            dockerfile_body=_gen_df, extra_files=_gen_ef,
+                            setup_commands=_gen_sc,
+                            auth_required=_gen_auth,
+                            docker_image=_gen_di)
+                        _apply_wpverify_result(inv, wr, es, llm)
+                    elif notes.get("confirm_string"):
+                        from .genericverify import verify_generic_http_confirm
+                        _hc_confirm_gen = notes.get("confirm_string") or ""
+                        _hc_praw_gen = _gen_params if isinstance(_gen_params, dict) else None
+                        _hc_post_gen: Optional[dict] = (
+                            _hc_praw_gen if _gen_m.upper() in ("POST", "PUT", "PATCH") else None)
+                        _hc_qget_gen: Optional[dict] = (
+                            _hc_praw_gen if _gen_m.upper() == "GET" else None)
+                        step(("intentando verificacion DINAMICA GENERICA (Python/generic) -- HTTP confirm "
+                             f"(buscando {_hc_confirm_gen[:40]!r} en {_gen_ep})..." if es else
+                             "attempting GENERIC DYNAMIC verification (Python/generic) -- HTTP confirm "
+                             f"(looking for {_hc_confirm_gen[:40]!r} in {_gen_ep})..."))
+                        wr = verify_generic_http_confirm(
+                            _gen_lp, _gen_ep, _gen_m,
+                            confirm_string=_hc_confirm_gen,
+                            on_step=step, budget_s=budget_s,
+                            custom_headers=_gen_hdrs,
+                            post_data=_hc_post_gen, query_params=_hc_qget_gen,
+                            dockerfile_body=_gen_df, extra_files=_gen_ef,
+                            setup_commands=_gen_sc,
+                            docker_image=_gen_di,
+                            setup_wait_extra_s=float(notes.get("setup_wait_extra_s") or 0.0),
+                            vuln_class=inv.vuln_class or "",
+                            auth_required=_gen_auth)
+                        _apply_wpverify_result(inv, wr, es, llm)
             # Strapi headless CMS: especializado con JWT Admin API auth y lab SQLite.
             # Se activa cuando el CMS detectado es Strapi (via package.json) y hay endpoint.
             elif (not plugin_dir and fr.local_path and
@@ -15650,6 +15687,87 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         budget_s=budget_s,
                     )
                     _apply_wpverify_result(inv, wr, es, llm)
+                elif (_go_fw == "unknown"
+                      and not inv.verified
+                      and (notes.get("docker_image") or notes.get("dockerfile_body"))
+                      and notes.get("endpoint")):
+                    # Non-Go target that entered goverify — route to right generic verifier.
+                    _go_gen_lp = str(fr.local_path)
+                    _go_gen_ep = notes.get("endpoint") or "/"
+                    _go_gen_m  = notes.get("http_method") or "GET"
+                    _go_gen_df = _notes_dockerfile(notes)
+                    _go_gen_ef = notes.get("extra_files") or None
+                    _go_gen_sc = notes.get("setup_cmds") or None
+                    _go_gen_di = notes.get("docker_image") or ""
+                    _go_gen_hdrs = notes.get("custom_headers") or None
+                    _go_gen_auth = bool(notes.get("auth_required", True))
+                    _go_gen_params = notes.get("parameters") or []
+                    if fr.local_path:
+                        _inject_custom_docker_lab(_go_gen_lp, notes, step)
+                    if inv.vuln_class in ("sqli", "sql-injection"):
+                        from .genericverify import verify_generic_sqli_blind, _pick_param
+                        from .wpverify import _SQLI_HINTS
+                        _sqli_p_go = _notes_param("sqli_param", notes, _go_gen_params,
+                                                   _pick_param, _SQLI_HINTS)
+                        step(("intentando verificacion DINAMICA GENERICA (Go/generic) -- SQLi ciega..."
+                              if es else
+                              "attempting GENERIC DYNAMIC verification (Go/generic) -- blind SQLi..."))
+                        wr = verify_generic_sqli_blind(
+                            _go_gen_lp, _go_gen_ep, _go_gen_m, _go_gen_params,
+                            sqli_param_hint=_sqli_p_go or "",
+                            on_step=step, budget_s=budget_s,
+                            custom_headers=_go_gen_hdrs,
+                            dockerfile_body=_go_gen_df, extra_files=_go_gen_ef,
+                            setup_commands=_go_gen_sc,
+                            docker_image=_go_gen_di,
+                            confirm_string=notes.get("confirm_string") or "",
+                            auth_required=_go_gen_auth)
+                        _apply_wpverify_result(inv, wr, es, llm)
+                    elif inv.vuln_class == "ssrf":
+                        from .genericverify import verify_generic_ssrf, _pick_param
+                        from .wpverify import _URL_HINTS
+                        _url_p_go = (_notes_param("url_param", notes, _go_gen_params,
+                                                   _pick_param, _URL_HINTS)
+                                     or _notes_param("ssrf_param", notes, _go_gen_params,
+                                                     _pick_param, _URL_HINTS))
+                        step(("intentando verificacion DINAMICA GENERICA (Go/generic) -- SSRF..."
+                              if es else
+                              "attempting GENERIC DYNAMIC verification (Go/generic) -- SSRF..."))
+                        wr = verify_generic_ssrf(
+                            _go_gen_lp, _go_gen_ep, _go_gen_m, _go_gen_params,
+                            url_param_hint=_url_p_go or "",
+                            on_step=step, budget_s=budget_s,
+                            custom_headers=_go_gen_hdrs,
+                            dockerfile_body=_go_gen_df, extra_files=_go_gen_ef,
+                            setup_commands=_go_gen_sc,
+                            auth_required=_go_gen_auth,
+                            docker_image=_go_gen_di)
+                        _apply_wpverify_result(inv, wr, es, llm)
+                    elif notes.get("confirm_string"):
+                        from .genericverify import verify_generic_http_confirm
+                        _hc_confirm_go = notes.get("confirm_string") or ""
+                        _hc_praw_go = _go_gen_params if isinstance(_go_gen_params, dict) else None
+                        _hc_post_go: Optional[dict] = (
+                            _hc_praw_go if _go_gen_m.upper() in ("POST", "PUT", "PATCH") else None)
+                        _hc_qget_go: Optional[dict] = (
+                            _hc_praw_go if _go_gen_m.upper() == "GET" else None)
+                        step(("intentando verificacion DINAMICA GENERICA (Go/generic) -- HTTP confirm "
+                             f"(buscando {_hc_confirm_go[:40]!r} en {_go_gen_ep})..." if es else
+                             "attempting GENERIC DYNAMIC verification (Go/generic) -- HTTP confirm "
+                             f"(looking for {_hc_confirm_go[:40]!r} in {_go_gen_ep})..."))
+                        wr = verify_generic_http_confirm(
+                            _go_gen_lp, _go_gen_ep, _go_gen_m,
+                            confirm_string=_hc_confirm_go,
+                            on_step=step, budget_s=budget_s,
+                            custom_headers=_go_gen_hdrs,
+                            post_data=_hc_post_go, query_params=_hc_qget_go,
+                            dockerfile_body=_go_gen_df, extra_files=_go_gen_ef,
+                            setup_commands=_go_gen_sc,
+                            docker_image=_go_gen_di,
+                            setup_wait_extra_s=float(notes.get("setup_wait_extra_s") or 0.0),
+                            vuln_class=inv.vuln_class or "",
+                            auth_required=_go_gen_auth)
+                        _apply_wpverify_result(inv, wr, es, llm)
             # mismo laboratorio efimero, para SQLi en Drupal (quinta clase de Drupal, "poco a
             # poco" -- ver drupalverify.py).
             elif (is_drupal and fr.kind in ("drupal-module", "local-zip", "zip-url") and plugin_dir
