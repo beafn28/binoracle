@@ -5163,47 +5163,56 @@ def process_never_attempted_cves(
                                config=_shared_config, llm=_shared_llm,
                                hints=_analyst_hints or None)
             results.append(r)
-            # Persist the new verified/attempt status back to the batch report JSON
+            # Persist the new verified/attempt status back to the batch report JSON.
+            # Uses an exclusive lock file (.lock) to prevent concurrent batch processes
+            # from overwriting each other's results.
             _out_path = _os.path.join(reports_dir, f"{cve_id}.json")
+            _lock_path = _out_path + ".lock"
             if _os.path.exists(_out_path):
                 try:
-                    with open(_out_path, encoding="utf-8") as fh:
-                        _existing = _j.load(fh)
-                    _existing["verified"] = r.verified
-                    _existing["engine_confidence"] = r.engine_confidence
-                    # Always record attempt_evidence so the CVE is not retried in every batch;
-                    # use a sentinel when evidence is empty (craftverify, timeout, etc.)
-                    _ae = dict(r.evidence) if r.evidence else {}
-                    _ae["attempted"] = True  # always set — r.evidence may not contain it
-                    _ae.setdefault("source", "auto_chain")
-                    _existing["attempt_evidence"] = _ae
-                    if r.verified:
-                        # Build a JSON-safe evidence dict (drop non-serializable blobs)
-                        _dv_evidence = {}
-                        for _ek, _ev in (r.evidence or {}).items():
-                            try:
-                                _j.dumps(_ev, default=str)
-                                _dv_evidence[_ek] = _ev
-                            except Exception:
-                                _dv_evidence[_ek] = str(_ev)[:200]
-                        _existing["dynamic_verify"] = {
-                            "verified": True,
-                            "evidence": _dv_evidence,
-                        }
-                    with open(_out_path, "w", encoding="utf-8") as fh:
-                        _j.dump(_existing, fh, indent=2, ensure_ascii=False, default=str)
-                    # Verify write: check that dynamic_verify was persisted
-                    if r.verified:
+                    import fcntl as _fcntl
+                    with open(_lock_path, "w") as _lf:
+                        _fcntl.flock(_lf, _fcntl.LOCK_EX)
                         try:
-                            with open(_out_path, encoding="utf-8") as _vf:
-                                _vd = _j.load(_vf)
-                            if not _vd.get("dynamic_verify", {}).get("verified"):
-                                step(f"  {cve_id}: WARN dynamic_verify no persistido, reintentando")
-                                _vd["dynamic_verify"] = {"verified": True, "source": "batch_retry"}
-                                with open(_out_path, "w", encoding="utf-8") as _vf2:
-                                    _j.dump(_vd, _vf2, indent=2, ensure_ascii=False, default=str)
-                        except Exception:
-                            pass
+                            with open(_out_path, encoding="utf-8") as fh:
+                                _existing = _j.load(fh)
+                            _existing["verified"] = r.verified
+                            _existing["engine_confidence"] = r.engine_confidence
+                            # Always record attempt_evidence so the CVE is not retried in every batch;
+                            # use a sentinel when evidence is empty (craftverify, timeout, etc.)
+                            _ae = dict(r.evidence) if r.evidence else {}
+                            _ae["attempted"] = True  # always set — r.evidence may not contain it
+                            _ae.setdefault("source", "auto_chain")
+                            _existing["attempt_evidence"] = _ae
+                            if r.verified:
+                                # Build a JSON-safe evidence dict (drop non-serializable blobs)
+                                _dv_evidence = {}
+                                for _ek, _ev in (r.evidence or {}).items():
+                                    try:
+                                        _j.dumps(_ev, default=str)
+                                        _dv_evidence[_ek] = _ev
+                                    except Exception:
+                                        _dv_evidence[_ek] = str(_ev)[:200]
+                                _existing["dynamic_verify"] = {
+                                    "verified": True,
+                                    "evidence": _dv_evidence,
+                                }
+                            with open(_out_path, "w", encoding="utf-8") as fh:
+                                _j.dump(_existing, fh, indent=2, ensure_ascii=False, default=str)
+                            # Verify write: check that dynamic_verify was persisted
+                            if r.verified:
+                                try:
+                                    with open(_out_path, encoding="utf-8") as _vf:
+                                        _vd = _j.load(_vf)
+                                    if not _vd.get("dynamic_verify", {}).get("verified"):
+                                        step(f"  {cve_id}: WARN dynamic_verify no persistido, reintentando")
+                                        _vd["dynamic_verify"] = {"verified": True, "source": "batch_retry"}
+                                        with open(_out_path, "w", encoding="utf-8") as _vf2:
+                                            _j.dump(_vd, _vf2, indent=2, ensure_ascii=False, default=str)
+                                except Exception:
+                                    pass
+                        finally:
+                            _fcntl.flock(_lf, _fcntl.LOCK_UN)
                     step(f"  {cve_id}: batch JSON actualizado ({_out_path})")
                 except Exception as _save_e:
                     step(f"  {cve_id}: advertencia al actualizar JSON — {_save_e}")
@@ -5213,17 +5222,30 @@ def process_never_attempted_cves(
             # Mark the CVE as attempted so it is not retried in every future batch
             # (without this, an exception before the JSON save leaves it unprocessed forever).
             _out_path = _os.path.join(reports_dir, f"{cve_id}.json")
+            _lock_path = _out_path + ".lock"
             if _os.path.exists(_out_path):
                 try:
-                    with open(_out_path, encoding="utf-8") as _fh:
-                        _exc_data = _j.load(_fh)
-                    if not _exc_data.get("attempt_evidence"):
-                        _exc_data["attempt_evidence"] = {
-                            "attempted": True, "source": "auto_chain_exception",
-                            "error": str(exc)[:200]}
-                        with open(_out_path, "w", encoding="utf-8") as _fh2:
-                            _j.dump(_exc_data, _fh2, indent=2, ensure_ascii=False, default=str)
-                        step(f"  {cve_id}: attempt_evidence marcado tras excepcion para evitar retry infinito")
+                    import fcntl as _fcntl
+                    with open(_lock_path, "w") as _lf:
+                        _fcntl.flock(_lf, _fcntl.LOCK_EX)
+                        try:
+                            with open(_out_path, encoding="utf-8") as _fh:
+                                _exc_data = _j.load(_fh)
+                            # Always mark attempted=True; merge into existing attempt_evidence
+                            _exc_ae = _exc_data.get("attempt_evidence") or {}
+                            if isinstance(_exc_ae, dict):
+                                _exc_ae["attempted"] = True
+                                _exc_ae.setdefault("source", "auto_chain_exception")
+                                _exc_ae["error"] = str(exc)[:200]
+                            else:
+                                _exc_ae = {"attempted": True, "source": "auto_chain_exception",
+                                           "error": str(exc)[:200]}
+                            _exc_data["attempt_evidence"] = _exc_ae
+                            with open(_out_path, "w", encoding="utf-8") as _fh2:
+                                _j.dump(_exc_data, _fh2, indent=2, ensure_ascii=False, default=str)
+                            step(f"  {cve_id}: attempt_evidence marcado tras excepcion para evitar retry infinito")
+                        finally:
+                            _fcntl.flock(_lf, _fcntl.LOCK_UN)
                 except Exception:
                     pass
     return results
