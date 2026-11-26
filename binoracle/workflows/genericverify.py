@@ -1987,7 +1987,8 @@ def _bootstrap_generic_lab(source_dir: str, step, res: WpVerifyResult,
                            dockerfile_body: str = "",
                            extra_files: Optional[dict] = None,
                            prebuilt_url: str = "",
-                           pkg_version: str = "") -> Optional[tuple]:
+                           pkg_version: str = "",
+                           docker_image: str = "") -> Optional[tuple]:
     """Pasos comunes a TODOS los verificadores genericos: detectar como arrancar el objetivo,
     construirlo/arrancarlo, y encontrar por donde habla HTTP. Devuelve (lab, base_url, container)
     o None con `res` ya relleno (detail/logs/limitations) -- el caller solo tiene que `return res`.
@@ -2028,6 +2029,19 @@ def _bootstrap_generic_lab(source_dir: str, step, res: WpVerifyResult,
         step(f"usando target externo pre-arrancado: {prebuilt_url} (sin Docker)")
         res.evidence["prebuilt_target"] = prebuilt_url
         return (None, prebuilt_url.rstrip("/"), "prebuilt")
+
+    if not dockerfile_body and docker_image:
+        # Auto-generate minimal Dockerfile when only a docker_image is known (no source/dockerfile).
+        # Pull port hints from docker_profiles.py; fall back to common ports.
+        try:
+            from binoracle.workflows.docker_profiles import DOCKER_PROFILES as _DP
+            _prof = _DP.get(docker_image, {}) or {}
+            _img_ports = _prof.get("ports", []) or []
+        except Exception:
+            _img_ports = []
+        _auto_expose = " ".join(str(p) for p in _img_ports) if _img_ports else "8080 3000 5000 80"
+        dockerfile_body = f"FROM {docker_image}\nEXPOSE {_auto_expose}\n"
+        step(f"docker_image={docker_image!r}: generando Dockerfile minimo (EXPOSE {_auto_expose})")
 
     if dockerfile_body:
         # Analyst-provided Dockerfile takes priority over anything in source_dir
@@ -2452,6 +2466,7 @@ def verify_generic_path_traversal(
     dockerfile_body: str = "", extra_files: Optional[dict] = None,
     _tried_params_set: Optional[frozenset] = None,
     auth_required: bool = False,
+    docker_image: str = "",
 ) -> WpVerifyResult:
     """Analogo generico de verify_wordpress_path_traversal (wpverify.py): planta un fichero
     canario con un secreto aleatorio DENTRO del contenedor real del objetivo (via `docker exec`,
@@ -2552,7 +2567,8 @@ def verify_generic_path_traversal(
         candidates.append((endpoint or "/", parameters, (http_method or "GET").upper(), llm_up, False))
 
     boot = _bootstrap_generic_lab(source_dir, step, res, budget_s, setup_commands=setup_commands,
-                                   dockerfile_body=dockerfile_body, extra_files=extra_files)
+                                   dockerfile_body=dockerfile_body, extra_files=extra_files,
+                                   docker_image=docker_image)
     if boot is None:
         return res
     lab, base_url, container = boot
@@ -3512,6 +3528,7 @@ def verify_generic_ssrf(
     dockerfile_body: str = "", extra_files: Optional[dict] = None,
     setup_commands: Optional[List[str]] = None,
     auth_required: bool = False,
+    docker_image: str = "",
 ) -> WpVerifyResult:
     """Analogo generico de verify_wordpress_ssrf: levanta un contenedor 'callback' en la MISMA
     red del laboratorio generico (sea `dockerfile` o `compose` -- ver _GenericLab.resolve_network)
@@ -3538,7 +3555,7 @@ def verify_generic_ssrf(
 
     boot = _bootstrap_generic_lab(source_dir, step, res, budget_s,
                                    dockerfile_body=dockerfile_body, extra_files=extra_files,
-                                   setup_commands=setup_commands)
+                                   setup_commands=setup_commands, docker_image=docker_image)
     if boot is None:
         return res
     lab, base_url, container = boot
@@ -7436,6 +7453,7 @@ def verify_generic_http_confirm(
     on_step: Optional[Callable[[str], None]] = None,
     budget_s: float = 900.0, custom_headers: Optional[dict] = None,
     post_data: Optional[dict] = None,
+    query_params: Optional[dict] = None,
     dockerfile_body: str = "", extra_files: Optional[dict] = None,
     setup_wait_extra_s: float = 0.0,
     docker_image: str = "",
@@ -7471,7 +7489,8 @@ def verify_generic_http_confirm(
         return res
 
     boot = _bootstrap_generic_lab(source_dir, step, res, budget_s,
-                                   dockerfile_body=dockerfile_body, extra_files=extra_files)
+                                   dockerfile_body=dockerfile_body, extra_files=extra_files,
+                                   docker_image=docker_image)
     if boot is None:
         return res
     lab, base_url, container = boot
@@ -7497,8 +7516,12 @@ def verify_generic_http_confirm(
         url = base_url.rstrip("/") + "/" + endpoint.lstrip("/")
         step(f"enviando {m} {endpoint} buscando confirm_string={confirm_string!r}...")
         try:
-            resp = _http_request(m, url, timeout=20, data=post_data,
-                                 headers=hdrs if hdrs else None)
+            _req_kwargs: dict = {"timeout": 20, "headers": hdrs if hdrs else None}
+            if m == "GET" and query_params:
+                _req_kwargs["params"] = query_params
+            elif post_data:
+                _req_kwargs["data"] = post_data
+            resp = _http_request(m, url, **_req_kwargs)
         except Exception as e:
             res.detail = f"peticion HTTP fallida: {e}"
             return res

@@ -14403,7 +14403,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     url_suffix=_pt_url_suffix, custom_headers=_pt_custom_hdrs,
                     query_suffix=_pt_query_suffix,
                     dockerfile_body=_pt_dockerfile, extra_files=_pt_extra_files,
-                    setup_commands=_pt_setup_cmds, auth_required=_pt_auth_req)
+                    setup_commands=_pt_setup_cmds, auth_required=_pt_auth_req,
+                    docker_image=(notes.get("docker_image") or ""))
                 # Bucle de feedback: si Qwen scaffoldeo y fallo, que diagnostique y regenere
                 if _scf_pt and not wr.verified:
                     _lab_cfg_pt = {
@@ -14439,7 +14440,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             url_suffix=_pt_url_suffix, custom_headers=_pt_custom_hdrs,
                             query_suffix=_pt_query_suffix,
                             dockerfile_body=_pt_dockerfile, extra_files=_pt_extra_files,
-                            setup_commands=_pt_setup_cmds, auth_required=_pt_auth_req)
+                            setup_commands=_pt_setup_cmds, auth_required=_pt_auth_req,
+                            docker_image=(notes.get("docker_image") or ""))
                         wr = wr_fb
                         if wr_fb.verified:
                             break
@@ -14452,6 +14454,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 # cuerpo real del primer intento y solo sugiere un reintento con una pista
                 # concreta en ESA evidencia, nunca a ciegas.
                 _pt_local_path_str = str(fr.local_path) if fr.local_path else ""
+                _pt_docker_image = notes.get("docker_image") or ""
                 def _attempt_pt(ep, pr):
                     return verify_generic_path_traversal(
                         _pt_local_path_str, ep, notes.get("http_method") or "GET", params,
@@ -14459,7 +14462,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         url_suffix=_pt_url_suffix, custom_headers=_pt_custom_hdrs,
                         query_suffix=_pt_query_suffix,
                         dockerfile_body=_pt_dockerfile, extra_files=_pt_extra_files,
-                        setup_commands=_pt_setup_cmds, auth_required=_pt_auth_req)
+                        setup_commands=_pt_setup_cmds, auth_required=_pt_auth_req,
+                        docker_image=_pt_docker_image)
                 wr = _run_evidence_retry_loop(
                     llm, step, es, _GENERIC_PATH_TRAVERSAL_RETRY_SYS,
                     _GENERIC_PATH_TRAVERSAL_RETRY_EVIDENCE_KEYS, _attempt_pt, wr,
@@ -14479,7 +14483,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         url_suffix=_pt_url_suffix, custom_headers=_pt_custom_hdrs,
                         query_suffix=_pt_query_suffix,
                         dockerfile_body=_pt_dockerfile, extra_files=_pt_extra_files,
-                        setup_commands=_pt_setup_cmds, auth_required=_pt_auth_req)
+                        setup_commands=_pt_setup_cmds, auth_required=_pt_auth_req,
+                        docker_image=_pt_docker_image)
                     if _wr_extra.verified or (not wr.verified and _wr_extra.ok):
                         wr = _wr_extra
                 # Cachear el scaffold SOLO si quedo verificado de verdad (igual que
@@ -16187,7 +16192,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     params, url_param_hint=url_p or "", on_step=step, budget_s=budget_s,
                     custom_headers=_ssrf_custom_hdrs,
                     dockerfile_body=_ssrf_dockerfile, extra_files=_ssrf_extra_files,
-                    setup_commands=_ssrf_setup_cmds, auth_required=_ssrf_auth_req)
+                    setup_commands=_ssrf_setup_cmds, auth_required=_ssrf_auth_req,
+                    docker_image=(notes.get("docker_image") or ""))
                 if _scf_ssrf and not wr.verified:
                     _lab_cfg_ssrf = {
                         "dockerfile_body": _ssrf_dockerfile,
@@ -16269,12 +16275,14 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                      f"(buscando {_hc_confirm_short!r} en {_hc_ep})..." if es else
                      "attempting GENERIC DYNAMIC verification -- HTTP confirm "
                      f"(looking for {_hc_confirm_short!r} in {_hc_ep})..."))
-                # Pass POST parameters as post_data (supports json_body=True payloads)
+                # Route parameters to query_params (GET) or post_data (POST+json_body)
                 _hc_params = notes.get("parameters") or None
+                _hc_is_get = (_hc_method or "GET").upper() == "GET"
                 _hc_post_data = (
-                    _hc_params if (notes.get("json_body") and isinstance(_hc_params, dict)) else None
+                    _hc_params if (not _hc_is_get and notes.get("json_body") and isinstance(_hc_params, dict)) else None
                 )
-                # Ensure JSON content type when json_body is set
+                _hc_query_params = _hc_params if (_hc_is_get and isinstance(_hc_params, dict)) else None
+                # Ensure JSON content type when json_body is set for POST
                 if _hc_post_data and notes.get("json_body"):
                     _hc_hdrs = dict(_hc_hdrs or {})
                     _hc_hdrs.setdefault("Content-Type", "application/json")
@@ -16282,7 +16290,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     _hc_local_path_str, _hc_ep, _hc_method,
                     confirm_string=_hc_confirm, patched_patterns=_hc_patched,
                     on_step=step, budget_s=budget_s, custom_headers=_hc_hdrs,
-                    post_data=_hc_post_data,
+                    post_data=_hc_post_data, query_params=_hc_query_params,
                     dockerfile_body=_hc_df, extra_files=_hc_ef,
                     docker_image=(notes.get("docker_image") or ""))
                 _apply_wpverify_result(inv, wr, es, llm)
