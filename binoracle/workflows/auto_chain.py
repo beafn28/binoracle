@@ -3094,6 +3094,7 @@ def run_full_chain(
     on_step:              Optional[Callable[[str], None]] = None,
     config=None,
     llm=None,
+    fast_llm=None,
     save_report:          bool  = True,
     no_cache:             bool  = False,
     skip_source_download: bool  = False,
@@ -3152,12 +3153,13 @@ def run_full_chain(
         except Exception:
             step("  LLM: no disponible (modo determinístico)")
     # Fast LLM for lightweight pre-attempt validation and grading tasks
-    _fast_llm = None
-    try:
-        from ..llm import make_fast_backend as _mbfb2
-        _fast_llm = _mbfb2(config)
-    except Exception:
-        pass
+    _fast_llm = fast_llm
+    if _fast_llm is None:
+        try:
+            from ..llm import make_fast_backend as _mbfb2
+            _fast_llm = _mbfb2(config)
+        except Exception:
+            pass
 
     # ── F30: Ollama availability watchdog ─────────────────────────────────────
     # Probe Ollama before starting; if unavailable, retry up to 3 times (15s).
@@ -5249,6 +5251,7 @@ def process_never_attempted_cves(
             r = run_full_chain(cve_id, lang=lang, budget_s=budget_s,
                                on_step=_step_capture, save_report=True,
                                config=_shared_config, llm=_shared_llm,
+                               fast_llm=_shared_fast_llm,
                                hints=_analyst_hints or None)
             results.append(r)
             # Persist the new verified/attempt status back to the batch report JSON.

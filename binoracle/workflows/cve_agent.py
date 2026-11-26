@@ -16397,6 +16397,28 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     docker_image=_hc_docker_image,
                     setup_wait_extra_s=_hc_extra_wait,
                     vuln_class=inv.vuln_class or "")
+                # Retry loop: if first attempt failed, let LLM suggest endpoint/param changes
+                if not wr.verified and llm is not None and getattr(llm, "available", lambda: False)():
+                    def _attempt_hc_retry(ep: str, _param: str) -> Any:
+                        _post = dict(_hc_post_data) if _hc_post_data else None
+                        _get = dict(_hc_query_params) if _hc_query_params else None
+                        return verify_generic_http_confirm(
+                            _hc_local_path_str, ep, _hc_method,
+                            confirm_string=_hc_confirm, patched_patterns=_hc_patched,
+                            on_step=step, budget_s=budget_s, custom_headers=_hc_hdrs,
+                            post_data=_post, query_params=_get,
+                            dockerfile_body=_hc_df, extra_files=_hc_ef,
+                            setup_commands=_hc_setup_cmds,
+                            docker_image=_hc_docker_image,
+                            setup_wait_extra_s=_hc_extra_wait,
+                            vuln_class=inv.vuln_class or "")
+                    wr = _run_evidence_retry_loop(
+                        llm, step, es, _GENERIC_RETRY_SYS,
+                        _RESPUESTA_CUERPO_EVIDENCE_KEYS,
+                        _attempt_hc_retry, wr,
+                        _hc_ep, "",
+                        technique_label=f"http-confirm ({inv.vuln_class or 'generic'})",
+                        inv=inv)
                 _apply_wpverify_result(inv, wr, es, llm)
             # mismo laboratorio efimero, para XSS/SSTI/XXE/open-redirect/file-upload/CSRF -- ver
             # _apply_wpverify_result() mas abajo, que vuelca el resultado en inv/blockers igual que

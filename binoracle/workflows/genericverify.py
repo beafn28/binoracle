@@ -2385,6 +2385,19 @@ def verify_generic_command_injection(
                 pass
             res.evidence["rce_id_output"]     = _id_output
             res.evidence["rce_whoami_output"] = _whoami_output
+            # Normalize into weaponization dict for uniform report/web rendering
+            if _id_output or _whoami_output:
+                _rce_impact = "CMDI confirmed — OS command execution: "
+                if _id_output:
+                    _rce_impact += f"id={_id_output[:80]}"
+                if _whoami_output and _whoami_output != _id_output:
+                    _rce_impact += f"; whoami={_whoami_output[:40]}"
+                res.evidence["weaponization"] = {
+                    "technique": "command_injection_rce",
+                    "data": {k: v for k, v in
+                             [("id_output", _id_output), ("whoami_output", _whoami_output)] if v},
+                    "impact": _rce_impact,
+                }
             # ──────────────────────────────────────────────────────────────
 
             res.verified = True
