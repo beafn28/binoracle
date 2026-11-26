@@ -3419,6 +3419,37 @@ def run_full_chain(
                 step(f"  [2.6] endpoint extraído de descripción NVD: {_ep_from_desc}")
                 result.add_step("endpoint_extract", "ok", _ep_from_desc)
 
+        # ── Stage 2.6b: WP AJAX action + parameter extractor ─────────────────────
+        # Pattern: "via the 'X' parameter of the 'Y' action" (NVD/Wordfence descriptions)
+        # → endpoint=/wp-admin/admin-ajax.php, parameters={action: Y, X: ""}
+        _nvd_desc = (getattr(cve_info, "description", "") or "")
+        if _nvd_desc and not (llm_notes.get("parameters") or {}) and not llm_notes.get("endpoint"):
+            import re as _re_26b
+            # Pattern 1: "via the 'PARAM' parameter of the 'ACTION' action"
+            _m_wp_action = _re_26b.search(
+                r"""via\s+(?:the\s+)?['"]([a-zA-Z0-9_-]+)['"]\s+parameter\s+"""
+                r"""of\s+(?:the\s+)?['"]([a-zA-Z0-9_-]+)['"]\s+action""",
+                _nvd_desc, _re_26b.I)
+            # Pattern 2: "via the ACTION action's PARAM parameter"
+            _m_wp_action2 = _re_26b.search(
+                r"""via\s+(?:the\s+)?['"]([a-zA-Z0-9_-]+)['"]\s+action(?:'s|'s)?\s+"""
+                r"""['"]([a-zA-Z0-9_-]+)['"]\s+parameter""",
+                _nvd_desc, _re_26b.I)
+            if _m_wp_action:
+                _wp_param = _m_wp_action.group(1)
+                _wp_action_name = _m_wp_action.group(2)
+            elif _m_wp_action2:
+                _wp_action_name = _m_wp_action2.group(1)
+                _wp_param = _m_wp_action2.group(2)
+            else:
+                _wp_param = _wp_action_name = ""
+            if _wp_param and _wp_action_name:
+                llm_notes["endpoint"] = "/wp-admin/admin-ajax.php"
+                llm_notes["parameters"] = {"action": _wp_action_name, _wp_param: ""}
+                step(f"  [2.6b] AJAX endpoint extraído: action={_wp_action_name} param={_wp_param}")
+                result.add_step("endpoint_extract_ajax", "ok",
+                                f"action={_wp_action_name}&{_wp_param}=")
+
     # ── Stage 2.7: WP plugin REST endpoint inference ─────────────────────────
     # When no endpoint still: infer /wp-json/<slug>/v1 from the plugin source slug
     # and common REST path patterns. Free heuristic — a later 404 just means no match.
@@ -3507,6 +3538,27 @@ def run_full_chain(
     if _vc_raw and _vc_raw in _VC_NORMALIZE:
         llm_notes["vuln_class"] = _VC_NORMALIZE[_vc_raw]
         step(f"  vuln_class normalizado: '{_vc_raw}' → '{llm_notes['vuln_class']}'")
+
+    # Description-driven class override: when LLM misidentified the mechanism vs impact.
+    # E.g. "arbitrary file creation via SSRF" is an upload class, not pure SSRF.
+    _nvd_desc_classify = (getattr(cve_info, "description", "") or "").lower()
+    _vc_current = (llm_notes.get("vuln_class") or "").lower()
+    if _vc_current in ("ssrf", "request-forgery") and any(
+        kw in _nvd_desc_classify for kw in
+        ("arbitrary file creation", "arbitrary file write", "file type validation",
+         "unrestricted upload", "file upload")
+    ):
+        llm_notes["vuln_class"] = "arbitrary-file-upload"
+        step("  [3] class override: ssrf → arbitrary-file-upload (descripción indica creación de fichero, no SSRF puro)")
+    elif _vc_current == "ssrf" and "code execution" in _nvd_desc_classify and "upload" not in _nvd_desc_classify:
+        pass  # keep ssrf+rce as ssrf if no file upload angle
+    # "Missing authorization + file download/SSRF" → arbitrary-file-upload
+    if _vc_current in ("missing-authorization", "broken-access-control") and any(
+        kw in _nvd_desc_classify for kw in
+        ("arbitrary file creation", "arbitrary file write", "arbitrary files")
+    ):
+        llm_notes["vuln_class"] = "arbitrary-file-upload"
+        step("  [3] class override: missing-auth → arbitrary-file-upload (creación arbitraria de ficheros)")
 
     _save_checkpoint(result, llm_notes, "classify")
 
