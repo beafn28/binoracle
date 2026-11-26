@@ -5117,9 +5117,6 @@ def process_never_attempted_cves(
         elif _ae and not isinstance(_ae, dict):
             continue  # Non-dict truthy sentinel → skip
         n = d.get("llm_notes") or {}
-        # Must have at minimum an endpoint to attack
-        if not n.get("endpoint"):
-            continue
         # Must have some Docker config OR a valid WP plugin source (slug only, no pip/pypi)
         # OR a supported CMS (craftverify.py provides its own Docker setup)
         has_docker = bool(n.get("dockerfile_body") or n.get("docker_image"))
@@ -5139,6 +5136,10 @@ def process_never_attempted_cves(
         _cms = (n.get("cms") or "").lower()
         has_cms_verifier = _cms in ("craft", "craftcms")
         if not has_docker and not has_wp_source and not has_cms_verifier:
+            continue
+        # Endpoint is required for Docker CVEs (engine can't derive it from a container).
+        # WP plugin and CMS CVEs can derive it from PHP source hooks — skip the gate for them.
+        if not n.get("endpoint") and has_docker and not has_wp_source and not has_cms_verifier:
             continue
         cvss = d.get("cvss_score") or 0.0
         if cvss < min_cvss:
