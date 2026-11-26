@@ -6255,15 +6255,16 @@ def verify_wordpress_sqli(
             if len(_rest_nonce) >= 8:
                 _attack_sess.headers["X-WP-Nonce"] = _rest_nonce
                 step(f"X-WP-Nonce generado para endpoint REST (user={_sub_id}): {_rest_nonce[:10]}...")
-            # For anonymous attacks the nonce MUST be for user_id=0: a subscriber nonce does
-            # not validate for user 0. Page scraping (done by _auto_resolve_wp_blockers) may
-            # have found a subscriber-session nonce — override it with one generated via wp eval
-            # running as user_id=0, which reliably produces the right nonce regardless of whether
-            # any page embeds it. Falls back to anonymous page re-scraping if wp eval fails.
+        # For ANY anonymous attack with nonce-like params: generate a correct nonce via
+        # wp eval (user_id=0) so the endpoint receives the action-specific nonce, not a
+        # generic page-scraped one. This applies to admin-ajax.php (e.g. Ultimate Member,
+        # CVE-2024-1071) AND /wp-json/ endpoints — page scraping returns the wrong nonce
+        # when the action uses a plugin-specific nonce action like 'um-frontend-nonce'.
+        if _anon_attack and lab is not None:
             _anon_nonce_keys = [nk for nk in base_params
                                 if any(h in nk.lower() for h in ("nonce", "security", "token"))]
             _anon_wp_eval_done = False
-            if _anon_nonce_keys and lab is not None:
+            if _anon_nonce_keys:
                 # Two-pass: first find the wp_verify_nonce action in the files that
                 # register wp_ajax_nopriv_ACTION (the actual callback files), then fall
                 # back to global scan. This avoids picking up nonce actions from unrelated

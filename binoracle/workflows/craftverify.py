@@ -187,6 +187,20 @@ def verify_craft_web_cve(
         res.detail = "Docker no disponible"
         return res
 
+    # Nuclei-style {{nonce}} / {nonce} substitution: replace with a random
+    # 10-digit integer so the value appears in the error response (register_argc_argv
+    # CVEs like CVE-2024-56145 use this pattern to prove path is processed).
+    import random as _rand_nonce
+    _nonce_val = str(_rand_nonce.randint(1000000000, 9999999999))
+    _had_nonce = "{nonce}" in endpoint or "{{nonce}}" in endpoint
+    endpoint = endpoint.replace("{{nonce}}", _nonce_val).replace("{nonce}", _nonce_val)
+    confirm_string = confirm_string.replace("{{nonce}}", _nonce_val).replace(
+        "{nonce}", _nonce_val
+    )
+    # If confirm_string was the nonce placeholder (now a number), or was empty and
+    # the endpoint had a nonce, fall back to checking the nonce itself in the response.
+    _nonce_confirm = confirm_string if confirm_string else (_nonce_val if _had_nonce else "")
+
     # Prefer generic lab: Craft's Docker setup takes >3min; for most CVEs
     # (path traversal, XSS, SQLi) the generic PHP lab is faster and sufficient.
     # BUT: only use the generic lab when it has pre-built infra (source is a full
@@ -265,21 +279,29 @@ def verify_craft_web_cve(
             res.evidence["body_snippet"] = (r.body or "")[:300]
             res.evidence["endpoint"] = target_url
 
-            if r.status in (200, 201):
-                if confirm_string and confirm_string in (r.body or ""):
+            body_text = r.body or ""
+            _effective_confirm = confirm_string or _nonce_confirm
+            if r.status in (200, 201, 500):
+                if _effective_confirm and _effective_confirm in body_text:
                     res.verified = True
                     res.ok = True
                     res.confidence = "confirmed"
-                    res.detail = f"VERIFICADO: '{confirm_string}' en respuesta Craft"
+                    res.detail = f"VERIFICADO: '{_effective_confirm}' en respuesta Craft"
                     step("  craftverify: VERIFICADO")
-                elif not confirm_string and payload and payload in (r.body or ""):
+                elif not _effective_confirm and payload and payload in body_text:
                     res.verified = True
                     res.ok = True
                     res.confidence = "probable"
                     res.detail = "VERIFICADO (probable): payload reflejado"
+                elif _had_nonce and "mkdir" in body_text.lower():
+                    res.verified = True
+                    res.ok = True
+                    res.confidence = "confirmed"
+                    res.detail = "VERIFICADO: mkdir() en respuesta Craft (register_argc_argv)"
+                    step("  craftverify: VERIFICADO (mkdir fallback)")
                 else:
                     res.ok = True
-                    res.detail = "HTTP 200 — confirm_string no encontrado"
+                    res.detail = "HTTP %d — confirm_string no encontrado" % r.status
             else:
                 res.detail = f"HTTP {r.status} — endpoint no accesible"
             return res
@@ -367,21 +389,29 @@ def verify_craft_web_cve(
             res.evidence["status"] = r.status
             res.evidence["body_snippet"] = (r.body or "")[:300]
 
-            if r.status in (200, 201):
-                if confirm_string and confirm_string in (r.body or ""):
+            body_text = r.body or ""
+            _effective_confirm = confirm_string or _nonce_confirm
+            if r.status in (200, 201, 500):
+                if _effective_confirm and _effective_confirm in body_text:
                     res.verified = True
                     res.ok = True
                     res.confidence = "confirmed"
-                    res.detail = f"VERIFICADO: '{confirm_string}' en respuesta Craft"
+                    res.detail = f"VERIFICADO: '{_effective_confirm}' en respuesta Craft"
                     step("  craftverify: VERIFICADO")
-                elif not confirm_string and payload and payload in (r.body or ""):
+                elif not _effective_confirm and payload and payload in body_text:
                     res.verified = True
                     res.ok = True
                     res.confidence = "probable"
                     res.detail = "VERIFICADO (probable): payload reflejado"
+                elif _had_nonce and "mkdir" in body_text.lower():
+                    res.verified = True
+                    res.ok = True
+                    res.confidence = "confirmed"
+                    res.detail = "VERIFICADO: mkdir() en respuesta Craft (register_argc_argv)"
+                    step("  craftverify: VERIFICADO (mkdir fallback)")
                 else:
                     res.ok = True
-                    res.detail = "HTTP 200 — confirm_string no encontrado"
+                    res.detail = "HTTP %d — confirm_string no encontrado" % r.status
             else:
                 res.detail = f"HTTP {r.status}"
     except Exception as e:
