@@ -24,21 +24,35 @@ __all__ = [
 
 _REGEX_PATTERNS: dict = {
     "sqli": [
-        # Direct wpdb calls with user input
+        # PHP/WordPress
         (r'\$wpdb->(query|get_results|get_row|get_var)\s*\(\s*["\']?.*\$_(GET|POST|REQUEST|COOKIE)',
          "wpdb_direct_input"),
-        # String concatenation into SQL
         (r'\$wpdb->(query|get_results|get_row|get_var)\s*\(.*\.(.*\$_(GET|POST|REQUEST|COOKIE))',
          "wpdb_concat"),
-        # Raw SQL with concatenation (not just wpdb)
         (r'(SELECT|INSERT|UPDATE|DELETE|WHERE|ORDER BY).*["\']?\s*\.\s*\$_(GET|POST|REQUEST)',
          "sql_concat"),
+        # Python / SQLAlchemy / psycopg2
+        (r'(cursor|conn|session)\.(execute|executemany)\s*\(.*%\s*\(',
+         "py_cursor_format_injection"),
+        (r'(cursor|conn|session)\.(execute|executemany)\s*\(.*\.format\(',
+         "py_cursor_format_inject"),
+        (r'db\.(session\.execute|execute|query)\s*\(.*f[\'"]\s*(SELECT|INSERT|UPDATE|DELETE)',
+         "py_raw_sql_fstring"),
+        # Node.js
+        (r'(query|execute|raw)\s*\(\s*`[^`]*(SELECT|INSERT|UPDATE|DELETE).*\$\{(req\.|body\.|params\.)',
+         "js_sql_template_literal"),
+        (r'(query|execute)\s*\(\s*["\']?\s*(SELECT|INSERT|UPDATE|DELETE).*\+\s*(req\.|body\.|params\.)',
+         "js_sql_concat"),
     ],
     "sql-injection": [
         (r'\$wpdb->(query|get_results|get_row|get_var)\s*\(\s*["\']?.*\$_(GET|POST|REQUEST|COOKIE)',
          "wpdb_direct_input"),
         (r'(SELECT|INSERT|UPDATE|DELETE|WHERE|ORDER BY).*["\']?\s*\.\s*\$_(GET|POST|REQUEST)',
          "sql_concat"),
+        (r'(cursor|conn|session)\.(execute|executemany)\s*\(.*%\s*\(',
+         "py_cursor_format_injection"),
+        (r'(query|execute|raw)\s*\(\s*`[^`]*(SELECT|INSERT|UPDATE|DELETE).*\$\{(req\.|body\.|params\.)',
+         "js_sql_template_literal"),
     ],
     "lfi": [
         (r'(include|require|include_once|require_once)\s*\(.*\$_(GET|POST|REQUEST)',
@@ -55,16 +69,29 @@ _REGEX_PATTERNS: dict = {
          "file_get_contents_input"),
     ],
     "path-traversal": [
+        # PHP
         (r'file_get_contents\s*\(.*\$_(GET|POST|REQUEST)',
          "file_read_input"),
         (r'(readfile|fopen|file|scandir|opendir|glob)\s*\(.*\$_(GET|POST|REQUEST)',
          "file_path_input"),
+        # Python
+        (r'open\s*\(.*request\.(args|form|json)',
+         "py_open_request"),
+        (r'os\.path\.(join|abspath)\s*\(.*request\.(args|form|json)',
+         "py_path_join_request"),
+        # Node.js
+        (r'(readFile|readFileSync|createReadStream)\s*\(.*\+\s*(req\.|body\.|params\.)',
+         "js_fs_concat"),
+        (r'path\.join\s*\(.*\+\s*(req\.|body\.|params\.)',
+         "js_path_join_request"),
     ],
     "arbitrary-file-read": [
         (r'file_get_contents\s*\(.*\$_(GET|POST|REQUEST)',
          "file_read_input"),
         (r'(readfile|fopen|file)\s*\(.*\$_(GET|POST|REQUEST)',
          "file_path_input"),
+        (r'open\s*\(.*request\.(args|form|json)',
+         "py_open_request"),
     ],
     "rce": [
         (r'(exec|shell_exec|system|passthru|popen|proc_open)\s*\(.*\$_(GET|POST|REQUEST)',
@@ -73,18 +100,33 @@ _REGEX_PATTERNS: dict = {
          "eval_input"),
         (r'`.*\$_(GET|POST|REQUEST).*`',
          "backtick_injection"),
+        (r'subprocess\.(run|call|Popen|check_output)\s*\(.*request\.(args|form|json)',
+         "py_subprocess_request"),
     ],
     "command-injection": [
+        # PHP
         (r'(exec|shell_exec|system|passthru|popen|proc_open)\s*\(.*\$_(GET|POST|REQUEST)',
          "command_injection"),
         (r'`.*\$_(GET|POST|REQUEST).*`',
          "backtick_injection"),
+        # Python
+        (r'subprocess\.(run|call|Popen|check_output)\s*\(.*request\.(args|form|json)',
+         "py_subprocess_request"),
+        (r'os\.(system|popen)\s*\(.*request\.(args|form|json)',
+         "py_os_system_request"),
+        # Node.js
+        (r'(exec|execSync|spawn|spawnSync)\s*\(.*\+\s*(req\.|body\.|params\.)',
+         "js_exec_concat"),
+        (r'(exec|execSync|spawn)\s*\(\s*`[^`]*\$\{(req\.|body\.|params\.)',
+         "js_exec_template"),
     ],
     "remote-code-execution": [
         (r'(exec|shell_exec|system|passthru|proc_open)\s*\(.*\$_(GET|POST|REQUEST)',
          "command_injection"),
         (r'eval\s*\(.*\$_(GET|POST|REQUEST)',
          "eval_input"),
+        (r'subprocess\.(run|call|Popen|check_output)\s*\(.*request\.(args|form|json)',
+         "py_subprocess_request"),
     ],
     "xss": [
         (r'echo\s+.*\$_(GET|POST|REQUEST|COOKIE)',
@@ -95,12 +137,33 @@ _REGEX_PATTERNS: dict = {
          "printf_unescaped"),
     ],
     "ssrf": [
+        # PHP/WordPress
         (r'(wp_remote_get|wp_remote_post|wp_remote_request|curl_exec|file_get_contents)\s*\(.*\$_(GET|POST|REQUEST)',
          "ssrf_user_url"),
+        # Python
+        (r'requests\.(get|post|put|delete)\s*\(.*request\.(args|form|json)',
+         "py_requests_user_url"),
+        (r'urllib\.request\.urlopen\s*\(.*request\.(args|form|json)',
+         "py_urllib_user_url"),
+        (r'httpx\.(get|post)\s*\(.*request\.(args|form|json)',
+         "py_httpx_user_url"),
+        # Node.js
+        (r'(axios|fetch|got)\s*\(\s*(req\.|body\.|params\.|query\.)',
+         "js_fetch_user_url"),
     ],
     "ssti": [
+        # PHP
         (r'(render|template|compile|eval)\s*\(.*\$_(GET|POST|REQUEST)',
          "template_user_input"),
+        # Python / Jinja2 / Flask
+        (r'Environment\s*\([^)]*\).*\.from_string\s*\(',
+         "jinja2_from_string"),
+        (r'Template\s*\(\s*request\.',
+         "jinja2_template_request"),
+        (r'render_template_string\s*\(.*request\.(args|form|json|data)',
+         "flask_render_template_string"),
+        (r'jinja2\.Template\s*\(\s*(request|user_input)',
+         "jinja2_template_user"),
     ],
     "arbitrary-file-upload": [
         (r'move_uploaded_file\s*\(',
@@ -127,7 +190,7 @@ _SEMGREP_FILTER: dict = {
 }
 
 
-def _walk_source_files(source_dir: str, extensions: tuple = (".php", ".js", ".py", ".rb")) -> List[str]:
+def _walk_source_files(source_dir: str, extensions: tuple = (".php", ".js", ".ts", ".py", ".rb", ".go", ".java")) -> List[str]:
     """Enumerate all source files under source_dir with given extensions."""
     files = []
     for root, dirs, fnames in os.walk(source_dir):

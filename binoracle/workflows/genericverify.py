@@ -3819,6 +3819,20 @@ def verify_generic_ssrf(
                     res.detail += (f"\n\nESCALACIÓN CLOUD: acceso a metadata de "
                                    f"{', '.join(h['cloud'] for h in _cloud_hits)} "
                                    f"— servidor en entorno cloud")
+                # Normalize into weaponization dict for uniform report/web display
+                _ssrf_wep_data = {
+                    h["cloud"]: h.get("body_preview", "")[:120] for h in _cloud_hits
+                }
+                _ssrf_wep_impact = (
+                    f"SSRF confirmed — cloud IMDS reachable: "
+                    + (f"{_cred_hit['cloud']} credentials exposed" if _cred_hit
+                       else ", ".join(h["cloud"] for h in _cloud_hits) + " metadata accessible")
+                )
+                res.evidence["weaponization"] = {
+                    "technique": "ssrf_cloud_escalation",
+                    "data": _ssrf_wep_data,
+                    "impact": _ssrf_wep_impact,
+                }
             step(f"VERIFICADO: el listener interno recibio el token "
                  f"'{res.evidence['token_ganador']}' -- la peticion saliente la hizo el servidor.")
             _ssrf_url = base_url + endpoint
