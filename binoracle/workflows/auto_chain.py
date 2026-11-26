@@ -1470,22 +1470,48 @@ def _detect_wrapper_stack(cve_info, llm_notes: dict) -> str:
 
 
 _DETERMINISTIC_WRAPPERS: dict[str, dict] = {
-    # Jinja2 sandbox SSTI: minimal Flask app exposing SandboxedEnvironment rendering
+    # Jinja2 sandbox SSTI: Flask app exposing SandboxedEnvironment rendering
+    # Covers CVE-2024-56326 (str.format bypass via custom filter) and
+    # CVE-2024-56201 (filename-based bypass via Environment.get_template).
     "jinja2": {
         "_meta": {"endpoint": "/render", "param": "t", "method": "GET",
                   "confirm_prefix": "output:"},
         "app.py": """\
-import os
+import os, tempfile
 from flask import Flask, request
+from jinja2 import Environment, FileSystemLoader
 from jinja2.sandbox import SandboxedEnvironment
 
 app = Flask(__name__)
+
+# CVE-2024-56326: custom filter that invokes .format() on its arg
+# (the sandbox bypass works via indirect calls through such filters)
+def call_format(value, *args, **kwargs):
+    return value.format(*args, **kwargs)
+
+sandbox_env = SandboxedEnvironment()
+sandbox_env.filters["call_format"] = call_format
 
 @app.route("/render")
 def render_tpl():
     tpl = request.args.get("t", "")
     try:
-        result = SandboxedEnvironment().from_string(tpl).render()
+        result = sandbox_env.from_string(tpl).render()
+        return f"output:{result}", 200
+    except Exception as e:
+        return f"error:{type(e).__name__}:{e}", 500
+
+# CVE-2024-56201: attacker controls both content and filename
+@app.route("/render_file")
+def render_file():
+    tpl = request.args.get("t", "")
+    name = request.args.get("name", "template.html")
+    try:
+        tmpdir = tempfile.mkdtemp()
+        with open(os.path.join(tmpdir, name), "w") as f:
+            f.write(tpl)
+        env = Environment(loader=FileSystemLoader(tmpdir))
+        result = env.get_template(name).render()
         return f"output:{result}", 200
     except Exception as e:
         return f"error:{type(e).__name__}:{e}", 500
@@ -1610,17 +1636,26 @@ from django.http import HttpResponse
 from django.urls import path as url_path
 
 def query_view(request):
+    # CVE-2024-42005 / CVE-2025-64459: SQLi via _connector kwarg in Q()
+    # Vulnerable: Q(_connector=user_input) lets attacker inject SQL connectors
     field = request.GET.get("field", "username")
     connector = request.GET.get("connector", "OR")
     try:
         from django.contrib.auth.models import User
         from django.db.models import Q
-        if connector.upper() in ("AND", "OR", "XOR"):
-            qs = User.objects.filter(Q(username="x") | Q(**{f"username___{connector}": "y"}))
-        else:
-            qs = User.objects.values(field)
-        result = str(list(qs.values_list(field, flat=True)))
-        return HttpResponse(f"result:{result}")
+        # Trigger 1: _connector kwarg path (CVE-2025-64459)
+        try:
+            qs1 = User.objects.filter(Q(_connector=connector, username="admin"))
+            r1 = list(qs1.values_list("username", flat=True))
+        except Exception as e1:
+            r1 = f"error:{type(e1).__name__}:{e1}"
+        # Trigger 2: values() chaining (CVE-2024-42005)
+        try:
+            qs2 = User.objects.values(field)
+            r2 = list(qs2)
+        except Exception as e2:
+            r2 = f"error:{type(e2).__name__}:{e2}"
+        return HttpResponse(f"result_connector:{r1}|result_values:{r2}")
     except Exception as e:
         return HttpResponse(f"error:{type(e).__name__}:{e}", status=500)
 
@@ -1689,13 +1724,22 @@ def _get_deterministic_wrapper_files(lib_key: str, cve_version: str = "",
     if "Dockerfile" not in result:
         result["Dockerfile"] = _WRAPPER_DOCKERFILES["python"]
 
-    # Pin to vulnerable version in requirements.txt if known
+    # Pin to vulnerable version in requirements.txt if known.
+    # Handle all line-ending variants: "\nlib\n", "lib\n", "\nlib", "lib" (no trailing newline).
     if cve_version and "requirements.txt" in result:
         reqs = result["requirements.txt"]
-        pinned = reqs.replace(f"\n{lib_key}\n", f"\n{lib_key}=={cve_version}\n")
-        pinned = pinned.replace(f"{lib_key}\n", f"{lib_key}=={cve_version}\n")
-        result["requirements.txt"] = pinned
-        step(f"  wrapper-det: {lib_key} pinned a {cve_version}")
+        import re as _re_pin
+        # Replace the bare package name as a whole token (not inside a longer package name)
+        pinned = _re_pin.sub(
+            rf'(^|\n)({re.escape(lib_key)})([ \t]*\n|[ \t]*$)',
+            rf'\1\2=={cve_version}\3',
+            reqs,
+        )
+        if pinned != reqs:
+            result["requirements.txt"] = pinned
+            step(f"  wrapper-det: {lib_key} pinned a {cve_version}")
+        else:
+            step(f"  wrapper-det: {lib_key} — no se pudo pinear a {cve_version} (revisa requirements.txt)")
 
     return result
 
