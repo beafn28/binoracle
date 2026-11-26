@@ -179,9 +179,18 @@ def verify_craft_web_cve(
 
     # Prefer generic lab: Craft's Docker setup takes >3min; for most CVEs
     # (path traversal, XSS, SQLi) the generic PHP lab is faster and sufficient.
+    # BUT: only use the generic lab when it has pre-built infra (source is a full
+    # project with its own Dockerfile/compose). For the craftcms/cms library source
+    # (no Dockerfile), the generic lab would call an LLM which generates a broken
+    # Dockerfile — skip straight to the craft-specific Docker in that case.
+    _has_own_docker = (
+        os.path.isfile(os.path.join(source_path, "Dockerfile")) or
+        os.path.isfile(os.path.join(source_path, "docker-compose.yml")) or
+        os.path.isfile(os.path.join(source_path, "docker-compose.yaml"))
+    )
     try:
         from .genericverify import _bootstrap_generic_lab
-        boot = _bootstrap_generic_lab(source_path, step, res, budget_s)
+        boot = _bootstrap_generic_lab(source_path, step, res, budget_s) if _has_own_docker else None
         if boot and boot[0]:
             lab, base_url, container = boot
             step("  craftverify: usando lab genérico PHP para Craft CMS")
