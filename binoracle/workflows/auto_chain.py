@@ -3474,19 +3474,33 @@ def run_full_chain(
                     llm=llm,
                     step=step,
                 )
-                if (_revised
-                        and isinstance(_revised, dict)
-                        and _revised.get("endpoint")
-                        and _revised.get("endpoint") != _tried_ep):
+                # analyst_endpoint_lock → LLM cannot override endpoint/http_method
+                _ep_locked = bool(llm_notes.get("analyst_endpoint_lock")
+                                  or llm_notes.get("poc_llm_endpoint_lock")
+                                  or llm_notes.get("poc_raw_http_lock"))
+                if _ep_locked and isinstance(_revised, dict):
+                    _revised.pop("endpoint", None)
+                    _revised.pop("http_method", None)
+                    step("  [5b] endpoint bloqueado — LLM solo puede cambiar params/técnica")
+
+                # Proceed when: a new endpoint was proposed (unlocked) OR params changed (locked)
+                _new_ep = isinstance(_revised, dict) and _revised.get("endpoint")
+                _has_useful = bool(
+                    _revised and isinstance(_revised, dict)
+                    and ((_new_ep and _new_ep != _tried_ep)
+                         or (_ep_locked
+                             and any(k not in ("endpoint", "http_method")
+                                     for k in _revised)))
+                )
+                if _has_useful:
                     # Merge revised notes — keep originals for fields LLM didn't revise
                     llm_notes.update(_revised)
-                    result.add_step(
-                        "rehypothesis", "ok",
-                        f"revised endpoint: {_revised.get('endpoint')} "
-                        f"(was: {_tried_ep})",
-                    )
+                    _new_desc = (f"endpoint={_revised.get('endpoint')} (was={_tried_ep})"
+                                 if _revised.get("endpoint")
+                                 else f"params/técnica revisados (endpoint={_tried_ep})")
+                    result.add_step("rehypothesis", "ok", _new_desc)
                     step(f"  hipotesis revisada: {_revised.get('http_method','GET')} "
-                         f"{_revised.get('endpoint')} — relanzando Stage 5")
+                         f"{_revised.get('endpoint') or _tried_ep} — relanzando Stage 5")
 
                     # Cap re-hypothesis budget at 40% of remaining or 120 s max
                     _remaining = max(0.0, budget_s - (time.time() - t0))
