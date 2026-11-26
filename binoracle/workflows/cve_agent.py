@@ -15240,16 +15240,25 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     # --- AUTO-DETECT json_body para endpoints REST (Fix B) ---
                     # Si el endpoint empieza por /wp-json/ o el plugin usa get_json_params()
                     # → forzar json_body=True aunque el LLM no lo haya detectado.
+                    # SOLO para métodos que llevan body (POST/PUT/PATCH).
+                    # GET/HEAD no tienen body — sus parámetros van en query string.
                     _sqli_ep_norm = (notes.get("endpoint") or "").lower()
+                    _sqli_http_method_norm = (_sqli_http_method or "GET").upper()
                     if not notes.get("json_body") and (
                             "/wp-json/" in _sqli_ep_norm
                             or _sqli_ep_norm.startswith("wp-json/")):
-                        notes["json_body"] = True
-                        inv.llm_notes["json_body"] = True
-                        step(("auto-detectado json_body=True: el endpoint es REST "
-                              "(/wp-json/) — el handler usa get_json_params()") if es else
-                             ("auto-detected json_body=True: REST endpoint "
-                              "(/wp-json/) — handler uses get_json_params()"))
+                        if _sqli_http_method_norm in ("POST", "PUT", "PATCH"):
+                            notes["json_body"] = True
+                            inv.llm_notes["json_body"] = True
+                            step(("auto-detectado json_body=True: el endpoint es REST "
+                                  "(/wp-json/) — el handler usa get_json_params()") if es else
+                                 ("auto-detected json_body=True: REST endpoint "
+                                  "(/wp-json/) — handler uses get_json_params()"))
+                        else:
+                            step((f"endpoint REST GET/HEAD ({_sqli_ep_norm[:60]}): "
+                                  "parámetros van en query string (no json_body)") if es else
+                                 (f"REST GET/HEAD endpoint ({_sqli_ep_norm[:60]}): "
+                                  "params in query string (not json_body)"))
                     elif not notes.get("json_body") and fr.local_path:
                         # Verificar en el código fuente si el handler del endpoint usa
                         # get_json_params() — indica que espera JSON body, no form data.

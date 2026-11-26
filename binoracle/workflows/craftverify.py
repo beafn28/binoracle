@@ -313,12 +313,31 @@ def verify_craft_web_cve(
     try:
         dockerfile_content = _craft_dockerfile(_CRAFT_PORT, cms_version=pkg_version or "")
         import tempfile, pathlib
+
+        # Cache the base image under a stable tag so Docker reuses layers across
+        # multiple runs with the same CraftCMS version (composer install only runs once).
+        # Include a short hash of the Dockerfile to auto-invalidate when it changes.
+        import hashlib as _hashlib
+        _df_hash = _hashlib.sha1(dockerfile_content.encode()).hexdigest()[:8]
+        _safe_ver = (pkg_version or "latest").replace(":", "_").replace("/", "_").replace(".", "_")
+        _cache_tag = f"binoracle_craft_base:{_safe_ver}_{_df_hash}"
+        _cache_exists = False
+        try:
+            _inspect = _run(["docker", "image", "inspect", _cache_tag], timeout=5)
+            _cache_exists = (_inspect.returncode == 0)
+        except Exception:
+            pass
+
         with tempfile.TemporaryDirectory(prefix="bo_craft_") as tmpdir:
             pathlib.Path(tmpdir, "Dockerfile").write_text(dockerfile_content)
-            step("  craftverify: construyendo imagen Craft CMS…")
-            _run(["docker", "build", "-t", container, tmpdir], timeout=240)
+            if _cache_exists:
+                step(f"  craftverify: imagen cacheada {_cache_tag} encontrada — reutilizando")
+            else:
+                step("  craftverify: construyendo imagen Craft CMS (primera vez, ~3-5 min)…")
+                _run(["docker", "build", "-t", _cache_tag, tmpdir], timeout=480)
+                step(f"  craftverify: imagen construida y cacheada como {_cache_tag}")
             _run(["docker", "run", "-d", "--rm", "--name", container,
-                  "-p", f"{_CRAFT_PORT}:{_CRAFT_PORT}", container], timeout=30)
+                  "-p", f"{_CRAFT_PORT}:{_CRAFT_PORT}", _cache_tag], timeout=30)
 
             import socket as _sock
             host = _lab_host()
