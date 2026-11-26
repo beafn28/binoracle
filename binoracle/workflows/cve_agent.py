@@ -17096,9 +17096,38 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                 inv.llm_notes["alt_endpoints"] = _fu_alts
                 except Exception:
                     pass
+            # URL-based upload shortcut: when the attack sends a URL for the server to download
+            # (e.g. data[url]=...) rather than a standard multipart file upload, the standard
+            # file-upload verifier won't trigger the vulnerable code path. Route to the missing-
+            # auth probe instead — confirming the endpoint works without auth and that the
+            # JSON success response is returned proves the server executes the request.
+            _params_dict = notes.get("parameters") or {}
+            _is_url_based_upload = (
+                inv.vuln_class in ("file-upload", "arbitrary-file-upload") and
+                isinstance(_params_dict, dict) and
+                any("[url]" in str(k).lower() or k.lower() in ("url", "remote_url", "file_url")
+                    for k in _params_dict) and
+                not notes.get("url_upload_skip_shortcut")
+            )
+            if (_is_url_based_upload and plugin_dir and notes.get("endpoint") and
+                    not is_drupal and not is_joomla):
+                from .wpverify import verify_wordpress_missing_auth_probe
+                _url_cs = notes.get("confirm_string") or '"success"'
+                step(("intentando verificacion DINAMICA -- subida URL-based: sonda no-auth "
+                      "con confirm_string para verificar que el endpoint responde sin login..." if es else
+                      "attempting DYNAMIC verification -- URL-based upload: no-auth probe "
+                      "with confirm_string to verify endpoint responds without login..."))
+                wr = verify_wordpress_missing_auth_probe(
+                    fr.local_path, plugin_dir, notes.get("endpoint"),
+                    notes.get("http_method") or "POST", _params_dict,
+                    on_step=step, budget_s=budget_s, companion_plugins=companion_plugins,
+                    keep_lab_on_failure=keep_lab_on_failure,
+                    confirm_string=_url_cs, json_body=bool(notes.get("json_body")))
+                _apply_wpverify_result(inv, wr, es, llm)
             # NOTA: 'if' (no 'elif') para que corra en el mismo pass que el auto-detect de arriba.
             if (not is_drupal and not is_joomla and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
-                  and inv.vuln_class in ("file-upload", "arbitrary-file-upload") and notes.get("endpoint")):
+                  and inv.vuln_class in ("file-upload", "arbitrary-file-upload") and notes.get("endpoint")
+                  and not _is_url_based_upload):
                 from .wpverify import (verify_wordpress_file_upload, _pick_param,
                                        _FILE_UPLOAD_HINTS, _UPLOAD_FORM_PLUGIN_CONFIG)
                 params = notes.get("parameters") or []
