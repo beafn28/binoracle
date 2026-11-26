@@ -1705,7 +1705,20 @@ def grep_vulnerable_functions(root: str, names: List[str]) -> dict:
     found: dict = {n: [] for n in names}
     if not names or not root or not os.path.isdir(root):
         return {"found": {}, "not_found": names}
-    compiled = {n: re.compile(r"\b" + re.escape(n) + r"\s*\(") for n in names}
+    # For namespaced names like "Foo\Bar::method" or "Foo::method", also try
+    # just the leaf identifier (the part after the last \, ::, or .) so that
+    # method definitions written without their qualifier still match.
+    _name_to_search: dict = {}
+    for n in names:
+        variants = {n}
+        for sep in ("\\", "::", "."):
+            if sep in n:
+                variants.add(n.rsplit(sep, 1)[-1])
+        _name_to_search[n] = variants
+    compiled = {
+        n: [re.compile(r"\b" + re.escape(v) + r"\s*\(") for v in variants]
+        for n, variants in _name_to_search.items()
+    }
     scanned = 0
     for dirpath, _dirs, files in os.walk(root):
         if "node_modules" in dirpath or "/.git" in dirpath:
@@ -1722,14 +1735,15 @@ def grep_vulnerable_functions(root: str, names: List[str]) -> dict:
                     text = f.read(_MAX_SCAN_BYTES)
             except Exception:
                 continue
-            for n, rx in compiled.items():
-                for m in rx.finditer(text):
-                    line_no = text.count("\n", 0, m.start()) + 1
-                    try:
-                        snippet = text.splitlines()[line_no - 1].strip()[:200]
-                    except Exception:
-                        snippet = ""
-                    found[n].append(FuncMatch(n, os.path.relpath(fp, root), line_no, snippet))
+            for n, rxlist in compiled.items():
+                for rx in rxlist:
+                    for m in rx.finditer(text):
+                        line_no = text.count("\n", 0, m.start()) + 1
+                        try:
+                            snippet = text.splitlines()[line_no - 1].strip()[:200]
+                        except Exception:
+                            snippet = ""
+                        found[n].append(FuncMatch(n, os.path.relpath(fp, root), line_no, snippet))
         if scanned >= _MAX_SCAN_FILES:
             break
     not_found = [n for n in names if not found.get(n)]

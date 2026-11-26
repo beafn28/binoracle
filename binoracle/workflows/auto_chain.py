@@ -671,10 +671,43 @@ _LIBRARY_SIGNALS = [
 
 
 def _is_library_cve(cve_info, llm_notes: dict) -> bool:
-    """Return True when the CVE targets a library that needs a wrapper app to exploit."""
+    """Return True when the CVE targets a standalone library that needs a custom wrapper app.
+
+    Key guards:
+    - WordPress/Drupal/Ghost/Craft/Strapi plugins always have their own HTTP layer,
+      so they are NEVER library CVEs even if the description mentions template injection.
+    - ssti/template-injection as a _vuln_class does NOT imply "library": CMSs (CraftCMS,
+      Ghost, Drupal) run their template engine within the app, so a real endpoint exists.
+    - "library" in the strategy text fired for 'this plugin library of features', not for
+      a pure Python/npm library. We check the target_binary and docker_image for context.
+    """
     desc = ((getattr(cve_info, "description", "") or "") + " " + str(llm_notes)).lower()
-    pkg_hit  = any(p in desc for p in _LIBRARY_PACKAGES)
-    sig_hit  = any(s in desc for s in _LIBRARY_SIGNALS)
+
+    # If the target is a WordPress/Drupal/CMS plugin or theme → definitely NOT a library CVE
+    _cms_ctx = any(tok in desc for tok in (
+        "wordpress", "wp-", "plugin for wordpress", "drupal", "ghost cms",
+        "craftcms", "craft cms", "strapi", "joomla", "prestashop", "magento",
+        "/wp-admin/", "/wp-content/", "admin-ajax.php", "/wp-json/",
+    ))
+    if _cms_ctx:
+        return False
+
+    # If the LLM or analyst set a docker_image or docker_compose, there's a lab → not a library CVE
+    if llm_notes.get("docker_image") or llm_notes.get("dockerfile_body"):
+        return False
+
+    pkg_hit = any(p in desc for p in _LIBRARY_PACKAGES)
+    # Exclude 'ssti'/'template injection' from triggering library detection when the
+    # target_binary is a web application (not a bare Python/node package).
+    _tb = str(llm_notes.get("target_binary") or "").lower()
+    _web_app_binary = any(tok in _tb for tok in ("cms", "app", "server", "api", "web", "craft"))
+    _skip_ssti_signal = _web_app_binary
+    _ssti_signals = {"ssti", "template injection", "template engine", "render_template_string",
+                     "arbitrary code via template"}
+    sig_hit = any(
+        s in desc for s in _LIBRARY_SIGNALS
+        if not (_skip_ssti_signal and s in _ssti_signals)
+    )
     no_endpoint = (llm_notes.get("endpoint", "") or "").strip() in ("", "?", "unknown", "n/a")
     return (pkg_hit or sig_hit) and no_endpoint
 
