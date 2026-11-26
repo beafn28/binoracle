@@ -203,6 +203,25 @@ _DOCKER_IMAGE_PROFILES: dict[str, dict] = {
         "startup_wait": 10,
         "health_path": "/",
     },
+    # --- Gradio Python apps ---
+    "gradio:": {
+        "port": 7860,
+        "startup_wait": 30,
+        "health_path": "/",
+        "dockerfile": (
+            "FROM python:3.11-slim\n"
+            "WORKDIR /app\n"
+            'RUN pip install --no-cache-dir "gradio=={VERSION}"\n'
+            "RUN printf 'import gradio as gr\\n"
+            "demo = gr.Interface(fn=lambda x: x, inputs=[\"text\"], outputs=[\"text\"])\\n"
+            "demo.launch(server_name=\"0.0.0.0\", server_port=7860)\\n' "
+            "> /app/app.py\n"
+            "EXPOSE 7860\n"
+            'CMD ["python", "/app/app.py"]\n'
+        ),
+        "envs": {},
+        "cmd": None,
+    },
 }
 
 
@@ -223,6 +242,12 @@ def dockerfile_from_profile(docker_image: str, port: int | None = None) -> str |
     profile = _match_profile(docker_image)
     if profile is None:
         return None
+
+    # If the profile has a full custom Dockerfile template, use it directly.
+    if "dockerfile" in profile:
+        # Extract version from docker_image (e.g. "gradio:4.19.1" → "4.19.1")
+        version = docker_image.split(":", 1)[1] if ":" in docker_image else "latest"
+        return profile["dockerfile"].replace("{VERSION}", version)
 
     effective_port = port or profile["port"]
     lines: list[str] = [f"FROM {docker_image}"]
