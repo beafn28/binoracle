@@ -14766,35 +14766,38 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             # Craft CMS: PHP-based CMS with CSRF+cookie session auth
             elif (not plugin_dir and fr.local_path and
                   (any(w in (getattr(inv, "cms", "") or "").lower() for w in ("craft", "craftcms"))
-                   or any(w in (notes.get("cms") or "").lower() for w in ("craft", "craftcms")))
+                   or any(w in (notes.get("cms") or "").lower() for w in ("craft", "craftcms"))
+                   or any(w in (inv.llm_notes.get("cms") or "").lower() for w in ("craft", "craftcms")))
                   and inv.vuln_class in ("xss", "sqli", "sql-injection", "ssrf", "idor",
                                          "missing-authorization", "auth-bypass",
                                          "broken-access-control", "ssti", "rce",
                                          "code-injection", "command-injection",
                                          "os-command-injection", "path-traversal")
-                  and notes.get("endpoint")):
+                  and (notes.get("endpoint") or inv.llm_notes.get("endpoint"))):
                 from .craftverify import detect_craft, verify_craft_web_cve
                 # Trust analyst's explicit cms: "craft" designation without requiring detect_craft
-                _analyst_craft = any(w in (notes.get("cms") or "").lower() for w in ("craft", "craftcms"))
+                _analyst_craft = any(w in ((notes.get("cms") or inv.llm_notes.get("cms")) or "").lower()
+                                     for w in ("craft", "craftcms"))
                 if _analyst_craft or detect_craft(str(fr.local_path)):
                     step(("  craftverify: Craft CMS detectado — iniciando lab" if es else
                           "  craftverify: Craft CMS detected — starting lab"))
                     # Si el analista especificó dockerfile_body, inyectarlo antes del lab
                     _inject_custom_docker_lab(str(fr.local_path), notes, step)
+                    _lln = inv.llm_notes  # analyst notes preserved on inv
                     wr = verify_craft_web_cve(
                         str(fr.local_path),
-                        endpoint=notes.get("endpoint") or "/",
+                        endpoint=(notes.get("endpoint") or _lln.get("endpoint") or "/"),
                         vuln_class=inv.vuln_class,
-                        http_method=notes.get("http_method") or "GET",
-                        parameters=notes.get("parameters") or [],
-                        payload=notes.get("payload") or "",
-                        confirm_string=notes.get("confirm_string") or "",
-                        auth_required=bool(notes.get("auth_required") or notes.get("authenticated")),
-                        pkg_version=(inv.llm_notes.get("vulnerable_version")
-                                     or inv.llm_notes.get("affected_version") or ""),
+                        http_method=(notes.get("http_method") or _lln.get("http_method") or "GET"),
+                        parameters=(notes.get("parameters") or _lln.get("parameters") or []),
+                        payload=(notes.get("payload") or _lln.get("payload") or ""),
+                        confirm_string=(notes.get("confirm_string") or _lln.get("confirm_string") or ""),
+                        auth_required=bool(notes.get("auth_required") or notes.get("authenticated")
+                                           or _lln.get("auth_required")),
+                        pkg_version=(_lln.get("vulnerable_version") or _lln.get("affected_version") or ""),
                         on_step=step,
                         budget_s=budget_s,
-                        json_body=bool(notes.get("json_body")),
+                        json_body=bool(notes.get("json_body") or _lln.get("json_body")),
                     )
                     _apply_wpverify_result(inv, wr, es, llm)
             # Payload CMS: Node.js headless CMS with JWT admin auth
