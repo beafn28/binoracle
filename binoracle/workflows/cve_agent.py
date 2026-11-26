@@ -1048,6 +1048,8 @@ def _diagnose_failure(wr: Any, technique_label: str = "", vuln_class: str = "") 
 
     El diagnóstico se inyecta en la evidencia ANTES de llamar al LLM."""
     ev = getattr(wr, "evidence", {}) or {}
+    if not isinstance(ev, dict):
+        ev = {}
     ctrl_body = (ev.get("respuesta_control_recorte") or "")[:600]
     ctrl_status = ev.get("status_control") or ev.get("control_status") or 0
     _det = (getattr(wr, "detail", "") or "")[:400]
