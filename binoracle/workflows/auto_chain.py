@@ -1522,11 +1522,15 @@ if __name__ == "__main__":
         "requirements.txt": "flask\njinja2",
     },
     # aiohttp static file serving path traversal
+    # CVE-2024-23334: add_static with follow_symlinks=True doesn't validate the
+    # resolved path stays within root dir. Also includes a custom /file/ handler
+    # that explicitly mirrors the vulnerable behavior as a secondary test route.
     "aiohttp": {
         "_meta": {"endpoint": "/files/", "param": None, "method": "GET",
-                  "path_traversal_prefix": "/files/"},
+                  "path_traversal_prefix": "/files/",
+                  "path_traversal_prefix_alt": "/file/"},
         "app.py": """\
-import os, asyncio
+import os
 from aiohttp import web
 
 STATIC_DIR = "/app/static"
@@ -1534,20 +1538,24 @@ os.makedirs(STATIC_DIR, exist_ok=True)
 with open(os.path.join(STATIC_DIR, "test.txt"), "w") as f:
     f.write("aiohttp static ok")
 
-async def serve(request):
+# /file/<path> — explicit path join without validation (always vulnerable, for canary)
+async def serve_file(request):
     path = request.match_info.get("path", "")
     full = os.path.join(STATIC_DIR, path)
     try:
-        return web.Response(text=open(full).read())
+        with open(full, "rb") as f:
+            return web.Response(body=f.read())
     except Exception as e:
         return web.Response(text=f"error:{e}", status=404)
 
 app = web.Application()
+# Primary: vulnerable aiohttp StaticResource (follow_symlinks=True, no root check)
 app.router.add_static("/files", STATIC_DIR, follow_symlinks=True)
-app.router.add_get("/file/{path:.+}", serve)
+# Secondary: explicit path join without validation
+app.router.add_get("/file/{path:.+}", serve_file)
 
 if __name__ == "__main__":
-    web.run_app(app, port=5000)
+    web.run_app(app, host="0.0.0.0", port=5000)
 """,
         "requirements.txt": "aiohttp",
     },
