@@ -5084,7 +5084,9 @@ def process_never_attempted_cves(
             _cve_id_check = fname.replace(".json", "")
             if _cve_id_check not in _cve_set:
                 continue
-        # Skip CVEs that another concurrent batch is currently processing
+        # Skip CVEs that another concurrent batch is currently processing.
+        # If we CAN acquire the lock exclusively, the previous process crashed and
+        # left a stale lock — remove it so this CVE becomes eligible again.
         _lock_path_scan = fpath + ".lock"
         if _os.path.exists(_lock_path_scan):
             try:
@@ -5092,6 +5094,12 @@ def process_never_attempted_cves(
                 with open(_lock_path_scan, "w") as _lf_scan:
                     _fcntl_scan.flock(_lf_scan, _fcntl_scan.LOCK_EX | _fcntl_scan.LOCK_NB)
                     _fcntl_scan.flock(_lf_scan, _fcntl_scan.LOCK_UN)
+                # Got the lock → it was stale (process died); clean up and proceed
+                try:
+                    _os.remove(_lock_path_scan)
+                    step(f"lock huerfano eliminado: {fname} (proceso previo terminó sin limpiar)")
+                except OSError:
+                    pass
             except (OSError, IOError):
                 step(f"saltando {fname} (otro proceso lo tiene bloqueado)")
                 continue
