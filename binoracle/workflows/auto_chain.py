@@ -5060,6 +5060,7 @@ def process_never_attempted_cves(
     budget_s: float = 300.0,
     reports_dir: str = "binoracle_batch_reports",
     on_step=None,
+    cve_filter: "Optional[List[str]]" = None,
 ) -> List["ChainResult"]:
     """Re-run full chain on CVEs that have been investigated but never verified.
 
@@ -5074,10 +5075,15 @@ def process_never_attempted_cves(
 
     # Collect never-attempted CVEs with enough config to try
     candidates = []
+    _cve_set = set(cve_filter) if cve_filter else None
     for fname in sorted(_os.listdir(reports_dir)):
         if not fname.endswith(".json"):
             continue
         fpath = _os.path.join(reports_dir, fname)
+        if _cve_set:
+            _cve_id_check = fname.replace(".json", "")
+            if _cve_id_check not in _cve_set:
+                continue
         # Skip CVEs that another concurrent batch is currently processing
         _lock_path_scan = fpath + ".lock"
         if _os.path.exists(_lock_path_scan):
