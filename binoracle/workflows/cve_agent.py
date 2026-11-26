@@ -13982,6 +13982,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _pt_url_suffix = notes.get("url_suffix") or ""
                 _pt_query_suffix = notes.get("query_suffix") or ""
                 _pt_custom_hdrs = notes.get("custom_headers") or None
+                _pt_auth_req = bool(notes.get("auth_required"))
                 _pt_dockerfile = _notes_dockerfile(notes)
                 _pt_extra_files = notes.get("extra_files") or None
                 _pt_setup_cmds = notes.get("setup_cmds") or None
@@ -14056,7 +14057,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     url_suffix=_pt_url_suffix, custom_headers=_pt_custom_hdrs,
                     query_suffix=_pt_query_suffix,
                     dockerfile_body=_pt_dockerfile, extra_files=_pt_extra_files,
-                    setup_commands=_pt_setup_cmds)
+                    setup_commands=_pt_setup_cmds, auth_required=_pt_auth_req)
                 # Bucle de feedback: si Qwen scaffoldeo y fallo, que diagnostique y regenere
                 if _scf_pt and not wr.verified:
                     _lab_cfg_pt = {
@@ -14092,7 +14093,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             url_suffix=_pt_url_suffix, custom_headers=_pt_custom_hdrs,
                             query_suffix=_pt_query_suffix,
                             dockerfile_body=_pt_dockerfile, extra_files=_pt_extra_files,
-                            setup_commands=_pt_setup_cmds)
+                            setup_commands=_pt_setup_cmds, auth_required=_pt_auth_req)
                         wr = wr_fb
                         if wr_fb.verified:
                             break
@@ -14112,7 +14113,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         url_suffix=_pt_url_suffix, custom_headers=_pt_custom_hdrs,
                         query_suffix=_pt_query_suffix,
                         dockerfile_body=_pt_dockerfile, extra_files=_pt_extra_files,
-                        setup_commands=_pt_setup_cmds)
+                        setup_commands=_pt_setup_cmds, auth_required=_pt_auth_req)
                 wr = _run_evidence_retry_loop(
                     llm, step, es, _GENERIC_PATH_TRAVERSAL_RETRY_SYS,
                     _GENERIC_PATH_TRAVERSAL_RETRY_EVIDENCE_KEYS, _attempt_pt, wr,
@@ -14132,7 +14133,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         url_suffix=_pt_url_suffix, custom_headers=_pt_custom_hdrs,
                         query_suffix=_pt_query_suffix,
                         dockerfile_body=_pt_dockerfile, extra_files=_pt_extra_files,
-                        setup_commands=_pt_setup_cmds)
+                        setup_commands=_pt_setup_cmds, auth_required=_pt_auth_req)
                     if _wr_extra.verified or (not wr.verified and _wr_extra.ok):
                         wr = _wr_extra
                 # Cachear el scaffold SOLO si quedo verificado de verdad (igual que
@@ -14623,12 +14624,13 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         if _scf.get("parameters"):
                             params = _scf["parameters"]
                         _scf_cmdi = True
+                _cmdi_auth_req = bool(notes.get("auth_required"))
                 wr = verify_generic_command_injection(
                     _cmdi_local_path_str, _cmdi_ep, notes.get("http_method") or "GET",
                     params, cmd_param_hint=cmd_p or "", on_step=step, budget_s=budget_s,
                     custom_headers=_cmdi_custom_hdrs,
                     dockerfile_body=_cmdi_dockerfile, extra_files=_cmdi_extra_files,
-                    setup_commands=_cmdi_setup_cmds)
+                    setup_commands=_cmdi_setup_cmds, auth_required=_cmdi_auth_req)
                 if _scf_cmdi and not wr.verified:
                     _lab_cfg_cmdi = {
                         "dockerfile_body": _cmdi_dockerfile,
@@ -14656,7 +14658,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             params, cmd_param_hint=cmd_p or "", on_step=step, budget_s=budget_s,
                             custom_headers=_cmdi_custom_hdrs,
                             dockerfile_body=_cmdi_dockerfile, extra_files=_cmdi_extra_files,
-                            setup_commands=_cmdi_setup_cmds)
+                            setup_commands=_cmdi_setup_cmds, auth_required=_cmdi_auth_req)
                         wr = wr_fb
                         if wr_fb.verified:
                             break
@@ -14670,7 +14672,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         cmd_param_hint=pr or "", on_step=step, budget_s=budget_s,
                         custom_headers=_cmdi_custom_hdrs,
                         dockerfile_body=_cmdi_dockerfile, extra_files=_cmdi_extra_files,
-                        setup_commands=_cmdi_setup_cmds)
+                        setup_commands=_cmdi_setup_cmds, auth_required=_cmdi_auth_req)
                 wr = _run_evidence_retry_loop(
                     llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
                     _attempt_cmdi_generic, wr, _cmdi_ep, cmd_p,

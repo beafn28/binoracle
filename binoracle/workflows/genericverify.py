@@ -2148,12 +2148,12 @@ def verify_generic_command_injection(
     budget_s: float = 900.0, custom_headers: Optional[dict] = None,
     dockerfile_body: str = "", extra_files: Optional[dict] = None,
     setup_commands: Optional[List[str]] = None,
+    auth_required: bool = False,
 ) -> WpVerifyResult:
     """Verifica OS command injection contra CUALQUIER objetivo que traiga su propio Dockerfile/
     docker-compose.yml, sin asumir el stack (Python/Node/Go/PHP/Java/Ruby... todos escriben a
-    disco igual, asi que el canario de fichero via `docker exec` sirve siempre). No hay login de
-    por medio -- esta clase, a diferencia de missing-authorization o account-takeover, no lo
-    necesita para probarse."""
+    disco igual, asi que el canario de fichero via `docker exec` sirve siempre). Si auth_required
+    se pasa True, intenta login automatico (bearer token o session cookie) antes de los intentos."""
     step = on_step or (lambda _m: None)
     res = WpVerifyResult()
     if not _docker_daemon_ok():
@@ -2169,6 +2169,17 @@ def verify_generic_command_injection(
         return res
     lab, base_url, container = boot
     try:
+        # Auth acquisition (pgAdmin, Django admin, Flask-Login, etc.)
+        if auth_required:
+            _auth_res = _try_acquire_app_token(base_url, step)
+            if _auth_res:
+                custom_headers = dict(custom_headers or {})
+                if _auth_res.startswith("cookie:"):
+                    custom_headers.setdefault("Cookie", _auth_res[7:])
+                else:
+                    custom_headers.setdefault("Authorization", f"Bearer {_auth_res}")
+            else:
+                step("WARN: auth_required pero no se pudo autenticar — continuando sin auth")
         secret = _token() * 4
         canary_path = f"/tmp/binoracle_ci_{_token()}.txt"
         m = (http_method or "POST").upper().split("/")[0].split("|")[0].strip() or "POST"
@@ -2398,6 +2409,7 @@ def verify_generic_path_traversal(
     query_suffix: str = "",
     dockerfile_body: str = "", extra_files: Optional[dict] = None,
     _tried_params_set: Optional[frozenset] = None,
+    auth_required: bool = False,
 ) -> WpVerifyResult:
     """Analogo generico de verify_wordpress_path_traversal (wpverify.py): planta un fichero
     canario con un secreto aleatorio DENTRO del contenedor real del objetivo (via `docker exec`,
@@ -2503,6 +2515,17 @@ def verify_generic_path_traversal(
         return res
     lab, base_url, container = boot
     try:
+        # Auth acquisition before traversal attempts
+        if auth_required:
+            _auth_res = _try_acquire_app_token(base_url, step)
+            if _auth_res:
+                custom_headers = dict(custom_headers or {})
+                if _auth_res.startswith("cookie:"):
+                    custom_headers.setdefault("Cookie", _auth_res[7:])
+                else:
+                    custom_headers.setdefault("Authorization", f"Bearer {_auth_res}")
+            else:
+                step("WARN: auth_required pero no se pudo autenticar — continuando sin auth")
         secret = _token() * 4
         canary_path = f"/tmp/binoracle_canary_{_token()}.txt"
         # Captura: servidor arrancado, antes del ataque
@@ -3333,17 +3356,20 @@ def verify_generic_file_upload(
 
 
 def _try_acquire_app_token(base_url: str, step) -> Optional[str]:
-    """Attempt to authenticate against common app login endpoints and return a bearer token.
+    """Attempt to authenticate against common app login endpoints and return a bearer token
+    OR a 'cookie:NAME=VALUE' string for session-cookie-based apps.
 
-    Tries Directus (/auth/login), Ghost (/ghost/api/admin/session, /ghost/api/admin/token),
-    and generic /api/auth/login endpoints with the standard binoracle test credentials.
-    Returns the bearer token string or None if all attempts fail.
+    Tries JSON bearer token endpoints first (Directus, Ghost, generic /api/auth/login),
+    then form-based session login (pgAdmin, Flask, Django, etc.).
+    Returns the token/cookie string or None if all attempts fail.
     """
     import json as _j
+    import re as _re_auth
     _creds = [
         {"email": "admin@example.com", "password": "BinOracle123!"},
         {"email": "admin@example.com", "password": "Admin1234!"},
     ]
+    # ── 1. JSON bearer token endpoints ─────────────────────────────────────────
     _login_endpoints = [
         "/auth/login",             # Directus
         "/ghost/api/admin/session", # Ghost CMS admin session
@@ -3373,6 +3399,61 @@ def _try_acquire_app_token(base_url: str, step) -> Optional[str]:
                         return str(_tok)
             except Exception:
                 pass
+    # ── 2. Form-based session login (pgAdmin, Flask, Django admin, etc.) ───────
+    # Uses requests.Session to maintain cookie jar across GET→POST
+    _form_endpoints = [
+        "/login",           # pgAdmin, Flask-Login, generic
+        "/auth/login",
+        "/accounts/login/", # Django admin
+        "/admin/login/",    # Django admin
+    ]
+    # Field name combos: (email_field, pass_field)
+    _field_combos = [
+        ("email", "password"),
+        ("username", "password"),
+        ("user", "password"),
+    ]
+    try:
+        import requests as _req
+        for ep in _form_endpoints:
+            for cred in _creds:
+                for email_f, pass_f in _field_combos:
+                    try:
+                        sess = _req.Session()
+                        sess.headers["User-Agent"] = "binoracle/1.0"
+                        get_r = sess.get(base_url + ep, timeout=10, allow_redirects=True)
+                        # Extract CSRF token from hidden input or meta tag
+                        _csrf = ""
+                        _m = _re_auth.search(
+                            r'<input[^>]*name=["\'](?:csrf_token|csrfmiddlewaretoken|_token)["\'][^>]*value=["\']([^"\']+)["\']',
+                            get_r.text or "", _re_auth.IGNORECASE)
+                        if _m:
+                            _csrf = _m.group(1)
+                        form = {email_f: cred["email"], pass_f: cred["password"]}
+                        if _csrf:
+                            form["csrf_token"] = _csrf
+                            form["csrfmiddlewaretoken"] = _csrf
+                        post_r = sess.post(base_url + ep, data=form, timeout=15,
+                                           allow_redirects=True)
+                        # Success if we got a session cookie and not still on login page
+                        _cookies = dict(sess.cookies)
+                        _is_authed = (
+                            _cookies and
+                            post_r.status_code in (200, 302) and
+                            "login" not in (post_r.url or "").lower().split("?")[0].rstrip("/")
+                        )
+                        if not _is_authed and _cookies:
+                            # Secondary check: authenticated page doesn't have login form
+                            _is_authed = "password" not in (post_r.text or "").lower()[:500]
+                        if _is_authed and _cookies:
+                            _cookie_str = "; ".join(f"{k}={v}" for k, v in _cookies.items())
+                            step(f"auth: session via form {ep} ({email_f}) → cookie len={len(_cookie_str)}")
+                            # Return as 'cookie:VALUE' so caller sets Cookie header instead of Bearer
+                            return f"cookie:{_cookie_str}"
+                    except Exception:
+                        pass
+    except ImportError:
+        pass
     return None
 
 
@@ -3421,12 +3502,15 @@ def verify_generic_ssrf(
             return res
 
         # Authentication: if the app requires auth (e.g. Directus, Ghost), acquire a bearer
-        # token before sending SSRF payloads, since unauthenticated requests would get 401.
+        # token or session cookie before sending SSRF payloads.
         if auth_required:
-            _bearer = _try_acquire_app_token(base_url, step)
-            if _bearer:
+            _auth_result = _try_acquire_app_token(base_url, step)
+            if _auth_result:
                 custom_headers = dict(custom_headers or {})
-                custom_headers.setdefault("Authorization", f"Bearer {_bearer}")
+                if _auth_result.startswith("cookie:"):
+                    custom_headers.setdefault("Cookie", _auth_result[7:])
+                else:
+                    custom_headers.setdefault("Authorization", f"Bearer {_auth_result}")
             else:
                 step("WARN: auth_required pero no se pudo obtener token — continuando sin auth")
 

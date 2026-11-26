@@ -4695,8 +4695,13 @@ def process_never_attempted_cves(
         # WP plugin slug: lowercase/digits/hyphens, no '=', no '/', no extension
         _is_wp_slug = bool(_src and not _src.startswith("http")
                            and not _re_na.search(r'[=./]', _src))
-        # WP.org plugin URL: https://wordpress.org/plugins/<slug>/
-        _is_wp_org_url = bool(_src and "wordpress.org/plugins/" in _src)
+        # WP.org plugin URL: handles wordpress.org/plugins/, plugins.svn.wordpress.org/,
+        # and downloads.wordpress.org/plugin/ (all point to WP plugin source code)
+        _is_wp_org_url = bool(_src and (
+            "wordpress.org/plugins/" in _src
+            or "plugins.svn.wordpress.org/" in _src
+            or "downloads.wordpress.org/plugin/" in _src
+        ))
         has_wp_source = _is_wp_slug or _is_wp_org_url
         # Supported CMSes that have their own verifier (craftverify, etc.)
         _cms = (n.get("cms") or "").lower()
