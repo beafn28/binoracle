@@ -4717,10 +4717,10 @@ def process_never_attempted_cves(
                     # use a sentinel when evidence is empty (craftverify, timeout, etc.)
                     _existing["attempt_evidence"] = r.evidence if r.evidence else {
                         "attempted": True, "source": "auto_chain"}
-                    if r.verified and r.evidence:
+                    if r.verified:
                         _existing["dynamic_verify"] = {
                             "verified": True,
-                            "evidence": r.evidence,
+                            "evidence": r.evidence if r.evidence else {},
                         }
                     with open(_out_path, "w", encoding="utf-8") as fh:
                         _j.dump(_existing, fh, indent=2, ensure_ascii=False, default=str)
