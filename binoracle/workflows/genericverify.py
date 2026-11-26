@@ -5823,6 +5823,23 @@ def verify_generic_ssti(
         if found:
             res.verified = True
             res.ok = True
+            # Weaponization: try RCE via the confirmed SSTI vector
+            try:
+                _ssti_wep = _try_weaponize_generic(
+                    base_url=base_url,
+                    endpoint=win_ep or endpoint or "/",
+                    method=m,
+                    query_params={win_param: ""} if m == "GET" else None,
+                    post_data={win_param: ""} if m != "GET" else None,
+                    hdrs=custom_headers or {},
+                    confirm_string="",
+                    vuln_class="ssti",
+                    step=step,
+                )
+                if _ssti_wep.get("impact"):
+                    res.evidence["weaponization"] = _ssti_wep
+            except Exception:
+                pass
             if res.evidence.get("upload_name_ganador"):
                 res.detail = (
                     f"SSTI multi-step confirmada: upload con name={res.evidence['upload_name_ganador']!r} "

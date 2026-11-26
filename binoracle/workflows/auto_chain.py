@@ -5315,6 +5315,16 @@ def process_never_attempted_cves(
                             _ae = dict(r.evidence) if r.evidence else {}
                             _ae["attempted"] = True  # always set — r.evidence may not contain it
                             _ae.setdefault("source", "auto_chain")
+                            # Also merge inv.attempt_evidence (Docker lab result details)
+                            _inv_ae = getattr(r.inv, "attempt_evidence", None) if r.inv else None
+                            if _inv_ae and isinstance(_inv_ae, dict):
+                                for _ak, _av in _inv_ae.items():
+                                    if _ak not in _ae:
+                                        try:
+                                            _j.dumps(_av, default=str)
+                                            _ae[_ak] = _av
+                                        except Exception:
+                                            _ae[_ak] = str(_av)[:200]
                             _existing["attempt_evidence"] = _ae
                             # Also persist investigation steps, blockers, llm_notes and
                             # static_analysis so failed CVEs are not hollow — the analyst and
@@ -5334,6 +5344,9 @@ def process_never_attempted_cves(
                             # Persist execution logs for historial replay (web UI)
                             if _exec_logs:
                                 _existing["execution_logs"] = _exec_logs[-800:]
+                            # Persist dynamic_verify for both verified AND failed runs
+                            # so the web UI shows what happened (endpoint hit, detail, etc.)
+                            _inv_dv = getattr(r.inv, "dynamic_verify", None) if r.inv else None
                             if r.verified:
                                 # Build a JSON-safe evidence dict (drop non-serializable blobs)
                                 _dv_evidence = {}
@@ -5343,10 +5356,25 @@ def process_never_attempted_cves(
                                         _dv_evidence[_ek] = _ev
                                     except Exception:
                                         _dv_evidence[_ek] = str(_ev)[:200]
+                                # Merge inv.dynamic_verify (has detail, logs, evidence from lab)
+                                if _inv_dv:
+                                    _dv_evidence.update({k: v for k, v in _inv_dv.items()
+                                                         if k not in _dv_evidence})
                                 _existing["dynamic_verify"] = {
                                     "verified": True,
                                     "evidence": _dv_evidence,
                                 }
+                            elif _inv_dv and _inv_dv.get("attempted"):
+                                # Failed attempt: persist the lab result for diagnosis
+                                try:
+                                    _j.dumps(_inv_dv, default=str)
+                                    _existing["dynamic_verify"] = _inv_dv
+                                except Exception:
+                                    _existing["dynamic_verify"] = {
+                                        "attempted": True,
+                                        "verified": False,
+                                        "detail": str(_inv_dv.get("detail", ""))[:300],
+                                    }
                             with open(_out_path, "w", encoding="utf-8") as fh:
                                 _j.dump(_existing, fh, indent=2, ensure_ascii=False, default=str)
                             # Verify write: check that dynamic_verify was persisted
