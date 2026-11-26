@@ -85,6 +85,9 @@ RUN echo "register_argc_argv = On" >> /usr/local/etc/php/php.ini-development \\
     && echo "display_startup_errors = On" >> /usr/local/etc/php/php.ini-development \\
     && echo "error_reporting = E_ALL" >> /usr/local/etc/php/php.ini-development \\
     && cp /usr/local/etc/php/php.ini-development /usr/local/etc/php/php.ini
+# Configure Apache to listen on {port} (not the default 80) so -p {port}:{port} works correctly
+RUN sed -i 's/^Listen 80$/Listen {port}/' /etc/apache2/ports.conf \\
+    && sed -i 's/<VirtualHost \\*:80>/<VirtualHost *:{port}>/' /etc/apache2/sites-available/000-default.conf
 WORKDIR /var/www/html
 RUN composer create-project {_create_proj} craft --no-interaction --prefer-dist \\
     || (echo "craft download failed" && exit 1)
@@ -358,11 +361,11 @@ def verify_craft_web_cve(
 
             # Run pre-exploit setup commands inside the container.
             # Used for multi-step exploits that need to pre-condition container state
-            # (e.g. write a PHP gadget file for Yii2 PhpManager RCE).
+            # (e.g. write a PHP gadget file for Yii2 PhpManager RCE, or install a CMS).
             for _cmd in (setup_cmds or []):
                 try:
-                    step(f"  craftverify: setup_cmd: {_cmd[:80]}")
-                    _run(["docker", "exec", container, "sh", "-c", _cmd], timeout=15)
+                    step(f"  craftverify: setup_cmd: {_cmd[:100]}")
+                    _run(["docker", "exec", container, "sh", "-c", _cmd], timeout=120)
                 except Exception as _se:
                     step(f"  craftverify: setup_cmd error — {_se}")
 
