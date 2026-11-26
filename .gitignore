@@ -58,3 +58,4 @@ rsvp-me/
 updraftplus/
 *.html.bak_*
 COORDINATION.md
+binoracle_batch_reports/*.lock
