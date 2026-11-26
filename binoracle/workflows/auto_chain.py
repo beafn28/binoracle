@@ -1669,93 +1669,70 @@ def _detect_deterministic_wrapper(cve_info, source_dir: str) -> str | None:
     return None
 
 
-def _build_deterministic_wrapper(lib_key: str, source_dir: str,
-                                  tmpdir: str, step: Callable,
-                                  cve_version: str = "") -> tuple[str | None, dict]:
-    """Build and start a deterministic wrapper app for a library CVE without LLM.
+def _get_deterministic_wrapper_files(lib_key: str, cve_version: str = "",
+                                      step: Callable = lambda _m: None) -> dict:
+    """Return the file dict for a deterministic wrapper app (without building/running).
 
-    Returns (base_url, meta_dict) where meta_dict has endpoint/param hints,
-    or (None, {}) on failure.
+    Keys: filename → content. The special key "_meta" contains endpoint hints.
+    "Dockerfile" is always present (from the entry or default Python Dockerfile).
+
+    The caller injects these into llm_notes["dockerfile_body"] and
+    llm_notes["extra_files"] so verifiers build from these files.
     """
     files = _DETERMINISTIC_WRAPPERS.get(lib_key)
     if not files:
-        return None, {}
-    meta = {k: v for k, v in files.items() if k == "_meta"}
-    meta = meta.get("_meta", {})
+        return {}
 
-    app_dir = os.path.join(tmpdir, f"wrapper_{lib_key}")
-    os.makedirs(app_dir, exist_ok=True)
+    result = {k: v for k, v in files.items()}  # shallow copy
 
-    for fname, content in files.items():
-        fpath = os.path.join(app_dir, fname)
-        os.makedirs(os.path.dirname(fpath), exist_ok=True)
-        with open(fpath, "w") as fh:
-            fh.write(content)
+    # Inject default Dockerfile if the entry didn't supply one
+    if "Dockerfile" not in result:
+        result["Dockerfile"] = _WRAPPER_DOCKERFILES["python"]
 
     # Pin to vulnerable version in requirements.txt if known
-    if cve_version and "requirements.txt" in files:
-        req_path = os.path.join(app_dir, "requirements.txt")
-        with open(req_path) as fh:
-            reqs = fh.read()
-        # Pin the library to the vulnerable version
+    if cve_version and "requirements.txt" in result:
+        reqs = result["requirements.txt"]
         pinned = reqs.replace(f"\n{lib_key}\n", f"\n{lib_key}=={cve_version}\n")
         pinned = pinned.replace(f"{lib_key}\n", f"{lib_key}=={cve_version}\n")
-        with open(req_path, "w") as fh:
-            fh.write(pinned)
-        step(f"  wrapper: pinned {lib_key}=={cve_version}")
+        result["requirements.txt"] = pinned
+        step(f"  wrapper-det: {lib_key} pinned a {cve_version}")
 
-    # Use custom Dockerfile if provided; otherwise use the Python default
-    if "Dockerfile" not in files:
-        with open(os.path.join(app_dir, "Dockerfile"), "w") as fh:
-            fh.write(_WRAPPER_DOCKERFILES["python"])
-
-    import socket
-    with socket.socket() as s:
-        s.bind(("", 0))
-        port = s.getsockname()[1]
-
-    container_name = f"bo_det_{lib_key}_{port}"
-    step(f"  wrapper-det: construyendo imagen {lib_key} en puerto {port}…")
-    try:
-        import subprocess
-        subprocess.run(
-            ["docker", "build", "-t", container_name, "."],
-            cwd=app_dir, capture_output=True, timeout=180, check=True,
-        )
-        subprocess.run(
-            ["docker", "run", "-d", "--rm",
-             "-p", f"{port}:5000",
-             "--name", container_name, container_name],
-            capture_output=True, timeout=30, check=True,
-        )
-        import time
-        time.sleep(3)
-        step(f"  wrapper-det: {lib_key} arrancado → http://localhost:{port}")
-        return f"http://localhost:{port}", meta
-    except subprocess.CalledProcessError as e:
-        stderr = e.stderr.decode()[:300] if e.stderr else str(e)
-        step(f"  wrapper-det: fallo Docker — {stderr}")
-        return None, {}
+    return result
 
 
 def _generate_wrapper_app(cve_id: str, cve_info, llm_notes: dict,
                            tmpdir: str, step: Callable, llm=None,
                            source_dir: str = "") -> tuple[str | None, dict]:
-    """Generate a minimal app that exposes the vulnerable library over HTTP.
+    """Prepare wrapper app files for a library CVE, injecting them into llm_notes
+    so verifiers build from them (via dockerfile_body/extra_files).
 
-    Returns (url, meta_dict) where url is the base URL and meta_dict has
-    endpoint/param hints, or (None, {}) on failure.
+    Does NOT build or run a container here — verifiers build their own containers
+    via _bootstrap_generic_lab(dockerfile_body=..., extra_files=...) which allows
+    docker exec for canary planting.
 
+    Returns (None, meta_dict) on success (URL is not needed; verifiers build from
+    llm_notes["dockerfile_body"] / llm_notes["extra_files"]).
+    Returns (None, {}) if no wrapper is available.
     Priority: (1) deterministic no-LLM wrapper if library detected, (2) LLM-generated.
     """
     # Try deterministic wrapper first (no LLM needed)
     lib_key = _detect_deterministic_wrapper(cve_info, source_dir or "")
     if lib_key:
-        cve_version = llm_notes.get("vulnerable_version") or llm_notes.get("affected_version") or ""
-        url, meta = _build_deterministic_wrapper(lib_key, source_dir or "", tmpdir, step, cve_version)
-        if url:
-            return url, meta
-        step(f"  wrapper-det: fallo — intentando con LLM")
+        cve_version = (llm_notes.get("vulnerable_version")
+                       or llm_notes.get("affected_version") or "")
+        wrapper_files = _get_deterministic_wrapper_files(lib_key, cve_version, step)
+        if wrapper_files:
+            meta = wrapper_files.get("_meta", {})
+            # Inject Dockerfile and app files into llm_notes for verifiers
+            llm_notes["dockerfile_body"] = wrapper_files.get("Dockerfile", "")
+            extra_files = {k: v for k, v in wrapper_files.items()
+                           if k not in ("Dockerfile", "_meta")}
+            if extra_files:
+                llm_notes["extra_files"] = extra_files
+            step(f"  wrapper-det: {lib_key} — Dockerfile + {len(extra_files)} archivo(s) "
+                 f"inyectados en llm_notes para los verificadores")
+            return None, meta
+        step(f"  wrapper-det: sin plantilla para {lib_key} — intentando con LLM")
 
     if llm is None:
         step("  wrapper: sin LLM — no se puede generar app demo")
@@ -1791,71 +1768,33 @@ def _generate_wrapper_app(cve_id: str, cve_info, llm_notes: dict,
             if not ln.startswith("```")
         ).strip()
 
-    app_dir = os.path.join(tmpdir, "wrapper_app")
-    os.makedirs(app_dir, exist_ok=True)
-
-    with open(os.path.join(app_dir, main_file), "w") as fh:
-        fh.write(code)
-
-    # Write dependency manifest per stack
+    # Build dependency manifest and Dockerfile as strings (not files on disk)
     desc_lower = (desc + " " + code).lower()
+    extra_files: dict[str, str] = {main_file: code}
     if stack == "python":
         pkgs = ["flask"]
         for pkg in _LIBRARY_PACKAGES:
             if pkg in desc_lower:
                 pkgs.append(pkg)
-        with open(os.path.join(app_dir, "requirements.txt"), "w") as fh:
-            fh.write("\n".join(dict.fromkeys(pkgs)))
+        extra_files["requirements.txt"] = "\n".join(dict.fromkeys(pkgs))
     elif stack == "node":
-        # Minimal package.json — LLM code determines actual deps
         import json as _json
         pkg_name = cve_id.lower().replace("-", "_")
-        with open(os.path.join(app_dir, "package.json"), "w") as fh:
-            _json.dump({"name": pkg_name, "version": "1.0.0", "dependencies": {"express": "^4.18.0"}}, fh)
+        extra_files["package.json"] = _json.dumps({
+            "name": pkg_name, "version": "1.0.0",
+            "dependencies": {"express": "^4.18.0"}})
     elif stack == "go":
-        # Minimal go.mod
-        with open(os.path.join(app_dir, "go.mod"), "w") as fh:
-            fh.write("module wrapper\n\ngo 1.22\n")
+        extra_files["go.mod"] = "module wrapper\n\ngo 1.22\n"
     elif stack == "java":
-        # Minimal pom.xml with Spring Boot
-        os.makedirs(os.path.join(app_dir, "src", "main", "java"), exist_ok=True)
-        # Move App.java to correct path
-        import shutil as _shutil
-        _shutil.move(os.path.join(app_dir, main_file),
-                     os.path.join(app_dir, "src", "main", "java", main_file))
-        with open(os.path.join(app_dir, "pom.xml"), "w") as fh:
-            fh.write(_SPRING_POM_XML)
+        extra_files["pom.xml"] = _SPRING_POM_XML
 
-    with open(os.path.join(app_dir, "Dockerfile"), "w") as fh:
-        fh.write(_WRAPPER_DOCKERFILES.get(stack, _WRAPPER_DOCKERFILES["python"]))
-
-    # Find a free port
-    import socket
-    with socket.socket() as s:
-        s.bind(("", 0))
-        port = s.getsockname()[1]
-
-    container_name = f"bo_wrapper_{cve_id.replace('-', '_').lower()}"
-    step(f"  wrapper: construyendo imagen Docker en puerto {port}…")
-    try:
-        import subprocess
-        subprocess.run(
-            ["docker", "build", "-t", container_name, "."],
-            cwd=app_dir, capture_output=True, timeout=120, check=True,
-        )
-        subprocess.run(
-            ["docker", "run", "-d", "--rm",
-             "-p", f"{port}:5000",
-             "--name", container_name, container_name],
-            capture_output=True, timeout=30, check=True,
-        )
-        import time
-        time.sleep(3)  # wait for Flask to start
-        step(f"  wrapper: container arrancado → http://localhost:{port}")
-        return f"http://localhost:{port}", {}
-    except Exception as e:
-        step(f"  wrapper: fallo Docker — {e}")
-        return None, {}
+    dockerfile = _WRAPPER_DOCKERFILES.get(stack, _WRAPPER_DOCKERFILES["python"])
+    # Inject into llm_notes so verifiers build from these files via _bootstrap_generic_lab
+    llm_notes["dockerfile_body"] = dockerfile
+    llm_notes["extra_files"] = extra_files
+    step(f"  wrapper LLM: {stack} — Dockerfile + {len(extra_files)} archivo(s) "
+         f"inyectados en llm_notes para los verificadores")
+    return None, {}
 
 
 # ── Web investigation stage ───────────────────────────────────────────────────
@@ -1900,35 +1839,21 @@ def _run_web_stage(cve_id: str, cve_info, llm_notes: dict,
     wrapper_url = None
     wrapper_container = None
     if not compose_lab_url and _is_library_cve(cve_info, llm_notes):
-        step("  LIBRARY CVE detectado — generando app demo como target HTTP…")
+        step("  LIBRARY CVE detectado — inyectando Dockerfile/archivos del wrapper en llm_notes…")
         result.add_step("library_detection", "ok",
                         "wrapper app needed — no direct HTTP endpoint on library")
         import tempfile as _tf
         wrapper_tmpdir = _tf.mkdtemp(prefix="bo_wrapper_")
         _src_dir = getattr(cve_info, "source_dir", "") or ""
-        wrapper_url, wrapper_meta = _generate_wrapper_app(
+        # _generate_wrapper_app now injects dockerfile_body/extra_files into llm_notes
+        # (no URL returned — verifiers build their own container from those files)
+        _wrapper_url_unused, wrapper_meta = _generate_wrapper_app(
             cve_id, cve_info, llm_notes, wrapper_tmpdir, step, llm=llm,
             source_dir=_src_dir)
-        if wrapper_url:
-            lib_key = _detect_deterministic_wrapper(cve_info, _src_dir)
-            wrapper_container = (
-                f"bo_det_{lib_key}_{wrapper_url.split(':')[-1]}"
-                if lib_key else
-                f"bo_wrapper_{cve_id.replace('-', '_').lower()}"
-            )
-            # Inject the wrapper URL into config so investigate_cve targets it
-            # config may be a Config dataclass or None — convert to plain dict safely
-            if config is None:
-                config = {}
-            elif not isinstance(config, dict):
-                config = {k: getattr(config, k)
-                          for k in dir(config)
-                          if not k.startswith("_") and not callable(getattr(config, k, None))}
-            else:
-                config = dict(config)
-            config["target_url"] = wrapper_url
-            step(f"  target inyectado: {wrapper_url}")
-            result.add_step("wrapper_app", "ok", wrapper_url)
+        wrapper_injected = bool(llm_notes.get("dockerfile_body"))
+        if wrapper_injected:
+            result.add_step("wrapper_app", "ok",
+                            f"dockerfile_body injected ({len(llm_notes['dockerfile_body'])} chars)")
             # Wire deterministic wrapper endpoint/param hints into llm_notes
             # so verifiers (SSTI, path-traversal, etc.) know where to probe
             if wrapper_meta:
@@ -1938,9 +1863,10 @@ def _run_web_stage(cve_id: str, cve_info, llm_notes: dict,
                     extra = wrapper_meta.get("extra_params", {})
                     llm_notes["parameters"] = {wrapper_meta["param"]: "", **extra}
                 if wrapper_meta.get("path_traversal_prefix"):
-                    llm_notes.setdefault("path_traversal_prefix", wrapper_meta["path_traversal_prefix"])
+                    llm_notes.setdefault("path_traversal_prefix",
+                                         wrapper_meta["path_traversal_prefix"])
         else:
-            step("  wrapper app falló — continuando sin target HTTP")
+            step("  wrapper app falló — continuando sin lab propio")
             result.add_step("wrapper_app", "warn", "generation failed")
 
     # ── C15: Fallback endpoint fuzzing when precheck blocks with low confidence ──
