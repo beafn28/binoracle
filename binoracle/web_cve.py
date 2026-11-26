@@ -186,6 +186,14 @@ def _build_rich_logs_from_batch_json(batch: dict) -> list:
             caption = ss.get("caption_en") or ss.get("caption_es") or "screenshot"
             add(f"[screenshot] {caption}", 0.1)
 
+    # Weaponization impact (post-verification data extraction)
+    _wep = dv.get("weaponization") or (ev.get("weaponization") if ev else None)
+    if _wep and _wep.get("impact"):
+        add(f"[WEAPON] {_wep['impact']}", 0.15)
+        _wd = _wep.get("data") or {}
+        for _wk, _wv in list(_wd.items())[:4]:
+            add(f"[WEAPON:{_wk}] {str(_wv)[:120]}", 0.1)
+
     # Verdict
     if batch.get("verified"):
         add(f"[OK] {cve_id} VERIFICADO — vulnerabilidad confirmada en lab aislado", 0.1)
