@@ -1549,6 +1549,7 @@ class _GenericLab:
     _CMS_READY_SIGNALS: dict = {
         "ghost":      ["Ghost is running in development", "Your site is accessible"],
         "strapi":     ["Project is fully loaded", "Project started"],
+        "directus":   ["Server started", "Directus ready", "Starting server on"],
         "payload":    ["Listening on port", "Server started"],
         "wagtail":    ["Starting development server", "Quit the server"],
         "djangocms":  ["Starting development server", "Quit the server"],
@@ -1593,7 +1594,7 @@ class _GenericLab:
         import urllib.error
         import urllib.request
         # CMSs con arranque largo (bootstrap DB incluido): 90 tries × 3s = 4.5 min máximo
-        heavy_cms = {"ghost", "strapi", "payload", "drupal", "joomla", "craft",
+        heavy_cms = {"ghost", "strapi", "directus", "payload", "drupal", "joomla", "craft",
                      "typo3", "contao", "prestashop",
                      # Ruby/Python heavy-boot: Rails runs db:migrate at startup; Django
                      # may run migrations; Gradio downloads model weights on first run
@@ -2165,8 +2166,20 @@ def _bootstrap_generic_lab(source_dir: str, step, res: WpVerifyResult,
                       "_analyst_ctx": ctx_dir}
             step("docker-compose en extra_files tiene prioridad sobre Dockerfile autogenerado")
         else:
+            # Detect CMS hint from the docker_image name so discover_http gets the
+            # ready-signal checks and extended tries for slow-booting images like Ghost.
+            _cms_from_image = None
+            _known_cms_images = {
+                "ghost": "ghost", "strapi": "strapi", "directus": "directus",
+                "payload": "payload", "ghost/ghost": "ghost",
+            }
+            for _img_key, _cms_val in _known_cms_images.items():
+                if _img_key in docker_image.lower():
+                    _cms_from_image = _cms_val
+                    break
+            _target_extra = {"cms": _cms_from_image} if _cms_from_image else {}
             target = {"kind": "dockerfile", "path": df_path, "context": ctx_dir,
-                      "_analyst_ctx": ctx_dir}
+                      "_analyst_ctx": ctx_dir, **_target_extra}
             step("usando Dockerfile del analista (prioridad sobre repo)")
     else:
         target = _find_build_target(source_dir, pkg_version=pkg_version)
