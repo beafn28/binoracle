@@ -5055,6 +5055,9 @@ def _apply_wpverify_result(inv, wr, es: bool, llm=None) -> None:
     """Vuelca un WpVerifyResult (ver workflows/wpverify.py) en la investigacion."""
     from .wpverify import _auto_set_confidence
     _auto_set_confidence(wr)
+    # Guard: evidence must be a dict (some verifiers may set it to a string body snippet)
+    if not isinstance(wr.evidence, dict):
+        wr.evidence = {"respuesta_cuerpo_recorte": str(wr.evidence)[:300]} if wr.evidence else {}
     inv.dynamic_verify = {"attempted": True, "available": wr.available, "ok": wr.ok,
                           "verified": wr.verified, "detail": wr.detail, "logs": wr.logs,
                           "exploit_poc": getattr(wr, "exploit_poc", {}),
@@ -15503,6 +15506,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         confirm_string=notes.get("confirm_string") or "",
                         auth_required=bool(notes.get("auth_required") or notes.get("authenticated")),
                         pkg_version=_directus_ver,
+                        request_chain=notes.get("request_chain") or None,
                         on_step=step,
                         budget_s=budget_s,
                     )
