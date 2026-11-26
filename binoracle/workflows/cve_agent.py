@@ -12810,6 +12810,48 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     step(("sqli_param derivado de analisis estatico: " if es else
                           "sqli_param derived from static analysis: ") + _sa_param)
                     notes = inv.llm_notes
+            # Auto-correct vuln_class when source code contradicts the LLM hypothesis.
+            # Only fires when analyst_endpoint_lock is NOT set (analyst fix takes precedence).
+            if (fr.ok and fr.local_path and not inv.llm_notes.get("analyst_endpoint_lock")):
+                try:
+                    import subprocess as _sp_vc, re as _re_vc
+                    _vc = inv.vuln_class or ""
+                    _vc_code = _sp_vc.run(
+                        ["grep", "-rl", "--include=*.php",
+                         "-e", "unserialize", "-e", "file_get_contents", "-e", "include(",
+                         "-e", "require(", "-e", "readfile(", fr.local_path],
+                        capture_output=True, text=True, timeout=5,
+                    ).stdout.strip().split("\n")
+                    # Only check PHP files that the action hook points to
+                    _ep_file = None
+                    if inv.llm_notes.get("endpoint"):
+                        _action = (inv.llm_notes.get("parameters") or {}).get("action", "")
+                        if _action:
+                            _grep_h = _sp_vc.run(
+                                ["grep", "-rl", "--include=*.php",
+                                 f"wp_ajax_{_action}", fr.local_path],
+                                capture_output=True, text=True, timeout=5,
+                            )
+                            _ep_file = (_grep_h.stdout.strip().split("\n") or [None])[0]
+                    _code_to_check = open(_ep_file, errors="replace").read() if (
+                        _ep_file and _ep_file.strip()) else ""
+                    if _code_to_check:
+                        _has_unser = bool(_re_vc.search(r'unserialize\s*\(', _code_to_check))
+                        _has_file_read = bool(_re_vc.search(
+                            r'file_get_contents|readfile|fopen|include\s*\(|require\s*\(', _code_to_check))
+                        _has_sql = bool(_re_vc.search(r'SELECT|INSERT|UPDATE|DELETE|wpdb|->get_results|->query', _code_to_check))
+                        # If LLM said SQLi but source shows unserialize with no SQL → correct class
+                        if _vc in ("sqli", "sql-injection", "blind-sqli") and _has_unser and not _has_sql:
+                            inv.vuln_class = "deserialization"
+                            step(("auto-corrección vuln_class: sqli→deserialization (unserialize() sin SQL en handler)" if es else
+                                  "auto-correct vuln_class: sqli→deserialization (unserialize() without SQL in handler)"))
+                        # If LLM said SQLi but source shows file read with no SQL → path-traversal
+                        elif _vc in ("sqli", "sql-injection", "blind-sqli") and _has_file_read and not _has_sql:
+                            inv.vuln_class = "path-traversal"
+                            step(("auto-corrección vuln_class: sqli→path-traversal (file read sin SQL en handler)" if es else
+                                  "auto-correct vuln_class: sqli→path-traversal (file read without SQL in handler)"))
+                except Exception:
+                    pass
             # HUECO path: when no public exploit exists, derive the attack from the real
             # source code BEFORE grounding — the taint scanner finds the vulnerable
             # parameter/endpoint deterministically, then the LLM reasons from actual PHP
