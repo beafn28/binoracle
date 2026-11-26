@@ -8004,6 +8004,15 @@ def verify_generic_http_confirm(
             return res
 
         body = resp.text if hasattr(resp, "text") else (resp.get("body") or "")
+        # Build searchable text from body + response headers (covers Set-Cookie, Location, etc.)
+        _resp_headers = {}
+        try:
+            _resp_headers = dict(resp.headers) if hasattr(resp, "headers") else {}
+        except Exception:
+            pass
+        _headers_str = " ".join(f"{k}: {v}" for k, v in _resp_headers.items())
+        _searchable = body + "\n" + _headers_str
+
         if patched_patterns and any(pat.lower() in body.lower() for pat in patched_patterns):
             matched = next(p for p in patched_patterns if p.lower() in body.lower())
             res.detail = (f"respuesta contiene patron de parche {matched!r} -> "
@@ -8011,13 +8020,16 @@ def verify_generic_http_confirm(
             res.evidence = body[:500]
             return res
 
-        if confirm_string.lower() in body.lower():
+        if confirm_string.lower() in _searchable.lower():
             res.verified = True
             res.detail = (f"confirm_string {confirm_string!r} encontrado en la respuesta "
                           f"de {m} {endpoint} -- vulnerabilidad confirmada")
+            _in_headers = confirm_string.lower() not in body.lower() and confirm_string.lower() in _headers_str.lower()
             res.evidence = {
                 "respuesta_cuerpo_recorte": body[:800],
                 "confirm_string": confirm_string,
+                "confirm_found_in": "headers" if _in_headers else "body",
+                "response_headers_snippet": _headers_str[:400] if _in_headers else "",
                 "status_code": resp.status_code if hasattr(resp, "status_code") else 200,
                 "url": url, "metodo": m,
             }
