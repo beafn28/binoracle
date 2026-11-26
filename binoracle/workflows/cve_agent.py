@@ -14843,6 +14843,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         on_step=step,
                         budget_s=budget_s,
                         json_body=bool(notes.get("json_body") or _lln.get("json_body")),
+                        setup_cmds=(notes.get("setup_cmds") or _lln.get("setup_cmds") or None),
                     )
                     _apply_wpverify_result(inv, wr, es, llm)
             # Payload CMS: Node.js headless CMS with JWT admin auth

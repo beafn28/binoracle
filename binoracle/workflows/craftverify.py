@@ -174,11 +174,17 @@ def verify_craft_web_cve(
     on_step: Optional[Callable] = None,
     budget_s: float = 240.0,
     json_body: bool = False,
+    setup_cmds: Optional[list] = None,
 ) -> WpVerifyResult:
     """Verify a Craft CMS CVE dynamically.
 
     Spins up Craft CMS in Docker, fires PoC, checks confirm_string.
     Falls back to genericverify lab when Craft-specific Docker fails.
+
+    setup_cmds: optional list of shell commands to run inside the container
+    (via docker exec) after startup but before the HTTP attack. Use for
+    multi-step exploits that require pre-conditioning the container state,
+    e.g. writing a PHP gadget file for Yii2 PhpManager RCE (CVE-2025-32432).
     """
     step = on_step or print
     res = WpVerifyResult()
@@ -349,6 +355,17 @@ def verify_craft_web_cve(
                     time.sleep(1)
 
             base_url = f"http://{host}:{_CRAFT_PORT}"
+
+            # Run pre-exploit setup commands inside the container.
+            # Used for multi-step exploits that need to pre-condition container state
+            # (e.g. write a PHP gadget file for Yii2 PhpManager RCE).
+            for _cmd in (setup_cmds or []):
+                try:
+                    step(f"  craftverify: setup_cmd: {_cmd[:80]}")
+                    _run(["docker", "exec", container, "sh", "-c", _cmd], timeout=15)
+                except Exception as _se:
+                    step(f"  craftverify: setup_cmd error — {_se}")
+
             cookie = None
             csrf_token = ""
             if auth_required:
