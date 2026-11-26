@@ -5078,6 +5078,17 @@ def process_never_attempted_cves(
         if not fname.endswith(".json"):
             continue
         fpath = _os.path.join(reports_dir, fname)
+        # Skip CVEs that another concurrent batch is currently processing
+        _lock_path_scan = fpath + ".lock"
+        if _os.path.exists(_lock_path_scan):
+            try:
+                import fcntl as _fcntl_scan
+                with open(_lock_path_scan, "w") as _lf_scan:
+                    _fcntl_scan.flock(_lf_scan, _fcntl_scan.LOCK_EX | _fcntl_scan.LOCK_NB)
+                    _fcntl_scan.flock(_lf_scan, _fcntl_scan.LOCK_UN)
+            except (OSError, IOError):
+                step(f"saltando {fname} (otro proceso lo tiene bloqueado)")
+                continue
         try:
             with open(fpath, encoding="utf-8") as fh:
                 d = _j.load(fh)
