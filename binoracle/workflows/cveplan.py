@@ -149,6 +149,8 @@ WEB_CLASSES = frozenset({
     "command-injection", "rce", "code-injection", "arbitrary-file-upload", "path-traversal",
     "lfi", "file-upload", "deserialization", "xxe", "ssti", "csrf", "open-redirect",
     "php-object-injection", "graphql-bypass", "boolean-oracle",
+    # Mechanism-specific classes routed through web investigation + generic HTTP confirm
+    "cli-argument-injection", "werkzeug-debug", "type-juggling", "insecure-randomness",
     "cors", "cors-misconfiguration", "cors-misconfig", "cors-reflection",
     # New classes added in architecture v2
     "jwt-bypass", "jwt", "jwt-weakness", "jwt-vulnerability", "jwt-none-algorithm",

@@ -14746,7 +14746,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         dockerfile_body=_auth_dockerfile,
                         extra_files=_auth_extra_files,
                         vuln_class=inv.vuln_class or notes.get("vuln_class", ""),
-                        pkg_version=_auth_pkg_ver)
+                        pkg_version=_auth_pkg_ver,
+                        docker_image=(notes.get("docker_image") or ""))
                 else:
                     wr = verify_generic_header_bypass(
                         _auth_local_path_str, _auth_ep, notes.get("http_method") or "GET",
@@ -14758,7 +14759,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         dockerfile_body=_auth_dockerfile,
                         extra_files=_auth_extra_files,
                         pkg_version=_auth_pkg_ver,
-                        setup_commands=_auth_setup_cmds)
+                        setup_commands=_auth_setup_cmds,
+                        docker_image=(notes.get("docker_image") or ""))
                 if _scf_auth and not wr.verified:
                     _lab_cfg_auth = {
                         "dockerfile_body": _auth_dockerfile, "extra_files": _auth_extra_files,
@@ -18971,7 +18973,21 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
         notes = _llm_research(llm, inv.cve_id, inv.description,
                               extra_context=_llm_extra_ctx.strip())
         if notes:
-            inv.llm_notes = notes
+            if inv.llm_notes.get("analyst_endpoint_lock"):
+                # Analyst locked the endpoint/class — merge but never overwrite analyst fields.
+                # The analyst knows which verifier to use; LLM re-analysis can't change that.
+                _ANALYST_LOCKED_KEYS = {
+                    "analyst_endpoint_lock", "endpoint", "parameters", "http_method",
+                    "confirm_string", "payload", "auth_required", "vuln_class",
+                    "dockerfile_body", "extra_files", "docker_image", "setup_commands",
+                    "affected_version", "patched_version", "pkg_version",
+                    "_ep_source", "_ep_confidence", "companion_plugins",
+                }
+                for _k, _v in notes.items():
+                    if _k not in _ANALYST_LOCKED_KEYS:
+                        inv.llm_notes[_k] = _v
+            else:
+                inv.llm_notes = notes
             step((f"hipotesis del LLM: clase={notes.get('vuln_class','?')}, "
                   f"disparador={notes.get('trigger','?')}" if es else
                   f"LLM hypothesis: class={notes.get('vuln_class','?')}, "
@@ -19047,7 +19063,8 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
                     "prototype-pollution", "mass-assignment", "crlf-injection",
                     "session-fixation", "2fa-bypass", "jwt-bypass",
                     "boolean-oracle", "graphql-bypass", "oauth-bypass",
-                    "stored-xss", "code-injection",
+                    "stored-xss", "code-injection", "cli-argument-injection",
+                    "werkzeug-debug", "type-juggling", "insecure-randomness",
                 }
                 if (_existing_vc in _CAUSE_ROOT_CLASSES and
                         _poc_vc not in _CAUSE_ROOT_CLASSES and _poc_vc):
@@ -19062,6 +19079,13 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
                         and isinstance(_existing_params, dict)
                         and _poc_params_raw is not None):
                     poc_hints = {k: v for k, v in poc_hints.items() if k != "parameters"}
+                # analyst_endpoint_lock also protects dockerfile_body, extra_files, docker_image,
+                # vuln_class, endpoint, confirm_string from PoC hint overwrite.
+                if inv.llm_notes.get("analyst_endpoint_lock"):
+                    _POC_LOCKED = {"dockerfile_body", "extra_files", "docker_image",
+                                   "setup_commands", "vuln_class", "endpoint",
+                                   "confirm_string", "http_method", "source_url"}
+                    poc_hints = {k: v for k, v in poc_hints.items() if k not in _POC_LOCKED}
                 inv.llm_notes = {**inv.llm_notes, **poc_hints}
                 notes = inv.llm_notes  # re-bind: inv.llm_notes is a NEW dict after merge
                 # Si el LLM extrajo un endpoint real del PoC (no placeholder), bloquearlo
@@ -19152,7 +19176,7 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
         "unknown", "", None,
     }
     _llm_vc_raw = inv.llm_notes.get("vuln_class", "")
-    if _llm_vc_raw in _VAGUE_CLASSES:
+    if _llm_vc_raw in _VAGUE_CLASSES and not inv.llm_notes.get("analyst_endpoint_lock"):
         _cwe_ids = getattr(info, "cwe_ids", None) or []
         _auto_vc = _cwe_to_vuln_class(_cwe_ids)
         if _auto_vc:
