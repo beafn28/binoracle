@@ -4545,6 +4545,8 @@ def _retry_or_keep_lab_alive(keep_lab_on_failure: bool, step, es: bool, wr: Any,
     `retry_fn` ejecuta el bucle real (closure sin argumentos, definido en el sitio de llamada,
     que ya conoce su propia firma de _run_evidence_retry_loop -- distinta en cada tecnica)."""
     if not keep_lab_on_failure:
+        if getattr(wr, "verified", False):
+            return wr  # ya verificado — no relanzar el lab
         return retry_fn()
     if not wr.verified:
         step("--keep-lab-on-failure pedido: no se reintenta (reintentar destruiria este mismo "
