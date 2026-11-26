@@ -15294,7 +15294,9 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     sqli_via_rawurldecode=_via_rawurldecode,
                     sqli_via_orderby=_via_orderby,
                     required_role=notes.get("required_role") or "subscriber",
-                    seed_sql=notes.get("seed_sql") or [])
+                    seed_sql=notes.get("seed_sql") or [],
+                    extra_nonce_pages=list(extra_nonce_pages),
+                    extra_setup_trigger_paths=list(extra_setup_trigger_paths))
                 # Inject full params list into evidence so the LLM knows all available
                 # parameters to suggest as alternatives during retries.
                 if not wr.verified and params and not wr.evidence.get("parametros_disponibles"):
@@ -15315,8 +15317,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 # ExploitReasoningEngine actua como primera capa de diagnostico (~100ms, sin LLM)
                 # para señales de alta confianza (Wrong Nonce, auth gate); el LLM se reserva para
                 # casos ambiguos.
-                extra_nonce_pages: List[str] = []
-                extra_setup_trigger_paths: List[str] = []
+                extra_nonce_pages: List[str] = list(notes.get("nonce_pages") or [])
+                extra_setup_trigger_paths: List[str] = list(notes.get("setup_trigger_paths") or [])
                 def _on_sqli_suggestion(sug):
                     _apply_generic_wp_suggestion(sug, extra_nonce_pages,
                                                  extra_setup_trigger_paths, params)
