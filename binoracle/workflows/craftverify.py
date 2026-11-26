@@ -79,6 +79,9 @@ RUN apt-get update -qq && apt-get install -y -qq \\
     && a2enmod rewrite \\
     && rm -rf /var/lib/apt/lists/*
 RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
+# Enable register_argc_argv (required for CVE-2024-56145 and similar argv-injection CVEs)
+RUN echo "register_argc_argv = On" >> /usr/local/etc/php/php.ini-development \\
+    && cp /usr/local/etc/php/php.ini-development /usr/local/etc/php/php.ini
 WORKDIR /var/www/html
 RUN composer create-project {_create_proj} craft --no-interaction --prefer-dist \\
     || (echo "craft download failed" && exit 1)
