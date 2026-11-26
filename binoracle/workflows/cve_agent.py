@@ -3107,12 +3107,14 @@ _LAB_SCAFFOLD_SSRF_SYS = (
 )
 
 _LAB_SCAFFOLD_CMDI_SYS = (
-    "Eres un experto en seguridad. Genera un servidor para un lab de command injection. "
+    "Eres un experto en seguridad. Genera un servidor para un lab de command injection/RCE. "
     "El servidor ejecuta un comando de shell con input del usuario. REGLAS:\n"
     "1. El endpoint recibe un parametro que se pasa a exec/execSync/subprocess SIN sanitizar\n"
     "2. El atacante inyectara '; touch /tmp/pwned;' para crear un fichero canario\n"
     "3. El servidor ejecuta el comando y devuelve stdout/stderr en la respuesta JSON\n"
     "4. SIN whitelist ni sanitizacion de caracteres especiales (;, |, `, $(), etc.)\n"
+    "5. IMPORTANTE: si Stack es 'php', genera un servidor PHP (index.php + php -S), NO Node.js\n"
+    "   Si Stack es 'python', genera Flask. Si Stack es 'nodejs' o 'unknown', genera Express.\n"
     "Responde SOLO con JSON sin markdown: "
     "{\"server_code\": \"...\", \"dockerfile\": \"...\", \"endpoint\": \"/api/ping\", "
     "\"cmd_param\": \"host\", \"server_port\": 3000, \"parameters\": {\"host\": \"localhost\"}}"
@@ -11558,6 +11560,8 @@ def _scaffold_llm_lab_for_class(llm, source_dir: str, notes: dict, cve_id: str,
         except Exception:
             pass
 
+    _setup_cmds = notes.get("setup_cmds") or []
+    _poc_cmd    = notes.get("poc_cmd") or ""
     prompt = (
         f"CVE: {cve_id}\nClase de vulnerabilidad: {vuln_class}\nStack: {tech}\n"
         f"Endpoint conocido: {endpoint}\nconfirm_string: {confirm}\n"
@@ -11566,6 +11570,16 @@ def _scaffold_llm_lab_for_class(llm, source_dir: str, notes: dict, cve_id: str,
         prompt += f"Version vulnerable: {_affected_ver}\n"
     if _target_binary:
         prompt += f"Componente/binario afectado: {_target_binary}\n"
+    if _setup_cmds:
+        _scmds_txt = "\n  ".join(_setup_cmds[:10])
+        prompt += (
+            f"\nSETUP COMMANDS DEL ANALISTA (incluye en el Dockerfile como RUN/CMD):\n"
+            f"  {_scmds_txt}\n"
+            f"IMPORTANTE: estos comandos configuran la app real — generarlos directamente en "
+            f"el Dockerfile RUN, no ignorarlos. Si son para PHP usa php/composer, etc.\n"
+        )
+    if _poc_cmd:
+        prompt += f"\nComando PoC del analista: {_poc_cmd[:200]}\n"
     if _known_routes:
         # Only include routes that look like API/app paths (not static assets)
         _api_routes = [r for r in _known_routes
@@ -11631,7 +11645,7 @@ def _scaffold_llm_lab_for_class(llm, source_dir: str, notes: dict, cve_id: str,
         return None
 
     srv_file = {"nodejs": "server.js", "python": "app.py", "go": "main.go",
-                "ruby": "app.rb"}.get(tech, "server.js")
+                "ruby": "app.rb", "php": "index.php"}.get(tech, "server.js")
 
     reasoning = (data.get("reasoning") or "")[:200]
     if reasoning:
