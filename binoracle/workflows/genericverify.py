@@ -3868,6 +3868,21 @@ def verify_generic_ssrf(
                     "data": _ssrf_wep_data,
                     "impact": _ssrf_wep_impact,
                 }
+            # Baseline weaponization when no cloud metadata hit: callback confirms SSRF
+            if not res.evidence.get("weaponization"):
+                res.evidence["weaponization"] = {
+                    "technique": "ssrf_internal_callback",
+                    "data": {
+                        "token": res.evidence.get("token_ganador", ""),
+                        "callback_url": res.evidence.get("callback_url_ganadora", ""),
+                        "listener_log": res.evidence.get("listener_log_recorte", "")[:300],
+                    },
+                    "impact": (
+                        f"SSRF confirmed — server made outbound request to internal "
+                        f"callback (token={res.evidence.get('token_ganador','')!r}). "
+                        f"Internal network reachable from server."
+                    ),
+                }
             step(f"VERIFICADO: el listener interno recibio el token "
                  f"'{res.evidence['token_ganador']}' -- la peticion saliente la hizo el servidor.")
             _ssrf_url = base_url + endpoint
@@ -10415,6 +10430,22 @@ def verify_generic_broken_access_control(
                                             if _hdrs else "sin autenticación")
                             step(f"VERIFICADO — broken access control en {_ep} "
                                  f"({_bypass_desc}): {r.status_code}")
+                            # Weaponization: captured body IS the proof of unauthorized access
+                            if body:
+                                res.evidence["weaponization"] = {
+                                    "technique": "broken_access_control_bypass",
+                                    "data": {
+                                        "endpoint": _ep,
+                                        "bypass_method": _bypass_desc,
+                                        "response_snippet": body[:400],
+                                        "status_code": r.status_code,
+                                    },
+                                    "impact": (
+                                        f"Unauthorized access to {_ep} without authentication "
+                                        f"({_bypass_desc}) — HTTP {r.status_code}: "
+                                        f"{body[:100]}"
+                                    ),
+                                }
                             return res
             res.ok = True
             res.detail = (f"broken-access-control: todas las combinaciones de bypass en "
