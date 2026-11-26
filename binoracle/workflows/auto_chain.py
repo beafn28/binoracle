@@ -3481,6 +3481,47 @@ def run_full_chain(
             step(f"  [2.5] correlación: error: {_ce}")
             result.add_step("correlation", "error", str(_ce)[:60])
 
+    # ── Stage 2.5b: CVE similarity — seed from previously-verified exploits ──
+    # Uses cve_similarity.find_similar to look up CVEs we CONFIRMED in Docker labs
+    # and whose exploit structure (function/param/class/CWE) matches the new CVE.
+    # Only seeds empty llm_notes fields — analyst data always wins.
+    try:
+        from .cve_similarity import find_similar as _find_similar
+        _sim_cves = _find_similar(
+            cve_id=cve_id,
+            vuln_function=llm_notes.get("vuln_function", ""),
+            param=(llm_notes.get("sqli_param") or llm_notes.get("path_param")
+                   or llm_notes.get("ssrf_param") or llm_notes.get("inject_param") or ""),
+            vuln_class=llm_notes.get("vuln_class", ""),
+            package=llm_notes.get("package_name", ""),
+            cwe=(getattr(cve_info, "cwe", "") or ""),
+            min_score=0.45,
+            max_results=2,
+        )
+        if _sim_cves:
+            _sc0 = _sim_cves[0]
+            step(f"  [2.5b] similar verified CVE: {_sc0['cve_id']} "
+                 f"(score={_sc0['score']}) class={_sc0.get('vuln_class','')} "
+                 f"ep={_sc0.get('poc_endpoint','?')!r}")
+            # Seed only empty fields
+            if not llm_notes.get("endpoint") and _sc0.get("poc_endpoint"):
+                llm_notes["endpoint"] = _sc0["poc_endpoint"]
+                step(f"    → endpoint seeded from {_sc0['cve_id']}")
+            if not llm_notes.get("http_method") and _sc0.get("http_method"):
+                llm_notes["http_method"] = _sc0["http_method"]
+            if not llm_notes.get("confirm_string") and _sc0.get("confirm_string"):
+                llm_notes["confirm_string"] = _sc0["confirm_string"]
+                step(f"    → confirm_string seeded from {_sc0['cve_id']}")
+            result.evidence["similarity_hint"] = {
+                "source_cve": _sc0["cve_id"],
+                "score": _sc0["score"],
+                "vuln_class": _sc0.get("vuln_class", ""),
+                "seeded_fields": [k for k in ("endpoint", "http_method", "confirm_string")
+                                  if _sc0.get(k)],
+            }
+    except Exception:
+        pass
+
     # ── Stage 2.6: NVD-description endpoint extractor ────────────────────────
     # When Stage 2 (LLM) produced no endpoint and no source, try extracting them
     # from the raw NVD description using simple regex patterns. This is a last-resort
