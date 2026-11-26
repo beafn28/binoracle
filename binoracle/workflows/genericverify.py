@@ -3375,25 +3375,31 @@ def _try_acquire_app_token(base_url: str, step) -> Optional[str]:
         "/ghost/api/admin/session", # Ghost CMS admin session
         "/api/auth/login",
         "/api/v1/auth/login",
+        "/api/v4/users/login",     # Mattermost
         "/api/users/login",
         "/api/sessions",
         "/api/login",
         "/login",
     ]
+    # Also try with login_id key for Mattermost-style APIs
+    _creds_mm = [{"login_id": c["email"], "password": c["password"]} for c in _creds]
     for ep in _login_endpoints:
-        for cred in _creds:
+        for cred in list(_creds) + (_creds_mm if "v4" in ep else []):
             try:
                 r = _http_request("POST", base_url + ep, timeout=10, json=cred,
                                   headers={"Content-Type": "application/json"})
                 if r.status_code in (200, 201):
-                    try:
-                        body = r.json() if callable(getattr(r, "json", None)) else {}
-                    except Exception:
-                        body = {}
-                    # Directus: {"data": {"access_token": "..."}}
-                    _tok = (body.get("data", {}) or {}).get("access_token")
+                    # Mattermost returns token in response header 'Token:'
+                    _tok = getattr(r, "headers", {}).get("Token") or getattr(r, "headers", {}).get("token")
                     if not _tok:
-                        _tok = body.get("access_token") or body.get("token") or body.get("jwt")
+                        try:
+                            body = r.json() if callable(getattr(r, "json", None)) else {}
+                        except Exception:
+                            body = {}
+                        # Directus: {"data": {"access_token": "..."}}
+                        _tok = (body.get("data", {}) or {}).get("access_token")
+                        if not _tok:
+                            _tok = body.get("access_token") or body.get("token") or body.get("jwt")
                     if _tok:
                         step(f"auth: token obtenido via {ep} ({ep.split('/')[-1]}) → {str(_tok)[:12]}...")
                         return str(_tok)
