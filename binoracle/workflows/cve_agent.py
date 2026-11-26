@@ -14774,7 +14774,9 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                          "os-command-injection", "path-traversal")
                   and notes.get("endpoint")):
                 from .craftverify import detect_craft, verify_craft_web_cve
-                if detect_craft(str(fr.local_path)):
+                # Trust analyst's explicit cms: "craft" designation without requiring detect_craft
+                _analyst_craft = any(w in (notes.get("cms") or "").lower() for w in ("craft", "craftcms"))
+                if _analyst_craft or detect_craft(str(fr.local_path)):
                     step(("  craftverify: Craft CMS detectado — iniciando lab" if es else
                           "  craftverify: Craft CMS detected — starting lab"))
                     # Si el analista especificó dockerfile_body, inyectarlo antes del lab
@@ -16155,7 +16157,11 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             elif (not plugin_dir and
                   (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
                   inv.vuln_class in ("ssti", "code-injection", "format-string") and
-                  (notes.get("endpoint") or os.path.isdir(str(fr.local_path)))):
+                  (notes.get("endpoint") or os.path.isdir(str(fr.local_path))) and
+                  # Don't use generic SSTI for explicitly labelled CMS targets — their
+                  # dedicated verifiers handle them (craftverify, payloadverify, etc.)
+                  not any(w in (getattr(inv, "cms", "") or notes.get("cms") or "").lower()
+                          for w in ("craft", "craftcms", "payload", "payloadcms", "ghost", "strapi"))):
                 from .genericverify import verify_generic_ssti, _pick_param
                 from .wpverify import _XSS_HINTS
                 params = notes.get("parameters") or []
