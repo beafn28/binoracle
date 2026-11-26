@@ -2510,7 +2510,44 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
             "does not exist" in activation_output
             and "cannot be registered" in activation_output
         )
-        if not wpcli_registration_error:
+        # Auto-detect missing companion plugins from activation error messages.
+        # WP-CLI emits: "Warning: Failed to activate plugin. {Name} requires 1 plugin
+        # to be installed and activated: {slug}." — extract slugs and install them, then retry.
+        import re as _re_act
+        _comp_match = _re_act.search(
+            r"requires\s+\d+\s+plugin[s]?\s+to\s+be\s+installed\s+and\s+activated:\s*(.+?)(?:\.|$)",
+            activation_output, _re_act.IGNORECASE)
+        _auto_companions: list = []
+        if _comp_match:
+            # slugs separated by ", " — strip trailing punctuation and spaces
+            _auto_companions = [
+                s.strip().rstrip(".").strip()
+                for s in _comp_match.group(1).split(",")
+                if s.strip().rstrip(".")
+            ]
+        if _auto_companions:
+            step(f"activacion fallo por dependencias no instaladas: {_auto_companions} — "
+                 f"instalando automaticamente y reintentando...")
+            for _dep_slug in _auto_companions:
+                _r_dep = lab.wp_cli("plugin", "install", _dep_slug, "--activate", timeout=120)
+                if _r_dep.returncode != 0:
+                    step(f"WARNING: no se pudo instalar dependencia '{_dep_slug}': "
+                         f"{(_r_dep.stderr or _r_dep.stdout or '')[:150]}")
+                else:
+                    step(f"dependencia '{_dep_slug}' instalada y activada")
+            r = lab.wp_cli("plugin", "activate", slug, timeout=90)
+            _activate_out = (r.stdout or "") + (r.stderr or "")
+            _activate_ok = r.returncode == 0
+            activation_output = _activate_out
+            if not _activate_ok:
+                step(f"ERROR: activacion sigue fallando tras instalar dependencias: "
+                     f"{activation_output[:200]}")
+                res.detail = f"activacion del plugin fallo: {activation_output[:300]}"
+                res.evidence["screenshots"] = shots
+                return None
+            else:
+                step(f"plugin activado correctamente tras instalar dependencias: {_auto_companions}")
+        elif not wpcli_registration_error:
             step(f"ERROR: activacion del plugin fallo (rc={r.returncode}): "
                  f"{activation_output[:200]}")
             res.detail = f"activacion del plugin fallo: {activation_output[:300]}"
