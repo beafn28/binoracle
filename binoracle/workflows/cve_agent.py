@@ -3042,16 +3042,41 @@ def _cheerleader_analysis(llm, inv, wr, es: bool) -> dict:
             k: v for k, v in (getattr(wr, "evidence", {}) or {}).items()
             if k not in ("screenshots", "http_captures") and not k.startswith("_")
         }
+        # Include static analysis and source grounding in cheerleader context
+        _notes = getattr(inv, "llm_notes", {}) or {}
+        _grounding = getattr(inv, "source_grounding", {}) or {}
+        _static = getattr(inv, "static_analysis", {}) or {}
+        # Include a snippet of grounding evidence (actual source code hits)
+        _grounding_snippet = {}
+        if _grounding.get("found"):
+            _grounding_snippet = {k: v[:3] for k, v in list(_grounding["found"].items())[:5]}
+        # Include top static analysis candidates
+        _static_candidates = []
+        if _static.get("top_candidates"):
+            for c in _static["top_candidates"][:3]:
+                _static_candidates.append({
+                    "file": c.get("file", ""),
+                    "line": c.get("line", 0),
+                    "param": c.get("param", ""),
+                    "snippet": (c.get("snippet", "") or "")[:200],
+                })
         context = {
             "cve_id": getattr(inv, "cve_id", ""),
             "vuln_class": getattr(inv, "vuln_class", ""),
+            "endpoint_tried": _notes.get("endpoint", ""),
+            "http_method_tried": _notes.get("http_method", ""),
+            "params_tried": _notes.get("parameters", {}),
+            "auth_required": _notes.get("auth_required", False),
             "detail": getattr(wr, "detail", ""),
             "failure_trace": failure_trace[-5:] if failure_trace else [],
             "logs_tail": [entry[:300] for entry in logs_tail],
             "evidence": {k: str(v)[:200] for k, v in list(evidence_summary.items())[:15]},
+            "source_grounding": _grounding_snippet,
+            "static_analysis_candidates": _static_candidates,
+            "source_grounding_summary": (_grounding.get("summary", "") or "")[:400],
         }
         import json
-        prompt = f"Evidencia real del intento fallido:\n{json.dumps(context, ensure_ascii=False)[:3000]}"
+        prompt = f"Evidencia real del intento fallido:\n{json.dumps(context, ensure_ascii=False)[:4000]}"
         raw = llm.chat([Message("system", _CHEERLEADER_SYS), Message("user", prompt)], json_mode=True)
         data = json.loads(raw)
         if not isinstance(data, dict):
@@ -4420,7 +4445,8 @@ _WP_GENERIC_MUESTRA_EVIDENCE_KEYS = {
 
 def _llm_suggest_retry_from_evidence(llm, system_prompt: str, wr: Any,
                                      evidence_keys: dict, technique_label: str = "",
-                                     vuln_class: str = "") -> Optional[dict]:
+                                     vuln_class: str = "",
+                                     inv: Any = None) -> Optional[dict]:
     """Automatiza, con el LLM, el mismo paso que un analista humano hace a mano tras un negativo:
     leer el cuerpo REAL de la respuesta y la evidencia observada, y decidir si hay una pista
     concreta que apunte a un endpoint/parametro distinto que valga la pena reintentar -- en vez de
@@ -4434,13 +4460,28 @@ def _llm_suggest_retry_from_evidence(llm, system_prompt: str, wr: Any,
     cada tecnica tiene su propia evidencia relevante y no conviene reutilizar el mismo prompt tal
     cual). `evidence_keys` mapea {etiqueta_para_el_LLM: clave_real_en_wr.evidence}, asi esta misma
     funcion sirve para cualquier verificador sin saber de antemano que evidencia concreta captura
-    cada uno."""
+    cada uno. `inv` es opcional: cuando se pasa, se inyectan los resultados del analisis estatico
+    y el grounding del codigo fuente en el contexto del LLM."""
     if llm is None or not getattr(llm, "available", lambda: False)():
         return None
     evidence = {label: wr.evidence.get(key) for label, key in evidence_keys.items()}
     evidence["detalle"] = wr.detail
     if technique_label:
         evidence["tecnica"] = technique_label
+    # Inject static analysis and source grounding when available (binchomp: static before LLM RCA)
+    if inv is not None:
+        _sa = getattr(inv, "static_analysis", None)
+        if _sa and _sa.get("top_candidates"):
+            evidence["static_analysis_candidates"] = [
+                {"file": c.get("file", ""), "line": c.get("line", 0),
+                 "param": c.get("param", ""), "snippet": (c.get("snippet", "") or "")[:200]}
+                for c in _sa["top_candidates"][:3]
+            ]
+        _grounding = getattr(inv, "source_grounding", None)
+        if _grounding and _grounding.get("found"):
+            evidence["source_grounding"] = {
+                k: v[:3] for k, v in list(_grounding["found"].items())[:5]
+            }
     # Inyectar diagnóstico estructurado antes de llamar al LLM.
     # El motor razona sobre los patrones de respuesta y produce una causa
     # determinista; el LLM recibe ese pre-diagnóstico junto con la evidencia
@@ -4475,6 +4516,7 @@ def _run_evidence_retry_loop(llm, step, es: bool, system_prompt: str, evidence_k
                              lock_endpoint: bool = False,
                              lock_param: bool = False,
                              alt_endpoints: Optional[List[Any]] = None,
+                             inv: Any = None,
                              ) -> Any:
     """Bucle de aprendizaje-y-reintento COMPARTIDO por cualquier verificador dinamico (no solo
     SQLi/path-traversal): tras un negativo, le pide al LLM (`_llm_suggest_retry_from_evidence`)
@@ -4573,7 +4615,7 @@ def _run_evidence_retry_loop(llm, step, es: bool, system_prompt: str, evidence_k
         if not _ere_skipped_llm:
             suggestion = _llm_suggest_retry_from_evidence(
                 llm, system_prompt, wr, evidence_keys,
-                technique_label=technique_label)
+                technique_label=technique_label, inv=inv)
         if not suggestion:
             break
         if on_suggestion is not None:
@@ -12671,6 +12713,26 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             # dinamica de WordPress (antes solo existia para SQLi) -- ver keep_lab_on_failure
             # en wpverify.py/_finalize_lab.
             keep_lab_on_failure = bool(notes.get("keep_lab_on_failure"))
+            # Static analysis runs for ALL CVEs with source code — deterministic taint scan
+            # before LLM grounding (binchomp: Binary Ninja headless before LLM RCA).
+            # For gap CVEs this feeds into full _hueco_code_analysis; for non-gap CVEs it
+            # validates/enriches the existing hypothesis with concrete source evidence.
+            if fr.ok and fr.local_path and not inv.static_analysis:
+                try:
+                    from .static_analysis import run_static_analysis as _rsa
+                    _sa_pre = _rsa(
+                        fr.local_path,
+                        inv.vuln_class or "",
+                        getattr(inv, "target_binary", "") or (notes or {}).get("target_binary", ""),
+                    )
+                    if _sa_pre.get("top_candidates"):
+                        inv.static_analysis = _sa_pre
+                        from .static_analysis import format_for_llm_context as _fmt_sa_pre
+                        _sa_ctx_pre = _fmt_sa_pre(_sa_pre)
+                        if _sa_ctx_pre:
+                            step(_sa_ctx_pre[:200] + "..." if len(_sa_ctx_pre) > 200 else _sa_ctx_pre)
+                except Exception:
+                    pass
             # HUECO path: when no public exploit exists, derive the attack from the real
             # source code BEFORE grounding — the taint scanner finds the vulnerable
             # parameter/endpoint deterministically, then the LLM reasons from actual PHP
@@ -15242,7 +15304,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     technique_label="SQLi Drupal", max_attempts=_SQLI_RETRY_MAX_ATTEMPTS,
                     lock_endpoint=bool(notes.get("analyst_endpoint_lock")
                                        or notes.get("poc_raw_http_lock")
-                                       or notes.get("poc_llm_endpoint_lock")))
+                                       or notes.get("poc_llm_endpoint_lock")),
+                    inv=inv)
                 _apply_wpverify_result(inv, wr, es, llm)
             # mismo laboratorio efimero, para SQLi: UNION-based (extrae version() real de la
             # base de datos) con fallback a boolean-blind diferencial -- ver verify_wordpress_sqli.
@@ -15618,6 +15681,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                 lock_endpoint=_ep_lock_active,
                                 alt_endpoints=list(notes.get("alt_endpoints") or []),
                                 max_attempts=_SQLI_RETRY_MAX_ATTEMPTS,
+                                inv=inv,
                             )
                         except Exception:
                             pass  # fall through to legacy loop on import/runtime error
@@ -15629,7 +15693,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         lock_endpoint=_ep_lock_active,
                         lock_param=bool((notes.get("analyst_endpoint_lock")
                                          or notes.get("poc_raw_http_lock")) and sqli_p),
-                        alt_endpoints=notes.get("alt_endpoints") or [])
+                        alt_endpoints=notes.get("alt_endpoints") or [],
+                        inv=inv)
                 wr = _retry_or_keep_lab_alive(keep_lab_on_failure, step, es, wr, _do_sqli_retry)
                 # Fix 4: acumular señal parcial del ultimo intento para cross-lab diagnosis
                 if not wr.verified and wr.available:
@@ -15801,7 +15866,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     llm, step, es, _SQLI_RETRY_SYS, _SQLI_RETRY_EVIDENCE_KEYS,
                     _attempt_sqli_blind_generic, wr, _genlab_ep, _genlab_param,
                     technique_label="SQLi ciega por tiempo (generico)",
-                    max_attempts=_SQLI_RETRY_MAX_ATTEMPTS)
+                    max_attempts=_SQLI_RETRY_MAX_ATTEMPTS, inv=inv)
                 _apply_wpverify_result(inv, wr, es, llm)
             # mismo laboratorio efimero, para SSRF: un listener interno (en la misma red Docker,
             # no expuesto) registra si el SERVIDOR hace de verdad la peticion saliente -- ver

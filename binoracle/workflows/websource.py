@@ -445,17 +445,32 @@ def fetch_wordpress_plugin(slug: str, version: str = "", dest_dir: str = "",
         svn_res = _svn_fetch_wp_plugin_version(slug, version, dest_dir, step, timeout)
         if svn_res.ok:
             return svn_res
-    # Fallback 2: si se pidio una version concreta (que el LLM puede haber alucinado) y la URL
-    # versionada 404 y el SVN tampoco lo tiene, intenta con la ultima estable de la API -- al
-    # menos el motor tendra codigo real para analizar aunque no sea exactamente la version
-    # vulnerable. Confirmado en vivo con varios CVEs donde el LLM da un numero de version que
-    # nunca existio en wordpress.org.
+    # Fallback 2: si se pidio una version concreta y no se pudo descargar ni via zip ni SVN,
+    # buscar la version mas reciente PUBLICADA que sea <= la version pedida (es decir, la mas
+    # cercana a la vulnerabilidad real), antes de saltar a la ultima estable (que puede estar
+    # ya parcheada). Confirmado en vivo: v2.17.0 no existe en descarga pero v2.16.4 si.
     if not r.ok and version and res.resolved_version:
+        older_vs = sorted(
+            [v for v in versions
+             if v.lower() != "trunk" and _looks_like_version(v)
+             and _version_sort_key(v) <= _version_sort_key(version)
+             and versions.get(v) and versions[v] != url],
+            key=_version_sort_key)
+        if older_vs:
+            nearest = older_vs[-1]
+            nearest_url = versions[nearest]
+            step(f"version '{version}' no descargable -- probando la version mas cercana "
+                 f"disponible '{nearest}' (aun vulnerable, <= {version})...")
+            r2 = _download_wp_zip(slug, nearest_url, nearest, dest_dir, step, timeout,
+                                   SourceFetchResult(kind="wordpress-plugin", source=slug))
+            if r2.ok:
+                return r2
+        # Last resort: latest stable — may be patched, but at least gives real code to analyze
         latest_url = info.get("download_link") or _WP_DOWNLOAD_LATEST.format(slug=slug)
         latest_ver = info.get("version", "")
         if latest_url != url:
             step(f"version '{version}' no descargable -- probando la ultima estable ({latest_ver}) "
-                 f"como alternativa para analizar el codigo real...")
+                 f"como alternativa para analizar el codigo real (puede estar parcheada)...")
             r2 = _download_wp_zip(slug, latest_url, latest_ver, dest_dir, step, timeout,
                                    SourceFetchResult(kind="wordpress-plugin", source=slug))
             if r2.ok:

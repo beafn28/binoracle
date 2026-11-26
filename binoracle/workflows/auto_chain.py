@@ -5148,7 +5148,9 @@ def process_never_attempted_cves(
     try:
         from ..llm import make_backend as _mb
         _shared_llm = _mb(_shared_config)
-        step(f"process_never_attempted_cves: LLM={getattr(_shared_llm, 'model', '?')}")
+        _llm_model_name = (getattr(_shared_llm, "model", None)
+                           or getattr(getattr(_shared_llm, "config", None), "model", "?"))
+        step(f"process_never_attempted_cves: LLM={_llm_model_name}")
     except Exception as _e:
         step(f"process_never_attempted_cves: LLM no disponible ({_e}) — modo determinístico")
 
