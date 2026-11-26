@@ -4048,6 +4048,7 @@ def verify_generic_sqli_blind(
     _tried_params_set: Optional[frozenset] = None,
     sqli_header_hint: str = "",
     auth_required: bool = False,
+    nonce_endpoint: str = "",
 ) -> WpVerifyResult:
     """SQL injection ciega por TIEMPO contra cualquier objetivo con su propio Dockerfile/compose.
     Deliberadamente mas limitada que verify_wordpress_sqli: sin saber el motor real de BD (puede
@@ -4111,6 +4112,30 @@ def verify_generic_sqli_blind(
                     custom_headers.setdefault("Authorization", f"Bearer {_auth_res}")
             else:
                 step("WARN: auth_required pero no se pudo autenticar — continuando sin auth")
+        # Nonce extraction: some WP plugins embed a frontend nonce in the page source.
+        # If nonce_endpoint is set, fetch it and fill any empty nonce parameter.
+        if nonce_endpoint:
+            try:
+                _nonce_resp = _http_request("GET", base_url + nonce_endpoint, timeout=10)
+                _nonce_text = getattr(_nonce_resp, "text", None) or getattr(_nonce_resp, "body", None) or ""
+                import re as _re_nonce
+                _nonce_m = _re_nonce.search(
+                    r'"(?:nonce|_nonce|frontend_nonce|ajax_nonce)"\s*:\s*"([a-f0-9]{6,20})"',
+                    _nonce_text)
+                if not _nonce_m:
+                    _nonce_m = _re_nonce.search(r'"nonce"\s*:\s*"([^"]{6,20})"', _nonce_text)
+                if _nonce_m:
+                    _nonce_val = _nonce_m.group(1)
+                    if isinstance(parameters, dict):
+                        parameters = dict(parameters)
+                        for _nk in list(parameters.keys()):
+                            if "nonce" in _nk.lower() and not parameters[_nk]:
+                                parameters[_nk] = _nonce_val
+                    step(f"nonce extraido desde {nonce_endpoint}: {_nonce_val!r}")
+                else:
+                    step(f"WARN: nonce_endpoint={nonce_endpoint!r} no devolvio nonce reconocible")
+            except Exception as _ne:
+                step(f"WARN: fallo extraccion de nonce desde {nonce_endpoint!r}: {_ne}")
         m = (http_method or "GET").upper().split("/")[0].split("|")[0].strip() or "GET"
         # Strip the query string from the endpoint: params are always passed separately as a
         # dict via 'params=' in GET requests. If the endpoint includes '?k=<placeholder>' (a

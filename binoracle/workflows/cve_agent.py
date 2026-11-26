@@ -14597,7 +14597,10 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             elif (not plugin_dir and
                   (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
                   inv.vuln_class in ("command-injection", "os-command-injection", "rce")
-                  and notes.get("endpoint")):
+                  and notes.get("endpoint")
+                  and not any(w in (notes.get("cms") or inv.llm_notes.get("cms") or
+                                    getattr(inv, "cms", "") or "").lower()
+                              for w in ("craft", "craftcms", "payload", "payloadcms"))):
                 from .genericverify import verify_generic_command_injection, _pick_param
                 from .wpverify import _CMD_HINTS
                 params = notes.get("parameters") or []
@@ -15576,6 +15579,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _is_local_lab = (fr.kind == "local-dir")
                 _sqli_custom_hdrs = notes.get("custom_headers") or None
                 _sqli_auth_req = bool(notes.get("auth_required"))
+                _sqli_nonce_ep = notes.get("nonce_endpoint") or ""
                 _sqli_setup_cmds = notes.get("setup_cmds") or None
                 _sqli_df = _notes_dockerfile(notes)
                 _sqli_ef = notes.get("extra_files") or None
@@ -15603,7 +15607,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     setup_commands=_sqli_setup_cmds,
                     dockerfile_body=_sqli_df, extra_files=_sqli_ef,
                     confirm_string=_sqli_cs,
-                    auth_required=_sqli_auth_req)
+                    auth_required=_sqli_auth_req,
+                    nonce_endpoint=_sqli_nonce_ep)
                 # Bucle de feedback: si Qwen scaffoldeo y fallo, que diagnostique y regenere
                 if _scaffolded and not wr.verified:
                     _lab_cfg = {
@@ -15629,7 +15634,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             custom_headers=_sqli_custom_hdrs,
                             setup_commands=_sqli_setup_cmds,
                             dockerfile_body=_df_fb, extra_files=_ef_fb,
-                            confirm_string=_cs_fb)
+                            confirm_string=_cs_fb,
+                            nonce_endpoint=_sqli_nonce_ep)
 
                     wr, _lab_cfg = _feedback_loop(
                         llm, _sqli_fb_verifier, wr, _lab_cfg, step, es,
@@ -15650,7 +15656,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         custom_headers=_sqli_custom_hdrs,
                         setup_commands=_sqli_setup_cmds,
                         dockerfile_body=_sqli_df, extra_files=_sqli_ef,
-                        confirm_string=_sqli_cs)
+                        confirm_string=_sqli_cs,
+                        nonce_endpoint=_sqli_nonce_ep)
                 wr = _run_evidence_retry_loop(
                     llm, step, es, _SQLI_RETRY_SYS, _SQLI_RETRY_EVIDENCE_KEYS,
                     _attempt_sqli_blind_generic, wr, _genlab_ep, _genlab_param,
