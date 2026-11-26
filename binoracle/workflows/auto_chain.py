@@ -5177,7 +5177,9 @@ def process_never_attempted_cves(
             _steps = d.get("steps") or []
             _bl = d.get("blockers") or []
             _hollow = not _dv and not _steps and not _bl
-            if not _hollow:
+            # cve_filter forces retry even if previously attempted (analyst explicitly requested)
+            _force_retry = bool(_cve_set and d.get("cve_id") in _cve_set)
+            if not _hollow and not _force_retry:
                 # Exception: cheerleader has a confident suggested fix → apply & retry
                 _cheer = (_ae.get("cheerleader") or {}) if isinstance(_ae, dict) else {}
                 _sf = (_cheer.get("suggested_fix") or {}) if isinstance(_cheer, dict) else {}
