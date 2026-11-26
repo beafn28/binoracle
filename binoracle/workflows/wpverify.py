@@ -10991,6 +10991,9 @@ def verify_wordpress_missing_auth_probe(
     keep_lab_on_failure: bool = False,
     confirm_string: Optional[str] = None,
     json_body: bool = False,
+    post_verify_wp_option: Optional[str] = None,
+    post_verify_expected: Optional[str] = None,
+    setup_wp_options: Optional[list] = None,
 ) -> WpVerifyResult:
     """Sonda no-autenticada para information-disclosure / missing-authorization.
 
@@ -11017,6 +11020,16 @@ def verify_wordpress_missing_auth_probe(
         if boot is None:
             res.detail = "fallo al arrancar el laboratorio WordPress"
             return res
+
+        # Pre-attack WP option setup (e.g., registrar clave UDRPC antes del ataque)
+        if setup_wp_options:
+            for opt in setup_wp_options:
+                _opt_name = (opt or {}).get("name") if isinstance(opt, dict) else None
+                if not _opt_name:
+                    continue
+                _opt_val = (opt or {}).get("value", "1")
+                step(f"probe: activando opcion pre-ataque '{_opt_name}'={_opt_val!r}...")
+                lab.wp_cli("option", "update", _opt_name, str(_opt_val), timeout=30)
 
         m = (http_method or "POST").upper()
         params_dict = (parameters if isinstance(parameters, dict)
@@ -11073,6 +11086,20 @@ def verify_wordpress_missing_auth_probe(
                 res.detail = (f"sonda no-auth: endpoint responde HTTP {status} con la cadena "
                               f"de confirmacion '{confirm_string}' en el body — information "
                               f"disclosure confirmada sin autenticacion (prueba dura)")
+            elif post_verify_wp_option and post_verify_expected:
+                # Verificación post-ataque: comprobar si una opción WP cambió (priv esc)
+                step(f"post-verify: comprobando opcion WP '{post_verify_wp_option}'...")
+                _r_opt = lab.wp_cli("option", "get", post_verify_wp_option, timeout=30)
+                _opt_actual = (_r_opt.stdout or "").strip() if _r_opt else ""
+                if post_verify_expected.lower() in _opt_actual.lower():
+                    res.verified = True
+                    res.detail = (f"sonda no-auth: opcion WP '{post_verify_wp_option}' cambiada "
+                                  f"a '{_opt_actual}' sin autenticacion — escalada de privilegios "
+                                  f"confirmada (prueba dura via wp-cli post-ataque)")
+                else:
+                    res.detail = (f"sonda no-auth: endpoint respondio HTTP {status} sin auth, "
+                                  f"pero opcion '{post_verify_wp_option}'='{_opt_actual}' "
+                                  f"(esperado: '{post_verify_expected}') — impacto no confirmado")
             else:
                 res.detail = (f"sonda no-auth: el endpoint responde HTTP {status} con contenido "
                               f"no trivial ({len(body)} bytes) sin autenticacion — evidencia debil "

@@ -14073,7 +14073,10 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         on_step=step, budget_s=budget_s, companion_plugins=companion_plugins,
                         keep_lab_on_failure=keep_lab_on_failure,
                         confirm_string=notes.get("confirm_string") or None,
-                        json_body=bool(notes.get("json_body")))
+                        json_body=bool(notes.get("json_body")),
+                        post_verify_wp_option=notes.get("post_verify_wp_option") or None,
+                        post_verify_expected=notes.get("post_verify_expected") or None,
+                        setup_wp_options=notes.get("setup_wp_options") or None)
                 if wr is None:
                     inv.blockers.append(("verificacion dinamica no intentada: la hipotesis no trae "
                                          "ni un parametro de email/password ni uno de ID "
@@ -19038,6 +19041,16 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
                 if (_existing_vc in _CAUSE_ROOT_CLASSES and
                         _poc_vc not in _CAUSE_ROOT_CLASSES and _poc_vc):
                     poc_hints = {k: v for k, v in poc_hints.items() if k != "vuln_class"}
+                # Si el analista ya proporciono parametros como dict (con valores reales),
+                # NO dejar que el PoC los sobreescriba con una lista de nombres.
+                # La extraccion de PoC produce siempre una lista, que destruiria los valores
+                # del analista y romperia el routing URL-upload (que necesita un dict).
+                _poc_params_raw = poc_hints.get("parameters")
+                _existing_params = inv.llm_notes.get("parameters")
+                if (inv.llm_notes.get("analyst_endpoint_lock")
+                        and isinstance(_existing_params, dict)
+                        and _poc_params_raw is not None):
+                    poc_hints = {k: v for k, v in poc_hints.items() if k != "parameters"}
                 inv.llm_notes = {**inv.llm_notes, **poc_hints}
                 notes = inv.llm_notes  # re-bind: inv.llm_notes is a NEW dict after merge
                 # Si el LLM extrajo un endpoint real del PoC (no placeholder), bloquearlo
