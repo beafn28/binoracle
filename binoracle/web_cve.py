@@ -61,6 +61,143 @@ def _save_history(job: "_Job"):
 
 _BATCH_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "binoracle_batch_reports")
 
+import re as _re_chainstep
+_CHAINSTEP_RE = _re_chainstep.compile(
+    r"ChainStep\(name='([^']+)',\s*status='([^']+)',\s*detail='([^']*)',\s*elapsed=([0-9.]+)"
+)
+_STATUS_TAG = {"ok": "ok", "skip": "skip", "fail": "err", "error": "err"}
+_PHASE_HEADERS = {
+    "intelligence": "── INTEL ─────────────────────────────────────────────",
+    "llm_hypothesis": "── HYPOTHESIS ────────────────────────────────────────",
+    "classify": "── CLASSIFY ──────────────────────────────────────────",
+    "patch_diff": "── PATCH DIFF ────────────────────────────────────────",
+    "web_investigation": "── WEB INVESTIGATION ─────────────────────────────────",
+    "rehypothesis": "── REHYPOTHESIS ──────────────────────────────────────",
+    "rehypothesis_run": "── REHYPOTHESIS RUN ──────────────────────────────────",
+    "binary_investigation": "── BINARY INVESTIGATION ──────────────────────────────",
+    "enrich": "── ENRICHMENT ────────────────────────────────────────",
+    "report": "── REPORT ────────────────────────────────────────────",
+    "index_update": "── INDEX UPDATE ──────────────────────────────────────",
+    "correlation": "── CORRELATION ───────────────────────────────────────",
+}
+
+def _build_rich_logs_from_batch_json(batch: dict) -> list:
+    """Reconstruct detailed step-by-step logs from a batch report JSON."""
+    logs = []
+    cve_id = batch.get("cve_id", "?")
+    t = 0.0
+
+    def add(msg, dt=0.3):
+        nonlocal t
+        logs.append({"t": round(t, 2), "msg": msg})
+        t += dt
+
+    add(f"[HIST] {cve_id} — cargado del historial", 0.5)
+
+    # Header info
+    cvss = batch.get("cvss_score") or (batch.get("llm_notes") or {}).get("_intel_cvss_score", "")
+    epss_raw = (batch.get("llm_notes") or {}).get("_intel_epss", "")
+    epss_pct = f"{float(epss_raw)*100:.1f}%" if epss_raw else "?"
+    kev = bool((batch.get("llm_notes") or {}).get("_intel_kev"))
+    add(f"[INFO] CVSS={cvss}  EPSS={epss_pct}  KEV={'YES' if kev else 'no'}  vuln_class={batch.get('vuln_class','?')}", 0.3)
+
+    desc = (batch.get("description") or "").strip()
+    if desc:
+        for chunk in [desc[i:i+120] for i in range(0, min(len(desc), 360), 120)]:
+            add(f"[INFO] {chunk}", 0.1)
+
+    # Execution logs (detailed per-step replay if available)
+    exec_logs = batch.get("execution_logs") or []
+    if exec_logs:
+        add("── LOGS DE EJECUCIÓN ─────────────────────────────────", 0.1)
+        for _log_line in exec_logs:
+            _msg = str(_log_line).strip()
+            if not _msg or _msg.startswith("process_never_attempted_cves:"):
+                continue
+            # Classify tag by message keywords
+            _llow = _msg.lower()
+            if any(w in _llow for w in ("verificado", "confirmed", "✓ verif")):
+                _tag = "conf"
+            elif any(w in _llow for w in ("docker", "contenedor", "container", "construyendo", "building")):
+                _tag = "docker"
+            elif any(w in _llow for w in ("clonando", "descargando", "downloading", "fetching", "net")):
+                _tag = "net"
+            elif any(w in _llow for w in ("el llm", "llm analiza", "hipotesis", "hypothesis", "classify")):
+                _tag = "llm"
+            elif any(w in _llow for w in ("error", "warn", "fallo", "failed", "exception")):
+                _tag = "warn"
+            elif any(w in _llow for w in ("exploit", "poc", "payload", "probando", "probing", "sqli")):
+                _tag = "expl"
+            else:
+                _tag = "info"
+            add(f"[{_tag}] {_msg[:200]}", 0.03)
+    else:
+        # Fall back to ChainStep entries summary
+        steps = batch.get("steps") or []
+        for step_str in steps:
+            m = _CHAINSTEP_RE.search(step_str)
+            if not m:
+                continue
+            name, status, detail, elapsed_s = m.groups()
+            # Phase header separator
+            if name in _PHASE_HEADERS:
+                add(_PHASE_HEADERS[name], 0.1)
+            tag = _STATUS_TAG.get(status, status)
+            elapsed_f = float(elapsed_s)
+            time_label = f"  [{elapsed_f:.1f}s]" if elapsed_f >= 0.5 else ""
+            # Clean up internal metadata from user-facing display
+            display_detail = detail
+            if name == "report" and "/" in detail:
+                display_detail = "Informe generado"
+            elif name == "index_update":
+                import re as _re_row
+                _row_m = _re_row.search(r'row=(\d+)', detail)
+                display_detail = f"Índice actualizado (fila {_row_m.group(1)})" if _row_m else "Índice actualizado"
+            add(f"[{tag}] {display_detail}{time_label}", 0.2)
+
+    # Dynamic verify evidence
+    dv = batch.get("dynamic_verify") or {}
+    ev = dv.get("evidence") or {}
+
+    if ev:
+        add("── EVIDENCE ──────────────────────────────────────────", 0.1)
+        for log_line in (ev.get("logs") or []):
+            add(f"[docker] {str(log_line)[:200]}", 0.05)
+        if ev.get("endpoint"):
+            add(f"[TARGET] {ev.get('base_url','')}{ev['endpoint']}", 0.1)
+        if ev.get("metodo"):
+            add(f"[HTTP] {ev['metodo']} {ev.get('endpoint', '')}", 0.1)
+        if ev.get("payload_ganador"):
+            param = ev.get("sqli_param") or ev.get("path_param") or ev.get("ssti_param") or "param"
+            add(f"[PAYLOAD] {param}={ev['payload_ganador'][:300]}", 0.1)
+        if ev.get("sleep3_s"):
+            add(f"[TIMING] SLEEP(3)={ev['sleep3_s']:.2f}s  SLEEP(0)={ev.get('sleep0_s',0):.2f}s  Δ={ev.get('diferencial_s',0):.2f}s", 0.1)
+        if ev.get("canary_secret"):
+            add(f"[CANARY] token plantado y leído: {ev['canary_secret'][:60]}", 0.1)
+        if ev.get("cookie"):
+            add(f"[COOKIE] {ev['cookie'][:150]}", 0.1)
+        if ev.get("respuesta_cuerpo_recorte"):
+            resp = ev["respuesta_cuerpo_recorte"]
+            for chunk in [resp[i:i+120] for i in range(0, min(len(resp), 480), 120)]:
+                add(f"[RESP] {chunk}", 0.05)
+        if ev.get("status_code_respuesta"):
+            add(f"[HTTP] status={ev['status_code_respuesta']}", 0.1)
+        for ss in (ev.get("screenshots") or []):
+            caption = ss.get("caption_en") or ss.get("caption_es") or "screenshot"
+            add(f"[screenshot] {caption}", 0.1)
+
+    # Verdict
+    if batch.get("verified"):
+        add(f"[OK] {cve_id} VERIFICADO — vulnerabilidad confirmada en lab aislado", 0.1)
+    else:
+        ae = batch.get("attempt_evidence") or {}
+        if ae.get("attempted"):
+            add(f"[WARN] {cve_id} intentado — verificación dinámica no confirmada", 0.1)
+        else:
+            add(f"[INFO] {cve_id} — aún sin intentar verificación dinámica", 0.1)
+
+    return logs
+
 
 def _is_truly_verified(rec: dict) -> bool:
     """
@@ -618,32 +755,44 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
 
-            # Replay stored logs; if none, synthesize from verified_detail / result
+            # Replay stored logs; if none (batch runs store 0 logs), rebuild from batch JSON
             stored_logs = rec.get("logs") or (rec.get("result") or {}).get("logs") or []
             if not stored_logs:
-                result = rec.get("result") or {}
-                ve = result.get("verified_evidence") or {}
-                detail = (result.get("verified_detail") or result.get("detail") or "").strip()
                 cve_id_hist = rec.get("cve_id", "?")
-                vuln_class = result.get("vuln_class", "")
-                # Build minimal synthetic log entries from stored result data
-                stored_logs = [{"t": 0.0, "msg": f"[HISTORIAL] {cve_id_hist} — resultado recuperado del disco"}]
-                if vuln_class:
-                    stored_logs.append({"t": 0.5, "msg": f"[INFO] clase={vuln_class}"})
-                if detail:
-                    for line in detail.split("\n"):
-                        if line.strip():
-                            stored_logs.append({"t": 1.0, "msg": f"[RESULTADO] {line.strip()}"})
-                if ve.get("payload_ganador"):
-                    stored_logs.append({"t": 1.5, "msg": f"[PAYLOAD] {ve['payload_ganador'][:200]}"})
-                if ve.get("sleep3_s"):
-                    stored_logs.append({"t": 2.0, "msg": f"[TIMING] SLEEP(3)={ve['sleep3_s']:.2f}s  SLEEP(0)={ve.get('sleep0_s',0):.2f}s  dif={ve.get('diferencial_s',0):.2f}s"})
-                if ve.get("cookie"):
-                    stored_logs.append({"t": 2.0, "msg": f"[COOKIE] {ve['cookie'][:100]}"})
-                if ve.get("canary_secret"):
-                    stored_logs.append({"t": 2.0, "msg": f"[CANARY] secreto leido: {ve['canary_secret']}"})
-                if ve.get("respuesta_cuerpo_recorte"):
-                    stored_logs.append({"t": 2.5, "msg": f"[RESP] {ve['respuesta_cuerpo_recorte'][:200]}"})
+                # Try to load from batch JSON for rich step-by-step reconstruction
+                _batch_path = os.path.join(_BATCH_DIR, f"{cve_id_hist}.json")
+                _batch_src = None
+                if os.path.exists(_batch_path):
+                    try:
+                        with open(_batch_path, encoding="utf-8") as _bf:
+                            _batch_src = json.load(_bf)
+                    except Exception:
+                        pass
+                if _batch_src:
+                    stored_logs = _build_rich_logs_from_batch_json(_batch_src)
+                else:
+                    # Fallback: minimal synthesis from history record
+                    result = rec.get("result") or {}
+                    ve = result.get("verified_evidence") or {}
+                    detail = (result.get("verified_detail") or result.get("detail") or "").strip()
+                    vuln_class = result.get("vuln_class", "")
+                    stored_logs = [{"t": 0.0, "msg": f"[HIST] {cve_id_hist} — resultado recuperado del disco"}]
+                    if vuln_class:
+                        stored_logs.append({"t": 0.5, "msg": f"[INFO] clase={vuln_class}"})
+                    if detail:
+                        for line in detail.split("\n"):
+                            if line.strip():
+                                stored_logs.append({"t": 1.0, "msg": f"[RESULTADO] {line.strip()}"})
+                    if ve.get("payload_ganador"):
+                        stored_logs.append({"t": 1.5, "msg": f"[PAYLOAD] {ve['payload_ganador'][:200]}"})
+                    if ve.get("sleep3_s"):
+                        stored_logs.append({"t": 2.0, "msg": f"[TIMING] SLEEP(3)={ve['sleep3_s']:.2f}s  SLEEP(0)={ve.get('sleep0_s',0):.2f}s  dif={ve.get('diferencial_s',0):.2f}s"})
+                    if ve.get("cookie"):
+                        stored_logs.append({"t": 2.0, "msg": f"[COOKIE] {ve['cookie'][:100]}"})
+                    if ve.get("canary_secret"):
+                        stored_logs.append({"t": 2.0, "msg": f"[CANARY] secreto leido: {ve['canary_secret']}"})
+                    if ve.get("respuesta_cuerpo_recorte"):
+                        stored_logs.append({"t": 2.5, "msg": f"[RESP] {ve['respuesta_cuerpo_recorte'][:200]}"})
 
             for entry in stored_logs:
                 self._write_sse("step", entry)
@@ -842,36 +991,32 @@ class _Handler(BaseHTTPRequestHandler):
             # Inject logs if not already stored
             if not result.get("logs"):
                 stored_logs = rec.get("logs") or []
+                cve_id_hist = rec.get("cve_id", "?")
                 if not stored_logs:
+                    # Try batch JSON for rich reconstruction
+                    _bp = os.path.join(_BATCH_DIR, f"{cve_id_hist}.json")
+                    if os.path.exists(_bp):
+                        try:
+                            with open(_bp, encoding="utf-8") as _bf:
+                                _bd = json.load(_bf)
+                            stored_logs = _build_rich_logs_from_batch_json(_bd)
+                        except Exception:
+                            pass
+                if not stored_logs:
+                    # Fallback: minimal synthesis
                     ve = result.get("verified_evidence") or {}
                     detail = (result.get("verified_detail") or result.get("detail") or "").strip()
-                    cve_id_hist = rec.get("cve_id", "?")
                     vuln_class = result.get("vuln_class", "")
-                    stored_logs = [{"t": 0.0, "msg": f"[HISTORIAL] {cve_id_hist} — resultado recuperado del disco"}]
+                    stored_logs = [{"t": 0.0, "msg": f"[HIST] {cve_id_hist} — resultado recuperado del disco"}]
                     if vuln_class:
                         stored_logs.append({"t": 0.5, "msg": f"[INFO] clase={vuln_class}"})
-                    if ve.get("endpoint"):
-                        stored_logs.append({"t": 0.8, "msg": f"[TARGET] {ve.get('base_url','')}{ve['endpoint']}"})
-                    if ve.get("metodo") and ve.get("endpoint"):
-                        stored_logs.append({"t": 1.0, "msg": f"[HTTP] {ve['metodo']} {ve['endpoint']}"})
                     if ve.get("payload_ganador"):
                         param = ve.get("sqli_param") or ve.get("path_param") or ve.get("ssti_param") or "param"
                         stored_logs.append({"t": 1.2, "msg": f"[PAYLOAD] {param}={ve['payload_ganador'][:200]}"})
-                    if ve.get("sleep3_s"):
-                        stored_logs.append({"t": 1.5, "msg": f"[TIMING] SLEEP(3)={ve['sleep3_s']:.2f}s  SLEEP(0)={ve.get('sleep0_s',0):.2f}s  dif={ve.get('diferencial_s',0):.2f}s"})
                     if ve.get("canary_secret"):
                         stored_logs.append({"t": 1.5, "msg": f"[CANARY] secreto leido: {ve['canary_secret']}"})
-                    if ve.get("cookie"):
-                        stored_logs.append({"t": 1.5, "msg": f"[COOKIE] {ve['cookie'][:100]}"})
                     if ve.get("respuesta_cuerpo_recorte"):
                         stored_logs.append({"t": 2.0, "msg": f"[RESP] {ve['respuesta_cuerpo_recorte'][:300]}"})
-                    if ve.get("status_code_respuesta"):
-                        stored_logs.append({"t": 2.2, "msg": f"[HTTP] status={ve['status_code_respuesta']}"})
-                    if detail:
-                        for line in detail.split(". "):
-                            line = line.strip()
-                            if line:
-                                stored_logs.append({"t": 2.5, "msg": f"[RESULTADO] {line}"})
                     if result.get("verified"):
                         stored_logs.append({"t": 3.0, "msg": f"[OK] {cve_id_hist} VERIFICADO — vulnerabilidad confirmada en lab aislado"})
                 result = dict(result)
@@ -2198,9 +2343,6 @@ main {
     <div style="margin-left:auto;display:flex;align-items:center;gap:10px">
       <span id="status-badge"></span>
       <a class="wiki-link" href="https://beafn28.github.io/binoracle/" target="_blank" rel="noopener">Docs</a>
-      <button id="repairs-btn" title="Autonomous repair stats" onclick="openRepairs()">
-        Repairs <span class="rep-count" id="rep-count">0</span>
-      </button>
       <button id="history-btn" title="Session history">
         History <span class="hist-count" id="hist-count">0</span>
       </button>

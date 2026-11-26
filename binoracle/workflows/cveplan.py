@@ -192,7 +192,8 @@ WEB_CLASSES = frozenset({
 
 
 def is_web_class(cls: str) -> bool:
-    return (cls or "") in WEB_CLASSES
+    s = (cls or "").strip().lower().replace("_", "-")
+    return s in WEB_CLASSES
 
 
 def classify_cve(text: str) -> Optional[str]:

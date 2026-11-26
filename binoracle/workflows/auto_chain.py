@@ -5219,8 +5219,13 @@ def process_never_attempted_cves(
                     _analyst_hints = {k: v for k, v in _raw_notes.items() if v is not None}
             except Exception:
                 pass
+            # Collect every step message for historial replay (last 800 lines max)
+            _exec_logs: list[str] = []
+            def _step_capture(msg: str, _orig_step=step):
+                _orig_step(msg)
+                _exec_logs.append(str(msg))
             r = run_full_chain(cve_id, lang=lang, budget_s=budget_s,
-                               on_step=step, save_report=True,
+                               on_step=_step_capture, save_report=True,
                                config=_shared_config, llm=_shared_llm,
                                hints=_analyst_hints or None)
             results.append(r)
@@ -5260,6 +5265,9 @@ def process_never_attempted_cves(
                                 _existing["llm_notes"] = _merged_notes
                             if getattr(r, "static_analysis", None):
                                 _existing["static_analysis"] = r.static_analysis
+                            # Persist execution logs for historial replay (web UI)
+                            if _exec_logs:
+                                _existing["execution_logs"] = _exec_logs[-800:]
                             if r.verified:
                                 # Build a JSON-safe evidence dict (drop non-serializable blobs)
                                 _dv_evidence = {}

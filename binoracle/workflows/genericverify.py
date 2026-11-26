@@ -3545,6 +3545,7 @@ def verify_generic_ssrf(
     setup_commands: Optional[List[str]] = None,
     auth_required: bool = False,
     docker_image: str = "",
+    setup_wait_extra_s: float = 0.0,
 ) -> WpVerifyResult:
     """Analogo generico de verify_wordpress_ssrf: levanta un contenedor 'callback' en la MISMA
     red del laboratorio generico (sea `dockerfile` o `compose` -- ver _GenericLab.resolve_network)
@@ -3576,6 +3577,10 @@ def verify_generic_ssrf(
         return res
     lab, base_url, container = boot
     try:
+        if setup_wait_extra_s > 0:
+            import time as _time
+            step(f"esperando {setup_wait_extra_s:.0f}s adicionales para que el lab este listo...")
+            _time.sleep(setup_wait_extra_s)
         step("levantando el contenedor 'callback' (listener) en la red interna del laboratorio...")
         listener = lab.start_listener()
         if not listener:
@@ -5770,6 +5775,7 @@ def verify_generic_header_bypass(
     pkg_version: str = "",
     vuln_class: str = "",
     setup_commands: Optional[List[str]] = None,
+    docker_image: str = "",
 ) -> WpVerifyResult:
     """Verifica un bypass de autorizacion via CABECERA HTTP o URL manipulada.
 
@@ -5804,7 +5810,8 @@ def verify_generic_header_bypass(
 
     boot = _bootstrap_generic_lab(source_dir, step, res, budget_s,
                                    dockerfile_body=dockerfile_body, extra_files=extra_files,
-                                   pkg_version=pkg_version, setup_commands=setup_commands)
+                                   pkg_version=pkg_version, setup_commands=setup_commands,
+                                   docker_image=docker_image)
     if boot is None:
         return res
     lab, base_url, container = boot
@@ -6741,6 +6748,7 @@ def verify_generic_header_bypass_candidates(
     dockerfile_body: str = "", extra_files: Optional[dict] = None,
     vuln_class: str = "",
     pkg_version: str = "",
+    docker_image: str = "",
 ) -> WpVerifyResult:
     """Iterate through bypass header candidates using ONE shared lab instance.
 
@@ -6784,7 +6792,8 @@ def verify_generic_header_bypass_candidates(
     boot = _bootstrap_generic_lab(source_dir, step, res, budget_s,
                                    dockerfile_body=dockerfile_body,
                                    extra_files=extra_files,
-                                   pkg_version=pkg_version)
+                                   pkg_version=pkg_version,
+                                   docker_image=docker_image)
     if boot is None:
         return res
     lab, base_url, container = boot
@@ -7576,9 +7585,54 @@ def verify_generic_http_confirm(
             )
             return res
 
+        # First attempt failed — try up to 2 endpoint format variants without Docker rebuild.
+        # Common patterns: trailing slash, no leading slash, /api/ prefix variant.
+        _ep_variants: list[str] = []
+        ep_stripped = endpoint.strip("/")
+        if endpoint.endswith("/"):
+            _ep_variants.append("/" + ep_stripped)         # strip trailing slash
+        else:
+            _ep_variants.append("/" + ep_stripped + "/")  # add trailing slash
+        if "?" not in endpoint:
+            _ep_variants.append("/" + ep_stripped.split("/")[0])  # parent path
+
+        for _alt_ep in _ep_variants[:2]:
+            if _alt_ep == endpoint:
+                continue
+            _alt_url = base_url.rstrip("/") + "/" + _alt_ep.lstrip("/")
+            step(f"reintentando con endpoint alternativo: {_alt_ep}...")
+            try:
+                _alt_kwargs: dict = {"timeout": 20, "headers": hdrs if hdrs else None}
+                if m == "GET" and query_params:
+                    _alt_kwargs["params"] = query_params
+                elif post_data:
+                    _alt_kwargs["data"] = post_data
+                _alt_resp = _http_request(m, _alt_url, **_alt_kwargs)
+                _alt_body = _alt_resp.text if hasattr(_alt_resp, "text") else ""
+                if confirm_string.lower() in _alt_body.lower():
+                    res.verified = True
+                    res.detail = (f"confirm_string {confirm_string!r} encontrado en la respuesta "
+                                  f"de {m} {_alt_ep} -- vulnerabilidad confirmada (endpoint alternativo)")
+                    res.evidence = {
+                        "respuesta_cuerpo_recorte": _alt_body[:800],
+                        "confirm_string": confirm_string,
+                        "status_code": _alt_resp.status_code if hasattr(_alt_resp, "status_code") else 200,
+                        "url": _alt_url, "metodo": m, "endpoint_alt": _alt_ep,
+                    }
+                    _add_exploit_evidence(
+                        res=res, method=m, url=_alt_url, resp_or_body=_alt_resp,
+                        highlight=confirm_string,
+                        caption_es=(f"VULNERABILIDAD CONFIRMADA: '{confirm_string}' en {m} {_alt_ep}."),
+                        caption_en=(f"VULNERABILITY CONFIRMED: '{confirm_string}' in {m} {_alt_ep}."),
+                    )
+                    return res
+            except Exception:
+                pass
+
         res.detail = (f"confirm_string {confirm_string!r} NO encontrado en la respuesta "
                       f"de {m} {endpoint} (len={len(body)})")
         res.evidence = body[:300]
+        step(f"confirm_string {confirm_string!r} no encontrado — primeros 300 chars: {body[:300]!r}")
         return res
     except Exception as e:
         res.detail = f"error inesperado en verify_generic_http_confirm: {e}"

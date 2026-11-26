@@ -4819,6 +4819,28 @@ def _inject_custom_docker_lab(source_dir: str, notes: dict, step=None) -> None:
         step(f"inyectado Dockerfile al source_dir desde '{label}' del JSON de hipotesis")
 
 
+_SLOW_DOCKER_IMAGES: dict[str, float] = {
+    "ghost":               90.0,
+    "tryghost":            90.0,
+    "zitadel":             90.0,
+    "dpage/pgadmin4":      60.0,
+    "directus/directus":   60.0,
+    "mattermost":          60.0,
+    "gitea":               60.0,
+    "gitlab":             120.0,
+    "nextcloud":           90.0,
+    "discourse":          120.0,
+}
+
+def _auto_setup_wait_s(docker_image: str, dockerfile_body: str = "") -> float:
+    """Return extra seconds to wait after container health-check for known slow images."""
+    combined = (docker_image + " " + dockerfile_body).lower()
+    for key, secs in _SLOW_DOCKER_IMAGES.items():
+        if key in combined:
+            return secs
+    return 0.0
+
+
 def _notes_dockerfile(notes: dict) -> str:
     """Returns the effective Dockerfile body from LLM notes.
     1. Use dockerfile_body directly if set
@@ -14962,6 +14984,9 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                   (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
                   inv.vuln_class in ("command-injection", "os-command-injection", "rce")
                   and notes.get("endpoint")
+                  # When analyst set confirm_string, use HTTP confirm (output is in response body)
+                  # rather than the file-canary approach (which looks for a written file on disk).
+                  and not (notes.get("analyst_endpoint_lock") and notes.get("confirm_string"))
                   and not any(w in (notes.get("cms") or inv.llm_notes.get("cms") or
                                     getattr(inv, "cms", "") or "").lower()
                               for w in ("craft", "craftcms", "payload", "payloadcms"))):
@@ -15050,10 +15075,13 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         custom_headers=_cmdi_custom_hdrs,
                         dockerfile_body=_cmdi_dockerfile, extra_files=_cmdi_extra_files,
                         setup_commands=_cmdi_setup_cmds, auth_required=_cmdi_auth_req)
-                wr = _run_evidence_retry_loop(
-                    llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
-                    _attempt_cmdi_generic, wr, _cmdi_ep, cmd_p,
-                    technique_label="command injection generico")
+                # Skip LLM-driven retry when analyst locked the endpoint — the LLM
+                # would suggest wrong endpoints/params (e.g. WordPress paths for pgAdmin).
+                if not notes.get("analyst_endpoint_lock"):
+                    wr = _run_evidence_retry_loop(
+                        llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
+                        _attempt_cmdi_generic, wr, _cmdi_ep, cmd_p,
+                        technique_label="command injection generico")
                 if _scf_cmdi and wr.verified:
                     _scaffold_cache[(_detect_lab_tech_stack(_cmdi_local_path_str, notes), "command-injection")] = {
                         "dockerfile_body": _cmdi_dockerfile, "extra_files": _cmdi_extra_files,
@@ -16189,13 +16217,16 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             params = _scf["parameters"]
                         _scf_ssrf = True
                 _ssrf_auth_req = bool(notes.get("auth_required"))
+                _ssrf_docker_image = notes.get("docker_image") or ""
+                _ssrf_extra_wait = _auto_setup_wait_s(_ssrf_docker_image, _ssrf_dockerfile)
                 wr = verify_generic_ssrf(
                     fr.local_path, _ssrf_ep, notes.get("http_method") or "GET",
                     params, url_param_hint=url_p or "", on_step=step, budget_s=budget_s,
                     custom_headers=_ssrf_custom_hdrs,
                     dockerfile_body=_ssrf_dockerfile, extra_files=_ssrf_extra_files,
                     setup_commands=_ssrf_setup_cmds, auth_required=_ssrf_auth_req,
-                    docker_image=(notes.get("docker_image") or ""))
+                    docker_image=_ssrf_docker_image,
+                    setup_wait_extra_s=_ssrf_extra_wait)
                 if _scf_ssrf and not wr.verified:
                     _lab_cfg_ssrf = {
                         "dockerfile_body": _ssrf_dockerfile,
@@ -16289,6 +16320,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 if _hc_post_data and notes.get("json_body"):
                     _hc_hdrs = dict(_hc_hdrs or {})
                     _hc_hdrs.setdefault("Content-Type", "application/json")
+                _hc_docker_image = notes.get("docker_image") or ""
+                _hc_extra_wait = _auto_setup_wait_s(_hc_docker_image, _hc_df)
                 wr = verify_generic_http_confirm(
                     _hc_local_path_str, _hc_ep, _hc_method,
                     confirm_string=_hc_confirm, patched_patterns=_hc_patched,
@@ -16296,7 +16329,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     post_data=_hc_post_data, query_params=_hc_query_params,
                     dockerfile_body=_hc_df, extra_files=_hc_ef,
                     setup_commands=_hc_setup_cmds,
-                    docker_image=(notes.get("docker_image") or ""))
+                    docker_image=_hc_docker_image,
+                    setup_wait_extra_s=_hc_extra_wait)
                 _apply_wpverify_result(inv, wr, es, llm)
             # mismo laboratorio efimero, para XSS/SSTI/XXE/open-redirect/file-upload/CSRF -- ver
             # _apply_wpverify_result() mas abajo, que vuelca el resultado en inv/blockers igual que
@@ -19221,7 +19255,8 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
     # dice "templating engine" -> classify_cve da "ssti" -> el lab correcto es el Jinja2 SSTI).
     _UPLOAD_OVERRIDE = {"ssti", "path-traversal", "command-injection", "xxe", "sqli", "ssrf"}
     if _analyst_owns_class:
-        pass  # analyst lock: inv.vuln_class already set from JSON, skip classification
+        # Normalize underscores in analyst-set class too
+        inv.vuln_class = (inv.vuln_class or "").lower().strip().replace("_", "-").replace(" ", "-")
     elif _llm_class in ("file-upload", "deserialization") and _desc_class in _UPLOAD_OVERRIDE:
         inv.vuln_class = _desc_class
     elif _llm_class:
