@@ -1739,12 +1739,12 @@ def _get_deterministic_wrapper_files(lib_key: str, cve_version: str = "",
     if "Dockerfile" not in result:
         result["Dockerfile"] = _WRAPPER_DOCKERFILES["python"]
 
+    import re as _re_pin
+
     # Pin to vulnerable version in requirements.txt if known.
     # Handle all line-ending variants: "\nlib\n", "lib\n", "\nlib", "lib" (no trailing newline).
     if cve_version and "requirements.txt" in result:
         reqs = result["requirements.txt"]
-        import re as _re_pin
-        # Replace the bare package name as a whole token (not inside a longer package name)
         pinned = _re_pin.sub(
             rf'(^|\n)({re.escape(lib_key)})([ \t]*\n|[ \t]*$)',
             rf'\1\2=={cve_version}\3',
@@ -1755,6 +1755,22 @@ def _get_deterministic_wrapper_files(lib_key: str, cve_version: str = "",
             step(f"  wrapper-det: {lib_key} pinned a {cve_version}")
         else:
             step(f"  wrapper-det: {lib_key} — no se pudo pinear a {cve_version} (revisa requirements.txt)")
+
+    # Pin to vulnerable version in Gemfile if known (Rack, etc.)
+    # Replaces: gem 'rack' → gem 'rack', '= version'
+    if cve_version and "Gemfile" in result:
+        gemfile = result["Gemfile"]
+        # Match: gem 'libkey' or gem "libkey" without a version already set
+        gem_pinned = _re_pin.sub(
+            rf"""(gem\s+['"]){re.escape(lib_key)}(['"])(\s*\n|\s*$)""",
+            rf"\g<1>{lib_key}\g<2>, '= {cve_version}'\3",
+            gemfile,
+        )
+        if gem_pinned != gemfile:
+            result["Gemfile"] = gem_pinned
+            step(f"  wrapper-det: {lib_key} Gemfile pinned a {cve_version}")
+        else:
+            step(f"  wrapper-det: {lib_key} — no se pudo pinear Gemfile a {cve_version}")
 
     return result
 
