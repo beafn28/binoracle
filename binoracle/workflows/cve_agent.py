@@ -15297,6 +15297,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     sqli_via_orderby=_via_orderby,
                     required_role=notes.get("required_role") or "subscriber",
                     seed_sql=notes.get("seed_sql") or [],
+                    nonce_action=notes.get("nonce_action") or "",
                     extra_nonce_pages=list(extra_nonce_pages),
                     extra_setup_trigger_paths=list(extra_setup_trigger_paths))
                 # Inject full params list into evidence so the LLM knows all available
@@ -15372,7 +15373,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         sqli_via_rawurldecode=_via_rawurldecode,
                         sqli_via_orderby=_via_orderby,
                         required_role=notes.get("required_role") or "subscriber",
-                        seed_sql=notes.get("seed_sql") or [])
+                        seed_sql=notes.get("seed_sql") or [],
+                        nonce_action=notes.get("nonce_action") or "")
                 _ep_lock_active = bool(notes.get("analyst_endpoint_lock")
                                        or notes.get("poc_raw_http_lock")
                                        or notes.get("poc_llm_endpoint_lock"))
@@ -15811,7 +15813,11 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             # dockerfile_body) + endpoint -- envia la peticion HTTP y busca confirm_string.
             # Cubre CVEs como Drupal install.php RCE (confirm_string='Choose language'),
             # backends que responden diferente cuando son vulnerables, etc.
+            # Guard: skip if already verified by an earlier path in this chain (e.g. the
+            # path-traversal canary in a separate if block above). Without this guard a
+            # second Docker lab would spin up, possibly crash, and overwrite the success.
             elif (not plugin_dir
+                  and not inv.verified
                   and (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image"))
                   and notes.get("confirm_string") and notes.get("endpoint")
                   and (notes.get("docker_image") or notes.get("dockerfile_body"))):

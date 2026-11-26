@@ -5588,6 +5588,7 @@ def verify_wordpress_sqli(
     _tried_params_set: Optional[frozenset] = None,
     sqli_header_hint: str = "",
     seed_sql: Optional[list] = None,
+    nonce_action: str = "",
 ) -> WpVerifyResult:
     """Verifica SQL injection con CINCO tecnicas, de mas a menos dura, probando varios contextos
     de inyeccion (numerico sin comillas, comilla simple, comilla doble, cierre de parentesis) y
@@ -6062,6 +6063,26 @@ def verify_wordpress_sqli(
                      f"escaneando código fuente del plugin para rutas alternativas...")
                 res.evidence["precheck_endpoint_status"] = 404
                 res.evidence["precheck_nota"] = "endpoint devolvio 404 — ruta incorrecta o plugin no expone ese endpoint"
+                # If endpoint looks like a bare WP REST path (missing /wp-json/ prefix), try it
+                if not endpoint.startswith("/wp-json/") and not endpoint.startswith("/wp-admin/"):
+                    _wp_json_ep = "/wp-json" + endpoint
+                    try:
+                        _wj_params = dict(base_params)
+                        _wj_params[sqli_param] = "1"
+                        if m == "POST":
+                            _wj_resp = _probe_sess.post(
+                                boot.base_url + _wp_json_ep, data=_wj_params,
+                                allow_redirects=False, timeout=5, verify=False)
+                        else:
+                            _wj_resp = _probe_sess.get(
+                                boot.base_url + _wp_json_ep, params=_wj_params,
+                                allow_redirects=False, timeout=5, verify=False)
+                        if _wj_resp.status_code != 404:
+                            step(f"pre-check: endpoint sin /wp-json/ — añadido prefijo, "
+                                 f"responde HTTP {_wj_resp.status_code} → usando {_wp_json_ep}")
+                            endpoint = _wp_json_ep
+                    except Exception:
+                        pass
                 # Auto-discover REST routes and AJAX hooks from plugin PHP code
                 if plugin_source_dir:
                     _alt_routes = _scan_rest_routes(plugin_source_dir)
@@ -6264,7 +6285,22 @@ def verify_wordpress_sqli(
             _anon_nonce_keys = [nk for nk in base_params
                                 if any(h in nk.lower() for h in ("nonce", "security", "token"))]
             _anon_wp_eval_done = False
-            if _anon_nonce_keys:
+            # Fast-path: if the caller provided the exact nonce action, skip detection.
+            if _anon_nonce_keys and nonce_action:
+                _r_known = lab.wp_cli("eval",
+                    f"wp_set_current_user(0);echo wp_create_nonce('{nonce_action}');",
+                    timeout=10)
+                _known_nonce = (_r_known.stdout or "").strip()
+                if _known_nonce and len(_known_nonce) >= 10:
+                    for _nk in _anon_nonce_keys:
+                        base_params[_nk] = _known_nonce
+                    step(f"nonce anonimo generado con nonce_action especificado "
+                         f"'{nonce_action}' → {_known_nonce[:8]}... "
+                         f"(saltando deteccion automatica)")
+                    res.evidence["nonce_anonimo_via_eval"] = {
+                        "action": nonce_action, "value": _known_nonce, "source": "explicit"}
+                    _anon_wp_eval_done = True
+            if _anon_nonce_keys and not _anon_wp_eval_done:
                 # Two-pass: first find the wp_verify_nonce action in the files that
                 # register wp_ajax_nopriv_ACTION (the actual callback files), then fall
                 # back to global scan. This avoids picking up nonce actions from unrelated
@@ -7014,6 +7050,23 @@ def verify_wordpress_sqli(
                  "aniade un campo seed_sql al JSON del CVE con los INSERT necesarios")
             res.evidence["control_vacio"] = True
             res.evidence["control_vacio_body"] = _ctrl_text_stripped[:100]
+        # Nonce fast-fail: when the control response shows a nonce/auth failure, none
+        # of the subsequent 400+ SQLi payloads can succeed. Abort early to save budget.
+        # Hint for the analyst: add nonce_action to the CVE JSON.
+        _ctrl_causa_pre = _quick_causa(_ctrl_text_stripped, base_resp.status_code)
+        if _ctrl_causa_pre == "nonce":
+            _nonce_params_ff = [k for k in base_params
+                                if any(h in k.lower() for h in ("nonce", "security", "token"))]
+            step(f"ABORT nonce fast-fail: control dice '{_ctrl_text_stripped[:80]}' — "
+                 f"el endpoint rechaza por nonce incorrecto; "
+                 f"ninguna tecnica SQLi puede trabajar si el control esta bloqueado "
+                 f"(hint: anadir nonce_action al JSON del CVE con la accion del plugin)")
+            res.evidence["nonce_fastfail"] = True
+            res.evidence["nonce_fastfail_response"] = _ctrl_text_stripped[:200]
+            res.evidence["nonce_params"] = _nonce_params_ff
+            res.detail = (f"Control rechazado por nonce: '{_ctrl_text_stripped[:100]}'. "
+                          f"Anadir 'nonce_action' (ej. 'um-frontend-nonce') al JSON del CVE.")
+            return res
         # Captura visual HTTP: peticion de control para el informe paso a paso
         step("capturando pantalla: peticion de control HTTP (sin inyeccion, respuesta base)...")
         _ctrl_url = boot.base_url + endpoint

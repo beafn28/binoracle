@@ -72,7 +72,8 @@ class ChainResult:
 
     def banner(self) -> str:
         kev = " [CISA KEV — ACTIVELY EXPLOITED]" if self.in_cisa_kev else ""
-        epss_str = f" | EPSS {self.epss_score:.0%} ({self.epss_pct:.0f}th pct)" if self.epss_score else ""
+        epss_str = (f" | EPSS {self.epss_score:.0%} ({self.epss_pct:.0f}th pct)"
+                    if self.epss_score and self.epss_pct is not None else "")
         return (f"{self.cve_id} | {self.risk_label or self.cvss_severity} "
                 f"CVSS {self.cvss_score or '?'}{epss_str}{kev}")
 
@@ -2991,6 +2992,15 @@ def run_full_chain(
         step("  sin LLM o sin descripción — modo determinístico")
         result.add_step("llm_hypothesis", "skip", "no LLM")
 
+    # ── Analyst hints pre-merge ───────────────────────────────────────────────
+    # Apply hints to llm_notes NOW so that library/compose/classification checks
+    # (Stages 2.5-5) use the analyst-provided endpoint and other facts.
+    # Without this, _is_library_cve fires when endpoint=? and "library" appears
+    # in LLM-generated strategy text, causing a spurious Node.js wrapper launch.
+    if hints:
+        _hint_premerge = {k: v for k, v in hints.items() if v is not None}
+        llm_notes.update(_hint_premerge)
+
     # ── Stage 2.5: Correlation — seed llm_notes from adjacent CVEs ──────────
     # Runs after LLM hypothesis so we can boost/validate what the LLM said.
     # Only seeds fields the LLM left empty (never overwrites a confident LLM answer).
@@ -3415,7 +3425,7 @@ def run_full_chain(
                         _run_web_stage(
                             cve_id, cve_info, _fast_notes, result, step,
                             budget_s=_fast_budget, config=config, llm=llm, lang=lang,
-                            skip_source_download=skip_source_download)
+                            skip_source_download=skip_source_download, hints=hints)
                         _status_fast = "VERIFICADO" if result.verified else "no confirmado"
                         step(f"  [5b-fast] resultado: {_status_fast}")
                         result.add_step("rehypothesis_alt_ep", "ok" if result.verified else "fail",
@@ -3455,7 +3465,7 @@ def run_full_chain(
                         _run_web_stage(
                             cve_id, cve_info, _fast2_notes, result, step,
                             budget_s=_fast2_budget, config=config, llm=llm, lang=lang,
-                            skip_source_download=skip_source_download)
+                            skip_source_download=skip_source_download, hints=hints)
                         _status_f2 = "VERIFICADO" if result.verified else "no confirmado"
                         step(f"  [5b-fast2] resultado: {_status_f2}")
                         result.add_step("rehypothesis_alt_ep2",
@@ -3510,7 +3520,7 @@ def run_full_chain(
                         _run_web_stage(
                             cve_id, cve_info, llm_notes, result, step,
                             budget_s=_rehyp_budget, config=config, llm=llm, lang=lang,
-                            skip_source_download=skip_source_download)
+                            skip_source_download=skip_source_download, hints=hints)
                         _status = "VERIFICADO" if result.verified else "no confirmado"
                         step(f"  [5b] resultado: {_status}")
                         result.add_step("rehypothesis_run", "ok" if result.verified else "fail",
@@ -4718,12 +4728,32 @@ def process_never_attempted_cves(
                     _existing["attempt_evidence"] = r.evidence if r.evidence else {
                         "attempted": True, "source": "auto_chain"}
                     if r.verified:
+                        # Build a JSON-safe evidence dict (drop non-serializable blobs)
+                        _dv_evidence = {}
+                        for _ek, _ev in (r.evidence or {}).items():
+                            try:
+                                _j.dumps(_ev, default=str)
+                                _dv_evidence[_ek] = _ev
+                            except Exception:
+                                _dv_evidence[_ek] = str(_ev)[:200]
                         _existing["dynamic_verify"] = {
                             "verified": True,
-                            "evidence": r.evidence if r.evidence else {},
+                            "evidence": _dv_evidence,
                         }
                     with open(_out_path, "w", encoding="utf-8") as fh:
                         _j.dump(_existing, fh, indent=2, ensure_ascii=False, default=str)
+                    # Verify write: check that dynamic_verify was persisted
+                    if r.verified:
+                        try:
+                            with open(_out_path, encoding="utf-8") as _vf:
+                                _vd = _j.load(_vf)
+                            if not _vd.get("dynamic_verify", {}).get("verified"):
+                                step(f"  {cve_id}: WARN dynamic_verify no persistido, reintentando")
+                                _vd["dynamic_verify"] = {"verified": True, "source": "batch_retry"}
+                                with open(_out_path, "w", encoding="utf-8") as _vf2:
+                                    _j.dump(_vd, _vf2, indent=2, ensure_ascii=False, default=str)
+                        except Exception:
+                            pass
                     step(f"  {cve_id}: batch JSON actualizado ({_out_path})")
                 except Exception as _save_e:
                     step(f"  {cve_id}: advertencia al actualizar JSON — {_save_e}")
