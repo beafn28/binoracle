@@ -5233,6 +5233,21 @@ def process_never_attempted_cves(
                             _ae["attempted"] = True  # always set — r.evidence may not contain it
                             _ae.setdefault("source", "auto_chain")
                             _existing["attempt_evidence"] = _ae
+                            # Also persist investigation steps, blockers, llm_notes and
+                            # static_analysis so failed CVEs are not hollow — the analyst and
+                            # cheerleader need this context for diagnosis and retry.
+                            if getattr(r, "steps", None):
+                                _existing["steps"] = r.steps
+                            if getattr(r, "blockers", None):
+                                _existing["blockers"] = r.blockers
+                            if getattr(r, "llm_notes", None):
+                                _merged_notes = dict(_existing.get("llm_notes") or {})
+                                for _k, _v in r.llm_notes.items():
+                                    if _v is not None:
+                                        _merged_notes[_k] = _v
+                                _existing["llm_notes"] = _merged_notes
+                            if getattr(r, "static_analysis", None):
+                                _existing["static_analysis"] = r.static_analysis
                             if r.verified:
                                 # Build a JSON-safe evidence dict (drop non-serializable blobs)
                                 _dv_evidence = {}
