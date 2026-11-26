@@ -1257,15 +1257,30 @@ _COMPOSE_SYSTEM_PROMPT = (
 
 
 def _needs_compose_lab(cve_info, llm_notes: dict) -> bool:
-    """Return True when the CVE requires a multi-container lab (proxy + app)."""
-    desc = ((getattr(cve_info, "description", "") or "") + " " + str(llm_notes)).lower()
-    compose_signals = [
+    """Return True when the CVE requires a multi-container lab (proxy + app).
+
+    Only triggers on strong proxy-architecture signals: the CVE itself must be ABOUT
+    a proxy bypass/misconfiguration. Broad terms like "nginx" are NOT enough —
+    they appear in exploit technique descriptions (e.g. "nginx log poisoning" for a
+    CMS RCE) and would create false compose-lab triggers for non-proxy CVEs.
+    """
+    desc = (getattr(cve_info, "description", "") or "").lower()
+    # Only check the CVE description + vuln_class/strategy (not full llm_notes which
+    # contains arbitrary PoC text, intel summaries, and repo descriptions).
+    n_strategy = (llm_notes.get("strategy") or "").lower()
+    n_vuln = (llm_notes.get("vuln_class") or "").lower()
+    combined = f"{desc} {n_strategy} {n_vuln}"
+    # Must have PROXY as a primary architectural component (not just mentioned)
+    strong_proxy_signals = [
         "reverse proxy", "proxy misconfiguration", "proxy bypass",
-        "trusted proxy", "x-forwarded-for", "hop-by-hop", "trusted header",
-        "session cookie", "proxy_pass", "nginx", "apache proxy",
-        "traefik", "caddy", "haproxy", "envoy", "istio",
+        "trusted proxy", "x-forwarded-for header", "hop-by-hop",
+        "trusted header injection", "proxy_pass",
     ]
-    return any(s in desc for s in compose_signals)
+    # Secondary signals: only if proxy is also mentioned
+    secondary_signals = ["traefik", "haproxy", "envoy", "istio", "caddy"]
+    has_primary = any(s in combined for s in strong_proxy_signals)
+    has_secondary = any(s in combined for s in secondary_signals) and "proxy" in combined
+    return has_primary or has_secondary
 
 
 def _generate_compose_lab(cve_id: str, cve_info, llm_notes: dict,
