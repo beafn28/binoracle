@@ -70,6 +70,12 @@ def prune_binoracle_containers() -> int:
                 removed += len(ids)
     except Exception:
         pass
+    # Redes huérfanas: el address pool se agota rápido (máx ~30 /24 subredes)
+    try:
+        subprocess.run(["docker", "network", "prune", "-f"],
+                       capture_output=True, timeout=30)
+    except Exception:
+        pass
     return removed
 
 
@@ -138,6 +144,10 @@ def prune(dry_run: bool = False) -> float:
 
     # 4. volúmenes huérfanos
     subprocess.run(["docker", "volume", "prune", "-f"],
+                   capture_output=True, timeout=60)
+
+    # 4b. redes huérfanas (direction pool se agota rápido con muchos labs)
+    subprocess.run(["docker", "network", "prune", "-f"],
                    capture_output=True, timeout=60)
 
     # 5. build cache
