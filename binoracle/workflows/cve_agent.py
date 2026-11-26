@@ -12794,9 +12794,24 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             )
                             if _rest_m:
                                 _rns, _rpath = _rest_m[0]
+                                # Extract $request->get_param() / $request['key'] parameters
+                                _rest_params = _re_ep.findall(
+                                    r'\$request\s*(?:->get_param\s*\(\s*|->sanitize_param\s*\(\s*|->get_json_params\s*\(\s*|->get_body_params\s*\(\s*)?'
+                                    r'[\'"]([^\'"]+)[\'"]', _php)
+                                _ep_rest_params = {}
+                                for _rp in _rest_params:
+                                    if _rp.lower() not in ("action", "nonce", "_wpnonce", "namespace", "route"):
+                                        _ep_rest_params[_rp] = ""
+                                # permission_callback = '__return_true' or missing → no auth required
+                                _perm_cb = _re_ep.findall(
+                                    r"'permission_callback'\s*=>\s*'([^']+)'", _php)
+                                _rest_auth = not any("return_true" in _p or "return_false" in _p
+                                                     for _p in _perm_cb) if _perm_cb else False
                                 _ep_derived = {
                                     "endpoint": "/wp-json/" + _rns.strip("/") + "/" + _rpath.lstrip("/"),
                                     "source": "rest_route",
+                                    "parameters": _ep_rest_params or None,
+                                    "auth_required": _rest_auth,
                                 }
                                 break
                         except Exception:
