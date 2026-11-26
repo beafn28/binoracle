@@ -3097,6 +3097,71 @@ def _cheerleader_analysis(llm, inv, wr, es: bool) -> dict:
         return {}
 
 
+_PRE_ATTEMPT_VALIDATE_SYS = (
+    "Eres un revisor de hipótesis de seguridad. Se te da la hipótesis generada por el LLM para "
+    "explotar un CVE antes de lanzar un laboratorio Docker. Tu tarea es evaluar si la hipótesis "
+    "es internamente coherente, está bien respaldada por la inteligencia del CVE, y los "
+    "parámetros propuestos (endpoint, método, param, payload) son plausibles para el stack. "
+    "NO razonas sobre si el CVE es explotable — solo evalúas si la hipótesis está bien formada. "
+    "Evalúa:\n"
+    "1. ¿El endpoint propuesto coincide con la descripción NVD/referencias del CVE?\n"
+    "2. ¿El método HTTP (GET/POST) tiene sentido para ese endpoint?\n"
+    "3. ¿El parámetro vulnerable mencionado existe en la grounding de código fuente?\n"
+    "4. ¿El tipo de vulnerabilidad (sqli/ssti/lfi/etc.) es coherente con el payload propuesto?\n"
+    "5. ¿Hay alguna contradicción interna (ej: sqli con payload xss, o endpoint de admin sin auth)?\n"
+    "Responde SOLO con JSON: {\"confidence\": 0.0-1.0, \"concerns\": [\"...lista de problemas...\"], "
+    "\"approved\": true/false, \"note\": \"resumen en 1 frase\"}. "
+    "approved=true si confidence > 0.5 y no hay contradicciones críticas. "
+    "Solo devuelve approved=false cuando hay una contradicción CLARA. En duda, aprueba."
+)
+
+
+def _pre_attempt_validate(fast_llm, inv, es: bool) -> dict:
+    """Pre-attempt hypothesis validation using the fast model (optional, non-blocking).
+
+    Runs BEFORE the Docker lab to catch obviously wrong hypotheses early (wrong method,
+    mismatched param type, etc.). Uses fast_llm to keep latency low.
+
+    Returns dict with 'confidence', 'concerns', 'approved', 'note'.
+    Returns {} if fast_llm unavailable or anything fails (non-blocking).
+    """
+    if fast_llm is None or not getattr(fast_llm, "available", lambda: False)():
+        return {}
+    try:
+        from ..llm.base import Message
+        import json
+        _notes = getattr(inv, "llm_notes", {}) or {}
+        _grounding = getattr(inv, "source_grounding", {}) or {}
+        _static = getattr(inv, "static_analysis", {}) or {}
+        context = {
+            "cve_id": getattr(inv, "cve_id", ""),
+            "vuln_class": getattr(inv, "vuln_class", ""),
+            "description_snippet": (getattr(inv, "description", "") or "")[:300],
+            "hypothesis": {
+                "endpoint": _notes.get("endpoint", ""),
+                "http_method": _notes.get("http_method", ""),
+                "parameters": _notes.get("parameters", {}),
+                "confirm_string": _notes.get("confirm_string", ""),
+                "docker_image": _notes.get("docker_image", ""),
+            },
+            "grounding_found": bool(_grounding.get("found")),
+            "grounding_summary": (_grounding.get("summary", "") or "")[:200],
+            "static_top": [
+                {"file": c.get("file", ""), "param": c.get("param", "")}
+                for c in (_static.get("top_candidates") or [])[:3]
+            ],
+        }
+        prompt = json.dumps(context, ensure_ascii=False)[:3000]
+        raw = fast_llm.chat([Message("system", _PRE_ATTEMPT_VALIDATE_SYS),
+                             Message("user", prompt)], json_mode=True)
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            return {}
+        return data
+    except Exception:
+        return {}
+
+
 # mapeo de evidencia compartido por cualquier verify_* que ya capture un recorte REAL del cuerpo
 # de la respuesta bajo la clave "respuesta_cuerpo_recorte" (command injection, SSTI, XXE, file
 # upload... -- ver wpverify.py/genericverify.py) pero que todavia no tiene su propio prompt a
@@ -18849,7 +18914,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                              "wpverify.py's ephemeral lab, when applicable)"))
 
 
-def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
+def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None, fast_llm=None,
                     on_step: Optional[Callable[[str], None]] = None, lang: str = "es",
                     budget_s: float = 300.0, hints: Optional[dict] = None,
                     use_cache: bool = True,
@@ -19290,6 +19355,21 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
         #      grep que las funciones citadas por el LLM existen de verdad (evidencia GROUNDED),
         #   2) desarrolla el PoC HTTP (o la pagina para CSRF) a partir de la hipotesis del LLM.
         # Nunca se marca 'verificado' aqui: eso exige lanzar el PoC contra un objetivo autorizado real.
+        # Pre-attempt validation (fast_llm, non-blocking): sanity-check hypothesis before Docker lab.
+        if fast_llm is not None:
+            _pav = _pre_attempt_validate(fast_llm, inv, es=(lang == "es"))
+            if _pav:
+                inv.attempt_evidence = inv.attempt_evidence or {}
+                inv.attempt_evidence["pre_validate"] = _pav
+                _concerns = _pav.get("concerns") or []
+                _note = _pav.get("note", "")
+                _approved = _pav.get("approved", True)
+                step((f"[pre-validate] confianza={_pav.get('confidence',0):.2f} "
+                      f"approved={_approved} — {_note}") if _concerns or not _approved else
+                     f"[pre-validate] hipótesis aprobada (confianza={_pav.get('confidence',0):.2f})")
+                if _concerns:
+                    for _c in _concerns[:3]:
+                        step(f"  [pre-validate] ⚠ {_c}")
         _run_web_investigation(inv, lang=lang, step=step, llm=(llm if llm_on else None),
                                budget_s=budget_s,
                                skip_source_download=skip_source_download)

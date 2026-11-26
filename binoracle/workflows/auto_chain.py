@@ -2022,6 +2022,7 @@ def _run_web_stage(cve_id: str, cve_info, llm_notes: dict,
             cve_id=cve_id,
             config=config,
             llm=llm,
+            fast_llm=_fast_llm,
             on_step=step,
             lang=lang,
             budget_s=budget_s,
@@ -3145,11 +3146,18 @@ def run_full_chain(
             config = {}
     if llm is None:
         try:
-            from ..llm import make_backend
+            from ..llm import make_backend, make_fast_backend as _mbfb
             llm = make_backend(config)
             step(f"  LLM: {getattr(llm, 'model', '?')}")
         except Exception:
             step("  LLM: no disponible (modo determinístico)")
+    # Fast LLM for lightweight pre-attempt validation and grading tasks
+    _fast_llm = None
+    try:
+        from ..llm import make_fast_backend as _mbfb2
+        _fast_llm = _mbfb2(config)
+    except Exception:
+        pass
 
     # ── F30: Ollama availability watchdog ─────────────────────────────────────
     # Probe Ollama before starting; if unavailable, retry up to 3 times (15s).
