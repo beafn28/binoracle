@@ -360,19 +360,34 @@ def fetch_cve(cve_id: str, timeout: float = 20.0, enrich: bool = True) -> CVEInf
             info.description = (d.get("value") or "").strip()
             break
     info.published = (cve.get("published") or "")[:10]
-    # CVSS — prioriza v4.0 > v3.1 > v3.0 > v2 (NVD expone v4 desde 2023 como cvssMetricV40)
+    # CVSS — usa el score más alto entre v3.1/v3.0/v2; v4.0 se guarda solo si no hay
+    # ningún v3.x (CVSS 4.0 tiende a puntuar más bajo para la misma vuln que v3.1,
+    # lo que causa que el filtro min_cvss descarte CVEs realmente críticos).
     metrics = cve.get("metrics", {})
-    for key in ("cvssMetricV40", "cvssMetricV31", "cvssMetricV30", "cvssMetricV2"):
+    _best_score: float = 0.0
+    _best_sev: str = ""
+    _best_vec: str = ""
+    # Recopilar todos los scores v3.x disponibles, quedarse con el más alto
+    for key in ("cvssMetricV31", "cvssMetricV30", "cvssMetricV2"):
         if metrics.get(key):
             m0 = metrics[key][0].get("cvssData", {})
-            info.cvss_score = m0.get("baseScore")
-            info.cvss_severity = (m0.get("baseSeverity") or
-                                  metrics[key][0].get("baseSeverity") or "")
-            info.cvss_vector = m0.get("vectorString", "")
-            # para CVSSv4 el campo de severity esta en el top-level del metric item
-            if not info.cvss_severity and key == "cvssMetricV40":
-                info.cvss_severity = metrics[key][0].get("cvssV4Severity", "")
-            break
+            sc = m0.get("baseScore") or 0.0
+            if sc > _best_score:
+                _best_score = sc
+                _best_sev = m0.get("baseSeverity") or metrics[key][0].get("baseSeverity") or ""
+                _best_vec = m0.get("vectorString", "")
+    # Usar v4.0 solo cuando no hay score v3.x
+    if _best_score == 0.0 and metrics.get("cvssMetricV40"):
+        m0 = metrics["cvssMetricV40"][0].get("cvssData", {})
+        _best_score = m0.get("baseScore") or 0.0
+        _best_sev = (m0.get("baseSeverity") or
+                     metrics["cvssMetricV40"][0].get("baseSeverity") or
+                     metrics["cvssMetricV40"][0].get("cvssV4Severity", ""))
+        _best_vec = m0.get("vectorString", "")
+    if _best_score > 0.0:
+        info.cvss_score = _best_score
+        info.cvss_severity = _best_sev
+        info.cvss_vector = _best_vec
     # referencias + deteccion de exploit publico (1) por las etiquetas de la NVD
     for ref in cve.get("references", []):
         url = ref.get("url", "")

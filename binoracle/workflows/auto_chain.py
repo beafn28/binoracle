@@ -5172,7 +5172,9 @@ def process_never_attempted_cves(
         if not n.get("endpoint") and has_docker and not has_wp_source and not has_cms_verifier:
             continue
         cvss = d.get("cvss_score") or 0.0
-        if cvss < min_cvss:
+        # Skip CVSS gate when caller provided an explicit cve_filter list —
+        # the caller already chose which CVEs to attempt.
+        if cvss < min_cvss and not _cve_set:
             continue
         # Prefer EPSS score for ordering (higher exploitation probability first)
         epss = float(n.get("_intel_epss", 0) or 0)
