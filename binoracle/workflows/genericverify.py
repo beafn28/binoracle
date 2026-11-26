@@ -2034,13 +2034,29 @@ def _bootstrap_generic_lab(source_dir: str, step, res: WpVerifyResult,
         # Auto-generate minimal Dockerfile when only a docker_image is known (no source/dockerfile).
         # Pull port hints from docker_profiles.py; fall back to common ports.
         try:
-            from binoracle.workflows.docker_profiles import DOCKER_PROFILES as _DP
-            _prof = _DP.get(docker_image, {}) or {}
-            _img_ports = _prof.get("ports", []) or []
+            from binoracle.workflows.docker_profiles import _DOCKER_IMAGE_PROFILES as _DP
+            # docker_image may have a tag (e.g. "dpage/pgadmin4:8.3") but profile keys use
+            # prefix patterns like "dpage/pgadmin4:" — try exact match first, then prefix.
+            _prof = _DP.get(docker_image) or {}
+            if not _prof:
+                for _pk in _DP:
+                    if docker_image.startswith(_pk) or _pk.rstrip(":").rstrip("-") == docker_image.split(":")[0]:
+                        _prof = _DP[_pk] or {}
+                        break
+            # Support both "port" (single) and "ports" (list) in profiles
+            _img_ports = _prof.get("ports") or ([_prof["port"]] if _prof.get("port") else [])
         except Exception:
             _img_ports = []
         _auto_expose = " ".join(str(p) for p in _img_ports) if _img_ports else "8080 3000 5000 80"
-        dockerfile_body = f"FROM {docker_image}\nEXPOSE {_auto_expose}\n"
+        # Include required ENV vars from the profile (e.g. PGADMIN_DEFAULT_EMAIL for pgAdmin)
+        _env_lines = ""
+        try:
+            _envs = _prof.get("envs") or {}
+            if _envs:
+                _env_lines = "\n" + "\n".join(f"ENV {k}={v}" for k, v in _envs.items())
+        except Exception:
+            _env_lines = ""
+        dockerfile_body = f"FROM {docker_image}{_env_lines}\nEXPOSE {_auto_expose}\n"
         step(f"docker_image={docker_image!r}: generando Dockerfile minimo (EXPOSE {_auto_expose})")
 
     if dockerfile_body:
@@ -7456,6 +7472,7 @@ def verify_generic_http_confirm(
     query_params: Optional[dict] = None,
     dockerfile_body: str = "", extra_files: Optional[dict] = None,
     setup_wait_extra_s: float = 0.0,
+    setup_commands: Optional[List[str]] = None,
     docker_image: str = "",
 ) -> WpVerifyResult:
     """Verificador generico de string de confirmacion en respuesta HTTP.
@@ -7490,7 +7507,8 @@ def verify_generic_http_confirm(
 
     boot = _bootstrap_generic_lab(source_dir, step, res, budget_s,
                                    dockerfile_body=dockerfile_body, extra_files=extra_files,
-                                   docker_image=docker_image)
+                                   docker_image=docker_image,
+                                   setup_commands=setup_commands)
     if boot is None:
         return res
     lab, base_url, container = boot

@@ -16268,6 +16268,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _hc_hdrs = notes.get("custom_headers") or None
                 _hc_df = _notes_dockerfile(notes)
                 _hc_ef = notes.get("extra_files") or None
+                _hc_setup_cmds = notes.get("setup_cmds") or None
                 if fr.local_path:
                     _inject_custom_docker_lab(_hc_local_path_str, notes, step)
                 _hc_confirm_short = _hc_confirm[:40]
@@ -16292,6 +16293,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     on_step=step, budget_s=budget_s, custom_headers=_hc_hdrs,
                     post_data=_hc_post_data, query_params=_hc_query_params,
                     dockerfile_body=_hc_df, extra_files=_hc_ef,
+                    setup_commands=_hc_setup_cmds,
                     docker_image=(notes.get("docker_image") or ""))
                 _apply_wpverify_result(inv, wr, es, llm)
             # mismo laboratorio efimero, para XSS/SSTI/XXE/open-redirect/file-upload/CSRF -- ver
