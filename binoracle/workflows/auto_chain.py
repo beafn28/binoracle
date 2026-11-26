@@ -5083,6 +5083,8 @@ def process_never_attempted_cves(
                 d = _j.load(fh)
         except Exception:
             continue
+        if not isinstance(d, dict):
+            continue
         if d.get("verified"):
             continue
         # Skip only if a real attempt was made (not just intel enrichment/patch analysis)
