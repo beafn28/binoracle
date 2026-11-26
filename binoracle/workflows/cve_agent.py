@@ -14006,8 +14006,11 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     # tecnicas de esta rama (account-takeover/direct-login-as/unauthenticated-
                     # login-bypass) son, en el fondo, formas de missing-authorization de todos
                     # modos -- un login bypass no autenticado ES una forma de auth-bypass Y de
-                    # missing-authorization a la vez.
-                    and inv.vuln_class in ("missing-authorization", "idor", "auth-bypass")
+                    # missing-authorization a la vez. information-disclosure/sensitive-info-exposure
+                    # incluidos porque el probe de no-auth (linea siguiente) los cubre directamente.
+                    and inv.vuln_class in ("missing-authorization", "idor", "auth-bypass",
+                                           "information-disclosure", "sensitive-info-exposure",
+                                           "data-exposure", "unauthorized-read")
                     and notes.get("endpoint")):
                 # el mecanismo exacto de account-takeover no es siempre el mismo (ver wpverify.py):
                 # unos plugins te dejan CAMBIAR la password/email de otro usuario (confirmable con
