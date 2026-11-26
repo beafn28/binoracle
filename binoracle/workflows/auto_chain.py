@@ -5463,16 +5463,27 @@ def reanalyze_failed_cves(
             )
             results.append(r)
 
-            # Persist new run results back to the batch JSON
+            # Persist new run results back to the batch JSON (with file lock to prevent races)
+            _lock_path_r = fpath + ".lock"
             try:
-                with open(fpath, encoding="utf-8") as fh:
-                    _ex = _j.load(fh)
-                _ex["verified"] = r.verified
-                _ex["engine_confidence"] = r.engine_confidence
-                if r.evidence:
-                    _ex["attempt_evidence"] = r.evidence
-                with open(fpath, "w", encoding="utf-8") as fh:
-                    _j.dump(_ex, fh, indent=2, ensure_ascii=False, default=str)
+                import fcntl as _fcntl_r
+                with open(_lock_path_r, "w") as _lf_r:
+                    _fcntl_r.flock(_lf_r, _fcntl_r.LOCK_EX)
+                    try:
+                        with open(fpath, encoding="utf-8") as fh:
+                            _ex = _j.load(fh)
+                        _ex["verified"] = r.verified
+                        _ex["engine_confidence"] = r.engine_confidence
+                        _retry_ae = dict(r.evidence) if r.evidence else (_ex.get("attempt_evidence") or {})
+                        if not isinstance(_retry_ae, dict):
+                            _retry_ae = {}
+                        _retry_ae["attempted"] = True
+                        _retry_ae.setdefault("source", "auto_chain_retry")
+                        _ex["attempt_evidence"] = _retry_ae
+                        with open(fpath, "w", encoding="utf-8") as fh:
+                            _j.dump(_ex, fh, indent=2, ensure_ascii=False, default=str)
+                    finally:
+                        _fcntl_r.flock(_lf_r, _fcntl_r.LOCK_UN)
             except Exception as _se:
                 step(f"  {cve_id}: advertencia al persistir resultado — {_se}")
 

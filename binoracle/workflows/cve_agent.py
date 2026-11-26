@@ -14477,6 +14477,23 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         "parameters": params if isinstance(params, dict) else {},
                     }
                 _apply_wpverify_result(inv, wr, es, llm)
+            # Drupal exposure CVEs: installer/setup pages accessible on installed instances.
+            # Uses HTTP confirm verifier instead of command injection (no cmd param exists).
+            # Works for both module CVEs (is_drupal=True) and core CVEs (target_binary=drupal).
+            elif ((is_drupal or "drupal" in (notes.get("target_binary") or "").lower()) and
+                  inv.vuln_class in ("command-injection", "os-command-injection", "rce") and
+                  notes.get("endpoint") and notes.get("confirm_string") and
+                  any(kw in (notes.get("endpoint") or "").lower()
+                      for kw in ("install.php", "setup.php", "installer", "/update.php"))):
+                from .drupalverify import verify_drupal_exposure
+                step(("intentando verificacion DINAMICA -- acceso al instalador Drupal (exposure)..." if es
+                      else "attempting DYNAMIC verification -- Drupal installer exposure..."))
+                _exp_confirm = notes.get("confirm_string") or ""
+                wr = verify_drupal_exposure(
+                    fr.local_path, plugin_dir, notes.get("endpoint"),
+                    notes.get("http_method") or "GET", confirm_string=_exp_confirm,
+                    on_step=step, budget_s=budget_s)
+                _apply_wpverify_result(inv, wr, es, llm)
             # mismo laboratorio efimero, para command injection en Drupal (cuarta clase de
             # Drupal, "poco a poco" -- ver drupalverify.py).
             elif (is_drupal and fr.kind in ("drupal-module", "local-zip", "zip-url") and plugin_dir

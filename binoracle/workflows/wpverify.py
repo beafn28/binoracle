@@ -6148,6 +6148,34 @@ def verify_wordpress_sqli(
                             endpoint = _wp_json_ep
                     except Exception:
                         pass
+                # If /wp-json/ pretty URL returns 404, try ?rest_route= fallback.
+                # This handles labs where Apache mod_rewrite isn't routing the pretty URL
+                # correctly to WordPress but plain query-string REST routes still work.
+                if endpoint.startswith("/wp-json/"):
+                    _rest_route_path = endpoint[len("/wp-json"):]  # /wphb/v1/rooms/search-rooms
+                    _rr_ep = "/"
+                    _rr_params = dict(base_params)
+                    _rr_params["rest_route"] = _rest_route_path
+                    _rr_params[sqli_param] = "1"
+                    try:
+                        if m == "POST":
+                            _rr_resp = _probe_sess.post(
+                                boot.base_url + _rr_ep, data=_rr_params,
+                                allow_redirects=False, timeout=5, verify=False)
+                        else:
+                            _rr_resp = _probe_sess.get(
+                                boot.base_url + _rr_ep, params=_rr_params,
+                                allow_redirects=False, timeout=5, verify=False)
+                        if _rr_resp.status_code not in (404, 400):
+                            step(f"pre-check: /wp-json/ devolvio 404 pero ?rest_route= "
+                                 f"responde HTTP {_rr_resp.status_code} "
+                                 f"({len(_rr_resp.content)}B) → usando ?rest_route= en vez "
+                                 f"de la ruta pretty (mod_rewrite probablemente no activo)")
+                            endpoint = _rr_ep
+                            base_params["rest_route"] = _rest_route_path
+                            res.evidence["rest_route_fallback"] = True
+                    except Exception:
+                        pass
                 # Auto-discover REST routes and AJAX hooks from plugin PHP code
                 if plugin_source_dir:
                     _alt_routes = _scan_rest_routes(plugin_source_dir)

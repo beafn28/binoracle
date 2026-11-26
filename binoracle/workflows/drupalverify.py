@@ -683,6 +683,107 @@ def verify_drupal_path_traversal(
         lab.teardown()
 
 
+def verify_drupal_exposure(
+    module_source_dir: Optional[str], slug: Optional[str], endpoint: str,
+    http_method: str, confirm_string: str = "", on_step=None, budget_s: float = 1200.0,
+) -> "WpVerifyResult":
+    """Verifica que un endpoint de Drupal (p.ej. /core/install.php) está accesible
+    y devuelve la cadena esperada. Usado para CVEs tipo 'instalador expuesto' donde
+    el RCE se obtiene al poder re-instalar Drupal (no hay parámetro de comando).
+    Funciona con módulos (module_source_dir + slug) o con sólo Drupal core
+    (module_source_dir=None, slug=None)."""
+    step = on_step or (lambda _m: None)
+    res = WpVerifyResult()
+    t0 = time.time()
+
+    if not _docker_daemon_ok():
+        res.available = False
+        res.detail = "sin daemon Docker alcanzable"
+        return res
+    if not confirm_string:
+        res.detail = "verify_drupal_exposure necesita confirm_string para confirmar el acceso"
+        return res
+
+    # If a module source is given, validate it exists before booting
+    _has_module = bool(module_source_dir and slug and
+                       os.path.isdir(os.path.join(module_source_dir, slug)))
+
+    lab = _Lab(_token())
+    try:
+        root_pw, db_pw = secrets.token_urlsafe(16), secrets.token_urlsafe(16)
+        admin_user, admin_pass = "binoracle_admin", secrets.token_urlsafe(12)
+
+        if not lab.ensure_drush_image(step):
+            res.detail = "no se pudo construir/encontrar la imagen de Drupal+Drush"
+            return res
+
+        step("levantando laboratorio Drupal+MySQL aislado en Docker (red propia)...")
+        lab.setup_network()
+        lab.start_mysql(root_pw, db_pw)
+        if not lab.mysql_ready(db_pw):
+            res.detail = "MySQL no respondio a tiempo"
+            return res
+
+        step("MySQL listo; arrancando Drupal...")
+        port = lab.start_drupal()
+        if not port or not lab.http_ready(port):
+            res.detail = "Drupal no respondio a tiempo"
+            return res
+
+        base_url = f"http://{_lab_host()}:{port}"
+        step(f"Drupal listo en {base_url}; instalando via Drush...")
+        r = lab.drush("site:install", "standard",
+                      f"--db-url=mysql://drupal:{db_pw}@{lab.mysql}/drupal",
+                      f"--account-name={admin_user}", f"--account-pass={admin_pass}",
+                      "--site-name=binoracle-lab", "-y", timeout=180)
+        if r.returncode != 0:
+            res.detail = f"drush site:install fallo: {(r.stderr or r.stdout or '')[:300]}"
+            return res
+
+        if _has_module:
+            step(f"copiando el modulo ({slug}) y activandolo...")
+            if not lab.install_module(module_source_dir, slug):
+                res.detail = "no se pudo copiar el modulo al laboratorio"
+                return res
+            r = lab.drush("pm:enable", slug, "-y", timeout=60)
+            if r.returncode != 0:
+                res.detail = f"activacion del modulo fallo: {(r.stderr or r.stdout or '')[:300]}"
+                return res
+
+        m = (http_method or "GET").upper()
+        ep = endpoint or "/core/install.php"
+        url = base_url.rstrip("/") + ep
+        step(f"probando acceso a {ep} en Drupal instalado (confirm_string={confirm_string!r})...")
+        import requests as _rq
+        import requests.exceptions as _rqe
+        try:
+            resp = _rq.request(m, url, allow_redirects=True, timeout=20, verify=False)
+            body = resp.text or ""
+            step(f"respuesta: HTTP {resp.status_code}, {len(body)}B")
+            if confirm_string.lower() in body.lower():
+                res.verified = True
+                res.ok = True
+                res.confidence = "confirmed"
+                res.detail = (f"confirm_string {confirm_string!r} encontrado en {ep} "
+                              f"(HTTP {resp.status_code}) — el instalador está accesible "
+                              f"en un Drupal ya instalado")
+                res.evidence.update({
+                    "endpoint": ep,
+                    "http_status": resp.status_code,
+                    "confirm_string": confirm_string,
+                    "body_excerpt": body[:500],
+                })
+            else:
+                res.detail = (f"confirm_string {confirm_string!r} no encontrado en {ep} "
+                              f"(HTTP {resp.status_code})")
+                res.evidence["body_excerpt"] = body[:300]
+        except _rqe.RequestException as e:
+            res.detail = f"error HTTP al acceder a {ep}: {e}"
+    finally:
+        lab.teardown()
+    return res
+
+
 def verify_drupal_command_injection(
     module_source_dir: str, slug: str, endpoint: str, http_method: str,
     parameters, cmd_param_hint: str = "",
