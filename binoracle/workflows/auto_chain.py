@@ -1884,7 +1884,8 @@ def _generate_wrapper_app(cve_id: str, cve_info, llm_notes: dict,
 
 def _run_web_stage(cve_id: str, cve_info, llm_notes: dict,
                    result: ChainResult, step: Callable,
-                   budget_s: float, config=None, llm=None, lang: str = "es",
+                   budget_s: float, config=None, llm=None, fast_llm=None,
+                   lang: str = "es",
                    skip_source_download: bool = False,
                    hints: Optional[dict] = None) -> Any:
     """Full web CVE investigation. Returns the Investigation object."""
@@ -2022,7 +2023,7 @@ def _run_web_stage(cve_id: str, cve_info, llm_notes: dict,
             cve_id=cve_id,
             config=config,
             llm=llm,
-            fast_llm=_fast_llm,
+            fast_llm=fast_llm,
             on_step=step,
             lang=lang,
             budget_s=budget_s,
@@ -3846,8 +3847,8 @@ def run_full_chain(
         elif result.cve_class in ("web", "unknown", "cli"):
             _run_web_stage(
                 cve_id, cve_info, llm_notes, result, step,
-                budget_s=budget_s, config=config, llm=llm, lang=lang,
-                skip_source_download=skip_source_download, hints=hints)
+                budget_s=budget_s, config=config, llm=llm, fast_llm=_fast_llm,
+                lang=lang, skip_source_download=skip_source_download, hints=hints)
         elif result.cve_class in ("native", "binary"):
             # Auto-lab: attempt to install the vulnerable package in Docker and
             # run the LLM-generated PoC — no manual --binary needed.
@@ -3861,8 +3862,8 @@ def run_full_chain(
                 step("  auto-lab no disponible — intentando web stage como fallback")
                 _run_web_stage(
                     cve_id, cve_info, llm_notes, result, step,
-                    budget_s=budget_s, config=config, llm=llm, lang=lang,
-                    skip_source_download=skip_source_download, hints=hints)
+                    budget_s=budget_s, config=config, llm=llm, fast_llm=_fast_llm,
+                    lang=lang, skip_source_download=skip_source_download, hints=hints)
         else:
             result.add_step("investigation", "skip", f"class={result.cve_class}")
 
@@ -3915,8 +3916,8 @@ def run_full_chain(
                     if _fast_budget >= 30.0:
                         _run_web_stage(
                             cve_id, cve_info, _fast_notes, result, step,
-                            budget_s=_fast_budget, config=config, llm=llm, lang=lang,
-                            skip_source_download=skip_source_download, hints=hints)
+                            budget_s=_fast_budget, config=config, llm=llm, fast_llm=_fast_llm,
+                            lang=lang, skip_source_download=skip_source_download, hints=hints)
                         _status_fast = "VERIFICADO" if result.verified else "no confirmado"
                         step(f"  [5b-fast] resultado: {_status_fast}")
                         result.add_step("rehypothesis_alt_ep", "ok" if result.verified else "fail",
@@ -3955,8 +3956,8 @@ def run_full_chain(
                     if _fast2_budget >= 30.0:
                         _run_web_stage(
                             cve_id, cve_info, _fast2_notes, result, step,
-                            budget_s=_fast2_budget, config=config, llm=llm, lang=lang,
-                            skip_source_download=skip_source_download, hints=hints)
+                            budget_s=_fast2_budget, config=config, llm=llm, fast_llm=_fast_llm,
+                            lang=lang, skip_source_download=skip_source_download, hints=hints)
                         _status_f2 = "VERIFICADO" if result.verified else "no confirmado"
                         step(f"  [5b-fast2] resultado: {_status_f2}")
                         result.add_step("rehypothesis_alt_ep2",
@@ -4010,8 +4011,8 @@ def run_full_chain(
                     if _rehyp_budget >= 30.0:
                         _run_web_stage(
                             cve_id, cve_info, llm_notes, result, step,
-                            budget_s=_rehyp_budget, config=config, llm=llm, lang=lang,
-                            skip_source_download=skip_source_download, hints=hints)
+                            budget_s=_rehyp_budget, config=config, llm=llm, fast_llm=_fast_llm,
+                            lang=lang, skip_source_download=skip_source_download, hints=hints)
                         _status = "VERIFICADO" if result.verified else "no confirmado"
                         step(f"  [5b] resultado: {_status}")
                         result.add_step("rehypothesis_run", "ok" if result.verified else "fail",
