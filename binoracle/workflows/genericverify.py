@@ -2088,9 +2088,22 @@ def _bootstrap_generic_lab(source_dir: str, step, res: WpVerifyResult,
             fp = os.path.join(ctx_dir, os.path.basename(fname))
             with open(fp, "w") as f:
                 f.write(content)
-        target = {"kind": "dockerfile", "path": df_path, "context": ctx_dir,
-                  "_analyst_ctx": ctx_dir}
-        step("usando Dockerfile del analista (prioridad sobre repo)")
+        # Si extra_files incluye un docker-compose, usarlo en vez del Dockerfile autogenerado.
+        # Caso: docker_image genera un Dockerfile mínimo pero el analista provee un compose
+        # multi-servicio (p.ej. Mattermost+PostgreSQL) en extra_files — el compose tiene
+        # prioridad porque contiene la infraestructura completa.
+        _compose_in_extras = next(
+            (os.path.join(ctx_dir, os.path.basename(n))
+             for n in (extra_files or {}) if os.path.basename(n) in _COMPOSE_NAMES),
+            None)
+        if _compose_in_extras and os.path.isfile(_compose_in_extras):
+            target = {"kind": "compose", "path": _compose_in_extras, "context": ctx_dir,
+                      "_analyst_ctx": ctx_dir}
+            step("docker-compose en extra_files tiene prioridad sobre Dockerfile autogenerado")
+        else:
+            target = {"kind": "dockerfile", "path": df_path, "context": ctx_dir,
+                      "_analyst_ctx": ctx_dir}
+            step("usando Dockerfile del analista (prioridad sobre repo)")
     else:
         target = _find_build_target(source_dir, pkg_version=pkg_version)
     if target is None:

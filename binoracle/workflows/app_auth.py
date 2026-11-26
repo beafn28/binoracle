@@ -152,6 +152,25 @@ def _auth_audiobookshelf(base: str, envs: dict, step: Callable) -> dict[str, str
     return None
 
 
+def _auth_mattermost(base: str, envs: dict, step: Callable) -> dict[str, str] | None:
+    """POST /api/v4/users/login → Bearer token from Token response header."""
+    for login_id, pwd in [
+        ("admin@example.com", "BinOracle123!"),
+        ("admin@example.com", "Admin1234!"),
+    ]:
+        status, body, hdrs = _post_json(
+            f"{base}/api/v4/users/login",
+            {"login_id": login_id, "password": pwd},
+        )
+        if status in (200, 201):
+            tok = hdrs.get("Token") or hdrs.get("token") or body.get("token") or ""
+            if tok:
+                step(f"mattermost-auth: token obtained ({tok[:8]}...)")
+                return {"Authorization": f"Bearer {tok}"}
+    step("mattermost-auth: login failed")
+    return None
+
+
 def _auth_daptin(base: str, envs: dict, step: Callable) -> dict[str, str] | None:
     """POST /action/user/signup and /action/user/signin → token."""
     # daptin default: sign in with admin@admin.com / admin
@@ -179,6 +198,7 @@ _IMAGE_AUTH_DISPATCH: list[tuple[str, str, Callable]] = [
     ("dpage/pgadmin4:",           "/misc/ping",          _auth_pgadmin),
     ("advplyr/audiobookshelf:",   "/healthcheck",        _auth_audiobookshelf),
     ("daptin/daptin:",            "/ping",               _auth_daptin),
+    ("mattermost/",               "/api/v4/system/ping", _auth_mattermost),
 ]
 
 
