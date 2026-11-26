@@ -12507,7 +12507,16 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             if not plugin_dir and fr.kind == "git" and fr.ok and fr.local_path:
                 _fr_src = fr.source or ""
                 if "common-repository/" in _fr_src or "plugins.svn.wordpress.org/" in _fr_src:
-                    _slug_from_mirror = _fr_src.rstrip("/").split("/")[-1]
+                    # For SVN versioned URLs like .../debug-tool/tags/2.2/, the slug
+                    # is the component AFTER plugins.svn.wordpress.org/, not the last one.
+                    if "plugins.svn.wordpress.org/" in _fr_src:
+                        import re as _re_svn_slug
+                        _m_svn = _re_svn_slug.search(
+                            r"plugins\.svn\.wordpress\.org/([a-z0-9][a-z0-9-]{1,80})",
+                            _fr_src, _re_svn_slug.IGNORECASE)
+                        _slug_from_mirror = _m_svn.group(1).lower() if _m_svn else _fr_src.rstrip("/").split("/")[-1]
+                    else:
+                        _slug_from_mirror = _fr_src.rstrip("/").split("/")[-1]
                     if _slug_from_mirror:
                         plugin_dir = _slug_from_mirror
                         # Treat as a WP plugin for downstream dispatch

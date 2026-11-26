@@ -6041,12 +6041,30 @@ def verify_wordpress_sqli(
             res.evidence["http_captures"] = boot.http_captures
             return res
 
-        if boot.shortcode_page_path and attack_endpoint_is_bare_root:
+        # WordPress query vars que se inyectan directamente en WP_Query: si el parametro de ataque
+        # es uno de estos vars, el ataque DEBE ir contra la raiz real (/?name=... etc.), NO contra
+        # la pagina del shortcode. La pagina del shortcode existe solo para que el plugin muestre
+        # su interfaz -- un parametro WP nativo (name, p, cat, tag, s, author...) se procesa en
+        # WP_Query independientemente de que pagina se visite, pero el diferencial booleano
+        # (200 con el post real vs 404 sin el post) solo funciona en la raiz.
+        _WP_NATIVE_QUERY_VARS = {
+            "name", "p", "page_id", "pagename", "cat", "tag", "s", "author",
+            "author_name", "feed", "tb", "paged", "comments_popup", "m", "year",
+            "monthnum", "day", "hour", "minute", "second", "post_type",
+        }
+        _attack_uses_wp_query_var = bool(
+            isinstance(parameters, dict)
+            and _WP_NATIVE_QUERY_VARS & set(parameters.keys())
+        )
+        if boot.shortcode_page_path and attack_endpoint_is_bare_root and not _attack_uses_wp_query_var:
             # solo se REDIRIGE el ataque a la pagina del shortcode cuando el endpoint dado era la
             # raiz (no hay otro sitio al que atacar). Si ya se dio un endpoint real y concreto
             # (p.ej. una accion AJAX propia del plugin), la pagina del shortcode existe solo para
             # que _auto_resolve_wp_blockers rasque de ahi el nonce real -- el ataque sigue yendo
             # contra el endpoint original, nunca contra la pagina.
+            # EXCEPCION: si el parametro de ataque es un query var nativo de WP (name, p, cat...),
+            # el diferencial boolean depende de la respuesta REAL de WP_Query en la raiz -- no
+            # redirigir, ya que la pagina del shortcode responde siempre igual.
             step(f"endpoint='/' no muestra nada del plugin -- atacando en su lugar la pagina "
                  f"real creada con el shortcode ({boot.shortcode_page_path})...")
             endpoint = boot.shortcode_page_path

@@ -4698,10 +4698,18 @@ def process_never_attempted_cves(
             continue
         # Skip only if a real attempt was made (not just intel enrichment/patch analysis)
         # attempt_evidence with just patch data (raw_patch_text, patch_analysis) is intel
-        # enrichment, not a verification attempt — only skip if "attempted": True is set
+        # enrichment, not a verification attempt — only skip if "attempted": True is set.
+        # Exception: "hollow attempts" — attempted=True but no steps, no blockers, and
+        # dynamic_verify is empty — indicate the agent crashed before writing any output;
+        # these are treated as retry-eligible so they don't get stuck forever.
         _ae = d.get("attempt_evidence")
         if isinstance(_ae, dict) and _ae.get("attempted"):
-            continue
+            _dv = d.get("dynamic_verify") or {}
+            _steps = d.get("steps") or []
+            _bl = d.get("blockers") or []
+            _hollow = not _dv and not _steps and not _bl
+            if not _hollow:
+                continue
         elif _ae and not isinstance(_ae, dict):
             continue  # Non-dict truthy sentinel → skip
         n = d.get("llm_notes") or {}

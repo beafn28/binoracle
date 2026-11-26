@@ -205,6 +205,26 @@ def _extract_wp_trac_plugin_slug(text: str) -> Optional[str]:
     return m.group(1).lower() if m else None
 
 
+def _extract_wp_svn_plugin_slug(text: str) -> Optional[str]:
+    """Si `text` es una URL SVN de WordPress.org (plugins.svn.wordpress.org/{slug}/...),
+    devuelve el slug. Cubre: trunk, tags/{version}, branches/{branch}.
+    Confirmado en vivo: LLM pone la URL SVN versioned como source_url (p.ej.
+    https://plugins.svn.wordpress.org/debug-tool/tags/2.2/)."""
+    m = re.match(
+        r"^(?:https?://)?plugins\.svn\.wordpress\.org/([a-z0-9][a-z0-9-]{1,80})(?:[/?#/]|$)",
+        (text or "").strip(), re.IGNORECASE)
+    return m.group(1).lower() if m else None
+
+
+def _extract_wp_downloads_plugin_slug(text: str) -> Optional[str]:
+    """Si `text` es una URL de descarga de WordPress.org (downloads.wordpress.org/plugin/<slug>*.zip),
+    devuelve el slug. Cubre: downloads.wordpress.org/plugin/{slug}.{ver}.zip."""
+    m = re.match(
+        r"^(?:https?://)?downloads\.wordpress\.org/plugin/([a-z0-9][a-z0-9-]{1,80})\.",
+        (text or "").strip(), re.IGNORECASE)
+    return m.group(1).lower() if m else None
+
+
 def _extract_drupal_org_module_slug(text: str) -> Optional[str]:
     """Analogo de _extract_wp_org_plugin_slug para la pagina de un proyecto de Drupal.org
     (https://www.drupal.org/project/<machine_name>...) -- misma casuistica (esquema opcional,
@@ -1592,7 +1612,17 @@ def fetch_source(target: str, version: str = "", on_step: Optional[Callable[[str
     # detect_plugin_folder devolveria la unica subcarpeta (p.ej. "static/" en un servidor aiohttp)
     # por la heuristica de "1 entrada = es esa", lo que haria que not plugin_dir == False en
     # cve_agent.py y bloquearia la rama de verificacion generica de path-traversal (linea 2139).
-    if os.path.isdir(target):
+    # EXCEPCION: si el target tiene forma de slug WP/Drupal (a-z0-9-, sin slashes ni puntos), se
+    # ignora el directorio local para descargarlo desde WP.org/Drupal.org con la version correcta.
+    # Un directorio casualmente llamado igual que un plugin (p.ej. rsvp-me/) no deberia ganar sobre
+    # la descarga oficial -- el directorio puede estar corrupto o ser de otra version.
+    _skip_local_dir = (
+        not os.path.sep in target
+        and not target.startswith("http")
+        and not target.endswith(".zip")
+        and bool(re.match(r'^[a-z0-9][a-z0-9-]{1,80}$', target, re.IGNORECASE))
+    )
+    if os.path.isdir(target) and not _skip_local_dir:
         step = on_step or (lambda _m: None)
         step(f"fuente local (directorio): {target}")
         res = SourceFetchResult(kind="local-dir", source=target)
@@ -1612,9 +1642,19 @@ def fetch_source(target: str, version: str = "", on_step: Optional[Callable[[str
         if wp_trac_slug:
             target, cms_hint = wp_trac_slug, "wordpress"
         else:
-            drupal_page_slug = _extract_drupal_org_module_slug(target)
-            if drupal_page_slug:
-                target, cms_hint = drupal_page_slug, "drupal"
+            # SVN versioned URL (plugins.svn.wordpress.org/{slug}/tags/{ver}/) y
+            # downloads.wordpress.org/plugin/{slug}.{ver}.zip -- el LLM los pone como source_url.
+            wp_svn_slug = _extract_wp_svn_plugin_slug(target)
+            if wp_svn_slug:
+                target, cms_hint = wp_svn_slug, "wordpress"
+            else:
+                wp_dl_slug = _extract_wp_downloads_plugin_slug(target)
+                if wp_dl_slug:
+                    target, cms_hint = wp_dl_slug, "wordpress"
+                else:
+                    drupal_page_slug = _extract_drupal_org_module_slug(target)
+                    if drupal_page_slug:
+                        target, cms_hint = drupal_page_slug, "drupal"
 
     if cms_hint == "drupal":
         return fetch_drupal_module(target, version=version, on_step=on_step, timeout=timeout,
