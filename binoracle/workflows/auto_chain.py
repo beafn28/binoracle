@@ -4799,6 +4799,22 @@ def process_never_attempted_cves(
             step(f"  {cve_id}: {'✓ VERIFICADO' if r.verified else '? completado'}")
         except Exception as exc:
             step(f"  {cve_id}: error — {exc}")
+            # Mark the CVE as attempted so it is not retried in every future batch
+            # (without this, an exception before the JSON save leaves it unprocessed forever).
+            _out_path = _os.path.join(reports_dir, f"{cve_id}.json")
+            if _os.path.exists(_out_path):
+                try:
+                    with open(_out_path, encoding="utf-8") as _fh:
+                        _exc_data = _j.load(_fh)
+                    if not _exc_data.get("attempt_evidence"):
+                        _exc_data["attempt_evidence"] = {
+                            "attempted": True, "source": "auto_chain_exception",
+                            "error": str(exc)[:200]}
+                        with open(_out_path, "w", encoding="utf-8") as _fh2:
+                            _j.dump(_exc_data, _fh2, indent=2, ensure_ascii=False, default=str)
+                        step(f"  {cve_id}: attempt_evidence marcado tras excepcion para evitar retry infinito")
+                except Exception:
+                    pass
     return results
 
 
