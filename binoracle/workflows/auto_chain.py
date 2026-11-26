@@ -5098,7 +5098,22 @@ def process_never_attempted_cves(
             _bl = d.get("blockers") or []
             _hollow = not _dv and not _steps and not _bl
             if not _hollow:
-                continue
+                # Exception: cheerleader has a confident suggested fix → apply & retry
+                _cheer = (_ae.get("cheerleader") or {}) if isinstance(_ae, dict) else {}
+                _sf = (_cheer.get("suggested_fix") or {}) if isinstance(_cheer, dict) else {}
+                _conf = float(_cheer.get("confidence", 0) or 0) if isinstance(_cheer, dict) else 0
+                if _conf > 0.5 and _sf and any(_sf.get(k) for k in ("endpoint", "param", "sqli_param")):
+                    _patched = {k: v for k, v in _sf.items() if v}
+                    d["llm_notes"] = {**(d.get("llm_notes") or {}), **_patched}
+                    d["attempt_evidence"] = {"_cheerleader_retry": True}
+                    try:
+                        with open(fpath, "w", encoding="utf-8") as _fhw:
+                            _j.dump(d, _fhw, ensure_ascii=False, indent=2)
+                        step(f"{d.get('cve_id','?')}: cheerleader-guided retry → {list(_patched.keys())}")
+                    except Exception:
+                        continue
+                else:
+                    continue
         elif _ae and not isinstance(_ae, dict):
             continue  # Non-dict truthy sentinel → skip
         n = d.get("llm_notes") or {}

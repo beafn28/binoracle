@@ -12733,6 +12733,67 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             step(_sa_ctx_pre[:200] + "..." if len(_sa_ctx_pre) > 200 else _sa_ctx_pre)
                 except Exception:
                     pass
+            # Derive WP endpoint from PHP action hooks when LLM left endpoint empty.
+            # Greps for add_action('wp_ajax_...' and register_rest_route() patterns.
+            if fr.ok and fr.local_path and not inv.llm_notes.get("endpoint"):
+                _ep_derived = None
+                try:
+                    import subprocess as _sp_ep, re as _re_ep
+                    _grep_ep = _sp_ep.run(
+                        ["grep", "-rl", "--include=*.php",
+                         "-e", "wp_ajax_", "-e", "register_rest_route",
+                         fr.local_path],
+                        capture_output=True, text=True, timeout=5,
+                    )
+                    for _phpf in (_grep_ep.stdout.strip().split("\n") if _grep_ep.stdout else [])[:6]:
+                        if not _phpf.strip():
+                            continue
+                        try:
+                            _php = open(_phpf, errors="replace").read()
+                            _np = _re_ep.findall(
+                                r"add_action\s*\(\s*['\"]wp_ajax_nopriv_([^'\"]+)['\"]", _php)
+                            _pr = _re_ep.findall(
+                                r"add_action\s*\(\s*['\"]wp_ajax_([^'\"]+)['\"]", _php)
+                            _action_name = (_np or _pr)
+                            if _action_name:
+                                _ep_derived = {
+                                    "endpoint": "/wp-admin/admin-ajax.php",
+                                    "parameters": {"action": _action_name[0]},
+                                    "source": "wp_ajax_nopriv" if _np else "wp_ajax",
+                                }
+                                break
+                            _rest_m = _re_ep.findall(
+                                r"register_rest_route\s*\(\s*['\"]([^'\"]+)['\"][^,]*,\s*['\"]([^'\"]+)['\"]",
+                                _php,
+                            )
+                            if _rest_m:
+                                _rns, _rpath = _rest_m[0]
+                                _ep_derived = {
+                                    "endpoint": "/wp-json/" + _rns.strip("/") + "/" + _rpath.lstrip("/"),
+                                    "source": "rest_route",
+                                }
+                                break
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+                if _ep_derived:
+                    inv.llm_notes["endpoint"] = _ep_derived["endpoint"]
+                    if _ep_derived.get("parameters") and not inv.llm_notes.get("parameters"):
+                        inv.llm_notes["parameters"] = _ep_derived["parameters"]
+                    step(("endpoint derivado de hooks PHP: " if es else "endpoint derived from PHP hooks: ") +
+                         f"{_ep_derived['endpoint']} (via {_ep_derived.get('source','?')})")
+                    notes = inv.llm_notes
+            # Use static analysis top candidate to fill missing sqli_param/parameters
+            if (fr.ok and inv.static_analysis and inv.static_analysis.get("top_candidates")
+                    and inv.vuln_class in ("sqli", "sql-injection", "blind-sqli")):
+                _top = inv.static_analysis["top_candidates"][0]
+                _sa_param = _top.get("param") or _top.get("function", "")
+                if _sa_param and not inv.llm_notes.get("sqli_param"):
+                    inv.llm_notes["sqli_param"] = _sa_param
+                    step(("sqli_param derivado de analisis estatico: " if es else
+                          "sqli_param derived from static analysis: ") + _sa_param)
+                    notes = inv.llm_notes
             # HUECO path: when no public exploit exists, derive the attack from the real
             # source code BEFORE grounding — the taint scanner finds the vulnerable
             # parameter/endpoint deterministically, then the LLM reasons from actual PHP
