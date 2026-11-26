@@ -12779,10 +12779,13 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                     for _rp in _req_params:
                                         if _rp.lower() not in ("action", "nonce", "_wpnonce"):
                                             _handler_params[_rp] = ""
+                                # nopriv = public endpoint; wp_ajax_ (priv-only) = needs login
+                                _needs_auth = bool(_pr and not _np)
                                 _ep_derived = {
                                     "endpoint": "/wp-admin/admin-ajax.php",
                                     "parameters": _handler_params,
                                     "source": "wp_ajax_nopriv" if _np else "wp_ajax",
+                                    "auth_required": _needs_auth,
                                 }
                                 break
                             _rest_m = _re_ep.findall(
@@ -12804,8 +12807,11 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     inv.llm_notes["endpoint"] = _ep_derived["endpoint"]
                     if _ep_derived.get("parameters") and not inv.llm_notes.get("parameters"):
                         inv.llm_notes["parameters"] = _ep_derived["parameters"]
+                    if _ep_derived.get("auth_required") and not inv.llm_notes.get("auth_required"):
+                        inv.llm_notes["auth_required"] = True
                     step(("endpoint derivado de hooks PHP: " if es else "endpoint derived from PHP hooks: ") +
-                         f"{_ep_derived['endpoint']} (via {_ep_derived.get('source','?')})")
+                         f"{_ep_derived['endpoint']} (via {_ep_derived.get('source','?')}" +
+                         (", requiere auth" if _ep_derived.get("auth_required") else "") + ")")
                     notes = inv.llm_notes
             # Use static analysis top candidate to fill missing sqli_param/parameters
             if (fr.ok and inv.static_analysis and inv.static_analysis.get("top_candidates")
