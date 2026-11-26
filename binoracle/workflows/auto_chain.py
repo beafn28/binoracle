@@ -5104,6 +5104,11 @@ def process_never_attempted_cves(
                 _conf = float(_cheer.get("confidence", 0) or 0) if isinstance(_cheer, dict) else 0
                 if _conf > 0.5 and _sf and any(_sf.get(k) for k in ("endpoint", "param", "sqli_param")):
                     _patched = {k: v for k, v in _sf.items() if v}
+                    # Normalize: "param" → "sqli_param" for SQLi CVEs
+                    if _patched.get("param") and not _patched.get("sqli_param"):
+                        _vc = (d.get("vuln_class") or (d.get("llm_notes") or {}).get("vuln_class") or "").lower()
+                        if "sql" in _vc:
+                            _patched["sqli_param"] = _patched["param"]
                     d["llm_notes"] = {**(d.get("llm_notes") or {}), **_patched}
                     d["attempt_evidence"] = {"_cheerleader_retry": True}
                     try:

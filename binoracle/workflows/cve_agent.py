@@ -3019,8 +3019,10 @@ _CHEERLEADER_SYS = (
     "\"retry_hypothesis\": \"accion especifica a probar en el siguiente intento\", "
     "\"confidence\": 0.0-1.0, "
     "\"assumption_challenged\": \"que suposicion era incorrecta\", "
-    "\"suggested_fix\": {\"endpoint\": \"...\", \"param\": \"...\", \"auth_required\": true/false}}"
-    "\nSolo incluye campos en suggested_fix en los que tengas certeza. "
+    "\"suggested_fix\": {\"endpoint\": \"...\", \"param\": \"...\", \"sqli_param\": \"...\", "
+    "\"http_method\": \"GET|POST\", \"auth_required\": true/false}}"
+    "\nUsa 'sqli_param' para CVEs de tipo sqli/sql-injection. "
+    "Solo incluye campos en suggested_fix en los que tengas certeza desde la evidencia real. "
     "Devuelve {} para suggested_fix si no tienes evidencia suficiente."
 )
 
