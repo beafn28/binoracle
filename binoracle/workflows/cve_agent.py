@@ -14774,6 +14774,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                          "code-injection", "command-injection",
                                          "os-command-injection", "path-traversal")
                   and (notes.get("endpoint") or inv.llm_notes.get("endpoint"))):
+                step(f"[DBG] craftverify ELIF MATCHED: inv.cms={getattr(inv,'cms','')!r} notes.cms={notes.get('cms')!r} lln.cms={inv.llm_notes.get('cms')!r} vc={inv.vuln_class!r} ep={notes.get('endpoint') or inv.llm_notes.get('endpoint')!r}")
                 from .craftverify import detect_craft, verify_craft_web_cve
                 # Trust analyst's explicit cms: "craft" designation without requiring detect_craft
                 _analyst_craft = any(w in ((notes.get("cms") or inv.llm_notes.get("cms")) or "").lower()

@@ -4671,9 +4671,25 @@ def process_never_attempted_cves(
     for _, cve_id in candidates[:max_cves]:
         step(f"\nprocess_never_attempted_cves: ejecutando {cve_id}...")
         try:
+            # Load analyst notes from the batch JSON as hints so that
+            # investigate_cve receives cms, endpoint, confirm_string, etc.
+            # These are set by the analyst and must override the LLM hypothesis.
+            _batch_path = _os.path.join(reports_dir, f"{cve_id}.json")
+            _analyst_hints = None
+            try:
+                with open(_batch_path, encoding="utf-8") as _fh:
+                    _bd = _j.load(_fh)
+                _raw_notes = _bd.get("llm_notes") or {}
+                # Pass all analyst-set fields as hints; investigate_cve merges them
+                # into inv.llm_notes after the LLM hypothesis, so analyst wins.
+                if _raw_notes:
+                    _analyst_hints = {k: v for k, v in _raw_notes.items() if v is not None}
+            except Exception:
+                pass
             r = run_full_chain(cve_id, lang=lang, budget_s=budget_s,
                                on_step=step, save_report=True,
-                               config=_shared_config, llm=_shared_llm)
+                               config=_shared_config, llm=_shared_llm,
+                               hints=_analyst_hints or None)
             results.append(r)
             # Persist the new verified/attempt status back to the batch report JSON
             _out_path = _os.path.join(reports_dir, f"{cve_id}.json")
