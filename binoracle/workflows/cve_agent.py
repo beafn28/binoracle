@@ -4825,7 +4825,7 @@ _SLOW_DOCKER_IMAGES: dict[str, float] = {
     "zitadel":             90.0,
     "dpage/pgadmin4":      60.0,
     "directus/directus":   60.0,
-    "mattermost":          60.0,
+    "mattermost":          90.0,
     "gitea":               60.0,
     "gitlab":             120.0,
     "nextcloud":           90.0,
