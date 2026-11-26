@@ -5134,8 +5134,10 @@ def process_never_attempted_cves(
                     _existing["engine_confidence"] = r.engine_confidence
                     # Always record attempt_evidence so the CVE is not retried in every batch;
                     # use a sentinel when evidence is empty (craftverify, timeout, etc.)
-                    _existing["attempt_evidence"] = r.evidence if r.evidence else {
-                        "attempted": True, "source": "auto_chain"}
+                    _ae = dict(r.evidence) if r.evidence else {}
+                    _ae["attempted"] = True  # always set — r.evidence may not contain it
+                    _ae.setdefault("source", "auto_chain")
+                    _existing["attempt_evidence"] = _ae
                     if r.verified:
                         # Build a JSON-safe evidence dict (drop non-serializable blobs)
                         _dv_evidence = {}
