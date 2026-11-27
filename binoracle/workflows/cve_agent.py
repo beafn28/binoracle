@@ -13877,7 +13877,12 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     pass
             # Derive WP endpoint from PHP action hooks when LLM left endpoint empty.
             # Greps for add_action('wp_ajax_...' and register_rest_route() patterns.
-            if fr.ok and fr.local_path and not inv.llm_notes.get("endpoint"):
+            # Run static endpoint scan unless the analyst explicitly locked the endpoint.
+            # Previously guarded by `not inv.llm_notes.get("endpoint")`, which caused the
+            # scan to be skipped whenever the LLM set any endpoint (even a wrong one).
+            # Now: scan always, prefer source-derived action/endpoint over LLM guess.
+            _ep_locked = bool(inv.llm_notes.get("analyst_endpoint_lock"))
+            if fr.ok and fr.local_path and not _ep_locked:
                 _ep_derived = None
                 try:
                     import subprocess as _sp_ep, re as _re_ep
@@ -13952,9 +13957,22 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 except Exception:
                     pass
                 if _ep_derived:
+                    # Always set endpoint from source (ground truth) when not analyst-locked
                     inv.llm_notes["endpoint"] = _ep_derived["endpoint"]
-                    if _ep_derived.get("parameters") and not inv.llm_notes.get("parameters"):
-                        inv.llm_notes["parameters"] = _ep_derived["parameters"]
+                    inv.llm_notes["_ep_source"] = _ep_derived.get("source", "static-scan")
+                    # Merge source-derived params: source-found action= overrides LLM guess;
+                    # other params from LLM are kept unless source provides them too.
+                    _src_params = _ep_derived.get("parameters") or {}
+                    if _src_params:
+                        _existing = dict(inv.llm_notes.get("parameters") or {})
+                        # Source-derived action is always authoritative
+                        if "action" in _src_params:
+                            _existing["action"] = _src_params["action"]
+                        # Other source params fill gaps only
+                        for _k, _v in _src_params.items():
+                            if _k != "action" and _k not in _existing:
+                                _existing[_k] = _v
+                        inv.llm_notes["parameters"] = _existing
                     if _ep_derived.get("auth_required") and not inv.llm_notes.get("auth_required"):
                         inv.llm_notes["auth_required"] = True
                     step(("endpoint derivado de hooks PHP: " if es else "endpoint derived from PHP hooks: ") +
@@ -21271,6 +21289,14 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None, fast_l
             })
     except Exception:
         pass
+
+    # Confidence fixup: verifiers that set inv.dynamic_verify directly (SQLi, LFI, path-traversal)
+    # never call _auto_set_confidence, so confidence stays "none" even when verified=True.
+    if inv.verified and inv.dynamic_verify.get("confidence", "none") in ("none", None, ""):
+        inv.dynamic_verify["confidence"] = "confirmed"
+    # Also propagate to inv.confidence if not set
+    if inv.verified and not getattr(inv, "confidence", None):
+        inv.confidence = "confirmed"
 
     # POST-FAILURE CLASS REDIAGNOSIS — Qwen diagnoses if the wrong verifier was used.
     # Runs only on web CVEs that the Docker lab attempted but did NOT confirm.
