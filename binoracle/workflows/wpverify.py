@@ -127,9 +127,7 @@ _SQLI_HINTS = ("sort", "order", "id", "search", "email", "sender", "receiver",
 # convencion generica de WordPress para esto (cada plugin inventa su propio mecanismo), asi que
 # este registro se amplia caso por caso -- igual que shortcode_name/relationship_table ya lo
 # hacen para otros CVEs (ver _bootstrap_lab).
-_PLUGIN_SETUP_TRIGGER_PATHS = {
-    "ultimate-member": ["/wp-admin/admin.php?page=um_options&um_adm_action=install_core_pages"],
-}
+_PLUGIN_SETUP_TRIGGER_PATHS: dict = {}  # now auto-detected via _detect_setup_trigger_from_source()
 # Mismo patron, otro bloqueo distinto -- confirmado en vivo, CVE-2024-1071: el shortcode pegado
 # en una pagina generica (ver shortcode_page_path en _bootstrap_lab) basta para MUCHOS plugins,
 # pero Ultimate Member guarda la configuracion real del "Member Directory" (incluido el campo de
@@ -154,9 +152,7 @@ _PLUGIN_SHORTCODE_OVERRIDE: dict = {}
 # aborts, or when the option is not near the injection sink in source).
 # Format: {slug: {option_key: value, ...}}
 # Values are raw PHP strings (e.g. "1", "'custom'"); they go into update_option() directly.
-_PLUGIN_REQUIRED_OPTIONS: dict = {
-    "ultimate-member": {"member_directory_own_table": "1"},
-}
+_PLUGIN_REQUIRED_OPTIONS: dict = {}  # now auto-detected via boolean-gate filter in _bootstrap_lab
 _URL_HINTS = ("url", "uri", "src", "source", "link", "feed", "webhook", "callback",
              "image", "avatar", "file_url", "endpoint")
 _XSS_HINTS = ("comment", "content", "message", "title", "name", "bio", "description", "text",
@@ -822,6 +818,64 @@ def _detect_directory_shortcode_from_source(plugin_source_dir: str, cpt_name: st
             except Exception:
                 continue
     return None
+
+
+def _detect_setup_trigger_from_source(plugin_source_dir: str) -> list:
+    """Detect admin setup trigger URLs by scanning plugin source for admin_init handlers
+    that check a GET/REQUEST parameter for install/setup/create/activate values.
+
+    Pattern: plugins that do not register their pages/CPTs during normal wp plugin activate
+    but only when an admin visits a specific URL with an action parameter.
+    Returns a list of URL paths like ['/wp-admin/admin.php?page=X&action_key=action_val'].
+    """
+    if not plugin_source_dir or not os.path.isdir(plugin_source_dir):
+        return []
+
+    # Find (action_key, action_value) pairs from $_GET checks for install/setup/create verbs
+    _action_check_re = re.compile(
+        r"\$_(?:GET|REQUEST)\s*\[\s*['\"]([a-z0-9_]{3,50})['\"]"
+        r"[^;]{0,80}[=!]=+\s*['\"]"
+        r"([a-z0-9_]*(?:install|setup|create|init|activate)[a-z0-9_]*)['\"]",
+        re.IGNORECASE | re.DOTALL,
+    )
+    # Find admin page slugs from add_menu_page / add_submenu_page registrations
+    _page_re = re.compile(
+        r"add_(?:menu|submenu)_page\s*\([^,]{0,100},[^,]{0,100},[^,]{0,100},\s*['\"]([a-z0-9_\-]{3,50})['\"]",
+        re.IGNORECASE,
+    )
+    # Collect page slugs from all PHP files
+    page_slugs: list = []
+    action_pairs: list = []
+    for root, _, files in os.walk(plugin_source_dir):
+        for fname in files:
+            if not fname.endswith(".php"):
+                continue
+            try:
+                with open(os.path.join(root, fname), "r", errors="replace") as fh:
+                    content = fh.read()
+                for m in _page_re.finditer(content):
+                    s = m.group(1)
+                    if s not in page_slugs:
+                        page_slugs.append(s)
+                for m in _action_check_re.finditer(content):
+                    pair = (m.group(1), m.group(2))
+                    if pair not in action_pairs:
+                        action_pairs.append(pair)
+            except Exception:
+                continue
+
+    if not action_pairs or not page_slugs:
+        return []
+
+    # Build trigger URLs: combine the most-likely page slug with each action pair.
+    # Heuristic: prefer page slugs that contain "option", "setting", "admin", "config".
+    _pref = ("option", "setting", "admin", "config", "setup", "install")
+    page_slug = next((s for s in page_slugs if any(p in s.lower() for p in _pref)), page_slugs[0])
+
+    return [
+        f"/wp-admin/admin.php?page={page_slug}&{key}={val}"
+        for key, val in action_pairs[:3]  # cap at 3 to avoid noise
+    ]
 
 
 def _resolve_endpoint_placeholders(endpoint: str, html_sources: list) -> tuple:
@@ -2913,12 +2967,45 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
                     _window = _content_b3[max(0, _mn.start() - _locality): _mn.end() + _locality]
                     for _m_b3 in _gating_option_re.finditer(_window):
                         _gating_opts_found[_m_b3.group(1)] = "1"
-            # Safety cap: if more than 3 options found, the scan may be too broad — skip auto-enable
+            # Safety filter: if more than 3 options found, the scan window may be too broad.
+            # Narrow to options that gate a boolean branch (== "1", == 1, != "0", != false)
+            # or whose name ends in known activation-flag suffixes (_own_table, _enabled, etc.)
             if len(_gating_opts_found) > 3:
-                step(f"[source-analysis] demasiadas opciones detectadas en rama vulnerable "
-                     f"({len(_gating_opts_found)}) -- saltando auto-activacion para evitar "
-                     f"efectos secundarios: {list(_gating_opts_found)[:5]}")
-                _gating_opts_found = {}
+                _bool_gate_re = _re_boot.compile(
+                    r"""(?:get_option|um_option|->get)\s*\(\s*['"]""" +
+                    r"(%s)" % "|".join(_re_boot.escape(k) for k in _gating_opts_found) +
+                    r"""['"]\s*\)[^;]{0,80}(?:[=!]=+\s*['"]?(?:1|true|yes|on)['"]?|
+                        !\s*(?:empty|isset)\s*\(|->|!=\s*false)""",
+                    _re_boot.IGNORECASE | _re_boot.VERBOSE,
+                )
+                _activation_suffixes = (
+                    "_own_table", "_enabled", "_active", "_on", "_use",
+                    "_enable", "_installed", "_activated", "_setup",
+                )
+                _filtered: dict = {}
+                for _window in [
+                    _content_b3[max(0, _mn2.start() - _locality): _mn2.end() + _locality]
+                    for _fp3b, _content_b3 in _all_php_contents.items()
+                    for _mn2 in ((_new_class_re.finditer(_content_b3) if _new_class_re else [])
+                                 if not _raw_orderby_re.search(_content_b3)
+                                 else _raw_orderby_re.finditer(_content_b3))
+                ]:
+                    for _m_bool in _bool_gate_re.finditer(_window):
+                        k = _m_bool.group(1)
+                        if k in _gating_opts_found:
+                            _filtered[k] = "1"
+                for k in _gating_opts_found:
+                    if any(k.endswith(suf) for suf in _activation_suffixes):
+                        _filtered[k] = "1"
+                if _filtered:
+                    step(f"[source-analysis] {len(_gating_opts_found)} opciones → filtradas "
+                         f"a {len(_filtered)} boolean-gate: {list(_filtered)}")
+                    _gating_opts_found = _filtered
+                else:
+                    step(f"[source-analysis] demasiadas opciones ({len(_gating_opts_found)}) "
+                         f"y ningun boolean-gate claro -- saltando auto-activacion: "
+                         f"{list(_gating_opts_found)[:5]}")
+                    _gating_opts_found = {}
             # Detect the plugin's options blob key from source (e.g. 'um_options' for
             # Ultimate Member).  Plugins typically store settings in one serialized WP
             # option; scanning for get_option('X') is cheaper than guessing the slug.
@@ -3096,7 +3183,15 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
                f"admin, con su password ORIGINAL -- antes del ataque).",
                f"Step 2: plugin '{slug}' installed and ACTIVE in the lab (admin's view, with "
                f"their ORIGINAL password -- before the attack).")
+        # Static fallback table (kept for backwards compat but intentionally empty —
+        # triggers are now detected dynamically from source).
         all_trigger_paths = list(_PLUGIN_SETUP_TRIGGER_PATHS.get(slug, []))
+        # Dynamic detection: scan plugin source for admin_init action triggers.
+        if plugin_source_dir and not all_trigger_paths:
+            all_trigger_paths = _detect_setup_trigger_from_source(plugin_source_dir)
+            if all_trigger_paths:
+                step(f"[source-analysis] triggers de setup detectados automaticamente "
+                     f"para '{slug}': {all_trigger_paths}")
         for p in (extra_setup_trigger_paths or []):
             if p and p not in all_trigger_paths:
                 all_trigger_paths.append(p)
