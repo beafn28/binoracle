@@ -497,6 +497,53 @@ def _s_verification(inv: Any, lang: str) -> str:
         _probed = _wep_data.get("probed") or {}
         for _lbl, _probe_info in list(_probed.items())[:3]:
             _rich_items.append((f"SSRF → {_lbl}", _probe_info.get("snippet", "")[:100]))
+    # EL injection → RCE escalation (from verify_generic_expression_language_injection)
+    if _ev.get("el_rce_id_output"):
+        _rich_items.append(("EL injection → RCE (id output)", _ev["el_rce_id_output"]))
+    if _ev.get("el_rce_payload"):
+        _rich_items.append(("EL RCE payload usado" if es else "EL RCE payload used", _ev["el_rce_payload"][:80]))
+    # Race condition / double-redemption
+    if _ev.get("double_redemption_proven"):
+        _rich_items.append(("Race condition (double-redemption)",
+                            f"{_ev.get('successful_requests', '?')} peticiones aceptadas "
+                            f"de {_ev.get('total_requests', '?')} simultáneas" if es else
+                            f"{_ev.get('successful_requests', '?')} accepted from {_ev.get('total_requests', '?')} concurrent"))
+    # User enumeration timing oracle
+    if _ev.get("timing_oracle"):
+        _rich_items.append(("User enum (timing oracle)",
+                            f"Δt={_ev.get('timing_diff_s', '?')}s — "
+                            f"respuesta más rápida para cuenta existente" if es else
+                            f"Δt={_ev.get('timing_diff_s', '?')}s — faster for existing account"))
+    # BOLA/IDOR sequential-ID
+    if _ev.get("bypass_type") == "bola-idor":
+        _rich_items.append(("BOLA/IDOR (sequential ID)",
+                            f"ID={_ev.get('victim_id', '?')} → {_ev.get('status_code', '?')} "
+                            f"vía {_ev.get('endpoint', '?')}"))
+    # HTTP Request Smuggling differential response
+    if _ev.get("smuggling_type") == "CL.TE-differential":
+        _rich_items.append(("HTTP Request Smuggling (differential)",
+                            f"marker '{_ev.get('response_snippet', '')[:40]}' en respuesta envenenada"))
+    # IP spoof bypass
+    if _ev.get("bypass_type") == "ip-spoof-header":
+        _rich_items.append(("Missing auth (IP spoof bypass)",
+                            f"{_ev.get('header', '?')}: {_ev.get('header_value', '?')} "
+                            f"→ {_ev.get('status_code', '?')}"))
+    # Zip-slip
+    if _ev.get("zipslip_path") or (_ev.get("zipslip_token") and _ev.get("endpoint")):
+        _zs_path = _ev.get("zipslip_path") or "traversal path confirmed"
+        _rich_items.append(("Zip-slip (path traversal)", _zs_path))
+    # Information disclosure secret regex
+    if _ev.get("secret_pattern_matched"):
+        _rich_items.append(("Info disclosure (secret regex)",
+                            f"pattern={_ev.get('secret_pattern_matched','')[:50]} "
+                            f"@ {_ev.get('disclosure_path', '?')}"))
+    # Prototype pollution technique
+    if _ev.get("pp_technique"):
+        _rich_items.append(("Prototype pollution technique", _ev["pp_technique"]))
+    # JWT technique
+    if _ev.get("jwt_technique") or _ev.get("jwt_bypass_token"):
+        _t = _ev.get("jwt_technique") or _ev.get("jwt_bypass_token", "")[:60]
+        _rich_items.append(("JWT bypass technique", _t))
     if _rich_items:
         lines.append("")
         lines.append("**" + ("Datos extraídos de la explotación:" if es else "Data extracted via exploitation:") + "**")

