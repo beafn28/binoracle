@@ -14530,7 +14530,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     query_suffix=_pt_query_suffix,
                     dockerfile_body=_pt_dockerfile, extra_files=_pt_extra_files,
                     setup_commands=_pt_setup_cmds, auth_required=_pt_auth_req,
-                    docker_image=(notes.get("docker_image") or ""))
+                    docker_image=(notes.get("docker_image") or ""),
+                    confirm_string=notes.get("confirm_string") or "")
                 # Bucle de feedback: si Qwen scaffoldeo y fallo, que diagnostique y regenere
                 if _scf_pt and not wr.verified:
                     _lab_cfg_pt = {
@@ -14567,7 +14568,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             query_suffix=_pt_query_suffix,
                             dockerfile_body=_pt_dockerfile, extra_files=_pt_extra_files,
                             setup_commands=_pt_setup_cmds, auth_required=_pt_auth_req,
-                            docker_image=(notes.get("docker_image") or ""))
+                            docker_image=(notes.get("docker_image") or ""),
+                            confirm_string=notes.get("confirm_string") or "")
                         wr = wr_fb
                         if wr_fb.verified:
                             break
@@ -14581,6 +14583,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 # concreta en ESA evidencia, nunca a ciegas.
                 _pt_local_path_str = str(fr.local_path) if fr.local_path else ""
                 _pt_docker_image = notes.get("docker_image") or ""
+                _pt_confirm_str = notes.get("confirm_string") or ""
                 def _attempt_pt(ep, pr):
                     return verify_generic_path_traversal(
                         _pt_local_path_str, ep, notes.get("http_method") or "GET", params,
@@ -14589,7 +14592,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         query_suffix=_pt_query_suffix,
                         dockerfile_body=_pt_dockerfile, extra_files=_pt_extra_files,
                         setup_commands=_pt_setup_cmds, auth_required=_pt_auth_req,
-                        docker_image=_pt_docker_image)
+                        docker_image=_pt_docker_image,
+                        confirm_string=_pt_confirm_str)
                 wr = _run_evidence_retry_loop(
                     llm, step, es, _GENERIC_PATH_TRAVERSAL_RETRY_SYS,
                     _GENERIC_PATH_TRAVERSAL_RETRY_EVIDENCE_KEYS, _attempt_pt, wr,
@@ -14610,7 +14614,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         query_suffix=_pt_query_suffix,
                         dockerfile_body=_pt_dockerfile, extra_files=_pt_extra_files,
                         setup_commands=_pt_setup_cmds, auth_required=_pt_auth_req,
-                        docker_image=_pt_docker_image)
+                        docker_image=_pt_docker_image,
+                        confirm_string=_pt_confirm_str)
                     if _wr_extra.verified or (not wr.verified and _wr_extra.ok):
                         wr = _wr_extra
                 # Cachear el scaffold SOLO si quedo verificado de verdad (igual que

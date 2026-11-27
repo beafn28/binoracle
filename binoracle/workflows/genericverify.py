@@ -2610,6 +2610,7 @@ def verify_generic_path_traversal(
     _tried_params_set: Optional[frozenset] = None,
     auth_required: bool = False,
     docker_image: str = "",
+    confirm_string: str = "",
 ) -> WpVerifyResult:
     """Analogo generico de verify_wordpress_path_traversal (wpverify.py): planta un fichero
     canario con un secreto aleatorio DENTRO del contenedor real del objetivo (via `docker exec`,
@@ -2886,6 +2887,10 @@ def verify_generic_path_traversal(
                                     break
                             except Exception:
                                 continue
+                    # Also check analyst-provided confirm_string (e.g. root:x:0:0 for apps that
+                    # don't serve arbitrary canary files but DO serve /etc/passwd via traversal).
+                    if not present and confirm_string and confirm_string.lower() in _resp_body.lower():
+                        present = True
                 tried.append({"payload": payload_value, "status": resp.status_code,
                               "secreto_presente": present,
                               "respuesta_cuerpo_recorte": _resp_body[:300]})
