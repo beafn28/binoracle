@@ -5518,7 +5518,8 @@ def process_never_attempted_cves(
 
 
 def _build_repair_prompt(
-    cve_id: str, description: str, llm_notes: dict, attempt_evidence: dict
+    cve_id: str, description: str, llm_notes: dict, attempt_evidence: dict,
+    patch_diff_structured: Optional[dict] = None,
 ) -> tuple:
     """Return (system_prompt, user_message) that ask the LLM to fix a failed hypothesis.
 
@@ -5570,6 +5571,33 @@ def _build_repair_prompt(
                 "HTTP 200 pero marcador ausente: payload o confirm_string incorrectos — "
                 "corrige 'confirm_string' o el payload de inyección"
             )
+    # Payload-class-specific hints based on vuln_class and failed payloads
+    _vc = str(llm_notes.get("vuln_class") or "").lower()
+    _tried_pls = str(attempt_evidence.get("tried_payloads") or
+                     attempt_evidence.get("payloads_tried") or "")
+    if "crlf" in _vc and "crlf" not in str(hints).lower():
+        hints.append("CRLF: si %0d%0a falló, prueba \\r\\n, URL-double-encode %250d%250a, o "
+                     "header-injection con valores en blanco")
+    if "prototype" in _vc and "__proto__" in _tried_pls:
+        hints.append("PP: si __proto__ fue filtrado, prueba constructor.prototype, "
+                     "o unicode escape \\u005f\\u005f")
+    if "ssti" in _vc and "{{7*7}}" in _tried_pls:
+        hints.append("SSTI: aritmética confirmada pero RCE falló — prueba engine alternativo "
+                     "(Twig: {{7*'7'}}, Freemarker: ${7*7})")
+    if "jwt" in _vc and "none" in _tried_pls.lower():
+        hints.append("JWT: alg:none bloqueado — prueba kid SQL injection o HMAC weak-secret")
+
+    # Inject patch diff intel if available
+    _pd_hints_block = ""
+    if isinstance(patch_diff_structured, dict) and patch_diff_structured:
+        _bh = patch_diff_structured.get("bypass_hints") or []
+        _ft = patch_diff_structured.get("fix_type") or ""
+        if _bh:
+            hints.append(f"bypass_hints del parche oficial: {_bh[:4]} — úsalos en payload_hint")
+        if _ft:
+            _pd_hints_block = (f"\nFix type del parche: {_ft}\n"
+                               f"Bypass hints: {_bh[:4]}\n")
+
     if not hints:
         hints.append("Revisa la evidencia y corrige los campos que sean claramente incorrectos")
 
@@ -5580,8 +5608,9 @@ def _build_repair_prompt(
         "No cambies el vector de ataque base ni inventes nuevas vulnerabilidades. "
         "Responde UNICAMENTE con JSON valido que contenga los campos a corregir. "
         "Campos permitidos: endpoint, http_method, parameters, path_param, sqli_param, "
-        "confirm_string, auth_required, bypass_header, bypass_value, custom_headers, "
-        "sqli_technique, sqli_via_orderby, file_param, ssrf_param, setup_cmds. "
+        "inject_param, confirm_string, auth_required, bypass_header, bypass_value, "
+        "custom_headers, sqli_technique, sqli_via_orderby, file_param, ssrf_param, "
+        "setup_cmds, payload_hint, bypass_hint, confirm_endpoint. "
         "Si un campo esta correcto, no lo incluyas."
     )
 
@@ -5597,7 +5626,8 @@ def _build_repair_prompt(
         f"- confirm_string: {llm_notes.get('confirm_string')}\n"
         f"- vuln_class: {llm_notes.get('vuln_class')}\n\n"
         f"Evidencia de fallo (HTTP real):\n{ae_str[:700]}\n\n"
-        "Diagnostico:\n"
+        + (_pd_hints_block if _pd_hints_block else "")
+        + "Diagnostico:\n"
         + "\n".join(f"- {h}" for h in hints)
         + "\n\nJSON con solo los campos a corregir:"
     )
@@ -5607,9 +5637,9 @@ def _build_repair_prompt(
 
 _REPAIR_SAFE_KEYS = frozenset({
     "endpoint", "http_method", "parameters", "path_param", "sqli_param",
-    "confirm_string", "auth_required", "bypass_header", "bypass_value",
+    "inject_param", "confirm_string", "auth_required", "bypass_header", "bypass_value",
     "custom_headers", "sqli_technique", "sqli_via_orderby", "file_param",
-    "ssrf_param", "setup_cmds",
+    "ssrf_param", "setup_cmds", "payload_hint", "bypass_hint", "confirm_endpoint",
 })
 
 
@@ -5681,8 +5711,17 @@ def reanalyze_failed_cves(
             if llm is not None:
                 try:
                     from ..llm.base import Message as _Msg
+                    # Load patch_diff_structured from intel store if available
+                    _pd_struct_repair: dict = {}
+                    try:
+                        from .cve_intel import load_cve_intel as _lci_rep
+                        _si = _lci_rep(cve_id) or {}
+                        _pd_struct_repair = _si.get("patch_diff_structured") or {}
+                    except Exception:
+                        pass
                     sys_p, usr_p = _build_repair_prompt(
-                        cve_id, description, llm_notes, attempt_evidence
+                        cve_id, description, llm_notes, attempt_evidence,
+                        patch_diff_structured=_pd_struct_repair or None,
                     )
                     step(f"  {cve_id}: LLM reparando hipotesis…")
                     raw = llm.chat(

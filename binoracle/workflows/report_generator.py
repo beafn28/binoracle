@@ -506,6 +506,32 @@ def _s_verification(inv: Any, lang: str) -> str:
         for _field, _val in _rich_items:
             lines.append(f"| {_field} | `{str(_val)[:120]}` |")
 
+    # Impact chain analysis (from adversarial_agent.impact_chain_analysis)
+    _ic = dv.get("impact_chain") or {}
+    if _ic and (_ic.get("chain_steps") or _ic.get("initial_access")):
+        lines.append("")
+        lines.append("### " + ("Cadena de impacto (post-explotación):" if es else "Impact Chain (post-exploitation):"))
+        lines.append("")
+        if _ic.get("blast_radius"):
+            lines.append(f"**Blast radius:** `{_ic['blast_radius']}`  "
+                         f"— {_ic.get('blast_radius_reasoning', '')[:200]}")
+        if _ic.get("initial_access"):
+            lines.append(f"\n**Acceso inicial / Initial access:** {_ic['initial_access']}")
+        if _ic.get("privilege_escalation"):
+            lines.append(f"**Escalada / Privilege escalation:** {_ic['privilege_escalation']}")
+        if _ic.get("data_exfiltration"):
+            lines.append(f"**Exfiltración / Data exfiltration:** {_ic['data_exfiltration']}")
+        if _ic.get("max_cve_impact"):
+            lines.append(f"**Impacto máximo / Max impact:** {_ic['max_cve_impact']}")
+        _steps = _ic.get("chain_steps") or []
+        if _steps:
+            lines.append("")
+            lines.append("| Step | Action | Evidence ref |")
+            lines.append("|---|---|---|")
+            for _s in _steps[:8]:
+                lines.append(f"| {_s.get('step', '')} | {str(_s.get('action',''))[:80]} "
+                             f"| {str(_s.get('evidence_ref',''))[:60]} |")
+
     return "\n".join(lines)
 
 

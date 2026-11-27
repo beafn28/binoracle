@@ -5646,6 +5646,23 @@ def _apply_wpverify_result(inv, wr, es: bool, llm=None) -> None:
                 inv.dynamic_verify["escalation_level"] = _post_sqli.get("escalation_level")
         except Exception:
             pass
+        # 4) Impact chain analysis — map full post-exploitation business impact
+        try:
+            if llm is not None and getattr(llm, "available", lambda: False)():
+                from .adversarial_agent import impact_chain_analysis as _ica
+                def _llm_call_impact(prompt: str, _model: str = "") -> str:
+                    from ..llm.base import Message as _Msg
+                    return llm.chat([_Msg("user", prompt)], json_mode=True)
+                _ica_result = _ica(
+                    cve_id=getattr(inv, "cve_id", ""),
+                    vuln_class=getattr(inv, "vuln_class", "") or "",
+                    evidence=dict(wr.evidence or {}),
+                    llm_call=_llm_call_impact,
+                )
+                if _ica_result.get("blast_radius") or _ica_result.get("initial_access"):
+                    inv.dynamic_verify["impact_chain"] = _ica_result
+        except Exception:
+            pass
     elif not wr.available:
         inv.blockers.append(("verificacion dinamica no intentada: " + wr.limitations[0]
                              if wr.limitations else
@@ -13432,6 +13449,32 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     k: v for k, v in _cve_intel.items() if k != "sources"
                 }
                 inv.llm_notes["cve_intel"]["sources"] = _cve_intel["sources"]
+                # Pull patch_diff_structured from CVE intel store if available
+                # (set by cve_intel.enrich_cve using diff_analyzer)
+                try:
+                    from .cve_intel import load_cve_intel as _lci_pd
+                    _stored_intel = _lci_pd(cve_id) or {}
+                    _pd_struct = _stored_intel.get("patch_diff_structured") or {}
+                    if _pd_struct and not inv.llm_notes.get("patch_diff_analysis"):
+                        # Reformat to the dict shape expected by _build_exploit_prompt
+                        inv.llm_notes["patch_diff_analysis"] = {
+                            "ok": True,
+                            "fix_type": _pd_struct.get("fix_type", ""),
+                            "changed_files": _pd_struct.get("patched_files", []),
+                            "vuln_functions": _pd_struct.get("patched_functions", []),
+                            "auth_checks_added": _pd_struct.get("auth_checks_added", []),
+                            "bypass_hints": _pd_struct.get("bypass_hints", []),
+                            "fix_completeness": _pd_struct.get("fix_completeness", "unknown"),
+                            "raw_diff_snippet": _stored_intel.get("patch_diff_analysis", "")[:2000],
+                        }
+                        step((f"patch_diff_structured del store de intel: "
+                              f"fix_type={_pd_struct.get('fix_type')!r}, "
+                              f"bypass_hints={_pd_struct.get('bypass_hints', [])}") if es else
+                             (f"patch_diff_structured from intel store: "
+                              f"fix_type={_pd_struct.get('fix_type')!r}, "
+                              f"bypass_hints={_pd_struct.get('bypass_hints', [])}"))
+                except Exception:
+                    pass
             except Exception:
                 _cve_intel = {"cve_id": cve_id, "description": "", "cwes": [],
                               "cvss_score": 0.0, "advisory_notes": "",
@@ -18473,6 +18516,40 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         "endpoint": _fu_ep, "confirm_string": notes.get("confirm_string") or "",
                         "parameters": params if isinstance(params, dict) else {},
                     }
+                _apply_wpverify_result(inv, wr, es, llm)
+            elif ((fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
+                  inv.vuln_class in ("zip-slip", "zip_slip", "path-traversal-zip",
+                                     "archive-extraction") and notes.get("endpoint")):
+                # Zip-slip: archive extraction without path canonicalization
+                from .genericverify import verify_generic_zip_slip
+                _zs_ep = notes.get("endpoint")
+                _zs_param = notes.get("file_param") or "file"
+                _zs_confirm = notes.get("confirm_endpoint") or ""
+                _zs_dockerfile = _notes_dockerfile(notes)
+                _zs_extra = notes.get("extra_files") or None
+                if not _zs_dockerfile and llm is not None:
+                    _scf = _scaffold_llm_lab_for_class(
+                        llm, str(fr.local_path), notes, inv.cve_id, "zip-slip", step, es,
+                        patch_diff=inv.llm_notes.get("patch_diff_analysis"))
+                    if _scf:
+                        _zs_dockerfile = _scf["dockerfile_body"]
+                        _zs_extra = _scf["extra_files"]
+                        _zs_ep = _scf.get("endpoint") or _zs_ep
+                        if _scf.get("file_param"):
+                            _zs_param = _scf["file_param"]
+                        if _scf.get("confirm_endpoint"):
+                            _zs_confirm = _scf["confirm_endpoint"]
+                step(("intentando verificacion DINAMICA -- zip-slip: archivo ZIP con entrada "
+                      "traversal subido, comprobando escritura fuera del directorio de extraccion..."
+                      if es else
+                      "attempting DYNAMIC verification -- zip-slip: crafted ZIP with traversal "
+                      "entry uploaded, checking file written outside extraction directory..."))
+                wr = verify_generic_zip_slip(
+                    str(fr.local_path) if fr.local_path else ".",
+                    _zs_ep, http_method=notes.get("http_method") or "POST",
+                    file_param=_zs_param, confirm_endpoint=_zs_confirm,
+                    on_step=step, budget_s=budget_s,
+                    dockerfile_body=_zs_dockerfile, extra_files=_zs_extra)
                 _apply_wpverify_result(inv, wr, es, llm)
             elif (is_drupal and fr.kind in ("drupal-module", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class == "csrf" and notes.get("endpoint")):

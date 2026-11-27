@@ -2,8 +2,9 @@
 
 adversarial_critique  — tries to DISPROVE the exploit hypothesis before lab time is spent.
 patch_bypass_analysis — checks whether a security patch diff is complete or bypassable.
+impact_chain_analysis — given confirmed exploit evidence, map the full business-impact chain.
 
-Both use an injected `llm_call(prompt, model) -> str` so they are testable without ollama.
+All three use an injected `llm_call(prompt, model) -> str` so they are testable without ollama.
 """
 from __future__ import annotations
 
@@ -229,4 +230,119 @@ def patch_bypass_analysis(
     result["patch_quality"] = (
         pq if pq in ("complete", "partial", "insufficient") else "complete"
     )
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Impact chain analysis
+# ---------------------------------------------------------------------------
+
+_IMPACT_CHAIN_PROMPT = """\
+You are a senior security researcher mapping the full post-exploitation impact chain for
+authorized pentest/research. Given CONFIRMED exploit evidence (real dynamic lab output),
+reason step by step what an attacker CAN do from this foothold.
+
+Strict rules:
+- ONLY reason from the provided evidence. Never invent capabilities not implied by the evidence.
+- Use attacker perspective: what does THIS primitive enable?
+- Map the chain: Initial Access → Privilege Escalation → Lateral Movement → Impact.
+- For each step, cite which piece of evidence justifies it.
+
+CVE: {cve_id}
+Vuln class: {vuln_class}
+Confirmed evidence (from real lab):
+{evidence_json}
+
+Output ONLY valid JSON:
+{{
+  "initial_access": "<what this exploit achieves — one sentence>",
+  "privilege_escalation": "<what escalation is possible from here, or null>",
+  "lateral_movement": "<lateral movement paths unlocked, or null>",
+  "data_exfiltration": "<data the attacker can exfiltrate with proof from evidence>",
+  "persistence_mechanism": "<persistence the attacker can install, or null>",
+  "blast_radius": "low|medium|high|critical",
+  "blast_radius_reasoning": "<why this severity — cite evidence>",
+  "chain_steps": [
+    {{"step": 1, "action": "<attacker action>", "evidence_ref": "<field from evidence that enables this>"}},
+    ...
+  ],
+  "max_cve_impact": "<CWE-equivalent one-liner for the full chain>"
+}}
+"""
+
+_IMPACT_DEFAULTS: dict = {
+    "initial_access": "",
+    "privilege_escalation": None,
+    "lateral_movement": None,
+    "data_exfiltration": "",
+    "persistence_mechanism": None,
+    "blast_radius": "low",
+    "blast_radius_reasoning": "",
+    "chain_steps": [],
+    "max_cve_impact": "",
+}
+
+
+def impact_chain_analysis(
+    cve_id: str,
+    vuln_class: str,
+    evidence: dict,
+    llm_call,
+    model: str = "qwen2.5-coder:7b",
+) -> dict:
+    """Map the full post-exploitation impact chain from confirmed dynamic evidence.
+
+    Strictly evidence-based: only capabilities directly implied by the evidence
+    are included. Never raises.
+
+    Returns dict with keys from _IMPACT_DEFAULTS.
+    """
+    if not evidence:
+        return {**_IMPACT_DEFAULTS, "blast_radius_reasoning": "no evidence provided"}
+
+    # Sanitize evidence for the prompt: keep only short serializable values
+    _safe_ev: dict = {}
+    for k, v in (evidence or {}).items():
+        if isinstance(v, (str, int, float, bool)):
+            _safe_ev[k] = str(v)[:300]
+        elif isinstance(v, (list, dict)):
+            try:
+                _safe_ev[k] = json.dumps(v, ensure_ascii=False)[:300]
+            except Exception:
+                _safe_ev[k] = str(v)[:200]
+
+    prompt = _IMPACT_CHAIN_PROMPT.format(
+        cve_id=cve_id,
+        vuln_class=vuln_class,
+        evidence_json=json.dumps(_safe_ev, ensure_ascii=False, indent=2)[:2000],
+    )
+
+    try:
+        raw = llm_call(prompt, model)
+    except Exception as exc:
+        return {**_IMPACT_DEFAULTS,
+                "blast_radius_reasoning": f"llm_call failed: {exc}"}
+
+    parsed = _extract_json(raw)
+    if not parsed:
+        return {**_IMPACT_DEFAULTS,
+                "blast_radius_reasoning": "LLM returned unparseable response"}
+
+    result = dict(_IMPACT_DEFAULTS)
+    for _key in ("initial_access", "privilege_escalation", "lateral_movement",
+                 "data_exfiltration", "persistence_mechanism",
+                 "blast_radius_reasoning", "max_cve_impact"):
+        if parsed.get(_key):
+            result[_key] = str(parsed[_key])[:600]
+    _br = str(parsed.get("blast_radius", "low")).lower()
+    result["blast_radius"] = (_br if _br in ("low", "medium", "high", "critical") else "low")
+    _steps = parsed.get("chain_steps")
+    if isinstance(_steps, list):
+        result["chain_steps"] = [
+            {"step": s.get("step", i + 1),
+             "action": str(s.get("action", ""))[:200],
+             "evidence_ref": str(s.get("evidence_ref", ""))[:100]}
+            for i, s in enumerate(_steps[:10])
+            if isinstance(s, dict)
+        ]
     return result
