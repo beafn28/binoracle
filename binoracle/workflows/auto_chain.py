@@ -3834,6 +3834,13 @@ def run_full_chain(
                         "weak_crypto":        "broken-cryptography",
                         "prototype_pollution": "prototype-pollution",
                         "graphql_injection":  "graphql-injection",
+                        "zip_slip":           "zip-slip",
+                        "el_injection":       "el-injection",
+                        "expression_language": "el-injection",
+                        "http_smuggling":     "http-smuggling",
+                        "request_smuggling":  "http-smuggling",
+                        "redos":              "redos",
+                        "account_takeover":   "account-takeover",
                     }
                     _mapped_vc = _DIFF_TO_VULN_CLASS.get(_pdiff.fix_class, "")
                     if _mapped_vc and result.cve_class not in ("native", "binary"):

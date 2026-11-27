@@ -600,6 +600,57 @@ _FIX_RULES: List[tuple] = [
                     r"\.lock\s*\(\s*\)|FileLock\s*\(|lockfile)", re.I)],
         0.78,
     ),
+    (
+        "zip_slip",
+        "zip-slip / archive traversal — entry path not validated before extraction",
+        "added path canonicalization or containment check for archive entries",
+        [re.compile(r"(?:zipfile\.ZipFile|ZipInputStream|ZipEntry\s*\(\s*\w+\.getName|"
+                    r"tarfile\.extractall|\.extract\s*\(\s*|TarEntry|"
+                    r"getEntry\s*\(\s*|\.getName\s*\(\s*\)\s*\)\s*\+|"
+                    r"new\s+File\s*\(\s*destDir\s*,\s*entry\.getName|"
+                    r"fs\.createWriteStream\s*\(\s*path\.join\s*\(destDir,\s*entry)", re.I)],
+        [re.compile(r"(?:isWithinDirectory|within_directory|safe_extract|"
+                    r"getCanonicalPath\s*\(\s*\)\.startsWith|"
+                    r"os\.path\.realpath.*startswith|"
+                    r"Path\s*\(.*\)\.resolve\s*\(\s*\)\.parents|"
+                    r"normpath.*startswith|abspath.*startswith|"
+                    r"ZipSlip|zip_slip_check)", re.I)],
+        0.82,
+    ),
+    (
+        "el_injection",
+        "EL/SSTI injection — user input evaluated by expression language engine",
+        "added input sanitization or removed user-controlled expression evaluation",
+        [re.compile(r"(?:parseExpression\s*\(\s*(?:request|req|user|input)|"
+                    r"spelParser\.parseExpression\s*\(\s*\w+Input|"
+                    r"Ognl\.getValue\s*\(\s*(?:request|user)|"
+                    r"nunjucks\.renderString\s*\(\s*(?:req|request|user)|"
+                    r"ejs\.render\s*\(\s*(?:req|request|user|input)|"
+                    r"pug\.render\s*\(\s*(?:req|request|user)|"
+                    r"new\s+Template\s*\(\s*(?:request|user|input))", re.I)],
+        [re.compile(r"(?:SimpleEvaluationContext|EVALUATE_TEMPLATE|"
+                    r"new\s+SimpleEvaluationContext|readOnlyDefinitionSource|"
+                    r"setMaxIterations|templateEnv.*autoescape.*True|"
+                    r"escape.*html.*True|allowedFunctions|"
+                    r"whitelist.*expression|denyList.*exec|"
+                    r"rejectInput|blockExpression)", re.I)],
+        0.80,
+    ),
+    (
+        "http_smuggling",
+        "HTTP request smuggling via ambiguous Content-Length/Transfer-Encoding headers",
+        "normalized header parsing or added strict CL/TE validation",
+        [re.compile(r"(?:Content-Length.*Transfer-Encoding|"
+                    r"transfer-encoding.*chunked.*content-length|"
+                    r"chunkedEncoding|te:\s*chunked|"
+                    r"headers\[.Transfer-Encoding.\].*headers\[.Content-Length.\])", re.I)],
+        [re.compile(r"(?:rejectAmbiguousRequest|rejectIllegalHeader|"
+                    r"parseTransferEncoding.*strict|"
+                    r"normalizeHeaders|strip.*Transfer-Encoding|"
+                    r"http\.server\.unsafe_protocols|"
+                    r"disable.*te.*cl|enforce.*single.*length)", re.I)],
+        0.75,
+    ),
 ]
 
 # Fallback: if nothing matches, look for generic sanitization removal
