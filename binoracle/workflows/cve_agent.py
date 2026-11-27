@@ -19225,9 +19225,15 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 bool_method = notes.get("http_method") or "GET"
                 params = notes.get("parameters") or []
                 # Construir true_param/false_param desde los parámetros del LLM
-                true_p = notes.get("true_param") or (params[0] if params else "where[id][$gt]")
+                # params may be a list of names OR a dict of {name: value}
+                _first_param = (
+                    params[0] if isinstance(params, list) and params
+                    else next(iter(params), None) if isinstance(params, dict)
+                    else None
+                )
+                true_p = notes.get("true_param") or _first_param or "where[id][$gt]"
                 true_v = notes.get("true_value") or "0"
-                false_p = notes.get("false_param") or (params[0] if params else "where[id][$lt]")
+                false_p = notes.get("false_param") or _first_param or "where[id][$lt]"
                 false_v = notes.get("false_value") or "0"
                 confirm_f = notes.get("confirm_field") or notes.get("leak_field") or ""
                 _inject_custom_docker_lab(str(fr.local_path), notes, step)
