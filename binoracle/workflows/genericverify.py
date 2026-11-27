@@ -7048,6 +7048,7 @@ def run_request_chain(
     extra_files: Optional[dict] = None,
     pkg_version: str = "",
     setup_commands: Optional[List[str]] = None,
+    docker_image: str = "",
 ) -> WpVerifyResult:
     """Execute a multi-step HTTP request chain in a single Docker lab.
 
@@ -7093,7 +7094,8 @@ def run_request_chain(
                                    dockerfile_body=dockerfile_body,
                                    extra_files=extra_files,
                                    pkg_version=pkg_version,
-                                   setup_commands=setup_commands)
+                                   setup_commands=setup_commands,
+                                   docker_image=docker_image)
     if boot is None:
         return res
     lab, base_url, container = boot
@@ -7109,6 +7111,23 @@ def run_request_chain(
             for var, val in _vars.items():
                 text = text.replace("{{" + var + "}}", str(val))
             return text
+
+        # SSRF callback listener — start if any step uses ssrf_url_param
+        _chain_ssrf_listener = None
+        _chain_ssrf_token: str = ""
+        if any(s.get("ssrf_url_param") for s in steps):
+            import secrets as _chain_sec
+            _chain_ssrf_token = _chain_sec.token_hex(10)
+            _chain_ssrf_listener = lab.start_listener()
+            if _chain_ssrf_listener:
+                _listener_ip = lab.container_ip(lab.listener)
+                _cb_path = f"binoracle-ssrf-{_chain_ssrf_token}"
+                _vars["ssrf_callback_url"] = f"http://{lab.listener}:8080/{_cb_path}"
+                if _listener_ip:
+                    _vars["ssrf_callback_ip_url"] = f"http://{_listener_ip}:8080/{_cb_path}"
+                _step(f"  request-chain SSRF: listener arrancado, callback_url={_vars['ssrf_callback_url']}")
+            else:
+                _step("  WARN: no se pudo arrancar el listener SSRF para request-chain")
 
         chain_evidence: list = []
         final_step_idx = max(
@@ -7262,24 +7281,56 @@ def run_request_chain(
                     break
                 continue
 
+            # SSRF callback check: when this step has ssrf_url_param and listener is running
+            _ssrf_step_verified = False
+            if step_def.get("ssrf_url_param") and _chain_ssrf_listener and _chain_ssrf_token:
+                import time as _time_chain
+                _time_chain.sleep(2)
+                _ssrf_log = lab.listener_log()
+                if _chain_ssrf_token in _ssrf_log:
+                    _ssrf_step_verified = True
+                    step_ev["ssrf_callback_received"] = True
+                    step_ev["ssrf_log_snippet"] = _ssrf_log[:300]
+                    _step(f"    SSRF: callback recibido (token={_chain_ssrf_token[:8]}…)")
+                else:
+                    step_ev["ssrf_callback_received"] = False
+                    _step(f"    SSRF: callback NO recibido tras step {i+1}")
+
             chain_evidence.append(step_ev)
 
             # Final step determines verified
             if i == final_step_idx:
-                res.verified = _status_ok and _confirm_ok
-                res.ok = True
-                if res.verified:
-                    res.detail = (
-                        f"request-chain VERIFICADO: {len(steps)} paso(s), "
-                        f"step final {method} {ep} → HTTP {status}"
-                        + (f", confirm_string='{confirm}' presente" if confirm else "")
-                    )
-                    _step(f"  request-chain VERIFICADO en {len(steps)} pasos")
+                # SSRF step verified overrides normal confirm logic when ssrf_url_param set
+                if step_def.get("ssrf_url_param") and _chain_ssrf_listener:
+                    res.verified = _ssrf_step_verified
+                    res.ok = True
+                    if res.verified:
+                        res.detail = (
+                            f"request-chain SSRF VERIFICADO: listener recibió callback "
+                            f"(token={_chain_ssrf_token[:8]}…) en paso {i+1}"
+                        )
+                        _step(f"  request-chain SSRF VERIFICADO en {len(steps)} pasos")
+                    else:
+                        res.detail = (
+                            f"request-chain SSRF no verificado: callback no recibido "
+                            f"en paso {i+1} → HTTP {status}"
+                        )
+                        _step("  request-chain SSRF no verificado")
                 else:
-                    res.detail = (
-                        f"request-chain no verificado: step final {method} {ep} → "
-                        f"HTTP {status}, status_ok={_status_ok}, confirm_ok={_confirm_ok}"
-                    )
+                    res.verified = _status_ok and _confirm_ok
+                    res.ok = True
+                    if res.verified:
+                        res.detail = (
+                            f"request-chain VERIFICADO: {len(steps)} paso(s), "
+                            f"step final {method} {ep} → HTTP {status}"
+                            + (f", confirm_string='{confirm}' presente" if confirm else "")
+                        )
+                        _step(f"  request-chain VERIFICADO en {len(steps)} pasos")
+                    else:
+                        res.detail = (
+                            f"request-chain no verificado: step final {method} {ep} → "
+                            f"HTTP {status}, status_ok={_status_ok}, confirm_ok={_confirm_ok}"
+                        )
                     _step(f"  request-chain no verificado: {res.detail}")
                 break
 

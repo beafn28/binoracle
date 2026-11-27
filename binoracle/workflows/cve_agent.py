@@ -15836,6 +15836,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     extra_files=notes.get("extra_files") or None,
                     pkg_version=inv.llm_notes.get("vulnerable_version") or "",
                     setup_commands=notes.get("setup_cmds") or None,
+                    docker_image=notes.get("docker_image") or "",
                 )
                 _apply_wpverify_result(inv, wr, es, llm)
             # "cualquier entorno": bypass de autorizacion via CABECERA HTTP (p.ej.
