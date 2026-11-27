@@ -9996,7 +9996,7 @@ def verify_generic_mass_assignment(
                 status_code=st,
             )
 
-            if string_ok or (admin_signals and len(admin_signals) >= 2) or analysis.get("partial_confidence", 0) >= 0.60:
+            if string_ok or (admin_signals and len(admin_signals) >= 2) or (admin_signals and analysis.get("partial_confidence", 0) >= 0.75):
                 res.verified = True
                 res.ok = True
                 res.evidence = {
@@ -11321,27 +11321,34 @@ def verify_generic_broken_access_control(
                     body = r.text or ""
                     # Success: 200 or 201 where we'd expect 401/403, with confirm_string
                     _is_success = r.status_code in (200, 201, 204)
-                    _has_confirm = confirm_string and confirm_string in body
-                    if _is_success and (_has_confirm or not confirm_string):
-                        # Only verify if no confirm_string is needed OR it's found
-                        if _has_confirm or (not confirm_string and
-                                            "unauthorized" not in body.lower() and
-                                            "forbidden" not in body.lower() and
-                                            "access denied" not in body.lower()):
+                    _has_confirm = bool(confirm_string and confirm_string in body)
+                    _deny_body = any(w in body.lower() for w in
+                                     ("unauthorized", "forbidden", "access denied",
+                                      "not allowed", "permission denied"))
+                    _is_bypass = bool(_hdrs)  # actual bypass header used (not baseline probe)
+                    # verified=True requires: HTTP success + confirm_string explicitly found
+                    # If no confirm_string: set ok=True only (suspicious, not verified) when
+                    # a bypass header produced success with no deny words — avoids FP on public endpoints
+                    if _is_success:
+                        if _has_confirm:
                             res.verified = True
                             res.ok = True
-                            res.evidence.update({
-                                "endpoint": _ep,
-                                "bypass_headers": _hdrs,
-                                "status_code": r.status_code,
-                                "confirm_string_found": _has_confirm,
-                                "respuesta_cuerpo_recorte": body[:400],
-                            })
-                            _bypass_desc = (f"cabeceras de bypass: {_hdrs}"
-                                            if _hdrs else "sin autenticación")
+                        elif _is_bypass and not _deny_body and not confirm_string:
+                            res.ok = True  # suspicious only — no confirmed secret to validate against
+                        else:
+                            continue
+                        res.evidence.update({
+                            "endpoint": _ep,
+                            "bypass_headers": _hdrs,
+                            "status_code": r.status_code,
+                            "confirm_string_found": _has_confirm,
+                            "respuesta_cuerpo_recorte": body[:400],
+                        })
+                        _bypass_desc = (f"cabeceras de bypass: {_hdrs}"
+                                        if _hdrs else "sin autenticación")
+                        if _has_confirm:
                             step(f"VERIFICADO — broken access control en {_ep} "
                                  f"({_bypass_desc}): {r.status_code}")
-                            # Weaponization: captured body IS the proof of unauthorized access
                             if body:
                                 res.evidence["weaponization"] = {
                                     "technique": "broken_access_control_bypass",
@@ -11358,6 +11365,11 @@ def verify_generic_broken_access_control(
                                     ),
                                 }
                             return res
+                        elif res.ok and not res.verified:
+                            # Suspicious (bypass succeeded without confirm_string) — keep
+                            # probing for a better signal, don't return early
+                            step(f"  sospechoso — {_ep} devolvió {r.status_code} con {_bypass_desc} "
+                                 f"pero sin confirm_string")
             res.ok = True
             res.detail = (f"broken-access-control: todas las combinaciones de bypass en "
                           f"{endpoint} devuelven 401/403 o no se obtuvo confirm_string")
@@ -12018,7 +12030,7 @@ def verify_generic_http_request_smuggling(
             except Exception as _de:
                 step(f"  differential probe error: {_de}")
 
-            if _smug_marker in _diff_response or "/binoracle_smug_probe" in _diff_response:
+            if _smug_marker in _diff_response:
                 res.verified = True
                 res.ok = True
                 res.evidence.update({
@@ -12330,13 +12342,19 @@ def verify_generic_user_enumeration(
                 except Exception as _ex:
                     return -1, str(_ex), 0.0
 
-            # Probe existing accounts
+            # Probe existing accounts (3 times and take median for stability)
             existing_sc, existing_body, existing_elapsed = None, None, 0.0
             for user in _KNOWN_USERS:
                 sc, body, elapsed = _probe(user)
                 if sc != -1:
-                    existing_sc, existing_body, existing_elapsed = sc, body, elapsed
-                    step(f"user-enum: probe existente '{user}' → {sc} ({len(body)} bytes, {elapsed:.3f}s)")
+                    existing_sc, existing_body = sc, body
+                    _exist_times = [elapsed]
+                    for _ in range(2):
+                        _es2, _eb2, _ee2 = _probe(user)
+                        if _es2 != -1:
+                            _exist_times.append(_ee2)
+                    existing_elapsed = sorted(_exist_times)[len(_exist_times) // 2]
+                    step(f"user-enum: probe existente '{user}' → {sc} ({len(body)} bytes, {existing_elapsed:.3f}s median)")
                     break
 
             if existing_sc is None:
@@ -12391,9 +12409,9 @@ def verify_generic_user_enumeration(
                 res.evidence["body_length_difference"] = abs(len(existing_body) - len(nonexist_body))
                 return res
 
-            # Timing oracle: >200ms difference (3σ threshold) → enumeration via timing
+            # Timing oracle: >500ms difference required to avoid jitter false positives
             if (existing_elapsed > 0 and nonexist_elapsed > 0
-                    and abs(existing_elapsed - nonexist_elapsed) > 0.2):
+                    and abs(existing_elapsed - nonexist_elapsed) > 0.5):
                 _faster = "existente" if existing_elapsed < nonexist_elapsed else "no-existente"
                 res.verified = True
                 res.ok = True
