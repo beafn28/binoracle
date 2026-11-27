@@ -5587,6 +5587,43 @@ def _build_repair_prompt(
     if "jwt" in _vc and "none" in _tried_pls.lower():
         hints.append("JWT: alg:none bloqueado — prueba kid SQL injection o HMAC weak-secret")
 
+    # exploit_dev diagnostic signals propagated from attempt_evidence
+    _diag_causa = str(attempt_evidence.get("causa") or
+                      attempt_evidence.get("last_causa") or "").lower()
+    if _diag_causa == "sql_error_visible":
+        hints.append(
+            "SQL error visible en respuesta — cambia sqli_technique a 'error-based' "
+            "en lugar de boolean-blind; el motor ya conoce el error"
+        )
+    elif _diag_causa == "csrf_requerido":
+        _csrf_tok = attempt_evidence.get("csrf_token") or ""
+        hints.append(
+            "CSRF token requerido — añade '_csrf_token' en extra_params o parameters; "
+            + (f"último token extraído: '{_csrf_tok[:40]}'" if _csrf_tok else
+               "extrae el token del HTML del formulario antes de enviar")
+        )
+    elif _diag_causa == "schema_validation_error":
+        hints.append(
+            "Schema validation error — revisa el nombre exacto del parámetro vulnerable "
+            "(case-sensitive) y el Content-Type; prueba application/json si era form-encoded"
+        )
+    elif _diag_causa == "redirect_detectado":
+        _redir_loc = attempt_evidence.get("redirect_location") or ""
+        hints.append(
+            "Redirect 3xx detectado — sigue el Location y usa el endpoint destino; "
+            + (f"destino: '{_redir_loc[:80]}'" if _redir_loc else "")
+        )
+    elif _diag_causa in ("sanitizado", "sanitized"):
+        hints.append(
+            "Payload sanitizado — prueba encoding alternativo (double-URL, unicode, "
+            "hex entidades) o técnica distinta (bypass_hint)"
+        )
+    elif _diag_causa == "timeout":
+        hints.append(
+            "Timeout en laboratorio — reduce payloads complejos; "
+            "si es blind SQLi, usa payload más corto con sleep(2)"
+        )
+
     # Inject patch diff intel if available
     _pd_hints_block = ""
     if isinstance(patch_diff_structured, dict) and patch_diff_structured:
