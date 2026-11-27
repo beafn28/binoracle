@@ -352,6 +352,12 @@ def classify_cve(text: str) -> Optional[str]:
     # --- clases web/app (respaldo por co-ocurrencia; la redaccion varia mucho entre CVEs) ---
     if has("missing", "authorization") or has("broken", "access", "control") or \
        has("missing", "capability") or has("capability", "check") or \
+       has("missing", "authentication") or \
+       has("unauthenticated", "access") or has("unauthenticated", "endpoint") or \
+       has("no", "authentication", "required") or \
+       has("lacks", "authentication") or has("lack", "authentication") or \
+       has("rest", "api") and ("auth" in t or "unauthenticated" in t) or \
+       has("arbitrary", "options", "update") or has("options", "update", "plugin") or \
        (has("without", "verifying") and "permission" in t) or \
        (has("sin", "verificar") and ("permiso" in t or "autoriza" in t)):
         return "missing-authorization"
