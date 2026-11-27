@@ -12676,7 +12676,7 @@ def _scaffold_llm_lab_for_class(llm, source_dir: str, notes: dict, cve_id: str,
     # Scan routes from non-WP source code — gives LLM concrete endpoint candidates
     # so it doesn't have to guess (which causes 404 errors in the feedback loop)
     _known_routes: list = []
-    if source_dir and not any(x in (tech or "") for x in ("php", "wordpress")):
+    if source_dir:
         try:
             from .websource import find_web_routes as _find_web_routes
             _known_routes = _find_web_routes(source_dir, tech=tech, max_routes=20)

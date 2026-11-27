@@ -5931,6 +5931,31 @@ def find_web_routes(local_path: str, tech: str = "auto", max_routes: int = 40) -
             _re.compile(r'@(GET|POST|PUT|DELETE|PATCH)\s*\n\s*@Path\s*\(\s*[\'"]([^\'"]+)[\'"]', _re.IGNORECASE | _re.DOTALL),
         ]
 
+    elif _tech in ("php", "wordpress", "laravel", "slim"):
+        _extensions = (".php",)
+        _patterns = [
+            # WordPress REST: register_rest_route('ns/v1', '/endpoint', [...])
+            _re.compile(
+                r"register_rest_route\s*\(\s*['\"]([^'\"]+)['\"]\s*,\s*['\"]([^'\"]{1,80})['\"]",
+                _re.IGNORECASE),
+            # WordPress AJAX nopriv: add_action('wp_ajax_nopriv_myaction', ...)
+            _re.compile(
+                r"add_action\s*\(\s*['\"]wp_ajax_nopriv_([A-Za-z0-9_]+)['\"]",
+                _re.IGNORECASE),
+            # WordPress AJAX (auth-required): add_action('wp_ajax_myaction', ...) — not nopriv
+            _re.compile(
+                r"add_action\s*\(\s*['\"]wp_ajax_(?!nopriv_)([A-Za-z0-9_]+)['\"]",
+                _re.IGNORECASE),
+            # Laravel: Route::get('/path', ...) / Route::post('/path', ...)
+            _re.compile(
+                r"Route\s*::\s*(get|post|put|patch|delete|any)\s*\(\s*['\"]([^'\"]+)['\"]",
+                _re.IGNORECASE),
+            # Slim: $app->get('/path', ...) / $app->post('/path', ...)
+            _re.compile(
+                r"\$(?:app|router)\s*->\s*(get|post|put|patch|delete)\s*\(\s*['\"]([^'\"]+)['\"]",
+                _re.IGNORECASE),
+        ]
+
     if not _patterns:
         return []
 
