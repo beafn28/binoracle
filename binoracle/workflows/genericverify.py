@@ -4603,6 +4603,18 @@ def verify_generic_sqli_blind(
         # Fast path: try error-based SQLi BEFORE slow time-based probes — covers MySQL, Postgres, MSSQL.
         # Saves ~30-60s per CVE when the target responds with an error instead of staying silent.
         step("intento rapido error-based (extractvalue/updatexml) antes de time-based...")
+        # Baseline: fetch the endpoint with the original value to check if error strings
+        # are already present in a normal response (pre-existing errors must not trigger FP).
+        _eb_baseline_body = ""
+        try:
+            _bl_params = dict(base_params)
+            _bl_r = _http_request(m, base_url + endpoint_path, timeout=12,
+                                  params=_bl_params if m == "GET" else None,
+                                  data=_bl_params if m != "GET" else None,
+                                  headers=dict(custom_headers or {}))
+            _eb_baseline_body = getattr(_bl_r, "text", "") or ""
+        except Exception:
+            pass
         _eb_payloads = {
             "mysql_xp": f"{orig_value}' AND extractvalue(1,concat(0x7e,version()))-- -",
             "mysql_ux": f"{orig_value}' AND updatexml(1,concat(0x7e,version()),1)-- -",
@@ -4634,7 +4646,10 @@ def verify_generic_sqli_blind(
                                           data=_eb_pl if m != "GET" else None,
                                           headers=_eb_hdrs or None)
                 _eb_body = getattr(_eb_r, "text", "") or ""
-                if any(sig in _eb_body for sig in _eb_sigs):
+                # Only fire if the error signal is NEW — not already in the baseline response
+                _eb_new_sigs = [s for s in _eb_sigs
+                                if s in _eb_body and s not in _eb_baseline_body]
+                if _eb_new_sigs:
                     res.verified = True
                     res.ok = True
                     res.confidence = "confirmed"
@@ -9169,30 +9184,34 @@ def verify_generic_csrf(
         body = (body_bytes or b"").decode("utf-8", errors="replace")
         step(f"CSRF: status={st} len={len(body)}")
 
-        confirmed = False
+        # Only mark verified=True when confirm_string is present in the response —
+        # a bare 2xx without proof of state mutation is not sufficient: many APIs
+        # return 200 even when rejecting CSRF (error in body, but 200 status).
         if confirm_string and confirm_string in body:
-            confirmed = True
-        elif not confirm_string and st in (200, 201, 202, 204):
-            confirmed = True
-
-        if confirmed:
             res.verified = True
             res.ok = True
             res.detail = (f"CSRF CONFIRMADO: peticion cross-origin sin token aceptada "
-                          f"(status={st}) en {endpoint}")
-            step(f"VERIFICADO: CSRF — peticion de {evil_origin!r} aceptada")
+                          f"(status={st}, confirm_string hallado) en {endpoint}")
+            step(f"VERIFICADO: CSRF — peticion de {evil_origin!r} aceptada con confirm")
             _add_exploit_evidence(
                 res=res, method=http_method, url=base_url + endpoint,
                 resp_or_body=body,
-                highlight=confirm_string or str(st),
+                highlight=confirm_string,
                 caption_es="CSRF CONFIRMADO: peticion cross-origin sin token aceptada.",
                 caption_en="CSRF CONFIRMED: cross-origin request without token accepted.",
             )
             return res
 
-        res.ok = True
-        res.detail = (f"CSRF no detectado: peticion cross-origin devolvio status={st} "
-                      f"sin confirm_string en la respuesta")
+        if st in (200, 201, 202, 204):
+            # Suspicious: accepted without token, but no confirm_string to prove
+            # the action actually executed — record as inconclusive, not verified.
+            res.ok = True
+            res.detail = (f"CSRF sospechoso: status={st} sin token en {endpoint} "
+                          f"— sin confirm_string para confirmar la mutacion de estado")
+        else:
+            res.ok = True
+            res.detail = (f"CSRF no detectado: peticion cross-origin devolvio status={st} "
+                          f"sin confirm_string en la respuesta")
         return res
     except Exception as e:
         res.detail = f"error inesperado en verify_generic_csrf: {e}"
@@ -11650,20 +11669,36 @@ def verify_generic_race_condition(
             _success_count = sum(1 for s in statuses if s in (200, 201, 204))
             _uniq_statuses = {s for s in statuses if s != -1}
 
-            # Double-redemption check: if the server accepted >=2 requests (200/201) it means
-            # the same token/coupon/credit was used twice — race condition proven without
-            # needing an exact confirm_string.
+            # Double-redemption check: requires EITHER a check endpoint that confirms
+            # the second success (double_redemption_key found in its response) OR
+            # confirm_string present in at least 2 concurrent responses. A bare
+            # _success_count >= 2 out of 50 requests is not sufficient — any normal
+            # stateless POST endpoint will return 200 for every request in the burst.
             if _success_count >= 2:
                 # Optionally confirm via a check endpoint (e.g. GET /balance shows double credit)
                 _dr_body = ""
+                _dr_key_found = False
                 if double_redemption_endpoint:
                     try:
                         import requests as _rq2
                         _dr_r = _rq2.get(boot.base_url + double_redemption_endpoint, timeout=10)
                         _dr_body = _dr_r.text[:300]
+                        _dr_key_found = bool(double_redemption_key and _dr_body
+                                             and double_redemption_key in _dr_body)
                     except Exception:
                         pass
-                _dr_key_found = bool(double_redemption_key and _dr_body and double_redemption_key in _dr_body)
+                # Count how many bursts saw confirm_string — if ≥2 it's proven
+                _confirm_hits = sum(1 for r in _results
+                                    if confirm_string and confirm_string in r.get("body", ""))
+                _double_proven = _dr_key_found or _confirm_hits >= 2
+                if not _double_proven:
+                    # Can't distinguish race from a naturally idempotent endpoint
+                    _uniq_statuses = _uniq_statuses  # keep for inconclusive detail
+                    res.ok = True
+                    res.detail = (f"race-condition: {_success_count} peticiones con 2xx pero sin "
+                                  f"prueba de doble ejecucion (double_redemption_key no hallado, "
+                                  f"confirm_string <2 hits) — inconclusivo")
+                    return res
                 res.verified = True
                 res.ok = True
                 res.evidence.update({
