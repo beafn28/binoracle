@@ -5204,6 +5204,25 @@ def process_never_attempted_cves(
                         _vc = (d.get("vuln_class") or (d.get("llm_notes") or {}).get("vuln_class") or "").lower()
                         if "sql" in _vc:
                             _patched["sqli_param"] = _patched["param"]
+                    # Guard: reject cheerleader suggestions that inject WordPress endpoints
+                    # into non-WordPress CVEs (cross-CMS hallucination protection).
+                    _notes_check = d.get("llm_notes") or {}
+                    _cms_check = (_notes_check.get("cms") or "").lower()
+                    _img_check = (_notes_check.get("docker_image") or "").lower()
+                    _src_check = (_notes_check.get("source_url") or "").lower()
+                    _is_wp_cve = (
+                        "wordpress" in _cms_check or "wordpress" in _img_check
+                        or "wordpress.org" in _src_check or "wordpress" in _src_check
+                        or any("wordpress" in (p or "").lower()
+                               for p in (_notes_check.get("companion_plugins") or []))
+                    )
+                    _cheer_ep = (_patched.get("endpoint") or "").lower()
+                    _wp_endpoints = ("admin-ajax.php", "wp-json/", "wp-admin/", "wp-login")
+                    _is_wp_ep = any(wpe in _cheer_ep for wpe in _wp_endpoints)
+                    if _is_wp_ep and not _is_wp_cve:
+                        step(f"{d.get('cve_id','?')}: cheerleader bloqueado — sugirió endpoint WP "
+                             f"'{_cheer_ep}' para CVE no-WordPress (framework={_src_check[:40]})")
+                        continue
                     d["llm_notes"] = {**(d.get("llm_notes") or {}), **_patched}
                     d["attempt_evidence"] = {"_cheerleader_retry": True}
                     try:

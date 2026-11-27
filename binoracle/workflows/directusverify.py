@@ -211,22 +211,30 @@ def verify_directus_web_cve(
             _image,
         ], timeout=30)
 
-        # Poll until port is open (up to 90s — Directus is slow to start)
+        # Poll until Directus HTTP is ready (up to 120s — it's slow to initialize DB)
         import socket as _sock
         host = _lab_host()
-        for _i in range(90):
-            try:
-                with _sock.create_connection((host, _DIRECTUS_PORT), timeout=1):
-                    break
-            except OSError:
-                time.sleep(1)
-        else:
-            res.detail = f"Timeout esperando puerto {_DIRECTUS_PORT}"
-            return res
-
         base_url = f"http://{host}:{_DIRECTUS_PORT}"
-        # Give Directus extra time to initialize its DB
-        time.sleep(5)
+        _ready = False
+        for _i in range(120):
+            try:
+                # Try a lightweight HTTP probe: ConnectionResetError means TCP open
+                # but HTTP not ready yet — keep waiting.
+                _probe = _http_request("GET", base_url + "/server/health", timeout=3)
+                if _probe.status_code in (200, 204, 401, 403, 404):
+                    _ready = True
+                    break
+            except Exception as _probe_exc:
+                _exc_str = str(_probe_exc)
+                if "Connection refused" in _exc_str:
+                    pass  # container not up yet
+                # else: ConnectionReset / other → not ready, keep waiting
+            time.sleep(1)
+        if not _ready:
+            res.detail = f"Timeout esperando HTTP Directus en {_DIRECTUS_PORT}"
+            return res
+        # Extra grace period for DB migrations to complete
+        time.sleep(3)
 
         # Auth (always needed for chain; also when auth_required=True)
         bearer = None

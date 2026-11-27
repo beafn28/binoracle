@@ -3008,19 +3008,24 @@ _CHEERLEADER_SYS = (
     "y generar UNA hipotesis especifica para el siguiente reintento. "
     "DEBES analizar:\n"
     "1. Codigos HTTP observados — devolvio 404? 200 vacio? 403? 500? 503?\n"
-    "   - 500 en TODOS los intentos de upload → plugin probablemente crashea en activacion, "
-    "no en el exploit. Recomendacion: cambiar docker_image o revisar dependencias del plugin.\n"
+    "   - 500 en TODOS los intentos de upload → plugin/app probablemente crashea en activacion, "
+    "no en el exploit. Recomendacion: cambiar docker_image o revisar dependencias.\n"
     "   - 403/401 → se requiere nonce o sesion autenticada.\n"
-    "   - 404 → endpoint incorrecto; revisar si es admin-ajax vs REST API vs query var.\n"
+    "   - 404 → endpoint incorrecto. Consultar la documentacion API del framework especifico.\n"
     "2. Era un error de infraestructura (Docker, red, timeout) o de logica de la aplicacion?\n"
-    "3. Estaba el endpoint realmente registrado? (404 = no existe; verificar si es REST API o query var)\n"
-    "4. Se requeria autenticacion que no se proporciono? Para WP admin-ajax: comprobar si el hook "
-    "es wp_ajax_ (requiere login) vs wp_ajax_nopriv_ (publico).\n"
+    "3. Estaba el endpoint realmente registrado? (404 = no existe)\n"
+    "4. Se requeria autenticacion que no se proporciono?\n"
     "5. Era el payload correcto para el contexto de inyeccion real (WHERE vs ORDER BY, GET vs POST)?\n"
     "6. Aparecio el canario/error XPATH/output UNION en la respuesta? Si no, por que?\n"
     "7. Era el parametro vulnerable realmente el que se probo?\n"
-    "8. FIELD NAME: si el upload falla con campo generico, leer el codigo PHP para el nombre REAL "
-    "del campo (ej: $_FILES['images'] no $_FILES['file']).\n"
+    "8. FIELD NAME: si el upload falla con campo generico, revisar la documentacion/codigo para el "
+    "nombre REAL del campo.\n"
+    "REGLA CRITICA: Razona SOLO en el contexto del framework/CMS real indicado en 'target_framework' "
+    "del contexto. NUNCA sugieras endpoints de WordPress (admin-ajax.php, wp-json/, post_type, "
+    "wp_ajax_) salvo que target_framework contenga 'wordpress'. "
+    "NUNCA sugieras endpoints de un framework diferente al indicado. "
+    "Si el framework es Directus, sugiere endpoints de la API REST de Directus (/items/, /files/, etc). "
+    "Si el framework es Django/Flask/Express/Strapi/etc, sugiere endpoints de ESOS frameworks. "
     "Solo razona desde la evidencia proporcionada. Nunca inventes. "
     "Si la evidencia no da pistas concretas, dilo honestamente (confidence=0.0). "
     "Responde SOLO con JSON valido:\n"
@@ -3071,9 +3076,31 @@ def _cheerleader_analysis(llm, inv, wr, es: bool) -> dict:
                     "param": c.get("param", ""),
                     "snippet": (c.get("snippet", "") or "")[:200],
                 })
+        # Derive target framework from docker_image, source_url, cms, or companion_plugins
+        _cms = (_notes.get("cms") or "").lower()
+        _docker_image = (_notes.get("docker_image") or "").lower()
+        _source_url = (_notes.get("source_url") or "").lower()
+        _plugins = [p.lower() for p in (_notes.get("companion_plugins") or [])]
+        _is_wp = (
+            "wordpress" in _cms or "wordpress" in _docker_image
+            or "wordpress.org" in _source_url or "wordpress" in _source_url
+            or any("wordpress" in p for p in _plugins)
+        )
+        if _is_wp:
+            _target_framework = "wordpress"
+        elif _cms:
+            _target_framework = _cms
+        elif _docker_image:
+            _target_framework = _docker_image.split("/")[-1].split(":")[0]
+        elif "github.com/" in _source_url:
+            _repo = _source_url.split("github.com/")[-1].split("/")[1] if "/" in _source_url.split("github.com/")[-1] else _source_url
+            _target_framework = _repo.rstrip("/")
+        else:
+            _target_framework = _source_url or "unknown"
         context = {
             "cve_id": getattr(inv, "cve_id", ""),
             "vuln_class": getattr(inv, "vuln_class", ""),
+            "target_framework": _target_framework,
             "endpoint_tried": _notes.get("endpoint", ""),
             "http_method_tried": _notes.get("http_method", ""),
             "params_tried": _notes.get("parameters", {}),
@@ -4705,7 +4732,26 @@ def _run_evidence_retry_loop(llm, step, es: bool, system_prompt: str, evidence_k
                                                 "parameters", "http_method")):
                     _cheer_ep = (_sf.get("endpoint") or retry_endpoint)
                     _cheer_param = (_sf.get("param") or _sf.get("sqli_param") or retry_param)
-                    if (_cheer_ep, _cheer_param or "") not in _tried_pairs:
+                    # Guard: reject cross-CMS hallucination (WP endpoints for non-WP CVEs)
+                    _inv_notes = getattr(inv, "llm_notes", {}) or {}
+                    _inv_cms = (_inv_notes.get("cms") or "").lower()
+                    _inv_img = (_inv_notes.get("docker_image") or "").lower()
+                    _inv_src = (_inv_notes.get("source_url") or "").lower()
+                    _inv_is_wp = (
+                        "wordpress" in _inv_cms or "wordpress" in _inv_img
+                        or "wordpress.org" in _inv_src or "wordpress" in _inv_src
+                        or any("wordpress" in (p or "").lower()
+                               for p in (_inv_notes.get("companion_plugins") or []))
+                    )
+                    _wp_ep_patterns = ("admin-ajax.php", "wp-json/", "wp-admin/", "wp-login")
+                    _cheer_ep_lc = (_cheer_ep or "").lower()
+                    if any(p in _cheer_ep_lc for p in _wp_ep_patterns) and not _inv_is_wp:
+                        step((f"cheerleader bloqueado — endpoint WP '{_cheer_ep}' "
+                              f"para CVE no-WordPress") if es else
+                             (f"cheerleader blocked — WP endpoint '{_cheer_ep}' "
+                              f"for non-WordPress CVE"))
+                        pass
+                    elif (_cheer_ep, _cheer_param or "") not in _tried_pairs:
                         suggestion = {
                             "tiene_sugerencia": True,
                             "endpoint_alternativo": _cheer_ep,
@@ -15219,7 +15265,14 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                      "missing-authorization", "auth-bypass",
                                      "broken-access-control", "ssti", "rce",
                                      "command-injection", "os-command-injection")
-                  and notes.get("endpoint")):
+                  and notes.get("endpoint")
+                  # Skip CMS-specific projects that have dedicated verifiers later in the chain
+                  and not any(cms in (notes.get("docker_image") or "").lower()
+                              for cms in ("directus", "ghost", "strapi", "mattermost"))
+                  and not any(cms in (notes.get("cms") or "").lower()
+                              for cms in ("directus", "ghost", "strapi"))
+                  and not any(cms in (notes.get("target_binary") or "").lower()
+                              for cms in ("directus",))):
                 from .jsverify import detect_js_framework, verify_node_web_cve
                 _js_fw = detect_js_framework(str(fr.local_path))
                 if _js_fw not in ("unknown",):
