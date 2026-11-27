@@ -5989,6 +5989,28 @@ def verify_generic_ssti(
     try:
         a, b = secrets.randbelow(90) + 10, secrets.randbelow(90) + 10
         expected = a * b
+
+        # Baseline probe: check if expected product already appears in a static response
+        # (e.g., the product 144 could be a port or constant in the page).
+        # Roll operands up to 3 times to avoid baseline collision.
+        _ep_for_baseline = (endpoint or "/").split("?")[0]
+        for _retry_ssti in range(3):
+            try:
+                _base_r = _http_request(
+                    (http_method or "GET").upper().split("/")[0].strip() or "GET",
+                    base_url + _ep_for_baseline, timeout=8,
+                )
+                _baseline_text = (_base_r.text or "") if _base_r else ""
+            except Exception:
+                _baseline_text = ""
+            _pat_ssti = re.compile(rf"(?<!\d){expected}(?!\d)")
+            if not _pat_ssti.search(_baseline_text):
+                break
+            a, b = secrets.randbelow(90) + 10, secrets.randbelow(90) + 10
+            expected = a * b
+            if _retry_ssti < 2:
+                step(f"SSTI: baseline ya contiene {expected} — re-generando operandos ({_retry_ssti+1}/3)")
+
         mul = f"{a}*{b}"
         hand_made = [
             f"{{{{{mul}}}}}", f"${{{mul}}}", f"#{{{mul}}}", f"<%= {mul} %>",
