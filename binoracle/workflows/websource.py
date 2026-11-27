@@ -4522,7 +4522,72 @@ def find_path_traversal_sinks(local_path: str, tech: str = "auto") -> List[VulnS
     if tech == "auto":
         tech = detect_tech_stack(local_path)
     pattern_sets = [p for p in _LFI_PATTERNS if p[0] == tech] or _LFI_PATTERNS
-    return _scan_sinks(local_path, pattern_sets, tech)[:15]
+    results = _scan_sinks(local_path, pattern_sets, tech)[:15]
+    # Also check for zip-slip (archive extraction without path validation)
+    results.extend(find_zip_slip_sinks(local_path))
+    return results[:20]
+
+
+# ── Zip Slip / Archive Extraction ─────────────────────────────────────────────
+_ZIP_SLIP_ARCHIVE_RE = re.compile(
+    r"\bZipArchive\b|\bzip_open\s*\(|\bzipfile\.ZipFile\b|\bZipFile\s*\("
+    r"|\bPharData\b|\bArchive_Zip\b|\bZipInputStream\b"
+    r"|\btarfile\.open\b|\btar\.open\b",
+    re.IGNORECASE,
+)
+_ZIP_SLIP_EXTRACT_RE = re.compile(
+    r"->extractTo\s*\(|->extract\s*\(|->extractAll\s*\("   # PHP ZipArchive
+    r"|\.extractall\s*\("                                   # Python tarfile/zipfile
+    r"|\.extract\s*\(\s*[^,)]+,"                            # Python zipfile.extract(name, path)
+    r"|\bZip\.ExtractToDirectory\s*\("                      # C# / .NET
+    r"|\bunzip\s*\(",                                        # generic
+    re.IGNORECASE,
+)
+_ZIP_SLIP_SAFE_RE = re.compile(
+    r"realpath\s*\(|\bcanonical\b|\babspath\s*\(|\bstr_starts_with\b"
+    r"|\bstrpos.*\.\."
+    r"|\bos\.path\.abspath\b|\bPath\.resolve\b"
+    r"|\bgetCanonicalPath\b",
+    re.IGNORECASE,
+)
+
+
+def find_zip_slip_sinks(local_path: str) -> List[VulnSink]:
+    """Detect archive extraction without path validation (Zip Slip / path traversal via archive)."""
+    import os as _os
+    results: List[VulnSink] = []
+    _exts = {".php", ".py", ".js", ".ts", ".rb", ".java", ".go", ".cs"}
+    for root, dirs, files in _os.walk(local_path):
+        dirs[:] = [d for d in dirs if d not in (".git", "node_modules", "__pycache__", "vendor")]
+        for fname in files:
+            if _os.path.splitext(fname)[1].lower() not in _exts:
+                continue
+            fpath = _os.path.join(root, fname)
+            try:
+                txt = open(fpath, encoding="utf-8", errors="ignore").read(100_000)
+            except OSError:
+                continue
+            # Must have an archive open AND an extraction call in the same file
+            if not _ZIP_SLIP_ARCHIVE_RE.search(txt):
+                continue
+            if not _ZIP_SLIP_EXTRACT_RE.search(txt):
+                continue
+            if _ZIP_SLIP_SAFE_RE.search(txt):
+                continue
+            # Find the extraction line for the VulnSink
+            for lineno, line in enumerate(txt.splitlines(), 1):
+                if _ZIP_SLIP_EXTRACT_RE.search(line):
+                    rel = _os.path.relpath(fpath, local_path)
+                    results.append(VulnSink(
+                        file=rel, line=lineno,
+                        snippet=line.strip()[:120],
+                        param="zip_entry_name",
+                        sink="archive_extract",
+                        tech="auto",
+                        confidence=2,
+                    ))
+                    break
+    return results[:5]
 
 
 # ── SSRF sinks ────────────────────────────────────────────────────────────────
@@ -4717,7 +4782,15 @@ _DOM_XSS_SOURCE_RE = re.compile(
     r"|wp\.data\.select\s*\("                  # Gutenberg data store
     r"|document\.getElementById.*\.value"      # form value from DOM
     r"|localStorage\.getItem\s*\("
-    r"|sessionStorage\.getItem\s*\(",
+    r"|sessionStorage\.getItem\s*\("
+    r"|addEventListener\s*\(\s*['\"]message['\"]"  # postMessage source
+    r"|event\.data\b"                              # postMessage payload
+    r"|window\.opener\b"                           # window.opener XSS
+    r"|document\.domain\b"                         # document.domain manipulation
+    r"|\.hash\b"                                   # hash fragment
+    r"|history\.(?:pushState|replaceState)\s*\("   # history API pollution
+    r"|JSON\.parse\s*\(.*(?:location|hash|storage)"  # JSON.parse of attacker input
+    r"|import\s*\(.*(?:location|hash|search)",         # dynamic import from URL
     re.IGNORECASE,
 )
 _DOM_XSS_SINK_RE = re.compile(
@@ -4740,7 +4813,16 @@ _DOM_XSS_SINK_RE = re.compile(
     r"|\.setAttributeNS\s*\([^,]+,\s*[\"'](?:src|href|action|formaction)[\"']"  # DOM attribute injection
     r"|\.setAttribute\s*\(\s*[\"'](?:src|href|action|formaction|on\w+)[\"']"    # on* event injection
     r"|jinja2\.Markup\s*\("                                       # Python Jinja2 Markup bypass
-    r"|flask\.Markup\s*\(",                                       # Flask Markup bypass
+    r"|flask\.Markup\s*\("                                        # Flask Markup bypass
+    r"|html`[^`]*\$\{"                                            # Lit HTML tagged template
+    r"|unsafeHTML\s*\("                                           # Lit unsafeHTML directive
+    r"|\.createContextualFragment\s*\("                           # Range.createContextualFragment
+    r"|srcdoc\s*="                                                # iframe srcdoc injection
+    r"|\.open\s*\(\s*[\"']javascript:"                            # window.open('javascript:')
+    r"|location\s*=\s*['\"]javascript:"                           # location = 'javascript:'
+    r"|\.href\s*=\s*['\"]javascript:"                             # .href = 'javascript:'
+    r"|template\.content.*innerHTML"                              # template element innerHTML
+    r"|postMessage\s*\(",                                         # postMessage sink
     re.IGNORECASE,
 )
 _DOM_XSS_SAFE_RE = re.compile(
