@@ -182,6 +182,50 @@ _DOCKER_IMAGE_PROFILES: dict[str, dict] = {
         "startup_wait": 10,
         "health_path": "/",
     },
+    # --- WordPress (PHP CMS) — standalone via php:apache + SQLite3 (no MySQL sidecar) ---
+    # The official wordpress:latest image requires MySQL; this profile uses php:8.1-apache
+    # with a minimal WP REST API emulator so missing-auth labs run without a sidecar.
+    # Qwen can override with a richer Dockerfile via dockerfile_body in the CVE JSON.
+    "wordpress:": {
+        "port": 80,
+        "startup_wait": 8,
+        "health_path": "/wp-json/",
+        "dockerfile": (
+            "FROM php:8.1-apache\n"
+            "RUN docker-php-ext-install pdo_sqlite 2>/dev/null || true && \\\n"
+            "    a2enmod rewrite\n"
+            # Minimal WP REST dispatcher: handles /wp-json/<ns>/v<n>/<path>
+            "RUN printf '<?php\\n"
+            "header(\"Content-Type: application/json\");\\n"
+            "header(\"Access-Control-Allow-Origin: *\");\\n"
+            "$uri = parse_url($_SERVER[\"REQUEST_URI\"], PHP_URL_PATH);\\n"
+            "if ($uri === \"/wp-json/\" || $uri === \"/wp-json\") {\\n"
+            "  echo json_encode([\"name\"=>\"BinOracle WP Lab\",\"description\"=>\"lab\","
+            "\"url\"=>\"http://localhost\",\"home\"=>\"http://localhost\","
+            "\"namespaces\"=>[\"lab/v1\"]]);\\n"
+            "  exit;\\n"
+            "}\\n"
+            "// Plugin route stubs go in /var/www/html/wp-content/plugins/lab/routes.php\\n"
+            "$routes_file = __DIR__.\"/wp-content/plugins/lab/routes.php\";\\n"
+            "if (file_exists($routes_file)) { require $routes_file; exit; }\\n"
+            "http_response_code(404);\\n"
+            "echo json_encode([\"code\"=>\"rest_no_route\",\"message\"=>\"No route found\","
+            "\"data\"=>[\"status\"=>404]]);\\n"
+            "' > /var/www/html/index.php\n"
+            # .htaccess: route everything through index.php
+            "RUN printf '<IfModule mod_rewrite.c>\\n"
+            "RewriteEngine On\\n"
+            "RewriteCond %%{REQUEST_FILENAME} !-f\\n"
+            "RewriteRule ^ index.php [L]\\n"
+            "</IfModule>\\n"
+            "' > /var/www/html/.htaccess\n"
+            "RUN mkdir -p /var/www/html/wp-content/plugins/lab\n"
+            "EXPOSE 80\n"
+            'CMD ["apache2-foreground"]\n'
+        ),
+        "envs": {},
+        "cmd": None,
+    },
     # --- Rack/Ruby web apps ---
     "ruby:": {
         "port": 9292,
