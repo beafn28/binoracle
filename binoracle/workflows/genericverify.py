@@ -2103,12 +2103,14 @@ class _DockerLab:
     def __init__(self, source_dir: str, dockerfile_body: Optional[str] = None,
                  extra_files: Optional[dict] = None,
                  setup_commands: Optional[List[str]] = None,
-                 on_step=None):
+                 on_step=None,
+                 docker_image: str = ""):
         self._source_dir = source_dir or ""
         self._df = dockerfile_body or ""
         self._extra_files = extra_files or {}
         self._setup_cmds = setup_commands or []
         self._step = on_step or (lambda _m: None)
+        self._docker_image = docker_image or ""
         self._lab: Optional["_GenericLab"] = None
         self._container: str = ""
         self.base_url: str = ""
@@ -2125,6 +2127,7 @@ class _DockerLab:
                 dockerfile_body=self._df,
                 extra_files=self._extra_files,
                 setup_commands=self._setup_cmds,
+                docker_image=self._docker_image,
             )
             if _boot is None:
                 raise RuntimeError(f"_DockerLab bootstrap failed: {_res.detail}")
@@ -11000,6 +11003,8 @@ def verify_generic_information_disclosure(
     budget_s: float = 900.0,
     dockerfile_body: str = "", extra_files: Optional[dict] = None,
     setup_commands: Optional[List[str]] = None,
+    missing_response_header: str = "",
+    docker_image: str = "",
 ) -> WpVerifyResult:
     """Verifica exposicion de informacion sensible: credenciales, claves, rutas internas,
     ficheros de configuracion, endpoints de debug expuestos.
@@ -11061,8 +11066,45 @@ def verify_generic_information_disclosure(
             _df = None
 
         lab = _DockerLab(source_dir, _df, extra_files=extra_files or {},
-                         setup_commands=setup_commands or [], on_step=step)
+                         setup_commands=setup_commands or [], on_step=step,
+                         docker_image=docker_image or "")
         with lab.running() as boot:
+            # Header-absence check (e.g. Flask CVE-2023-30861: missing Vary: Cookie).
+            # When missing_response_header is set, verify that the named header value is
+            # NOT present in the response to `endpoint`. Confirmed when the header is absent.
+            if missing_response_header and endpoint:
+                try:
+                    import requests as _rq_mh
+                    _mh_resp = _rq_mh.request(
+                        http_method.upper() if http_method else "GET",
+                        boot.base_url + endpoint, timeout=10, allow_redirects=False)
+                    _vary_val = _mh_resp.headers.get("Vary", "")
+                    _set_cookie = _mh_resp.headers.get("Set-Cookie", "")
+                    _header_absent = missing_response_header.lower() not in _vary_val.lower()
+                    res.evidence.update({
+                        "endpoint": endpoint,
+                        "status_code": _mh_resp.status_code,
+                        "vary_header": _vary_val or "(absent)",
+                        "set_cookie": _set_cookie[:100] if _set_cookie else "(absent)",
+                        "missing_header_check": missing_response_header,
+                        "header_absent": _header_absent,
+                    })
+                    step(f"header check: Vary='{_vary_val or '(absent)'}' — "
+                         f"'{missing_response_header}' {'ABSENT (vuln)' if _header_absent else 'present (patched)'}")
+                    if _header_absent and _mh_resp.status_code < 500:
+                        res.verified = True
+                        res.ok = True
+                        res.confidence = "confirmed"
+                        res.detail = (f"VERIFICADO: '{missing_response_header}' ausente en "
+                                      f"cabecera Vary de {endpoint} (HTTP {_mh_resp.status_code})")
+                        return res
+                    else:
+                        res.detail = (f"header '{missing_response_header}' presente en Vary — "
+                                      f"version parcheada o endpoint incorrecto")
+                        return res
+                except Exception as _mh_e:
+                    step(f"header-absence check error: {_mh_e}")
+
             # Planta canario en /tmp
             _plant_path = "/tmp/binoracle_infodiscl.txt"
             _plant_ok = lab.exec_in_container(

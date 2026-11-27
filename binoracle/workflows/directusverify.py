@@ -190,6 +190,7 @@ def verify_directus_web_cve(
     confirm_string: str = "",
     auth_required: bool = False,
     pkg_version: str = "",
+    docker_image: str = "",
     request_chain: Optional[list] = None,
     on_step: Optional[Callable] = None,
     budget_s: float = 240.0,
@@ -203,8 +204,10 @@ def verify_directus_web_cve(
         return res
 
     container = f"bo_directus_{os.urandom(4).hex()}"
-    # Use versioned image; fall back to latest if pkg_version not usable
-    _image = f"directus/directus:{pkg_version}" if pkg_version else "directus/directus:latest"
+    # Prefer analyst-specified docker_image; fall back to pkg_version; then latest
+    _image = (docker_image if docker_image
+              else (f"directus/directus:{pkg_version}" if pkg_version
+                    else "directus/directus:latest"))
 
     try:
         step(f"  directus: arrancando {_image} en puerto {_DIRECTUS_PORT}…")

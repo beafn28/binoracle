@@ -16583,6 +16583,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         confirm_string=notes.get("confirm_string") or "",
                         auth_required=bool(notes.get("auth_required") or notes.get("authenticated")),
                         pkg_version=_directus_ver,
+                        docker_image=notes.get("docker_image") or "",
                         request_chain=notes.get("request_chain") or None,
                         on_step=step,
                         budget_s=budget_s,
@@ -20065,7 +20066,9 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 wr = verify_generic_information_disclosure(
                     fr.local_path, _id_ep, _id_method, _id_cs,
                     on_step=step, budget_s=budget_s,
-                    dockerfile_body=_id_dockerfile, extra_files=_id_extra)
+                    dockerfile_body=_id_dockerfile, extra_files=_id_extra,
+                    missing_response_header=notes.get("missing_response_header") or "",
+                    docker_image=notes.get("docker_image") or "")
                 _apply_wpverify_result(inv, wr, es, llm)
             # --- Python deserialization (pickle/yaml.load RCE) ---
             elif (not plugin_dir and
