@@ -12712,6 +12712,13 @@ def verify_wordpress_missing_auth_probe(
                                 f" — subscriber rechazado (HTTP {_sub_st}) pero anonimo pasa "
                                 f"(HTTP {status}): broken-access-control")
                             res.evidence["privilege_comparison"] = "anon=pass subscriber=reject"
+                            # Definitive: subscriber rejected but anon passes = missing-auth proven
+                            res.verified = True
+                            res.detail = (
+                                f"MISSING-AUTH CONFIRMADA: subscriber rechazado (HTTP {_sub_st}) "
+                                f"pero request anonima pasa (HTTP {status} con {len(body)}B) — "
+                                f"comprobacion de autenticacion ausente en endpoint {endpoint}")
+                            return res
                         elif abs(len(_sub_body) - len(body)) < max(50, len(body) * 0.1):
                             _cmp_detail = (
                                 f" — mismo contenido para anonimo y subscriber ({len(body)}B ≈ "
