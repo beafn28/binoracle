@@ -1273,6 +1273,31 @@ def _static_vuln_precheck(local_path: str, plugin_dir: str, vuln_class: str,
         except Exception:
             pass
 
+    # --- Check 2b: ORDER BY injection — dedicated scanner for WP plugins ---
+    if vuln_class in ("sqli", "sql-injection", "order-by-injection") and local_path and plugin_dir:
+        try:
+            from .websource import find_order_by_injection_sinks, find_incomplete_prepare_sinks
+            _ob_sinks = find_order_by_injection_sinks(local_path, plugin_dir)
+            _ip_sinks = find_incomplete_prepare_sinks(local_path, plugin_dir)
+            if _ob_sinks:
+                return {
+                    "ok": True,
+                    "reason": (f"pre-check ORDER BY injection: {len(_ob_sinks)} candidato(s) de "
+                               f"ORDER BY con input de usuario sin sanitize_sql_orderby() — "
+                               f"{_ob_sinks[0].file}:{_ob_sinks[0].line} `{_ob_sinks[0].snippet[:80]}`"),
+                    "confidence": 0.0,  # positive signal
+                }
+            if _ip_sinks:
+                return {
+                    "ok": True,
+                    "reason": (f"pre-check incomplete prepare: {len(_ip_sinks)} llamada(s) a "
+                               f"$wpdb->prepare() con variables PHP interpoladas directamente "
+                               f"— {_ip_sinks[0].file}:{_ip_sinks[0].line}"),
+                    "confidence": 0.0,
+                }
+        except Exception:
+            pass
+
     # --- Check 3: LFI/path-traversal — verificar que hay operacion de archivo en el plugin ---
     if vuln_class in ("lfi", "path-traversal"):
         import os as _os_pc

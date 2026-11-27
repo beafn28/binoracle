@@ -1835,6 +1835,17 @@ _SANITIZER_NEARBY_RE = re.compile(
     r"\bintval\s*\(|\babsint\s*\(|%d\b|%s\b|->\s*prepare\s*\(|\(int\)|\besc_sql\s*\(",
     re.IGNORECASE)
 
+# ORDER BY injection: `ORDER BY <user_input>` without whitelist check.
+# sanitize_sql_orderby() is safe; a raw concat into ORDER BY is not.
+_ORDER_BY_INJECT_RE = re.compile(
+    r"ORDER\s+BY\s+['\"]?\s*\.\s*\$(?!this)\w+|"       # "ORDER BY " . $var
+    r"ORDER\s+BY\s+['\"]?\s*\.\s*\$_(?:GET|POST|REQUEST)\s*\[",
+    re.IGNORECASE)
+# Incomplete prepare: prepare() called but no %d/%s placeholders in the SQL
+_INCOMPLETE_PREPARE_RE = re.compile(
+    r"\$wpdb\s*->\s*prepare\s*\(\s*['\"][^'\"]*\$(?!wpdb)[A-Za-z_]\w*",
+    re.IGNORECASE)
+
 
 def find_unsafe_sql_concat_sinks(local_path: str, plugin_dir: str) -> List[SqlSink]:
     """Busca, en TODO el codigo del plugin (no solo la funcion que cito el LLM), lineas que leen
@@ -1878,6 +1889,85 @@ def find_unsafe_sql_concat_sinks(local_path: str, plugin_dir: str) -> List[SqlSi
                 sinks.append(SqlSink(param=sg_m.group(1), function=current_function,
                                      file=os.path.relpath(fp, base), line=i + 1,
                                      snippet=line.strip()[:300]))
+        if scanned >= _MAX_SCAN_FILES:
+            break
+    return sinks
+
+
+def find_order_by_injection_sinks(local_path: str, plugin_dir: str) -> List[SqlSink]:
+    """Detect ORDER BY injection: user-controlled value concatenated into ORDER BY
+    without whitelist check or sanitize_sql_orderby(). Covers a common WordPress
+    vuln class (CVE-2024-* range is full of them in WP_Query / custom REST endpoints)."""
+    base = os.path.join(local_path, plugin_dir) if plugin_dir else local_path
+    sinks: List[SqlSink] = []
+    scanned = 0
+    for dirpath, _dirs, files in os.walk(base):
+        if "node_modules" in dirpath or "/.git" in dirpath:
+            continue
+        for fn in files:
+            if not fn.lower().endswith(".php") or scanned >= _MAX_SCAN_FILES:
+                continue
+            scanned += 1
+            fp = os.path.join(dirpath, fn)
+            try:
+                with open(fp, "r", encoding="utf-8", errors="replace") as f:
+                    lines = f.readlines()
+            except OSError:
+                continue
+            current_function = ""
+            for i, line in enumerate(lines):
+                fn_m = re.search(r"\bfunction\s+([A-Za-z0-9_]+)\s*\(", line)
+                if fn_m:
+                    current_function = fn_m.group(1)
+                if not _ORDER_BY_INJECT_RE.search(line):
+                    continue
+                if re.search(r"sanitize_sql_orderby\s*\(", line, re.I):
+                    continue  # safe usage
+                sg_m = _SUPERGLOBAL_READ_RE.search(line)
+                param = sg_m.group(1) if sg_m else "orderby_input"
+                sinks.append(SqlSink(
+                    param=param, function=current_function,
+                    file=os.path.relpath(fp, base), line=i + 1,
+                    snippet=line.strip()[:300]))
+        if scanned >= _MAX_SCAN_FILES:
+            break
+    return sinks
+
+
+def find_incomplete_prepare_sinks(local_path: str, plugin_dir: str) -> List[SqlSink]:
+    """Detect $wpdb->prepare() called with PHP variables directly interpolated into
+    the SQL string instead of using %d/%s placeholders. This is a known WP anti-pattern
+    that bypasses the purpose of prepare() entirely."""
+    base = os.path.join(local_path, plugin_dir) if plugin_dir else local_path
+    sinks: List[SqlSink] = []
+    scanned = 0
+    for dirpath, _dirs, files in os.walk(base):
+        if "node_modules" in dirpath or "/.git" in dirpath:
+            continue
+        for fn in files:
+            if not fn.lower().endswith(".php") or scanned >= _MAX_SCAN_FILES:
+                continue
+            scanned += 1
+            fp = os.path.join(dirpath, fn)
+            try:
+                with open(fp, "r", encoding="utf-8", errors="replace") as f:
+                    lines = f.readlines()
+            except OSError:
+                continue
+            current_function = ""
+            for i, line in enumerate(lines):
+                fn_m = re.search(r"\bfunction\s+([A-Za-z0-9_]+)\s*\(", line)
+                if fn_m:
+                    current_function = fn_m.group(1)
+                if not _INCOMPLETE_PREPARE_RE.search(line):
+                    continue
+                # Must also read user input somewhere reachable (don't flag DB-internal variables)
+                sg_m = _SUPERGLOBAL_READ_RE.search(line)
+                param = sg_m.group(1) if sg_m else "prepare_arg"
+                sinks.append(SqlSink(
+                    param=param, function=current_function,
+                    file=os.path.relpath(fp, base), line=i + 1,
+                    snippet=line.strip()[:300]))
         if scanned >= _MAX_SCAN_FILES:
             break
     return sinks
