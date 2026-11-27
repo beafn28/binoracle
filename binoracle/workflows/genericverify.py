@@ -2170,7 +2170,8 @@ def _bootstrap_generic_lab(source_dir: str, step, res: WpVerifyResult,
         with open(df_path, "w") as f:
             f.write(dockerfile_body)
         for fname, content in (extra_files or {}).items():
-            fp = os.path.join(ctx_dir, os.path.basename(fname))
+            fp = os.path.join(ctx_dir, fname)
+            os.makedirs(os.path.dirname(fp), exist_ok=True)
             with open(fp, "w") as f:
                 f.write(content)
         # Si extra_files incluye un docker-compose, usarlo en vez del Dockerfile autogenerado.
@@ -2178,7 +2179,7 @@ def _bootstrap_generic_lab(source_dir: str, step, res: WpVerifyResult,
         # multi-servicio (p.ej. Mattermost+PostgreSQL) en extra_files — el compose tiene
         # prioridad porque contiene la infraestructura completa.
         _compose_in_extras = next(
-            (os.path.join(ctx_dir, os.path.basename(n))
+            (os.path.join(ctx_dir, n)
              for n in (extra_files or {}) if os.path.basename(n) in _COMPOSE_NAMES),
             None)
         if _compose_in_extras and os.path.isfile(_compose_in_extras):
