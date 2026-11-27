@@ -1505,7 +1505,16 @@ class _GenericLab:
                 break
             if r.returncode != 0:
                 return r
-            self.sh("network", "create", self.net, timeout=30)
+            net_r = self.sh("network", "create", self.net, timeout=30)
+            if net_r.returncode != 0:
+                combined = (net_r.stdout or "") + (net_r.stderr or "")
+                if "address pools" in combined or "fully subnetted" in combined:
+                    # Prune orphaned networks and retry once
+                    import subprocess as _sp
+                    _sp.run(["docker", "network", "prune", "-f"], capture_output=True, timeout=30)
+                    net_r = self.sh("network", "create", self.net, timeout=30)
+                if net_r.returncode != 0:
+                    return net_r
             self._created.append(("network", self.net))
             self._created.append(("image", self.image))
             r = self.sh("run", "-d", "--platform", "linux/amd64", "--name", self.container,
