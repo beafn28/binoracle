@@ -12622,8 +12622,33 @@ def verify_generic_missing_authorization(
                          f"confirm_string '{confirm_string[:30]}' presente")
                     return res
                 if _status in (200, 201, 204) and not confirm_string:
-                    # No confirm_string but got 200 — record as suspicious
-                    if "unauthorized" not in body.lower() and "forbidden" not in body.lower():
+                    # No confirm_string: use sensitive-data heuristic to verify
+                    _body_low = body.lower()
+                    if "unauthorized" not in _body_low and "forbidden" not in _body_low:
+                        # Sensitive fields that shouldn't appear in unauthed response
+                        _SENSITIVE = (
+                            "\"email\"", "\"password\"", "\"secret\"", "\"token\"",
+                            "\"api_key\"", "\"access_token\"", "\"refresh_token\"",
+                            "\"user_login\"", "\"user_pass\"", "\"private_key\"",
+                            "\"admin\"", "\"nonce\"", "\"auth_cookie\"",
+                            "user_email", "user_pass", "admin_email",
+                        )
+                        _sensitive_hit = next(
+                            (s for s in _SENSITIVE if s in _body_low), None)
+                        if _sensitive_hit and len(body) > 20:
+                            res.verified = True
+                            res.ok = True
+                            res.evidence.update({
+                                "bypass_type": "unauthenticated_sensitive_data",
+                                "method": _m,
+                                "endpoint": endpoint,
+                                "status_code": _status,
+                                "sensitive_field": _sensitive_hit,
+                                "respuesta_cuerpo_recorte": body[:400],
+                            })
+                            step(f"VERIFICADO — missing auth (sensitive data leak): "
+                                 f"campo '{_sensitive_hit}' en respuesta sin auth a {endpoint}")
+                            return res
                         res.evidence.update({
                             "bypass_type": "unauthenticated",
                             "method": _m,
