@@ -43,6 +43,11 @@ _REGEX_PATTERNS: dict = {
          "js_sql_template_literal"),
         (r'(query|execute)\s*\(\s*["\']?\s*(SELECT|INSERT|UPDATE|DELETE).*\+\s*(req\.|body\.|params\.)',
          "js_sql_concat"),
+        # Rust: sqlx/diesel raw SQL with format! macro
+        (r'(sqlx::query|diesel::sql_query|query!)\s*\([^)]*format!\s*\(',
+         "rust_raw_sql_format_macro"),
+        (r'\.execute\s*\(\s*&?format!\s*\([\'"].*\{',
+         "rust_execute_format_string"),
     ],
     "sql-injection": [
         (r'\$wpdb->(query|get_results|get_row|get_var)\s*\(\s*["\']?.*\$_(GET|POST|REQUEST|COOKIE)',
@@ -119,6 +124,12 @@ _REGEX_PATTERNS: dict = {
          "js_exec_concat"),
         (r'(exec|execSync|spawn)\s*\(\s*`[^`]*\$\{(req\.|body\.|params\.)',
          "js_exec_template"),
+        # Rust: std::process::Command with user-controlled input
+        (r'Command::new\s*\([^)]*(?:request|query|param|arg)',
+         "rust_command_new_user_input"),
+        # Kotlin/JVM: Runtime.exec with user input
+        (r'Runtime\.getRuntime\(\)\.exec\s*\([^)]*(?:request|param|input)',
+         "kotlin_runtime_exec_user_input"),
     ],
     "remote-code-execution": [
         (r'(exec|shell_exec|system|passthru|proc_open)\s*\(.*\$_(GET|POST|REQUEST)',
@@ -364,22 +375,6 @@ _REGEX_PATTERNS: dict = {
         # Node.js / Go: HTTP/1.1 server without strict CL.TE handling
         (r'(http\.createServer|net\.Listen)\s*\(.*\n.*(?!keepAliveTimeout)',
          "js_go_server_no_ka_timeout"),
-    ],
-    "sqli": [
-        # Rust: raw SQL format! macro with user input (sqlx, diesel)
-        (r'(sqlx::query|diesel::sql_query|query!)\s*\([^)]*format!\s*\(',
-         "rust_raw_sql_format_macro"),
-        # Rust: execute() with format string (string interpolation in SQL)
-        (r'\.execute\s*\(\s*&?format!\s*\([\'"].*\{',
-         "rust_execute_format_string"),
-    ],
-    "command-injection": [
-        # Rust: std::process::Command with user input
-        (r'Command::new\s*\([^)]*(?:request|query|param|arg)',
-         "rust_command_new_user_input"),
-        # Kotlin/JVM: Runtime.exec with user input
-        (r'Runtime\.getRuntime\(\)\.exec\s*\([^)]*(?:request|param|input)',
-         "kotlin_runtime_exec_user_input"),
     ],
 }
 
