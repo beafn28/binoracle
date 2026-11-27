@@ -1684,6 +1684,39 @@ def _static_vuln_precheck(local_path: str, plugin_dir: str, vuln_class: str,
                            f"127.0.0.1 esté bloqueado"),
                 "confidence": 0.70,
             }
+        # Positive signal: wp_remote_get/post/request with user-controlled URL (no guard)
+        _SSRF_SINK_RE = re.compile(
+            r'(?:wp_remote_get|wp_remote_post|wp_remote_request|curl_exec'
+            r'|file_get_contents|http_response_class)\s*\(\s*'
+            r'\$_(?:GET|POST|REQUEST|COOKIE)'
+            r'|\bwp_remote_get\s*\(\s*\$(?:url|remote|fetch|source|link|href|uri)\b'
+            r'|\bwp_remote_post\s*\(\s*\$(?:url|remote|fetch|source|link|href|uri)\b',
+            re.IGNORECASE,
+        )
+        _ssrf_sink_hits: list[str] = []
+        try:
+            for _r2_ssrf, _d2_ssrf, _f2_ssrf in _os_ip.walk(local_path):
+                _d2_ssrf[:] = [d for d in _d2_ssrf if d not in
+                               (".git", "node_modules", "dist", "__pycache__")]
+                for _fn2_ssrf in _f2_ssrf:
+                    if not any(_fn2_ssrf.endswith(e) for e in _exts_ssrf):
+                        continue
+                    _fp2_ssrf = _os_ip.path.join(_r2_ssrf, _fn2_ssrf)
+                    try:
+                        _txt2_ssrf = open(_fp2_ssrf, encoding="utf-8", errors="ignore").read(100_000)
+                        if _SSRF_SINK_RE.search(_txt2_ssrf):
+                            _ssrf_sink_hits.append(_os_ip.path.relpath(_fp2_ssrf, local_path))
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        if _ssrf_sink_hits:
+            return {
+                "ok": True,
+                "reason": (f"pre-check SSRF positivo: wp_remote_get/post con URL de usuario "
+                           f"detectada en {', '.join(_ssrf_sink_hits[:2])} — SSRF probable"),
+                "confidence": 0.0,
+            }
 
     # --- Check 11: SSTI — detect template render with unescaped user input ---
     # Jinja2: render_template_string(user_input), Twig: twig.render(user_input),
