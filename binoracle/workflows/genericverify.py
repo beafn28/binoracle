@@ -2302,7 +2302,7 @@ def _bootstrap_generic_lab(source_dir: str, step, res: WpVerifyResult,
 
         for cmd in (setup_commands or []):
             step(f"ejecutando paso de configuracion real dentro del contenedor: {cmd!r}...")
-            r = lab.sh("exec", container, "sh", "-c", cmd, timeout=240)
+            r = lab.sh("exec", container, "sh", "-c", cmd, timeout=480)
             _cmd_out = (r.stdout or "") + (r.stderr or "")
             _cmd_failed = r.returncode != 0
             # Tolerate nonzero exit for commands that emit warnings but complete their task:
@@ -6851,6 +6851,7 @@ def run_request_chain(
     dockerfile_body: str = "",
     extra_files: Optional[dict] = None,
     pkg_version: str = "",
+    setup_commands: Optional[List[str]] = None,
 ) -> WpVerifyResult:
     """Execute a multi-step HTTP request chain in a single Docker lab.
 
@@ -6895,7 +6896,8 @@ def run_request_chain(
     boot = _bootstrap_generic_lab(source_dir, _step, res, budget_s,
                                    dockerfile_body=dockerfile_body,
                                    extra_files=extra_files,
-                                   pkg_version=pkg_version)
+                                   pkg_version=pkg_version,
+                                   setup_commands=setup_commands)
     if boot is None:
         return res
     lab, base_url, container = boot

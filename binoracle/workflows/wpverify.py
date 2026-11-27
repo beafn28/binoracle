@@ -1372,9 +1372,20 @@ class _Lab:
         return p or None
 
     def wp_cli(self, *args, timeout=120.0) -> subprocess.CompletedProcess:
-        return self.sh("run", "--rm", "--network", self.net, "--platform", "linux/amd64",
-                       "-v", f"{self.vol}:/var/www/html", *self._db_env, "--user", "33:33",
-                       _WPCLI_IMAGE, "wp", "--path=/var/www/html", *args, timeout=timeout)
+        r = self.sh("run", "--rm", "--network", self.net, "--platform", "linux/amd64",
+                    "-v", f"{self.vol}:/var/www/html", *self._db_env, "--user", "33:33",
+                    _WPCLI_IMAGE, "wp", "--path=/var/www/html", *args, timeout=timeout)
+        # Docker garbage collection can delete the network between lab setup and wp-cli use.
+        # Recreate it and retry once when that happens.
+        if r.returncode != 0 and "network" in (r.stderr or "").lower() and "not found" in (r.stderr or "").lower():
+            try:
+                self.sh("network", "create", self.net, timeout=30)
+            except Exception:
+                pass
+            r = self.sh("run", "--rm", "--network", self.net, "--platform", "linux/amd64",
+                        "-v", f"{self.vol}:/var/www/html", *self._db_env, "--user", "33:33",
+                        _WPCLI_IMAGE, "wp", "--path=/var/www/html", *args, timeout=timeout)
+        return r
 
     def exec_mysql(self, query: str, db_pw: str, timeout: float = 20.0) -> str | None:
         """Ejecuta una query SQL directamente en el contenedor MySQL del lab via `docker exec`.

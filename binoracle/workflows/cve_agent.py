@@ -14835,9 +14835,10 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                   notes.get("request_chain") and
                   isinstance(notes.get("request_chain"), list) and
                   # CMS with dedicated verifiers handle request_chain themselves — skip generic chain
+                  # (mattermost has no dedicated verifier — keep it in the generic request_chain path)
                   not any(cms in (notes.get("docker_image") or "").lower()
                           for cms in ("directus", "ghost", "strapi", "payload", "wagtail",
-                                      "mattermost", "gitea", "gitlab", "nextcloud")) and
+                                      "gitea", "gitlab", "nextcloud")) and
                   not any(cms in (notes.get("cms") or "").lower()
                           for cms in ("directus", "ghost", "strapi", "payload", "wagtail"))):
                 from .genericverify import run_request_chain
@@ -14854,6 +14855,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     dockerfile_body=_notes_dockerfile(notes),
                     extra_files=notes.get("extra_files") or None,
                     pkg_version=inv.llm_notes.get("vulnerable_version") or "",
+                    setup_commands=notes.get("setup_cmds") or None,
                 )
                 _apply_wpverify_result(inv, wr, es, llm)
             # "cualquier entorno": bypass de autorizacion via CABECERA HTTP (p.ej.
@@ -15281,7 +15283,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                   and notes.get("endpoint")
                   # Skip CMS-specific projects that have dedicated verifiers later in the chain
                   and not any(cms in (notes.get("docker_image") or "").lower()
-                              for cms in ("directus", "ghost", "strapi", "mattermost"))
+                              for cms in ("directus", "ghost", "strapi"))
                   and not any(cms in (notes.get("cms") or "").lower()
                               for cms in ("directus", "ghost", "strapi"))
                   and not any(cms in (notes.get("target_binary") or "").lower()
@@ -15367,7 +15369,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                       and notes.get("endpoint")
                       # Skip CMS-specific images that have dedicated verifiers later in the chain
                       and not any(cms in (notes.get("docker_image") or "").lower()
-                                  for cms in ("ghost", "directus", "mattermost", "zitadel",
+                                  for cms in ("ghost", "directus", "zitadel",
                                               "matomo", "concretecms", "concrete5",
                                               "strapi", "payload", "wagtail"))):
                     # Scaffolded lab (no detectable framework signals) — route to right verifier.
