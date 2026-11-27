@@ -1983,6 +1983,31 @@ def _scan_web_routes(source_dir: str) -> list:
                 content):
             routes.append((m_hon.group(2), {}, m_hon.group(1).upper()))
 
+    # --- PHP Laravel / Slim / Craft CMS: scan routes/*.php and index.php ---
+    _php_route_files = (
+        _glob.glob(os.path.join(source_dir, "routes", "*.php"), recursive=False) +
+        _glob.glob(os.path.join(source_dir, "**", "web.php"), recursive=True) +
+        _glob.glob(os.path.join(source_dir, "**", "api.php"), recursive=True) +
+        _glob.glob(os.path.join(source_dir, "index.php"), recursive=False)
+    )
+    for php_file in _php_route_files:
+        try:
+            content = open(php_file, encoding="utf-8", errors="replace").read()
+        except Exception:
+            continue
+        # Laravel: Route::get('/path', ...) / Route::post('/path', ...)
+        for m_lv in re.finditer(
+                r'Route::(get|post|put|patch|delete|any)\s*\(\s*["\']([^"\']+)["\']',
+                content, re.IGNORECASE):
+            meth = m_lv.group(1).upper()
+            ep = m_lv.group(2)
+            routes.append((ep, {}, meth if meth != "ANY" else "GET"))
+        # Slim: $app->get('/path', ...) / $app->post('/path', ...)
+        for m_slim in re.finditer(
+                r'\$app->(get|post|put|patch|delete)\s*\(\s*["\']([^"\']+)["\']',
+                content, re.IGNORECASE):
+            routes.append((m_slim.group(2), {}, m_slim.group(1).upper()))
+
     # Deduplicate while preserving order
     seen: set = set()
     uniq = []
