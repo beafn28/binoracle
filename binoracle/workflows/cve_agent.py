@@ -2862,6 +2862,56 @@ def _static_vuln_precheck(local_path: str, plugin_dir: str, vuln_class: str,
         except Exception:
             pass
 
+    # --- Check 28: CSRF — missing nonce/check_ajax_referer in AJAX handler ---
+    if vuln_class in ("csrf", "cross-site-request-forgery", "xsrf") and local_path and plugin_dir:
+        import os as _os_csrf
+        _AJAX_HANDLER_RE = re.compile(
+            r"add_action\s*\(\s*['\"]wp_ajax(?:_nopriv)?_([a-zA-Z0-9_]+)['\"]",
+        )
+        _NONCE_CHECK_RE = re.compile(
+            r"check_ajax_referer|wp_verify_nonce|check_admin_referer",
+            re.IGNORECASE,
+        )
+        _csrf_handlers_no_nonce: list[str] = []
+        _csrf_handlers_with_nonce: list[str] = []
+        try:
+            for _r28, _d28, _f28 in _os_csrf.walk(
+                _os_csrf.path.join(local_path, plugin_dir) if plugin_dir else local_path
+            ):
+                _d28[:] = [d for d in _d28
+                           if d not in (".git", "node_modules", "__pycache__", "vendor")]
+                for _fn28 in _f28:
+                    if not _fn28.endswith(".php"):
+                        continue
+                    _fp28 = _os_csrf.path.join(_r28, _fn28)
+                    try:
+                        _txt28 = open(_fp28, encoding="utf-8", errors="ignore").read(200_000)
+                    except Exception:
+                        continue
+                    _hms = _AJAX_HANDLER_RE.findall(_txt28)
+                    if not _hms:
+                        continue
+                    if _NONCE_CHECK_RE.search(_txt28):
+                        _csrf_handlers_with_nonce.extend(_hms[:2])
+                    else:
+                        _csrf_handlers_no_nonce.extend(_hms[:2])
+        except Exception:
+            pass
+        if _csrf_handlers_no_nonce and not _csrf_handlers_with_nonce:
+            return {
+                "ok": True,
+                "reason": (f"Check 28 — handlers AJAX sin nonce: "
+                           f"{', '.join(_csrf_handlers_no_nonce[:2])} — CSRF probable"),
+                "confidence": 0.0,
+            }
+        if _csrf_handlers_with_nonce and not _csrf_handlers_no_nonce:
+            return {
+                "ok": False,
+                "reason": (f"Check 28 — todos los handlers AJAX tienen check_ajax_referer/wp_verify_nonce "
+                           f"({', '.join(_csrf_handlers_with_nonce[:2])}) — CSRF no probable"),
+                "confidence": 0.65,
+            }
+
     return {"ok": True, "reason": "pre-check OK", "confidence": 1.0}
 
 
