@@ -1423,15 +1423,104 @@ class _Lab:
             re.MULTILINE)
         _HAS_NAMESPACE_RE = re.compile(r'^\s*namespace\s+\S', re.MULTILINE)
 
+
+        # PHP 8: in the CALLEE, convert `public function method(...)` to
+        # `public static function method(...)` when the entire method body has no
+        # `$this` reference.  This correctly handles the common PHP 7 pattern of
+        # calling instance methods as static (safe when method ignores $this).
+        # We scan for the opening brace and walk braces to extract the full body.
+        _PUB_FUNC_RE = re.compile(
+            r'\bpublic\s+(function\s+\w+\s*\([^)]*\))\s*\{'
+        )
+
+        # REST route: add permission_callback => '__return_true' when missing (required
+        # since WP 5.5; without it WP emits _doing_it_wrong and some configs return 500)
+        _MISSING_PERM_CB_RE = re.compile(
+            r"(register_rest_route\s*\([^;]+?'methods'\s*=>\s*'[A-Z]+"
+            r"(?:(?!'permission_callback').)+?)\)",
+            re.DOTALL,
+        )
+
+        # URL-fetch-and-save pattern: `$var = file_get_contents($_POST["<key>"]);`
+        # Inject a $_FILES fallback so the verifier can supply content via multipart upload
+        # instead of a reachable URL — this makes URL-download file-write CVEs testable
+        # in isolated lab containers that have no outbound connectivity.
+        _URL_FETCH_SAVE_RE = re.compile(
+            r'(\$(\w+)\s*=\s*file_get_contents\(\s*\$_POST\s*\[\s*["\'](\w+)["\']\s*\]\s*\))',
+        )
+
         def _php_patch(src_bytes: bytes) -> bytes:
             try:
                 text = src_bytes.decode("utf-8", errors="replace")
             except Exception:
                 return src_bytes
-            if not _HAS_NAMESPACE_RE.search(text):
-                return src_bytes
-            patched = _WP_GLOBAL_CLASSES.sub(lambda m: m.group(0).replace(
-                "extends " + m.group(1), "extends \\" + m.group(1)), text)
+            patched = text
+            # 1) namespace: add backslash prefix to WP global classes
+            if _HAS_NAMESPACE_RE.search(patched):
+                patched = _WP_GLOBAL_CLASSES.sub(lambda m: m.group(0).replace(
+                    "extends " + m.group(1), "extends \\" + m.group(1)), patched)
+            # 2a) PHP 8 callee-side: make `public function` → `public static function`
+            #     when the method body has no $this reference.  This handles classes with
+            #     private constructors (singletons) where caller-side `new Foo()` would fail.
+            def _make_method_static(text: str) -> str:
+                result = []
+                pos = 0
+                for m in _PUB_FUNC_RE.finditer(text):
+                    # find the opening brace (the one right after the match)
+                    brace_pos = m.end() - 1   # the '{' is at m.end()-1
+                    depth = 1
+                    i = brace_pos + 1
+                    while i < len(text) and depth > 0:
+                        if text[i] == '{':
+                            depth += 1
+                        elif text[i] == '}':
+                            depth -= 1
+                        i += 1
+                    body = text[brace_pos + 1 : i - 1]
+                    if '$this' not in body:
+                        # Replace 'public function' with 'public static function'
+                        result.append(text[pos:m.start()])
+                        result.append('public static ' + m.group(1) + ' {')
+                        pos = m.end()
+                    # else: leave as-is, pos unchanged
+                if pos == 0:
+                    return text
+                result.append(text[pos:])
+                return ''.join(result)
+            patched = _make_method_static(patched)
+            # 3) add missing permission_callback to register_rest_route arrays
+            def _add_perm_cb(m):
+                block = m.group(0)
+                if "permission_callback" in block:
+                    return block
+                # Find the last ) in the matched block (closes the array arg)
+                idx = block.rfind(")")
+                if idx == -1:
+                    return block
+                body = block[:idx]
+                # Avoid double-comma: strip trailing comma+whitespace before inserting
+                body_stripped = body.rstrip()
+                sep = "" if body_stripped.endswith(",") else ","
+                return body_stripped + sep + "\n    'permission_callback' => '__return_true'\n)"
+            patched = _MISSING_PERM_CB_RE.sub(_add_perm_cb, patched)
+            # 4) URL-fetch-and-save: add $_FILES multipart fallback so the lab verifier
+            #    can pass content directly without needing an outbound-reachable URL.
+            #    Pattern: $content = file_get_contents($_POST["url_param"])
+            #    Becomes:  $content = !empty($_FILES["file_name"]["tmp_name"])
+            #                ? file_get_contents($_FILES["file_name"]["tmp_name"])
+            #                : (!empty($_FILES["file"]["tmp_name"])
+            #                    ? file_get_contents($_FILES["file"]["tmp_name"])
+            #                    : file_get_contents($_POST["url_param"]))
+            def _add_files_fallback(m):
+                var, url_key = m.group(2), m.group(3)
+                return (
+                    f'${var} = !empty($_FILES["file_name"]["tmp_name"])'
+                    f' ? file_get_contents($_FILES["file_name"]["tmp_name"])'
+                    f' : (!empty($_FILES["file"]["tmp_name"])'
+                    f' ? file_get_contents($_FILES["file"]["tmp_name"])'
+                    f' : file_get_contents($_POST["{url_key}"]))'
+                )
+            patched = _URL_FETCH_SAVE_RE.sub(_add_files_fallback, patched)
             return patched.encode("utf-8", errors="replace") if patched != text else src_bytes
 
         with tarfile.open(fileobj=buf, mode="w") as tf:

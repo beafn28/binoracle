@@ -17681,6 +17681,28 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     keep_lab_on_failure=keep_lab_on_failure,
                     confirm_string=_url_cs, json_body=bool(notes.get("json_body")))
                 _apply_wpverify_result(inv, wr, es, llm)
+                # Si la sonda no-auth no confirmo con evidencia dura, intentar SSRF→file-write→RCE
+                # (el plugin fetcha una URL del atacante y escribe el contenido al filesystem).
+                if not wr.verified:
+                    from .wpverify import _pick_param, _URL_HINTS, _DEST_PATH_HINTS
+                    _params_fw2 = notes.get("parameters") or []
+                    _url_p_fw2 = _pick_param(_params_fw2, _URL_HINTS)
+                    _dest_p_fw2 = _pick_param(_params_fw2, _DEST_PATH_HINTS)
+                    if _url_p_fw2 and _dest_p_fw2:
+                        from .wpverify import verify_wordpress_fetch_and_write_rce
+                        step(("sonda no-auth sin confirmacion dura — intentando SSRF→file-write→RCE "
+                             "(servidor HTTP interno + URL al endpoint)..." if es else
+                             "no-auth probe without hard confirmation — trying SSRF→file-write→RCE "
+                             "(internal HTTP server + URL to endpoint)..."))
+                        wr_fw2 = verify_wordpress_fetch_and_write_rce(
+                            fr.local_path, plugin_dir, notes.get("endpoint"),
+                            notes.get("http_method") or "POST", _params_fw2,
+                            url_param_hint=_url_p_fw2, dest_param_hint=_dest_p_fw2,
+                            on_step=step, budget_s=min(budget_s, 300.0),
+                            companion_plugins=companion_plugins)
+                        if wr_fw2.verified:
+                            wr = wr_fw2
+                            _apply_wpverify_result(inv, wr, es, llm)
             # NOTA: 'if' (no 'elif') para que corra en el mismo pass que el auto-detect de arriba.
             if (not is_drupal and not is_joomla and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class in ("file-upload", "arbitrary-file-upload") and notes.get("endpoint")
