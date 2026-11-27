@@ -2189,6 +2189,43 @@ def _run_investigate_batch_and_report(cve_ids, config, parallel: int, budget_s: 
 
     colorlog.info(f"lanzando {len(cve_ids)} investigaciones con paralelismo {parallel}...")
 
+    # Load analyst hints from existing JSON reports — preserves analyst_endpoint_lock,
+    # vuln_class, endpoint, parameters, dockerfile_body, extra_files, confirm_string, etc.
+    # across re-runs. Without this, investigate_cves_batch ignores the analyst's work and
+    # the LLM re-classifies from scratch (confirmed bug: sqli overwrites ssti for Jinja2 CVEs).
+    _ANALYST_PASSTHROUGH_KEYS = {
+        "analyst_endpoint_lock", "endpoint", "parameters", "http_method",
+        "confirm_string", "payload", "auth_required", "vuln_class",
+        "dockerfile_body", "extra_files", "docker_image", "setup_commands",
+        "affected_version", "patched_version", "pkg_version",
+        "companion_plugins", "sqli_param", "url_param", "ssrf_param", "path_param",
+        "url_suffix", "custom_headers", "setup_cmds", "budget_s",
+        "bypass_header", "bypass_value", "bypass_url", "poc_cmd",
+    }
+    hints_by_cve: dict = {}
+    import json as _j, os as _os_b
+    for _cve_id in cve_ids:
+        _bp = out_dir / f"{_cve_id}.json"
+        if not _bp.exists():
+            continue
+        try:
+            _stored_notes = _j.loads(_bp.read_text(encoding="utf-8")).get("llm_notes") or {}
+            if not _stored_notes.get("analyst_endpoint_lock"):
+                continue
+            _hints = {}
+            for _k, _v in _stored_notes.items():
+                if _k not in _ANALYST_PASSTHROUGH_KEYS or _v is None:
+                    continue
+                # `parameters` as a LIST means grep-discovered param names (unreliable).
+                # Only pass analyst-set parameters dicts — those have actual values to send.
+                if _k == "parameters" and not isinstance(_v, dict):
+                    continue
+                _hints[_k] = _v
+            if _hints:
+                hints_by_cve[_cve_id] = _hints
+        except Exception:
+            pass
+
     def on_event(ev):
         cve_id = ev["cve_id"]
         if ev["type"] == "start":
@@ -2203,7 +2240,7 @@ def _run_investigate_batch_and_report(cve_ids, config, parallel: int, budget_s: 
 
     items = investigate_cves_batch(
         cve_ids, config=config, lang=config.lang, budget_s=budget_s, parallel=parallel,
-        on_event=on_event, use_cache=use_cache)
+        on_event=on_event, use_cache=use_cache, hints_by_cve=hints_by_cve or None)
 
     for it in items:
         if it.investigation is None:

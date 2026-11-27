@@ -10075,7 +10075,9 @@ def _scaffold_pip_lab(target: str, version: str, vuln_class: str,
     if _override:
         notes["endpoint"] = _override[0]
         notes["parameters"] = [_override[1]]
-    elif not notes.get("poc_raw_http_lock") and not notes.get("poc_llm_endpoint_lock"):
+    elif (not notes.get("poc_raw_http_lock")
+          and not notes.get("poc_llm_endpoint_lock")
+          and not notes.get("analyst_endpoint_lock")):
         notes["endpoint"] = f"/{_lab_ep}"
         notes["parameters"] = [_lab_param]
 
@@ -13954,6 +13956,13 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         det_no_llm = _deterministic_web_hints_from_source(
                             fr.local_path, inv.source_grounding["found"])
                         if det_no_llm:
+                            # Never overwrite analyst-set parameters (dict) with grep-discovered
+                            # param names (list) — the analyst's concrete payload values win.
+                            if (notes.get("analyst_endpoint_lock")
+                                    and isinstance(notes.get("parameters"), dict)
+                                    and "parameters" in det_no_llm):
+                                det_no_llm = {k: v for k, v in det_no_llm.items()
+                                              if k != "parameters"}
                             notes = {**notes, **det_no_llm}
                             inv.llm_notes.update(det_no_llm)
                             step((f"grep deterministico (sin LLM): endpoint="

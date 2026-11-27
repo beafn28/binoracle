@@ -2875,7 +2875,10 @@ def verify_generic_path_traversal(
                         target_url = base_url + cand_ep + payload_value + url_suffix + _qs
                         # requests.request() normaliza %2e a '.' ANTES de enviar -- exactamente
                         # lo que rompe bypasses como '.%2e/' (CVE-2021-41773).
-                        _has_pct_dot = "%2e" in payload_value.lower() or "%2f" in payload_value.lower()
+                        # También check cand_ep: si el analista bloqueó el endpoint con %2F/%2e
+                        # incrustados (endpoint=path traversal completo), también hay que usar raw.
+                        _has_pct_dot = ("%2e" in payload_value.lower() or "%2f" in payload_value.lower()
+                                        or "%2e" in cand_ep.lower() or "%2f" in cand_ep.lower())
                         if _has_pct_dot and cand_meth == "GET":
                             resp = _http_request_raw_path(cand_meth, target_url, timeout=15)
                         else:

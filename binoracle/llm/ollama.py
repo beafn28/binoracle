@@ -10,7 +10,8 @@ from typing import List, Optional
 from .base import LLMBackend, LLMUnavailable, Message
 
 # Max seconds between tokens before we consider Ollama stuck.
-_PER_TOKEN_TIMEOUT = 45
+# 90s to handle cold model loads (Ollama needs 60-90s to load a 7B model from disk on cold start).
+_PER_TOKEN_TIMEOUT = 90
 # Hard wall-clock cap per chat() call regardless of token pace.
 _DEFAULT_WALL_CAP = 300
 

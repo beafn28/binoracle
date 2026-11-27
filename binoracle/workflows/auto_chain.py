@@ -1973,10 +1973,21 @@ def _run_web_stage(cve_id: str, cve_info, llm_notes: dict,
                 # Deterministic wrappers define canonical endpoints — always set them
                 # (overrides any stale endpoint from a previous LLM hypothesis)
                 if wrapper_meta.get("endpoint"):
-                    llm_notes["endpoint"] = wrapper_meta["endpoint"]
+                    # Only override endpoint if analyst hasn't locked it
+                    if not llm_notes.get("analyst_endpoint_lock"):
+                        llm_notes["endpoint"] = wrapper_meta["endpoint"]
                 if wrapper_meta.get("param"):
                     extra = wrapper_meta.get("extra_params", {})
-                    llm_notes["parameters"] = {wrapper_meta["param"]: "", **extra}
+                    # Only set default parameters if analyst hasn't provided payload values
+                    _analyst_params = llm_notes.get("parameters") or {}
+                    _param_key = wrapper_meta["param"]
+                    _has_payload = bool(_analyst_params.get(_param_key))
+                    if not _has_payload:
+                        llm_notes["parameters"] = {_param_key: "", **extra}
+                    elif extra:
+                        # Merge extra params but keep analyst's payload
+                        for _k, _v in extra.items():
+                            _analyst_params.setdefault(_k, _v)
                 elif wrapper_meta.get("extra_params") and not llm_notes.get("parameters"):
                     llm_notes["parameters"] = wrapper_meta["extra_params"]
                 if wrapper_meta.get("path_traversal_prefix"):
