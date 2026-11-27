@@ -5299,12 +5299,42 @@ def _apply_wpverify_result(inv, wr, es: bool, llm=None) -> None:
                 inv.standalone_poc_filename = poc_filename(getattr(inv, "cve_id", "CVE-UNKNOWN"))
         except Exception:
             pass
-        # 2) Record version matrix seed for follow-up range discovery
+        # 2) Version range discovery using find_vulnerable_range.
+        # Runs immediately after first verification — requires a re-verify function that
+        # downloads and boots each candidate version. We build a lightweight verify_fn from
+        # the existing static pre-check (no Docker spin-up per version — fast enough).
         try:
             _slug = (getattr(inv, "plugin_slug", None) or getattr(inv, "slug", None) or "")
             _ver = (getattr(inv, "plugin_version", None) or getattr(inv, "version", None) or "")
             if _slug and _ver:
                 inv.version_matrix_seed = {"slug": _slug, "confirmed_version": _ver}
+                # Light verify_fn: download the version and run static precheck only (no Docker)
+                from .version_matrix import find_vulnerable_range
+                from .websource import find_unsafe_sql_concat_sinks
+                import tempfile as _tmp
+
+                def _static_verify_fn(candidate_ver: str) -> bool:
+                    _dest = _tmp.mkdtemp(prefix="vm_")
+                    try:
+                        from .websource import fetch_wordpress_plugin
+                        _fr2 = fetch_wordpress_plugin(_slug, version=candidate_ver, dest_dir=_dest)
+                        if not _fr2.ok or not _fr2.local_path:
+                            return False
+                        _sinks2 = find_unsafe_sql_concat_sinks(_fr2.local_path, _slug)
+                        return len(_sinks2) > 0
+                    except Exception:
+                        return False
+                    finally:
+                        import shutil as _sh
+                        try:
+                            _sh.rmtree(_dest, ignore_errors=True)
+                        except Exception:
+                            pass
+
+                _vm = find_vulnerable_range(
+                    _slug, _ver, _static_verify_fn, max_versions=4)
+                if _vm.get("range_string"):
+                    inv.version_matrix = _vm
         except Exception:
             pass
         # 3) Copy post-exploit escalation data from verifier evidence (run inside the lab)
