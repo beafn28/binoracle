@@ -267,6 +267,22 @@ def analyze_patch_diff(raw_diff: str) -> dict:
     elif any("parameterized" in l.lower() or "prepared" in l.lower()
              for l in result["added_checks"]):
         result["fix_type"] = "parameterized_query"
+    elif any(any(kw in l for kw in ("canonicalPath", "realpath", "normalize", "getCanonicalPath",
+                                     "ZipEntry", "getZipSlip", "isWithinDirectory"))
+             for l in added_lines):
+        result["fix_type"] = "path_canonicalization"
+    elif any(any(kw in l for kw in ("rateLimit", "rate_limit", "throttle", "RateLimiter",
+                                     "express-rate-limit", "flask_limiter"))
+             for l in added_lines):
+        result["fix_type"] = "rate_limiting"
+    elif any(any(kw in l for kw in ("cors(", "Access-Control-Allow-Origin", "CorsConfiguration",
+                                     "AllowedOrigins", "cors.New"))
+             for l in added_lines):
+        result["fix_type"] = "cors_fix"
+    elif any(any(kw in l for kw in ("Joi.", "z.object(", "yup.", "ajv.", "validate(",
+                                     "schema.validate", "validator."))
+             for l in added_lines):
+        result["fix_type"] = "schema_validation"
 
     # Bypass hints from removed code
     for line in result["removed_code"]:
@@ -338,6 +354,30 @@ def analyze_patch_diff(raw_diff: str) -> dict:
         result["bypass_hints"].append(
             "Fix appears partial (single file, multiple sink patterns) — look for alternate "
             "code paths in other files that reach the same sink without the new check"
+        )
+    if _fix_type == "path_canonicalization":
+        result["bypass_hints"].append(
+            "Fix adds path canonicalization for zip entries — check if canonicalization is "
+            "applied before or after creating the destination path; double-dot encoded as ..%2f "
+            "may survive one pass; also check Windows path separators (backslash)"
+        )
+    elif _fix_type == "rate_limiting":
+        result["bypass_hints"].append(
+            "Fix adds rate limiting — check if rate limit applies per-IP (bypassable with "
+            "X-Forwarded-For spoofing), per-user (bypassable with new account creation), "
+            "or uses Redis (check if bypass via IP rotation still works)"
+        )
+    elif _fix_type == "cors_fix":
+        result["bypass_hints"].append(
+            "Fix adds CORS restriction — check if null origin is allowed (file://, redirects), "
+            "subdomain wildcard (*.example.com allows any subdomain), or if OPTIONS preflight "
+            "is handled but actual request is not gated"
+        )
+    elif _fix_type == "schema_validation":
+        result["bypass_hints"].append(
+            "Fix adds schema validation (Joi/Zod/Yup) — check if validation is bypassed by "
+            "sending extra properties (additionalProperties:true), type coercion "
+            "(string '1' instead of int 1), or via nested objects that bypass flat validators"
         )
     # Sanitization bypass hints
     for line in result.get("added_checks", []):
