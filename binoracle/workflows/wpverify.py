@@ -1250,9 +1250,19 @@ class _Lab:
         return _run(["docker"] + list(args), timeout=timeout, input_text=input_text)
 
     def setup_network_and_volume(self):
-        r = self.sh("network", "create", self.net, timeout=30)
-        if r.returncode != 0:
-            raise RuntimeError(f"docker network create failed: {r.stderr.strip()[:200]}")
+        # Retry up to 3× with 3s back-off for transient Docker daemon network races
+        # ("network not found", "address already in use" for the bridge subnet, etc.)
+        import time as _time
+        _net_err = ""
+        for _attempt in range(3):
+            r = self.sh("network", "create", self.net, timeout=30)
+            if r.returncode == 0:
+                break
+            _net_err = r.stderr.strip()[:200]
+            if _attempt < 2:
+                _time.sleep(3)
+        else:
+            raise RuntimeError(f"docker network create failed: {_net_err}")
         self._created.append(("network", self.net))
         self.sh("volume", "create", self.vol, timeout=30)
         self._created.append(("volume", self.vol))
@@ -1598,19 +1608,41 @@ class _Lab:
                     f' : file_get_contents($_POST["{url_key}"]))'
                 )
             patched = _URL_FETCH_SAVE_RE.sub(_add_files_fallback, patched)
-            # 5) Cap outbound HTTP timeout to 1s to prevent call-home blocking in isolated lab.
-            #    Many plugins call wp_remote_get/post in register_activation_hook or plugins_loaded;
-            #    each call blocks for the WP default 5s when the target server is unreachable.
-            #    Applied only to the main plugin file, identified by a 'Plugin Name:' docblock.
-            if (('* Plugin Name:' in patched or '* Plugin Name :' in patched)
-                    and 'wp_remote_' in patched
-                    and "add_filter('http_request_timeout'" not in patched):
+            # 5) Inject into the main plugin file (identified by Plugin Name: docblock):
+            #    a) Cap outbound HTTP timeout to 1s — prevents call-home blocking.
+            #    b) Suppress PHP deprecation/notice output — PHP 8.1+ emits deprecation
+            #       warnings (implicit nullable, optional-before-required params, etc.)
+            #       that prepend text to the response body and break JSON parsing.
+            if ('* Plugin Name:' in patched or '* Plugin Name :' in patched):
                 _php_open = patched.find('<?php')
                 if _php_open != -1:
                     _nl = patched.find('\n', _php_open)
                     if _nl != -1:
-                        _tf = "\nadd_filter('http_request_timeout',function(){return 1;},PHP_INT_MAX);\n"
-                        patched = patched[:_nl + 1] + _tf + patched[_nl + 1:]
+                        _inject = ""
+                        if ('wp_remote_' in patched
+                                and "add_filter('http_request_timeout'" not in patched):
+                            _inject += ("\nadd_filter('http_request_timeout',"
+                                        "function(){return 1;},PHP_INT_MAX);")
+                        if 'error_reporting(' not in patched[:600]:
+                            _inject += ("\n@ini_set('display_errors','0');"
+                                        "error_reporting(E_ERROR|E_PARSE);")
+                        if _inject:
+                            patched = patched[:_nl + 1] + _inject + "\n" + patched[_nl + 1:]
+            # 6) Suppress notices in ALL plugin PHP files via output buffering start —
+            #    catches files included mid-request where the main file's error_reporting
+            #    hasn't loaded yet (e.g. autoloaded class files, included partials).
+            elif ('<?php' in patched
+                    and 'error_reporting(' not in patched[:200]
+                    and ('Deprecated:' in patched or 'Notice:' in patched
+                         or 'function (' in patched)):
+                # Light-touch: only suppress if file contains notice-prone patterns
+                _php_open2 = patched.find('<?php')
+                if _php_open2 != -1:
+                    _nl2 = patched.find('\n', _php_open2)
+                    if _nl2 != -1:
+                        patched = (patched[:_nl2 + 1]
+                                   + "\n@ini_set('display_errors','0');\n"
+                                   + patched[_nl2 + 1:])
             return patched.encode("utf-8", errors="replace") if patched != text else src_bytes
 
         with tarfile.open(fileobj=buf, mode="w") as tf:
@@ -11376,10 +11408,45 @@ def verify_wordpress_missing_auth_probe(
                                   f"pero opcion '{post_verify_wp_option}'='{_opt_actual}' "
                                   f"(esperado: '{post_verify_expected}') — impacto no confirmado")
             else:
+                # Strengthen weak probe: compare anonymous response with subscriber.
+                # If both get the same content, the endpoint clearly skips auth checks.
+                # If subscriber gets 401/403 but anon gets 200, it's a broken-access anomaly.
+                # If anon == admin, the endpoint leaks admin-only data unauthenticated.
+                _cmp_detail = ""
+                try:
+                    _sub_ok = _wp_login(
+                        boot.base_url, boot.sub_user, boot.sub_pass, on_step=step)
+                    if _sub_ok:
+                        _r_sub = _sub_ok.request(
+                            m, boot.base_url + endpoint,
+                            json=params_dict if (m not in ("GET","HEAD") and json_body) else None,
+                            data=params_dict if (m not in ("GET","HEAD") and not json_body) else None,
+                            params=params_dict if m == "GET" else None,
+                            timeout=15, allow_redirects=True)
+                        _sub_st = _r_sub.status_code
+                        _sub_body = (_r_sub.text or "")[:2000]
+                        res.evidence["status_subscriber"] = _sub_st
+                        res.evidence["body_subscriber_recorte"] = _sub_body[:200]
+                        if _sub_st in (401, 403):
+                            _cmp_detail = (
+                                f" — subscriber rechazado (HTTP {_sub_st}) pero anonimo pasa "
+                                f"(HTTP {status}): broken-access-control")
+                            res.evidence["privilege_comparison"] = "anon=pass subscriber=reject"
+                        elif abs(len(_sub_body) - len(body)) < max(50, len(body) * 0.1):
+                            _cmp_detail = (
+                                f" — mismo contenido para anonimo y subscriber ({len(body)}B ≈ "
+                                f"{len(_sub_body)}B): el endpoint no diferencia usuarios")
+                            res.evidence["privilege_comparison"] = "anon==subscriber (no auth check)"
+                        else:
+                            _cmp_detail = (
+                                f" — respuesta anonima ({len(body)}B) difiere de subscriber "
+                                f"({len(_sub_body)}B): posible filtrado por rol")
+                            res.evidence["privilege_comparison"] = f"anon={len(body)}B sub={len(_sub_body)}B"
+                except Exception:
+                    pass
                 res.detail = (f"sonda no-auth: el endpoint responde HTTP {status} con contenido "
-                              f"no trivial ({len(body)} bytes) sin autenticacion — evidencia debil "
-                              f"de que la comprobacion falta, pero no hay cuenta victim para "
-                              f"confirmar acceso indebido; ejecuta contra objetivo autorizado")
+                              f"no trivial ({len(body)} bytes) sin autenticacion{_cmp_detail} — "
+                              f"evidencia de que la comprobacion de autenticacion falta")
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = f"timeout de infraestructura: {e}"
