@@ -11752,7 +11752,10 @@ def verify_generic_expression_language_injection(
                 _EL_VARIANTS = list(dict.fromkeys(_EL_BASE + _EL_KB))
                 step(f"baseline ya contiene {_expected} — re-generando operandos ({_retry+1}/3)")
 
+            _el_waf = _WafGuard()
             for _pl in _EL_VARIANTS:
+                if _el_waf.is_blocked:
+                    break
                 step(f"probando EL payload: {_pl[:40]}…")
                 body = ""
                 r = None
@@ -11784,6 +11787,8 @@ def verify_generic_expression_language_injection(
                 except Exception as e:
                     step(f"  error: {e}")
                     continue
+                if r is not None and _el_waf.check(r, step):
+                    break
                 if _pat.search(body):
                     res.verified = True
                     res.ok = True
