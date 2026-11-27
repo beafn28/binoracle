@@ -1138,6 +1138,46 @@ def _diagnose_failure(wr: Any, technique_label: str = "", vuln_class: str = "") 
         detalle = ("Status 500 en control — la función se ejecuta pero falla "
                    "(falta seed data, FK constraint, o el parámetro esperado).")
 
+    # 8 — WAF/security firewall blocking (generic patterns across providers)
+    elif any(t in ctrl_body.lower() for t in
+             ("access denied", "request blocked", "mod_security", "waf", "firewall",
+              "security violation", "illegal request", "attack detected",
+              "this request has been blocked")):
+        causa = "waf_blocked"
+        detalle = ("WAF/firewall detectado en la respuesta — el payload está siendo filtrado "
+                   "antes de llegar a la aplicación. Intentar encoding alternativo (hex, "
+                   "comment injection, case variation, chunked encoding).")
+        cambio_tecnica = "waf-bypass"
+
+    # 9 — Parámetro faltante o nombre erróneo (400 con mensaje de campo requerido)
+    elif ctrl_status == 400 or any(t in ctrl_body.lower() for t in
+                                   ("required", "missing parameter", "undefined variable",
+                                    "required field", "must provide", "param required",
+                                    "missing required", "field is required")):
+        causa = "parametro_faltante"
+        detalle = ("HTTP 400 o mensaje de campo requerido — el nombre del parámetro o el "
+                   "tipo de body (form/JSON) no coincide con lo que espera el endpoint. "
+                   "Revisar si el endpoint espera JSON body, multipart, o query string.")
+
+    # 10 — Content-Type mismatch (endpoint espera JSON pero recibió form)
+    elif any(t in ctrl_body.lower() for t in
+             ("json_decode", "json_last_error", "syntaxerror", "invalid json",
+              "unexpected token", "content-type", "application/json required",
+              "unsupported media type")) or ctrl_status == 415:
+        causa = "content_type_mismatch"
+        detalle = ("Mismatch de Content-Type detectado — el endpoint probablemente requiere "
+                   "Content-Type: application/json pero recibió form-urlencoded, o viceversa. "
+                   "Reintentar con json_body=True (o False si ya era JSON).")
+
+    # 11 — Rate limiting / throttling
+    elif ctrl_status == 429 or any(t in ctrl_body.lower() for t in
+                                   ("too many requests", "rate limit", "try again later",
+                                    "slow down", "throttled")):
+        causa = "rate_limited"
+        detalle = ("Rate limiting detectado (429 o mensaje de throttle) — el lab no puede "
+                   "enviar múltiples peticiones rápidas. Reducir frecuencia o reintentar.")
+        tecnica_agotada = True
+
     # fallback: sin patrón reconocido
     if not causa:
         causa = "sin_patron"
@@ -1148,13 +1188,18 @@ def _diagnose_failure(wr: Any, technique_label: str = "", vuln_class: str = "") 
         next_action = "pop_alt_endpoint"
     elif causa == "auth_gate" and vuln_class in ("missing-authorization", "auth-bypass",
                                                   "broken-access-control", "idor"):
-        # For missing-authorization CVEs a 403/401 means the bypass hasn't been attempted yet.
-        # Try common header-based bypasses before giving up or going to LLM.
         next_action = "try_bypass_headers"
     elif causa == "respuesta_vacia" and vuln_class in ("sqli", "sql-injection",
                                                         "order-by-injection"):
-        # Empty response means the DB has no rows; the LLM should seed data before injecting.
         next_action = "try_seed_data"
+    elif causa == "waf_blocked":
+        next_action = "escalate_technique"  # waf-bypass variant
+    elif causa == "content_type_mismatch":
+        next_action = "flip_content_type"
+    elif causa == "parametro_faltante":
+        next_action = "ask_llm"  # LLM knows the correct parameter name
+    elif causa == "rate_limited":
+        next_action = "abort"
     elif cambio_tecnica and not tecnica_agotada:
         next_action = "escalate_technique"
     else:
@@ -4703,6 +4748,20 @@ def _run_evidence_retry_loop(llm, step, es: bool, system_prompt: str, evidence_k
                                f"{retry_endpoint}] " + wr_retry.detail)
             wr = wr_retry
             continue
+
+        # abort action: rate-limited or other terminal state
+        if _pre_diag.get("next_action") == "abort":
+            step((_pre_diag["detalle"] + " — abortando.") if es else
+                 (_pre_diag["detalle"] + " — aborting."))
+            break
+
+        # flip_content_type: inject a suggestion that swaps json_body flag via on_suggestion
+        if _pre_diag.get("next_action") == "flip_content_type" and on_suggestion is not None:
+            try:
+                on_suggestion({"flip_content_type": True, "tiene_sugerencia": True,
+                               "razon": _pre_diag["detalle"]})
+            except Exception:
+                pass
 
         if _pre_diag.get("tecnica_agotada"):
             step((f"diagnostico del motor: técnica agotada ({_pre_diag['causa']}) — "
