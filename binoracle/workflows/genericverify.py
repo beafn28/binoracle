@@ -12481,18 +12481,20 @@ def verify_generic_user_enumeration(
                 res.evidence["status_difference"] = True
                 return res
 
-            # Check body length difference (>50 chars)
-            if abs(len(existing_body) - len(nonexist_body)) > 50:
+            # Check body length difference: require >200 bytes AND one response short
+            # (>50 is too noisy — different error messages/decorations can differ by 50-200b).
+            _body_diff = abs(len(existing_body) - len(nonexist_body))
+            if _body_diff > 200 and min(len(existing_body), len(nonexist_body)) < 2000:
                 res.verified = True
                 res.ok = True
                 res.detail = (f"user-enumeration VERIFICADO: longitud de respuesta diferente "
-                              f"({len(existing_body)} vs {len(nonexist_body)} bytes)")
-                res.evidence["body_length_difference"] = abs(len(existing_body) - len(nonexist_body))
+                              f"({len(existing_body)} vs {len(nonexist_body)} bytes, diff={_body_diff})")
+                res.evidence["body_length_difference"] = _body_diff
                 return res
 
-            # Timing oracle: >500ms difference required to avoid jitter false positives
+            # Timing oracle: >1000ms difference required — Docker jitter can easily be 300-500ms
             if (existing_elapsed > 0 and nonexist_elapsed > 0
-                    and abs(existing_elapsed - nonexist_elapsed) > 0.5):
+                    and abs(existing_elapsed - nonexist_elapsed) > 1.0):
                 _faster = "existente" if existing_elapsed < nonexist_elapsed else "no-existente"
                 res.verified = True
                 res.ok = True
