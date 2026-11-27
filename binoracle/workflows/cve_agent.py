@@ -12821,6 +12821,16 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 for _ac in _analyst_companions:
                     if _ac and _ac not in companion_plugins:
                         companion_plugins.append(_ac)
+                # Auto-derive companion from source_url/plugin_dir when empty.
+                # Many CVEs have companion_plugins=[] but source_url=<plugin-slug>.
+                # If the source_url is a simple slug (no http), add it automatically.
+                if not companion_plugins:
+                    _auto_slug = notes.get("source_url", "") or plugin_dir or ""
+                    if (_auto_slug and not _auto_slug.startswith("http")
+                            and "/" not in _auto_slug and " " not in _auto_slug
+                            and len(_auto_slug) < 100):
+                        companion_plugins.append(_auto_slug)
+                        step(f"companion_plugins vacío — auto-derivado del source_url: {_auto_slug!r}")
                 if companion_plugins:
                     step((f"el plugin requiere que {', '.join(companion_plugins)} este(n) "
                          f"activo(s) para cargar su propia funcionalidad (detectado en el "
