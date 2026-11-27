@@ -5191,6 +5191,60 @@ def _apply_wpverify_result(inv, wr, es: bool, llm=None) -> None:
                 }
         if poc:
             inv.reproduce_sh = _build_reproduce_sh(inv.cve_id, poc, inv.confidence)
+        # 1) Generate portable standalone PoC script (deliverable for YWH/triager)
+        try:
+            from .poc_generator import generate_standalone_poc, poc_filename
+            _poc_script = generate_standalone_poc(inv, wr)
+            if _poc_script:
+                inv.standalone_poc = _poc_script
+                inv.standalone_poc_filename = poc_filename(getattr(inv, "cve_id", "CVE-UNKNOWN"))
+        except Exception:
+            pass
+        # 2) Record version matrix seed for follow-up range discovery
+        try:
+            _slug = (getattr(inv, "plugin_slug", None) or getattr(inv, "slug", None) or "")
+            _ver = (getattr(inv, "plugin_version", None) or getattr(inv, "version", None) or "")
+            if _slug and _ver:
+                inv.version_matrix_seed = {"slug": _slug, "confirmed_version": _ver}
+        except Exception:
+            pass
+        # 3) Post-exploit escalation for RCE / file-write confirmed
+        try:
+            _vuln_cls = getattr(inv, "vuln_class", "") or ""
+            _webshell_url = (wr.evidence or {}).get("webshell_url", "")
+            _base_url_ev = (wr.evidence or {}).get("base_url", "")
+            if _webshell_url and _base_url_ev and _vuln_cls in (
+                    "rce", "remote-code-execution", "file-upload",
+                    "arbitrary-file-upload", "file-write"):
+                from .wpverify import escalate_post_rce
+                _lab_ref = getattr(wr, "_lab", None)
+                if _lab_ref is not None:
+                    _esc = escalate_post_rce(_lab_ref, _base_url_ev, _webshell_url,
+                                             step=lambda m: None)
+                    if _esc:
+                        inv.dynamic_verify["post_exploit"] = _esc
+                        inv.dynamic_verify["escalation_level"] = _esc.get("escalation_level")
+        except Exception:
+            pass
+        # 4) Post-exploit escalation for SQLi confirmed
+        try:
+            if _vuln_cls in ("sqli", "sql-injection"):
+                _ep_ev = (wr.evidence or {}).get("endpoint", "")
+                _param_ev = ((wr.evidence or {}).get("sqli_param") or
+                             (wr.evidence or {}).get("parametro_ganador", ""))
+                _method_ev = (wr.evidence or {}).get("metodo") or "GET"
+                _base_url_ev2 = (wr.evidence or {}).get("base_url", "")
+                if _ep_ev and _param_ev and _base_url_ev2:
+                    from .wpverify import escalate_post_sqli
+                    _lab_ref2 = getattr(wr, "_lab", None)
+                    if _lab_ref2 is not None:
+                        _esc2 = escalate_post_sqli(_lab_ref2, _base_url_ev2, _ep_ev,
+                                                   _param_ev, _method_ev, step=lambda m: None)
+                        if _esc2:
+                            inv.dynamic_verify["post_exploit_sqli"] = _esc2
+                            inv.dynamic_verify["escalation_level"] = _esc2.get("escalation_level")
+        except Exception:
+            pass
     elif not wr.available:
         inv.blockers.append(("verificacion dinamica no intentada: " + wr.limitations[0]
                              if wr.limitations else
@@ -19849,6 +19903,71 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None, fast_l
                 if _concerns:
                     for _c in _concerns[:3]:
                         step(f"  [pre-validate] ⚠ {_c}")
+        # Adversarial critique: challenge the LLM hypothesis before running the Docker lab.
+        # Runs a second Qwen pass that actively looks for missed auth checks, wrong endpoints,
+        # wrong param names, and vuln_class mismatches. If it finds issues, we update
+        # inv.llm_notes with corrections before the expensive Docker run.
+        if llm_on and not inv.llm_notes.get("analyst_endpoint_lock"):
+            try:
+                from .adversarial_agent import adversarial_critique
+                _snips = []
+                if hasattr(inv, "source_snippets") and inv.source_snippets:
+                    _snips = list(inv.source_snippets)[:5]
+                _hyp = {
+                    "endpoint": inv.llm_notes.get("endpoint", ""),
+                    "parameters": inv.llm_notes.get("parameters", []),
+                    "vuln_class": inv.llm_notes.get("vuln_class", ""),
+                    "trigger": inv.llm_notes.get("trigger", ""),
+                    "auth_required": inv.llm_notes.get("auth_required", False),
+                }
+                def _llm_call_wrapper(prompt: str, model: str = "") -> str:
+                    try:
+                        return llm(prompt) or ""
+                    except Exception:
+                        return ""
+                _critique = adversarial_critique(
+                    cve_id=inv.cve_id,
+                    hypothesis=_hyp,
+                    source_snippets=_snips,
+                    llm_call=_llm_call_wrapper,
+                )
+                inv.attempt_evidence = inv.attempt_evidence or {}
+                inv.attempt_evidence["adversarial_critique"] = _critique
+                _verdict = _critique.get("verdict", "PLAUSIBLE")
+                _challenges = _critique.get("challenges", [])
+                if _challenges:
+                    step((f"[adversarial] {_verdict}: {'; '.join(_challenges[:2])}" if es
+                          else f"[adversarial] {_verdict}: {'; '.join(_challenges[:2])}"))
+                # Apply corrections if the adversary found a better endpoint/params
+                if _critique.get("revised_endpoint") and _verdict != "STRONG":
+                    inv.llm_notes["endpoint"] = _critique["revised_endpoint"]
+                    step(f"[adversarial] endpoint corregido: {_critique['revised_endpoint']}" if es
+                         else f"[adversarial] endpoint corrected: {_critique['revised_endpoint']}")
+                if _critique.get("revised_params") and _verdict != "STRONG":
+                    inv.llm_notes["parameters"] = _critique["revised_params"]
+            except Exception:
+                pass
+        # Patch bypass analysis when patch diff is available
+        if llm_on and hasattr(inv, "patch_diff") and inv.patch_diff:
+            try:
+                from .adversarial_agent import patch_bypass_analysis
+                _pd = inv.patch_diff if isinstance(inv.patch_diff, dict) else {}
+                _diff_text = _pd.get("raw_diff_snippet", "") or ""
+                if _diff_text:
+                    _bypass = patch_bypass_analysis(
+                        cve_id=inv.cve_id,
+                        patch_diff=_diff_text,
+                        hypothesis=inv.llm_notes,
+                        llm_call=_llm_call_wrapper,
+                    )
+                    inv.attempt_evidence = inv.attempt_evidence or {}
+                    inv.attempt_evidence["patch_bypass"] = _bypass
+                    if _bypass.get("bypass_possible"):
+                        step((f"[patch-bypass] POSIBLE bypass: {_bypass.get('bypass_vector','?')}"
+                              if es else
+                              f"[patch-bypass] POSSIBLE bypass: {_bypass.get('bypass_vector','?')}"))
+            except Exception:
+                pass
         _run_web_investigation(inv, lang=lang, step=step, llm=(llm if llm_on else None),
                                budget_s=budget_s,
                                skip_source_download=skip_source_download)
