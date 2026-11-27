@@ -2001,6 +2001,14 @@ def _run_web_stage(cve_id: str, cve_info, llm_notes: dict,
                 if wrapper_meta.get("path_traversal_prefix_alt"):
                     llm_notes.setdefault("path_traversal_prefix_alt",
                                          wrapper_meta["path_traversal_prefix_alt"])
+                # Deterministic wrappers embed the exact canary — always override confirm_string
+                if wrapper_meta.get("confirm_string"):
+                    llm_notes["confirm_string"] = wrapper_meta["confirm_string"]
+                # Deterministic wrappers can specify required custom headers (e.g. bypass headers)
+                if wrapper_meta.get("custom_headers"):
+                    _existing_hdrs = llm_notes.get("custom_headers") or {}
+                    _existing_hdrs.update(wrapper_meta["custom_headers"])
+                    llm_notes["custom_headers"] = _existing_hdrs
         else:
             step("  wrapper app falló — continuando sin lab propio")
             result.add_step("wrapper_app", "warn", "generation failed")
