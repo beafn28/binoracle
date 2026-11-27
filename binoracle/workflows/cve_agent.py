@@ -2862,6 +2862,24 @@ def _static_vuln_precheck(local_path: str, plugin_dir: str, vuln_class: str,
         except Exception:
             pass
 
+    # --- Check 28b: PHP Code Injection — eval()/call_user_func() with user-controlled input ---
+    if vuln_class in ("code-injection", "rce", "php-code-injection",
+                      "arbitrary-code-execution") and local_path and plugin_dir:
+        try:
+            from .websource import find_code_injection_candidates
+            _ci_candidates = find_code_injection_candidates(local_path, plugin_dir)
+            if _ci_candidates:
+                _ci0 = _ci_candidates[0]
+                return {
+                    "ok": True,
+                    "reason": (f"pre-check Code Injection: {_ci0.sink_fn}() con "
+                               f"input {_ci0.input_source!r} en {_ci0.file}:{_ci0.sink_line} "
+                               f"— ejecución de código PHP arbitrario probable"),
+                    "confidence": 0.0,
+                }
+        except Exception:
+            pass
+
     # --- Check 28: CSRF — missing nonce/check_ajax_referer in AJAX handler ---
     if vuln_class in ("csrf", "cross-site-request-forgery", "xsrf") and local_path and plugin_dir:
         import os as _os_csrf

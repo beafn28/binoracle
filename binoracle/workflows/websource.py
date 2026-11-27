@@ -2092,6 +2092,91 @@ def find_php_gadget_chains(local_path: str, plugin_dir: str = "") -> List[Gadget
 _TOCTOU_SKIP_DIRS = {"node_modules", "vendor", ".git", "__pycache__", "dist", "build"}
 
 
+# ---------------------------------------------------------------------------
+# PHP code injection / eval() scanner
+# ---------------------------------------------------------------------------
+
+@dataclass
+class CodeInjectionCandidate:
+    """A potential server-side code injection — eval() or dynamic function call with user input."""
+    sink_fn: str       # e.g. eval, call_user_func, assert, preg_replace /e
+    input_source: str  # e.g. $_GET['code'], $_POST['func']
+    file: str
+    sink_line: int
+    snippet: str
+
+
+_PHP_CODE_SINK_RE = re.compile(
+    r"\b(eval|assert|preg_replace\s*\([^,]*\/e[^,]*\,|call_user_func(?:_array)?"
+    r"|create_function|include_once|require_once|include|require)\s*\(",
+    re.IGNORECASE,
+)
+
+_PHP_USER_INPUT_NEAR_RE = re.compile(
+    r"\$_(GET|POST|REQUEST|COOKIE|SERVER)\s*\[\s*['\"]([A-Za-z0-9_\-]+)['\"]\s*\]"
+    r"|\$_REQUEST|\bbase64_decode\s*\(",
+    re.IGNORECASE,
+)
+
+
+def find_code_injection_candidates(local_path: str, plugin_dir: str = "") -> List[CodeInjectionCandidate]:
+    """Scan PHP files for eval()/call_user_func() with user-controlled input nearby.
+
+    Finds direct user input → eval/call_user_func patterns that indicate
+    code injection / RCE via arbitrary PHP execution.
+    """
+    candidates: List[CodeInjectionCandidate] = []
+    scanned = 0
+    _WINDOW = 5  # lines before the sink to check for user input
+
+    target_dir = os.path.join(local_path, plugin_dir) if plugin_dir else local_path
+    if not os.path.isdir(target_dir):
+        target_dir = local_path
+
+    for root, dirs, files in os.walk(target_dir):
+        dirs[:] = [d for d in dirs if d not in _TOCTOU_SKIP_DIRS]
+        for fname in files:
+            if not fname.endswith(".php"):
+                continue
+            fp = os.path.join(root, fname)
+            rel_fp = os.path.relpath(fp, local_path)
+            try:
+                with open(fp, encoding="utf-8", errors="replace") as fh:
+                    content = fh.read()
+            except OSError:
+                continue
+            scanned += 1
+            lines = content.splitlines()
+
+            for i, line in enumerate(lines):
+                sm = _PHP_CODE_SINK_RE.search(line)
+                if not sm:
+                    continue
+                sink_fn = sm.group(1).split("(")[0].strip()
+                # Check if user input appears on same line or within window
+                window_start = max(0, i - _WINDOW)
+                window_text = "\n".join(lines[window_start:i + 1])
+                um = _PHP_USER_INPUT_NEAR_RE.search(window_text)
+                if um:
+                    input_src = um.group(0)[:80]
+                    candidates.append(CodeInjectionCandidate(
+                        sink_fn=sink_fn,
+                        input_source=input_src,
+                        file=rel_fp,
+                        sink_line=i + 1,
+                        snippet=line.strip()[:200],
+                    ))
+
+            if scanned >= _MAX_SCAN_FILES:
+                break
+
+    # Sort by most dangerous: eval > call_user_func > assert > create_function
+    _danger = {"eval": 0, "assert": 1, "call_user_func": 2, "call_user_func_array": 2,
+                "create_function": 3, "preg_replace": 4}
+    candidates.sort(key=lambda c: _danger.get(c.sink_fn.lower(), 99))
+    return candidates[:10]
+
+
 @dataclass
 class ToctouCandidate:
     """A potential TOCTOU (time-of-check/time-of-use) or race condition in PHP source."""
