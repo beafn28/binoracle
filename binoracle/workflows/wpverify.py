@@ -1553,11 +1553,17 @@ class _Lab:
         r = self.sh("run", "--rm", "--network", self.net, "--platform", "linux/amd64",
                     "-v", f"{self.vol}:/var/www/html", *self._db_env, "--user", "33:33",
                     _WPCLI_IMAGE, "wp", "--path=/var/www/html", *args, timeout=timeout)
-        # Docker garbage collection can delete the network between lab setup and wp-cli use.
-        # Recreate it and retry once when that happens.
+        # Docker GC can delete the network between lab setup and wp-cli use.
+        # Recreate it, reconnect existing containers, and retry once.
         if r.returncode != 0 and "network" in (r.stderr or "").lower() and "not found" in (r.stderr or "").lower():
             try:
                 self.sh("network", "create", self.net, timeout=30)
+                # Reconnect WordPress and MySQL containers to the recreated network
+                for _cname in (self.wp, self.mysql):
+                    try:
+                        self.sh("network", "connect", self.net, _cname, timeout=15)
+                    except Exception:
+                        pass
             except Exception:
                 pass
             r = self.sh("run", "--rm", "--network", self.net, "--platform", "linux/amd64",
