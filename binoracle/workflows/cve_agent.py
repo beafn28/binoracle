@@ -5208,41 +5208,16 @@ def _apply_wpverify_result(inv, wr, es: bool, llm=None) -> None:
                 inv.version_matrix_seed = {"slug": _slug, "confirmed_version": _ver}
         except Exception:
             pass
-        # 3) Post-exploit escalation for RCE / file-write confirmed
+        # 3) Copy post-exploit escalation data from verifier evidence (run inside the lab)
         try:
-            _vuln_cls = getattr(inv, "vuln_class", "") or ""
-            _webshell_url = (wr.evidence or {}).get("webshell_url", "")
-            _base_url_ev = (wr.evidence or {}).get("base_url", "")
-            if _webshell_url and _base_url_ev and _vuln_cls in (
-                    "rce", "remote-code-execution", "file-upload",
-                    "arbitrary-file-upload", "file-write"):
-                from .wpverify import escalate_post_rce
-                _lab_ref = getattr(wr, "_lab", None)
-                if _lab_ref is not None:
-                    _esc = escalate_post_rce(_lab_ref, _base_url_ev, _webshell_url,
-                                             step=lambda m: None)
-                    if _esc:
-                        inv.dynamic_verify["post_exploit"] = _esc
-                        inv.dynamic_verify["escalation_level"] = _esc.get("escalation_level")
-        except Exception:
-            pass
-        # 4) Post-exploit escalation for SQLi confirmed
-        try:
-            if _vuln_cls in ("sqli", "sql-injection"):
-                _ep_ev = (wr.evidence or {}).get("endpoint", "")
-                _param_ev = ((wr.evidence or {}).get("sqli_param") or
-                             (wr.evidence or {}).get("parametro_ganador", ""))
-                _method_ev = (wr.evidence or {}).get("metodo") or "GET"
-                _base_url_ev2 = (wr.evidence or {}).get("base_url", "")
-                if _ep_ev and _param_ev and _base_url_ev2:
-                    from .wpverify import escalate_post_sqli
-                    _lab_ref2 = getattr(wr, "_lab", None)
-                    if _lab_ref2 is not None:
-                        _esc2 = escalate_post_sqli(_lab_ref2, _base_url_ev2, _ep_ev,
-                                                   _param_ev, _method_ev, step=lambda m: None)
-                        if _esc2:
-                            inv.dynamic_verify["post_exploit_sqli"] = _esc2
-                            inv.dynamic_verify["escalation_level"] = _esc2.get("escalation_level")
+            _post_rce = (wr.evidence or {}).get("post_exploit")
+            if _post_rce:
+                inv.dynamic_verify["post_exploit"] = _post_rce
+                inv.dynamic_verify["escalation_level"] = _post_rce.get("escalation_level")
+            _post_sqli = (wr.evidence or {}).get("post_exploit_sqli")
+            if _post_sqli:
+                inv.dynamic_verify["post_exploit_sqli"] = _post_sqli
+                inv.dynamic_verify["escalation_level"] = _post_sqli.get("escalation_level")
         except Exception:
             pass
     elif not wr.available:

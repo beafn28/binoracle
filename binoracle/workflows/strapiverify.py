@@ -130,6 +130,7 @@ def verify_strapi_web_cve(
     confirm_string: str,
     auth_required: bool,
     pkg_version: str = "",
+    request_chain: Optional[list] = None,
     on_step: Optional[Callable[[str], None]] = None,
     budget_s: float = 600.0,
 ) -> WpVerifyResult:
@@ -169,8 +170,24 @@ def verify_strapi_web_cve(
             res.limitations.append("Strapi puede requerir Node 18+ — verifica la imagen base")
             return res
 
+        # Create isolated network with retry for Docker daemon race conditions
+        network = f"binoracle-strapi-net-{_token()}"
+        _net_err = ""
+        for _att in range(3):
+            r_net = subprocess.run(["docker", "network", "create", network],
+                                   capture_output=True, timeout=15)
+            if r_net.returncode == 0:
+                break
+            _net_err = (r_net.stderr or b"").decode(errors="replace").strip()
+            if _att < 2:
+                time.sleep(3)
+        else:
+            res.detail = f"docker network create failed: {_net_err}"
+            return res
+
         step("  strapiverify: arrancando contenedor…")
         _run(["docker", "run", "-d", "--rm", "--name", container,
+              "--network", network,
               "-p", f"0.0.0.0::{port}", container], timeout=30)
 
         # Get actual mapped port
@@ -199,12 +216,26 @@ def verify_strapi_web_cve(
 
         # Auth
         bearer = None
-        if auth_required:
+        if auth_required or request_chain:
             bearer = _strapi_get_admin_jwt(base_url, step)
             if not bearer:
                 step("  strapiverify: auth fallida — intentando sin auth")
 
-        # Build request
+        # Multi-step chain takes priority
+        if request_chain:
+            from .directusverify import _run_request_chain
+            verified, detail, evidence = _run_request_chain(
+                base_url, request_chain, bearer, step)
+            res.verified = verified
+            res.ok = verified
+            res.confidence = "confirmed" if verified else "failed"
+            res.detail = detail
+            res.evidence.update(evidence)
+            if verified:
+                step("  strapiverify: VERIFICADO (chain)")
+            return res
+
+        # Build single request
         target_url = base_url + endpoint
         headers: dict = {}
         if bearer:
@@ -221,28 +252,29 @@ def verify_strapi_web_cve(
             res.detail = f"request fallida: {e}"
             return res
 
-        res.evidence["status"] = r2.status
-        res.evidence["body_snippet"] = (r2.body or "")[:400]
+        res.evidence["status"] = r2.status_code
+        res.evidence["body_snippet"] = (r2.text or "")[:400]
         res.evidence["endpoint"] = endpoint
         res.evidence["auth_used"] = bool(bearer)
 
-        if r2.status < 500:
-            if confirm_string and confirm_string in (r2.body or ""):
+        if r2.status_code < 500:
+            if confirm_string and confirm_string in (r2.text or ""):
                 res.verified = True
                 res.ok = True
                 res.detail = (f"VERIFICADO: '{confirm_string}' presente en la respuesta — "
-                              f"CVE confirmado en Strapi (status {r2.status})")
+                              f"CVE confirmado en Strapi (status {r2.status_code})")
                 step("  strapiverify: VERIFICADO")
-            elif r2.status in (200, 201) and not confirm_string:
+            elif r2.status_code in (200, 201) and not confirm_string:
                 res.ok = True
-                res.detail = f"endpoint respondio {r2.status} sin confirm_string — no concluyente"
+                res.detail = (f"endpoint respondio {r2.status_code} sin confirm_string "
+                              f"— no concluyente")
             else:
                 res.ok = True
-                res.detail = (f"status {r2.status} — confirm_string no encontrado "
+                res.detail = (f"status {r2.status_code} — confirm_string no encontrado "
                               f"({confirm_string!r})" if confirm_string else
-                              f"status {r2.status}")
+                              f"status {r2.status_code}")
         else:
-            res.detail = f"server error {r2.status}"
+            res.detail = f"server error {r2.status_code}"
 
         return res
 
@@ -257,6 +289,179 @@ def verify_strapi_web_cve(
         try:
             subprocess.run(["docker", "rm", "-f", container],
                            capture_output=True, timeout=15)
+        except Exception:
+            pass
+        try:
+            subprocess.run(["docker", "network", "rm", network],
+                           capture_output=True, timeout=10)
+        except Exception:
+            pass
+        try:
+            os.remove(os.path.join(source_path, "Dockerfile.binoracle"))
+        except Exception:
+            pass
+
+
+def verify_strapi_unauth(
+    source_path: str,
+    endpoint: str,
+    http_method: str = "GET",
+    parameters: Optional[List[str]] = None,
+    confirm_string: str = "",
+    on_step: Optional[Callable[[str], None]] = None,
+    budget_s: float = 600.0,
+) -> WpVerifyResult:
+    """Verify a missing-authorization CVE in Strapi by comparing unauth vs auth responses.
+
+    After the lab is ready but BEFORE registering an admin, fires the request
+    unauthenticated. If confirm_string appears unauthenticated, verified=True (hard evidence).
+    Otherwise compares response body size with an authenticated request — if they match
+    (within 10%), the endpoint skips auth checks.
+    """
+    step = on_step or (lambda _m: None)
+    res = WpVerifyResult()
+
+    if not _docker_daemon_ok():
+        res.available = False
+        res.detail = "sin daemon Docker alcanzable"
+        return res
+
+    if not os.path.isdir(source_path):
+        res.detail = f"directorio de fuente no encontrado: {source_path}"
+        return res
+
+    port = 1337
+    container = f"binoracle-strapi-unauth-{_token()}"
+    network = f"binoracle-strapi-unauth-net-{_token()}"
+
+    try:
+        dockerfile_path = os.path.join(source_path, "Dockerfile.binoracle")
+        with open(dockerfile_path, "w") as f:
+            f.write(_strapi_dockerfile(port))
+
+        step("  strapi-unauth: construyendo imagen Docker…")
+        r = _run(["docker", "build", "-f", dockerfile_path, "-t", container, source_path],
+                 timeout=300)
+        if r.returncode != 0:
+            res.detail = f"docker build fallido: {(r.stderr or '')[-300:]}"
+            return res
+
+        _net_err = ""
+        for _att in range(3):
+            r_net = subprocess.run(["docker", "network", "create", network],
+                                   capture_output=True, timeout=15)
+            if r_net.returncode == 0:
+                break
+            _net_err = (r_net.stderr or b"").decode(errors="replace").strip()
+            if _att < 2:
+                time.sleep(3)
+        else:
+            res.detail = f"docker network create failed: {_net_err}"
+            return res
+
+        _run(["docker", "run", "-d", "--rm", "--name", container,
+              "--network", network,
+              "-p", f"0.0.0.0::{port}", container], timeout=30)
+
+        rp = _run(["docker", "port", container, str(port)], timeout=10)
+        m = re.search(r":(\d+)\s*$", (rp.stdout or "").strip())
+        actual_port = int(m.group(1)) if m else port
+
+        host = _lab_host()
+        base_url = f"http://{host}:{actual_port}"
+
+        step(f"  strapi-unauth: esperando que Strapi responda en {base_url}…")
+        import socket as _sock
+        for _i in range(90):
+            try:
+                with _sock.create_connection((host, actual_port), timeout=1):
+                    break
+            except OSError:
+                time.sleep(2)
+        else:
+            res.detail = "timeout esperando que Strapi arranque"
+            return res
+        time.sleep(5)
+
+        # Fire UNAUTHENTICATED request (before any admin setup)
+        target_url = base_url + endpoint
+        body_data, target_url, headers = _build_json_params(
+            parameters, "", http_method, target_url, {})
+
+        step(f"  strapi-unauth: {http_method.upper()} {target_url} (sin auth)")
+        try:
+            r_unauth = _http_request(http_method.upper(), target_url, data=body_data,
+                                     headers=headers, timeout=15)
+            unauth_status = r_unauth.status_code
+            unauth_body = r_unauth.text or ""
+        except Exception as e:
+            res.detail = f"request sin auth fallida: {e}"
+            return res
+
+        res.evidence["status_unauth"] = unauth_status
+        res.evidence["body_unauth_snippet"] = unauth_body[:300]
+        res.evidence["endpoint"] = endpoint
+
+        # Hard evidence: confirm_string in unauthenticated response
+        if confirm_string and confirm_string in unauth_body:
+            res.verified = True
+            res.ok = True
+            res.confidence = "confirmed"
+            res.detail = (f"VERIFICADO: '{confirm_string}' en respuesta Strapi SIN autenticacion "
+                          f"(HTTP {unauth_status}) — missing-authorization confirmado")
+            step("  strapi-unauth: VERIFICADO (confirm_string)")
+            return res
+
+        # Soft evidence: compare with authenticated response
+        bearer = _strapi_get_admin_jwt(base_url, step)
+        if bearer:
+            auth_hdrs = dict(headers)
+            auth_hdrs["Authorization"] = bearer
+            try:
+                r_auth = _http_request(http_method.upper(), target_url, data=body_data,
+                                       headers=auth_hdrs, timeout=15)
+                auth_body = r_auth.text or ""
+                res.evidence["status_auth"] = r_auth.status_code
+                res.evidence["body_auth_snippet"] = auth_body[:200]
+
+                # If sizes match within 10%, the endpoint doesn't differentiate auth
+                if (unauth_status in (200, 201) and r_auth.status_code in (200, 201)
+                        and abs(len(unauth_body) - len(auth_body)) < max(50, len(auth_body) * 0.1)):
+                    res.ok = True
+                    res.detail = (f"strapi-unauth: respuesta sin auth ({len(unauth_body)}B) ≈ "
+                                  f"con auth ({len(auth_body)}B) — endpoint no diferencia usuarios")
+                    res.evidence["privilege_comparison"] = "unauth==auth (no auth check)"
+                elif unauth_status in (401, 403):
+                    res.ok = True
+                    res.detail = (f"strapi-unauth: endpoint rechazó acceso anónimo "
+                                  f"(HTTP {unauth_status}) — comprobación activa")
+                else:
+                    res.ok = True
+                    res.detail = (f"strapi-unauth: HTTP {unauth_status} sin auth, "
+                                  f"HTTP {r_auth.status_code} con auth — revisar manualmente")
+            except Exception:
+                res.ok = True
+                res.detail = f"strapi-unauth: HTTP {unauth_status} sin auth"
+        else:
+            res.ok = True
+            res.detail = f"strapi-unauth: HTTP {unauth_status} sin auth (sin comparación auth)"
+
+        return res
+
+    except subprocess.TimeoutExpired as e:
+        res.detail = f"timeout: {e}"
+        return res
+    except Exception as e:
+        res.detail = f"error inesperado: {e}"
+        return res
+    finally:
+        step("  strapi-unauth: desmontando…")
+        try:
+            subprocess.run(["docker", "rm", "-f", container], capture_output=True, timeout=15)
+        except Exception:
+            pass
+        try:
+            subprocess.run(["docker", "network", "rm", network], capture_output=True, timeout=10)
         except Exception:
             pass
         try:

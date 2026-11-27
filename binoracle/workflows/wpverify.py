@@ -8579,6 +8579,21 @@ def verify_wordpress_sqli(
                         pass
                 if res.verified:
                     break
+        # Post-exploit escalation for SQLi: extract version, user(), hashes
+        if res.verified and boot is not None:
+            try:
+                _base_pe2 = boot.base_url
+                _ep_pe2 = endpoint or ""
+                _param_pe2 = res.evidence.get("sqli_param") or res.evidence.get("parametro_ganador") or sqli_param or ""
+                _m_pe2 = m or "GET"
+                if _ep_pe2 and _param_pe2:
+                    _esc2 = escalate_post_sqli(lab, _base_pe2, _ep_pe2, _param_pe2, _m_pe2, step=step)
+                    if _esc2:
+                        res.evidence["post_exploit_sqli"] = _esc2
+                        res.evidence["escalation_level"] = _esc2.get("escalation_level", "none")
+                        step(f"[post-exploit-sqli] escalacion: {_esc2.get('escalation_level','?')}")
+            except Exception:
+                pass
         return res
     except subprocess.TimeoutExpired as e:
         step(f"TIMEOUT en verify_wordpress_sqli: {e}")
@@ -9033,6 +9048,19 @@ def verify_wordpress_fetch_and_write_rce(
         if boot is not None:
             res.evidence["screenshots"] = boot.shots
             res.evidence["http_captures"] = boot.http_captures
+        # Post-exploit escalation: when RCE confirmed, extract /etc/passwd + wp-config creds
+        if res.verified:
+            _webshell = res.evidence.get("webshell_url", "")
+            _base_pe = boot.base_url if boot else ""
+            if _webshell and _base_pe:
+                try:
+                    _esc = escalate_post_rce(lab, _base_pe, _webshell, step=step)
+                    if _esc:
+                        res.evidence["post_exploit"] = _esc
+                        res.evidence["escalation_level"] = _esc.get("escalation_level", "none")
+                        step(f"[post-exploit] escalacion: {_esc.get('escalation_level','?')}")
+                except Exception:
+                    pass
         return res
     finally:
         if not (keep_lab_on_failure and not res.verified):
