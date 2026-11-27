@@ -12741,6 +12741,30 @@ def _scaffold_llm_lab_for_class(llm, source_dir: str, notes: dict, cve_id: str,
             endpoint = _wp_rest["path"]
             step(f"  [route-auto-promote] WP REST route → endpoint={endpoint}")
 
+    # Auto-promote Joomla com_ route when endpoint is empty/generic
+    # Joomla routes are /?option=com_X&task=Y&format=json not REST paths
+    if _known_routes and tech == "joomla" and \
+            (not notes.get("endpoint") or notes.get("endpoint") in ("/api/items", "/api/v1", "")):
+        _joomla_com = next(
+            (r for r in _known_routes
+             if isinstance(r.get("path"), str) and "com_" in r.get("path", "")),
+            None,
+        )
+        if not _joomla_com:
+            # Build Joomla endpoint from the source URL slug (e.g. com_users → /?option=com_users)
+            _slug = (notes.get("source_url") or "").split("/")[-1].rstrip("/")
+            if _slug and not _slug.startswith("com_"):
+                _slug = f"com_{_slug}"
+            if _slug.startswith("com_"):
+                _joomla_ep = f"/?option={_slug}&task=default&format=json"
+                notes["endpoint"] = _joomla_ep
+                endpoint = _joomla_ep
+                step(f"  [route-auto-promote] Joomla com_ route → endpoint={endpoint}")
+        else:
+            notes["endpoint"] = _joomla_com["path"]
+            endpoint = _joomla_com["path"]
+            step(f"  [route-auto-promote] Joomla route → endpoint={endpoint}")
+
     _setup_cmds = notes.get("setup_cmds") or []
     _poc_cmd    = notes.get("poc_cmd") or ""
     prompt = (

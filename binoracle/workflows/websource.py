@@ -5931,6 +5931,30 @@ def find_web_routes(local_path: str, tech: str = "auto", max_routes: int = 40) -
             _re.compile(r'@(GET|POST|PUT|DELETE|PATCH)\s*\n\s*@Path\s*\(\s*[\'"]([^\'"]+)[\'"]', _re.IGNORECASE | _re.DOTALL),
         ]
 
+    elif _tech == "joomla":
+        _extensions = (".php",)
+        _patterns = [
+            # Joomla com_ component: ?option=com_X&task=Y&format=json
+            _re.compile(
+                r"JFactory::getApplication\s*\(\s*\)\s*->input->get\s*\(\s*['\"]task['\"]",
+                _re.IGNORECASE),
+            # Joomla controller task mapping: protected $default_task
+            _re.compile(
+                r"protected\s+\$default_task\s*=\s*['\"]([A-Za-z0-9_]+)['\"]",
+                _re.IGNORECASE),
+            # Joomla onAjax handler (com_ + ajax): JPlugin onAjaxMyPlugin
+            _re.compile(
+                r"public\s+function\s+onAjax([A-Za-z0-9_]+)\s*\(",
+                _re.IGNORECASE),
+            # Joomla com_ component folder name (extract from dirname)
+            _re.compile(
+                r"'option'\s*=>\s*'(com_[A-Za-z0-9_]+)'",
+                _re.IGNORECASE),
+            # Joomla \$app->input->get / JInput::get (task parameter)
+            _re.compile(
+                r"\$input->(?:get|getCmd)\s*\(\s*['\"]task['\"]",
+                _re.IGNORECASE),
+        ]
     elif _tech in ("php", "wordpress", "laravel", "slim"):
         _extensions = (".php",)
         _patterns = [

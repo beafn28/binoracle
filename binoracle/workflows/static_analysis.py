@@ -263,6 +263,9 @@ _REGEX_PATTERNS: dict = {
         # REST route without permission_callback
         (r'register_rest_route\s*\([^;]*(?!permission_callback)',
          "rest_route_no_permission"),
+        # WordPress REST route with __return_true permission callback (intentionally open)
+        (r'permission_callback["\']?\s*=>\s*["\']__return_true["\']',
+         "rest_route_permission_true"),
         # Express/Strapi: router.get/post without auth middleware
         (r'router\.(get|post|put|delete|patch)\s*\(\s*["\'][^"\']+["\'],\s*(async\s*)?\(',
          "express_route_no_auth_middleware"),
@@ -272,6 +275,18 @@ _REGEX_PATTERNS: dict = {
         # Python Flask route without login_required or auth check
         (r'@(?:app|blueprint)\.(route|get|post|put|delete|patch)\s*\([^)]+\)\s*\n(?:(?:@[^\n]+\n)*)?(?:async\s+)?def\s+\w+\s*\(',
          "flask_route_no_auth_decorator"),
+        # Joomla component: missing ACL check (checkEditId / authorise)
+        (r'function\s+(?:display|save|delete|edit)\s*\([^)]*\)\s*\{[^}]*(?!authorise|checkEditId|\$user->authorise)',
+         "joomla_component_no_acl"),
+        # PHP admin function without capability check (current_user_can)
+        (r'function\s+\w+\s*\([^)]*\)\s*\{[^}]{0,200}(?:wp_send_json|wp_die|echo\s+json_encode)[^}]*(?!current_user_can|check_admin_referer)',
+         "php_ajax_no_capability"),
+        # Craft CMS controller action without requireLogin/requireAdmin
+        (r'public\s+function\s+action\w+\s*\([^)]*\)[^{]*\{[^}]*(?!requireLogin|requireAdmin|requirePermission)',
+         "craft_action_no_auth"),
+        # Drupal hook_menu without 'access callback' or access_callback set to TRUE
+        (r'"access\s+callback"\s*=>\s*TRUE',
+         "drupal_menu_access_true"),
     ],
     "business-logic": [
         # Price/quantity parameter manipulation (server-side value not validated)
