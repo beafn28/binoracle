@@ -12731,6 +12731,16 @@ def _scaffold_llm_lab_for_class(llm, source_dir: str, notes: dict, cve_id: str,
         except Exception:
             pass
 
+    # Auto-promote WP REST route when endpoint is empty/generic and routes were found
+    # This avoids sending /api/items as default when the plugin has real /wp-json/... routes
+    if _known_routes and tech in ("wordpress", "php") and \
+            (not notes.get("endpoint") or notes.get("endpoint") in ("/api/items", "/api/v1")):
+        _wp_rest = next((r for r in _known_routes if r.get("path", "").startswith("/wp-json/")), None)
+        if _wp_rest:
+            notes["endpoint"] = _wp_rest["path"]
+            endpoint = _wp_rest["path"]
+            step(f"  [route-auto-promote] WP REST route → endpoint={endpoint}")
+
     _setup_cmds = notes.get("setup_cmds") or []
     _poc_cmd    = notes.get("poc_cmd") or ""
     prompt = (
