@@ -3828,9 +3828,13 @@ def run_full_chain(
                     _mapped_vc = _DIFF_TO_VULN_CLASS.get(_pdiff.fix_class, "")
                     if _mapped_vc and result.cve_class not in ("native", "binary"):
                         result.cve_class = "web"
-                        # Only update vuln_class if LLM was vague or absent
+                        # Only update vuln_class if LLM was vague or absent,
+                        # and analyst did not lock the class (analyst_endpoint_lock).
                         _llm_vc = (llm_notes.get("vuln_class") or "").lower()
-                        if not _llm_vc or _llm_vc in ("unknown", "injection", "web"):
+                        _analyst_locked_vc = bool(llm_notes.get("analyst_endpoint_lock")
+                                                   and _llm_vc
+                                                   and _llm_vc not in ("unknown", "injection", "web"))
+                        if not _analyst_locked_vc and (not _llm_vc or _llm_vc in ("unknown", "injection", "web")):
                             llm_notes["vuln_class"] = _mapped_vc
                             step(f"  patch-diff: vuln_class actualizado a {_mapped_vc!r} "
                                  f"(diff clase={_pdiff.fix_class!r})")
@@ -4028,6 +4032,17 @@ def run_full_chain(
                 if _has_useful:
                     # Merge revised notes — keep originals for fields LLM didn't revise
                     llm_notes.update(_revised)
+                    # Re-protect analyst-set fields that LLM re-hypothesis must not override:
+                    # vuln_class, confirm_string, parameters, dockerfile_body, extra_files.
+                    # analyst_endpoint_lock already protects endpoint/http_method above.
+                    if hints:
+                        _protected = {k: v for k, v in hints.items()
+                                      if k in ("vuln_class", "confirm_string", "parameters",
+                                               "dockerfile_body", "extra_files", "setup_cmds",
+                                               "server_port", "analyst_endpoint_lock")
+                                      and v not in (None, "", [], {})}
+                        if _protected:
+                            llm_notes.update(_protected)
                     _new_desc = (f"endpoint={_revised.get('endpoint')} (was={_tried_ep})"
                                  if _revised.get("endpoint")
                                  else f"params/técnica revisados (endpoint={_tried_ep})")

@@ -19691,10 +19691,14 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None, fast_l
     # sobre la clasificacion por keyword en la descripcion cuando el LLM fue consultado.
     # EXCEPCION: si el analista fijo el endpoint (analyst_endpoint_lock=True), respetamos
     # tambien el vuln_class del JSON — el analista sabe mejor que el LLM que verificador usar.
-    _analyst_owns_class = bool(inv.llm_notes.get("analyst_endpoint_lock") and inv.vuln_class)
+    # Use inv.llm_notes.get("vuln_class") — not inv.vuln_class — because inv.vuln_class is
+    # unset at this point (populated later); hints applied at 2b already put the analyst
+    # class into inv.llm_notes, so that is the authoritative source here.
+    _analyst_vc_raw = (inv.llm_notes.get("vuln_class") or inv.vuln_class or "")
+    _analyst_owns_class = bool(inv.llm_notes.get("analyst_endpoint_lock") and _analyst_vc_raw)
     if _analyst_owns_class:
-        step((f"[ANALYST-LOCK] preservando vuln_class del analista: {inv.vuln_class}" if es else
-              f"[ANALYST-LOCK] preserving analyst vuln_class: {inv.vuln_class}"))
+        step((f"[ANALYST-LOCK] preservando vuln_class del analista: {_analyst_vc_raw}" if es else
+              f"[ANALYST-LOCK] preserving analyst vuln_class: {_analyst_vc_raw}"))
         notes = inv.llm_notes
     else:
         pass  # will fall through to classification below
@@ -19710,8 +19714,9 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None, fast_l
     # dice "templating engine" -> classify_cve da "ssti" -> el lab correcto es el Jinja2 SSTI).
     _UPLOAD_OVERRIDE = {"ssti", "path-traversal", "command-injection", "xxe", "sqli", "ssrf"}
     if _analyst_owns_class:
-        # Normalize underscores in analyst-set class too
-        inv.vuln_class = (inv.vuln_class or "").lower().strip().replace("_", "-").replace(" ", "-")
+        # Normalize underscores/spaces in analyst-set class; use llm_notes value since
+        # inv.vuln_class is not yet populated at this point.
+        inv.vuln_class = _analyst_vc_raw.lower().strip().replace("_", "-").replace(" ", "-")
     elif _llm_class in ("file-upload", "deserialization") and _desc_class in _UPLOAD_OVERRIDE:
         inv.vuln_class = _desc_class
     elif _llm_class:
