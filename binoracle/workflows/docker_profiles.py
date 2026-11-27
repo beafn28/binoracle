@@ -57,7 +57,7 @@ _DOCKER_IMAGE_PROFILES: dict[str, dict] = {
         "port": 3000,
         "envs": {},
         "cmd": None,
-        "startup_wait": 10,
+        "startup_wait": 20,
         "health_path": "/healthcheck",
     },
     "daptin/daptin:": {
