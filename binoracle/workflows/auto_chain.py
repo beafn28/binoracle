@@ -1717,6 +1717,55 @@ if __name__ == "__main__":
 """,
         "requirements.txt": "django",
     },
+    # Next.js middleware bypass (CVE-2025-29927): simulates vulnerable behavior via Express.
+    # The x-middleware-subrequest header causes Next.js to skip middleware (auth check).
+    # This wrapper replicates the vulnerable pattern: protected route skips auth when the
+    # bypass header is present, exposing a canary in the response body.
+    "nextjs-middleware": {
+        "_meta": {"endpoint": "/protected", "param": None, "method": "GET",
+                  "bypass_header": "x-middleware-subrequest",
+                  "bypass_value": "middleware:middleware:middleware:middleware:middleware",
+                  "confirm_string": "protected-content"},
+        "app.js": """\
+const http = require("http");
+
+// Simulate vulnerable Next.js middleware behavior (CVE-2025-29927):
+// x-middleware-subrequest header causes middleware to skip auth check.
+function handler(req, res) {
+  const bypass = req.headers["x-middleware-subrequest"] || "";
+  if (req.url === "/protected" || req.url.startsWith("/protected?")) {
+    // Vulnerable: if bypass header contains "middleware", skip auth
+    const skipped = bypass.includes("middleware");
+    if (!skipped) {
+      const auth = req.headers["authorization"] || "";
+      if (!auth) {
+        res.writeHead(401, {"Content-Type": "application/json"});
+        res.end(JSON.stringify({error: "Unauthorized"}));
+        return;
+      }
+    }
+    res.writeHead(200, {"Content-Type": "application/json"});
+    res.end(JSON.stringify({
+      message: "protected-content",
+      user: "admin",
+      role: "administrator",
+    }));
+    return;
+  }
+  res.writeHead(200, {"Content-Type": "text/plain"});
+  res.end("Next.js middleware bypass lab");
+}
+
+http.createServer(handler).listen(3000, "0.0.0.0");
+""",
+        "Dockerfile": """\
+FROM node:20-slim
+WORKDIR /app
+COPY app.js .
+EXPOSE 3000
+CMD ["node", "app.js"]
+""",
+    },
 }
 
 _DETERMINISTIC_WRAPPER_TRIGGERS: dict[str, list[str]] = {
@@ -1725,6 +1774,7 @@ _DETERMINISTIC_WRAPPER_TRIGGERS: dict[str, list[str]] = {
     "gradio": ["gradio"],
     "rack": ["rack ", "rack::", "rack web"],
     "django": ["django"],
+    "nextjs-middleware": ["next.js", "nextjs", "middleware bypass", "x-middleware-subrequest"],
 }
 
 
@@ -2015,6 +2065,11 @@ def _run_web_stage(cve_id: str, cve_info, llm_notes: dict,
                     _existing_hdrs = llm_notes.get("custom_headers") or {}
                     _existing_hdrs.update(wrapper_meta["custom_headers"])
                     llm_notes["custom_headers"] = _existing_hdrs
+                # Wire bypass_header/bypass_value for auth-bypass/header-bypass labs
+                if wrapper_meta.get("bypass_header") and not llm_notes.get("bypass_header"):
+                    llm_notes["bypass_header"] = wrapper_meta["bypass_header"]
+                if wrapper_meta.get("bypass_value") and not llm_notes.get("bypass_value"):
+                    llm_notes["bypass_value"] = wrapper_meta["bypass_value"]
         else:
             step("  wrapper app falló — continuando sin lab propio")
             result.add_step("wrapper_app", "warn", "generation failed")
