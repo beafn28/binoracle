@@ -576,6 +576,16 @@ def auto_enrich_before_analysis(cve_id: str, notes: dict) -> dict:
             diff = fetch_github_patch_diff(patch_commits[0])
             if diff:
                 out["patch_diff_analysis"] = diff[:6000]
+                # Structured diff analysis (fix_type, bypass_hints) for exploit loop
+                if not out.get("patch_diff_structured"):
+                    try:
+                        from .diff_analyzer import analyze_patch_diff as _apd
+                        _lean = {k: v for k, v in _apd(diff).items()
+                                 if v not in (None, [], "", False, "unknown", "other")}
+                        if _lean:
+                            out["patch_diff_structured"] = _lean
+                    except Exception:
+                        pass
         for alias in osv.get("aliases") or []:
             if alias.startswith("GHSA-") and not out.get("_intel_ghsa_url"):
                 out["_intel_ghsa_url"] = f"https://github.com/advisories/{alias}"

@@ -544,6 +544,28 @@ def _s_verification(inv: Any, lang: str) -> str:
     if _ev.get("jwt_technique") or _ev.get("jwt_bypass_token"):
         _t = _ev.get("jwt_technique") or _ev.get("jwt_bypass_token", "")[:60]
         _rich_items.append(("JWT bypass technique", _t))
+    # XXE canary / file read result
+    if _ev.get("canary_path") and _ev.get("modo_ganador"):
+        _rich_items.append(("XXE file read confirmed",
+                            f"mode={_ev['modo_ganador']} → {_ev.get('canary_path', '')}"))
+    elif _wep and _wep.get("technique") == "xxe_file_read":
+        for _target, _info in list((_wep_data.get("files_read") or {}).items())[:3]:
+            _snippet = (_info.get("snippet") or "") if isinstance(_info, dict) else str(_info)
+            if _snippet:
+                _rich_items.append((f"XXE → {_target}", _snippet[:80]))
+    # NoSQL injection user dump
+    if _wep and _wep.get("technique") in ("nosql_dump", "nosql_data_dump"):
+        _dump_rows = (_wep_data.get("users_extracted") or _wep_data.get("dump_rows") or
+                      _wep_data.get("users") or [])
+        if _dump_rows:
+            _rich_items.append(("NoSQL data dump", f"{len(_dump_rows)} record(s) exfiltrated: "
+                                + str(_dump_rows[0])[:80]))
+    # Mass assignment profile verification
+    _prof_v = _ev.get("profile_verification") or {}
+    if _prof_v.get("admin_signals"):
+        _rich_items.append(("Mass assignment → profile",
+                            f"signals={_prof_v['admin_signals'][:3]} "
+                            f"@ GET {_prof_v.get('endpoint', '?')}"))
     if _rich_items:
         lines.append("")
         lines.append("**" + ("Datos extraídos de la explotación:" if es else "Data extracted via exploitation:") + "**")
