@@ -19965,7 +19965,10 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path), notes), "crlf-injection")] = _lab_cfg_crlf
                 _apply_wpverify_result(inv, wr, es, llm)
             # Multi-step chain (2FA bypass, token-based flows, session fixation, ATO)
-            elif (not plugin_dir and
+            # Guard with wr is None: bypass_url/header path in an earlier chain may have
+            # already set wr for auth-bypass CVEs — don't overwrite with a multistep result.
+            elif (wr is None and
+                  not plugin_dir and
                   (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
                   (inv.vuln_class in ("2fa-bypass", "two-factor-bypass", "auth-chain",
                                       "multistep", "authentication-bypass") or
