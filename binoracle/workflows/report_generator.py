@@ -437,6 +437,57 @@ def _s_verification(inv: Any, lang: str) -> str:
             lines.append(_jw.dumps(_wdata, ensure_ascii=False, indent=2)[:600])
             lines.append("```")
 
+    # Rich exploitation evidence (SQLi extraction, SSTI RCE, LFI escalation, etc.)
+    _ev = getattr(inv, "verified_evidence", {}) or {}
+    _rich_items = []
+    # SQLi UNION / bool-blind extraction
+    if _ev.get("mysql_version_extraida") or _ev.get("extracted_version"):
+        _v = _ev.get("mysql_version_extraida") or _ev.get("extracted_version")
+        _rich_items.append(("MySQL version extraída" if es else "MySQL version extracted", _v))
+    if _ev.get("db_user") or _ev.get("extracted_user"):
+        _rich_items.append(("DB user" , _ev.get("db_user") or _ev.get("extracted_user")))
+    if _ev.get("extracted_database"):
+        _rich_items.append(("DB nombre actual" if es else "Current database name", _ev.get("extracted_database")))
+    if _ev.get("db_tables"):
+        _tbl_list = _ev["db_tables"]
+        _rich_items.append(("Tablas del esquema" if es else "Schema tables",
+                            ", ".join(_tbl_list[:10]) + ("..." if len(_tbl_list) > 10 else "")))
+    if _ev.get("wp_users_hashes"):
+        _rich_items.append(("Hashes wp_users (truncado)" if es else "wp_users hashes (truncated)",
+                            str(_ev["wp_users_hashes"])[:200]))
+    # SSTI RCE escalation
+    if _ev.get("ssti_rce"):
+        _rce = _ev["ssti_rce"]
+        _rich_items.append(("SSTI → RCE técnica" if es else "SSTI → RCE technique",
+                            f"{_rce.get('technique')} (token: {_rce.get('token_confirmed')})"))
+    if _ev.get("ssti_rce_id_output"):
+        _rich_items.append(("Salida de id (SSTI RCE)" if es else "id output (SSTI RCE)",
+                            _ev["ssti_rce_id_output"]))
+    # LFI post-exploitation
+    if _ev.get("aws_credentials_found"):
+        _rich_items.append(("AWS credentials vía LFI" if es else "AWS credentials via LFI",
+                            _ev["aws_credentials_found"]))
+    if _ev.get("k8s_service_account_token_found"):
+        _rich_items.append(("K8s SA token vía LFI" if es else "K8s SA token via LFI",
+                            _ev["k8s_service_account_token_found"]))
+    if _ev.get("etc_shadow_readable"):
+        _rich_items.append(("/etc/shadow legible" if es else "/etc/shadow readable",
+                            "root hash expuesto" if es else "root hash exposed"))
+    # IDOR user metadata
+    if _ev.get("user_idor", {}).get("has_email"):
+        _ui = _ev["user_idor"]
+        _rich_items.append(("IDOR user metadata (admin ID=1)" if es else "IDOR user metadata (admin ID=1)",
+                            f"email leakeado, status={_ui.get('status')}" if es else
+                            f"email leaked, status={_ui.get('status')}"))
+    if _rich_items:
+        lines.append("")
+        lines.append("**" + ("Datos extraídos de la explotación:" if es else "Data extracted via exploitation:") + "**")
+        lines.append("")
+        lines.append("| " + ("Campo" if es else "Field") + " | " + ("Valor" if es else "Value") + " |")
+        lines.append("|---|---|")
+        for _field, _val in _rich_items:
+            lines.append(f"| {_field} | `{str(_val)[:120]}` |")
+
     return "\n".join(lines)
 
 
