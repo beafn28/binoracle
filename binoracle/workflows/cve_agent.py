@@ -5145,6 +5145,12 @@ def _apply_wpverify_result(inv, wr, es: bool, llm=None) -> None:
     # Guard: evidence must be a dict (some verifiers may set it to a string body snippet)
     if not isinstance(wr.evidence, dict):
         wr.evidence = {"respuesta_cuerpo_recorte": str(wr.evidence)[:300]} if wr.evidence else {}
+    # Consistency guard: if the verifier crashed or ran without hard evidence,
+    # evidence["verified"]=False overrides a stale wr.verified=True.
+    if wr.verified and isinstance(wr.evidence, dict) and wr.evidence.get("verified") is False:
+        wr.verified = False
+        if not getattr(wr, "confidence", None) or wr.confidence in ("confirmed", "none"):
+            wr.confidence = "inconclusive"
     inv.dynamic_verify = {"attempted": True, "available": wr.available, "ok": wr.ok,
                           "verified": wr.verified, "detail": wr.detail, "logs": wr.logs,
                           "exploit_poc": getattr(wr, "exploit_poc", {}),
