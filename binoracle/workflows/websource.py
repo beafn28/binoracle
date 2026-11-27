@@ -5752,6 +5752,8 @@ def find_web_routes(local_path: str, tech: str = "auto", max_routes: int = 40) -
             _tech = "go"
         elif _exts.get("java", 0) > 0:
             _tech = "java"
+        elif _exts.get("rs", 0) > 0:
+            _tech = "rust"
         else:
             _tech = "nodejs"
 
@@ -5826,6 +5828,21 @@ def find_web_routes(local_path: str, tech: str = "auto", max_routes: int = 40) -
             _re.compile(r'(?:mux|http|router|r)\s*\.\s*HandleFunc\s*\(\s*[\'"`]([^\'"`]+)[\'"`]', _re.IGNORECASE),
             # Echo: e.GET("/path", ...) already covered above, but also e.Add("GET", "/path", ...)
             _re.compile(r'\.Add\s*\(\s*[\'"`](GET|POST|PUT|PATCH|DELETE)[\'"`]\s*,\s*[\'"`]([^\'"`]+)[\'"`]', _re.IGNORECASE),
+        ]
+
+    elif _tech in ("rust", "actix", "axum", "warp", "rocket"):
+        _extensions = (".rs",)
+        _patterns = [
+            # Actix-web: web::get().to(...) or .route("/path", web::get().to(...))
+            _re.compile(r'\.route\s*\(\s*[\'"]([^\'"]+)[\'"]\s*,\s*web::(?:(get|post|put|patch|delete))\s*\(\)', _re.IGNORECASE),
+            # Actix-web: #[get("/path")] / #[post("/path")]
+            _re.compile(r'#\[\s*(get|post|put|patch|delete)\s*\(\s*[\'"]([^\'"]+)[\'"]\s*\)\s*\]', _re.IGNORECASE),
+            # Axum: .route("/path", get(handler)) / post(handler)
+            _re.compile(r'\.route\s*\(\s*[\'"]([^\'"]+)[\'"]\s*,\s*(get|post|put|patch|delete)\s*\(', _re.IGNORECASE),
+            # Rocket: #[get("/path")] / #[post("/path")]
+            _re.compile(r'#\[(?:get|post|put|patch|delete)\s*\(\s*[\'"]([^\'"]+)[\'"]', _re.IGNORECASE),
+            # Warp: warp::get().and(warp::path("endpoint")) or warp::path!("path")
+            _re.compile(r'warp::path(?:!\s*\()?\s*\(\s*[\'"]([^\'"]+)[\'"]', _re.IGNORECASE),
         ]
 
     elif _tech in ("java", "spring", "springboot", "jakarta"):
