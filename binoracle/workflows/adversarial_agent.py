@@ -1,10 +1,12 @@
 """Adversarial agent: second Qwen/ollama pass that challenges the main CVE hypothesis.
 
-adversarial_critique  — tries to DISPROVE the exploit hypothesis before lab time is spent.
-patch_bypass_analysis — checks whether a security patch diff is complete or bypassable.
-impact_chain_analysis — given confirmed exploit evidence, map the full business-impact chain.
+adversarial_critique        — tries to DISPROVE the exploit hypothesis before lab time is spent.
+failure_class_rediagnosis   — post-failure: Qwen diagnoses if the vuln_class was wrong and
+                              suggests the corrected class+approach so the engine can retry.
+patch_bypass_analysis       — checks whether a security patch diff is complete or bypassable.
+impact_chain_analysis       — given confirmed exploit evidence, map the full business-impact chain.
 
-All three use an injected `llm_call(prompt, model) -> str` so they are testable without ollama.
+All use an injected `llm_call(prompt, model) -> str` so they are testable without ollama.
 """
 from __future__ import annotations
 
@@ -140,6 +142,152 @@ def adversarial_critique(
     result["revised_endpoint"] = parsed.get("revised_endpoint") or None
     rp = parsed.get("revised_params")
     result["revised_params"] = rp if isinstance(rp, dict) and rp else None
+    return result
+
+
+# ---------------------------------------------------------------------------
+# failure_class_rediagnosis
+# ---------------------------------------------------------------------------
+
+# CWE → mechanism vuln_class mapping (same logic as _cwe_to_vuln_class in cve_agent)
+_CWE_CLASS_MAP: dict[str, str] = {
+    "CWE-89": "sqli", "CWE-564": "sqli",
+    "CWE-79": "xss", "CWE-80": "xss",
+    "CWE-22": "lfi", "CWE-23": "lfi", "CWE-35": "lfi",
+    "CWE-918": "ssrf",
+    "CWE-611": "xxe",
+    "CWE-78": "rce", "CWE-77": "rce", "CWE-94": "ssti",
+    "CWE-434": "file-upload",
+    "CWE-352": "csrf",
+    "CWE-285": "missing-authorization", "CWE-862": "missing-authorization",
+    "CWE-863": "missing-authorization",
+    "CWE-307": "brute-force", "CWE-284": "missing-authorization",
+    "CWE-200": "information-disclosure", "CWE-209": "information-disclosure",
+    "CWE-312": "information-disclosure",
+    "CWE-601": "open-redirect",
+    "CWE-502": "deserialization",
+    "CWE-1333": "redos",
+    "CWE-1321": "prototype-pollution",
+}
+
+_REDIAGNOSIS_PROMPT = """\
+You are a security classification expert. A CVE verification attempt just FAILED — the lab ran
+but did NOT confirm the vulnerability. Your job is to determine if the WRONG vulnerability class
+was used for the verifier, and if so, what the correct class should be.
+
+## CVE being tested
+- CVE ID: {cve_id}
+- Description: {description}
+- CWE IDs: {cwe_ids}
+- CWE-to-class mapping for reference: {cwe_class_hints}
+
+## What the verifier tried
+- vuln_class used: {vuln_class_used}
+- endpoint tested: {endpoint}
+- http_method: {http_method}
+- parameters sent: {parameters}
+
+## What the lab actually returned (truncated)
+- HTTP status: {status_code}
+- Response body (first 300 chars): {response_body}
+- Verifier failure detail: {failure_detail}
+
+## Your analysis task
+1. CLASS MATCH: Is '{vuln_class_used}' the right mechanism class for this CVE?
+   - Look at the CWE IDs — do they map to a different mechanism class?
+   - Look at the description — does it say "file inclusion", "SQL injection", "SSRF", etc.?
+   - A vuln_class is a MECHANISM (how it works), not a consequence (what happens).
+     "information-disclosure" and "rce" are consequences; "lfi", "sqli", "ssrf" are mechanisms.
+2. RESPONSE ANALYSIS: What does the response tell us?
+   - 403/401 → auth gate (maybe auth_required should be true)
+   - Empty body → endpoint exists but needs seed data
+   - 404 → endpoint path is wrong
+   - Response contains error about wrong class → wrong verifier was chosen
+3. CORRECTED CLASS: If the class is wrong, what is the correct mechanism class?
+   Valid mechanism classes: sqli, xss, lfi, path-traversal, ssrf, xxe, ssti, rce,
+   file-upload, csrf, missing-authorization, open-redirect, deserialization,
+   information-disclosure (only if truly no mechanism class applies)
+
+Respond ONLY with valid JSON (no markdown):
+{{
+  "class_was_wrong": <true|false>,
+  "diagnosis": "<one sentence: why the class was or wasn't wrong>",
+  "correct_vuln_class": "<corrected class, or same as used if correct>",
+  "auth_fix_needed": <true|false — set true if response suggests auth is required>,
+  "endpoint_fix_needed": <true|false — set true if 404 suggests wrong endpoint>,
+  "reasoning": "<2-3 sentences explaining your analysis citing CWEs and response>"
+}}
+"""
+
+_REDIAGNOSIS_DEFAULTS: dict = {
+    "class_was_wrong": False,
+    "diagnosis": "analysis unavailable",
+    "correct_vuln_class": "",
+    "auth_fix_needed": False,
+    "endpoint_fix_needed": False,
+    "reasoning": "",
+}
+
+
+def failure_class_rediagnosis(
+    cve_id: str,
+    description: str,
+    cwe_ids: list,
+    vuln_class_used: str,
+    endpoint: str,
+    http_method: str,
+    parameters,
+    response_evidence: dict,
+    llm_call,
+    model: str = "qwen2.5-coder:7b",
+) -> dict:
+    """Post-failure Qwen analysis: was the wrong vuln_class used?
+
+    When the Docker lab runs but doesn't confirm the vulnerability, this asks Qwen
+    to diagnose if the CLASS MISMATCH caused the failure — e.g., the engine ran a
+    missing-authorization verifier for a CVE that is actually LFI (CWE-22).
+
+    Returns dict with keys from _REDIAGNOSIS_DEFAULTS. 'class_was_wrong' is True
+    when Qwen is confident the wrong verifier ran. Never raises.
+    """
+    cwe_class_hints = {
+        cwe: _CWE_CLASS_MAP.get(cwe, "unknown") for cwe in (cwe_ids or [])
+    }
+    ev = response_evidence or {}
+    status_code = ev.get("status_control") or ev.get("control_status") or ev.get("status") or 0
+    body = (ev.get("respuesta_control_recorte") or ev.get("body") or "")[:300]
+    failure_detail = (ev.get("detail") or ev.get("detalle") or "")[:200]
+
+    prompt = _REDIAGNOSIS_PROMPT.format(
+        cve_id=cve_id,
+        description=(description or "")[:400],
+        cwe_ids=", ".join(cwe_ids) if cwe_ids else "none",
+        cwe_class_hints=json.dumps(cwe_class_hints),
+        vuln_class_used=vuln_class_used or "unknown",
+        endpoint=endpoint or "unknown",
+        http_method=http_method or "POST",
+        parameters=json.dumps(parameters) if parameters else "{}",
+        status_code=status_code,
+        response_body=body,
+        failure_detail=failure_detail,
+    )
+
+    try:
+        raw = llm_call(prompt, model)
+    except Exception as exc:
+        return {**_REDIAGNOSIS_DEFAULTS, "diagnosis": f"llm_call failed: {exc}"}
+
+    parsed = _extract_json(raw)
+    if not parsed:
+        return {**_REDIAGNOSIS_DEFAULTS, "diagnosis": "LLM returned unparseable response"}
+
+    result = dict(_REDIAGNOSIS_DEFAULTS)
+    result["class_was_wrong"] = bool(parsed.get("class_was_wrong", False))
+    result["diagnosis"] = str(parsed.get("diagnosis") or "")[:300]
+    result["correct_vuln_class"] = str(parsed.get("correct_vuln_class") or vuln_class_used)
+    result["auth_fix_needed"] = bool(parsed.get("auth_fix_needed", False))
+    result["endpoint_fix_needed"] = bool(parsed.get("endpoint_fix_needed", False))
+    result["reasoning"] = str(parsed.get("reasoning") or "")[:500]
     return result
 
 

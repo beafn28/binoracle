@@ -13134,9 +13134,16 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
     from .websource import (fetch_source, grep_vulnerable_functions,
                             detect_required_companion_plugins, gather_cve_intelligence)
     from .webexploit import build_http_poc
+    from .wpverify import set_wp_image_override, clear_wp_image_override
 
     cve_id = inv.cve_id
     notes = inv.llm_notes or {}
+
+    # Clear any stale WP image override from a previous CVE, then apply this CVE's value.
+    clear_wp_image_override()
+    _wp_img_override = notes.get("docker_image", "")
+    if _wp_img_override and "wordpress" in _wp_img_override.lower():
+        set_wp_image_override(_wp_img_override)
 
     # --- Intel enrichment: OSV.dev + Nuclei Templates (additive, non-blocking) ---
     try:
@@ -16324,7 +16331,13 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                      "missing-authorization", "auth-bypass",
                                      "broken-access-control", "command-injection",
                                      "os-command-injection", "rce", "ssti", "code-injection")
-                  and notes.get("endpoint")):
+                  and notes.get("endpoint")
+                  # Ghost/Directus/Strapi have dedicated verifiers later in the chain —
+                  # don't consume this branch when their docker_image is set.
+                  and not any(cms in (notes.get("docker_image") or "").lower()
+                              for cms in ("ghost", "directus", "strapi", "payload",
+                                          "wagtail", "matomo", "concretecms", "concrete5",
+                                          "zitadel"))):
                 from .pythonverify import detect_python_framework, verify_python_web_cve
                 _py_fw = detect_python_framework(str(fr.local_path))
                 if _py_fw in ("django", "fastapi", "flask"):
@@ -18622,7 +18635,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             # auth probe instead — confirming the endpoint works without auth and that the
             # JSON success response is returned proves the server executes the request.
             _params_dict = notes.get("parameters") or {}
-            _url_key_hints = ("url", "remote_url", "file_url")
+            _url_key_hints = ("url", "remote_url", "file_url", "source", "src")
             _params_keys: list = (list(_params_dict.keys()) if isinstance(_params_dict, dict)
                                   else list(_params_dict) if isinstance(_params_dict, list) else [])
             _is_url_based_upload = (
@@ -21258,6 +21271,56 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None, fast_l
             })
     except Exception:
         pass
+
+    # POST-FAILURE CLASS REDIAGNOSIS — Qwen diagnoses if the wrong verifier was used.
+    # Runs only on web CVEs that the Docker lab attempted but did NOT confirm.
+    # If Qwen detects a class mismatch, the corrected class + analyst_endpoint_lock are
+    # written into inv.llm_notes and persisted so the next "Run Again" uses the right verifier.
+    if (not inv.verified
+            and inv.dynamic_verify.get("attempted")
+            and llm_on
+            and not inv.llm_notes.get("analyst_endpoint_lock")
+            and not getattr(inv, "rediagnosis_done", False)):
+        try:
+            from .adversarial_agent import failure_class_rediagnosis
+            _cwe_ids = getattr(info, "cwe_ids", None) or []
+            _ev = dict(inv.attempt_evidence or {})
+            _rediag = failure_class_rediagnosis(
+                cve_id=inv.cve_id,
+                description=inv.description or "",
+                cwe_ids=_cwe_ids,
+                vuln_class_used=inv.vuln_class or inv.llm_notes.get("vuln_class", ""),
+                endpoint=inv.llm_notes.get("endpoint", ""),
+                http_method=inv.llm_notes.get("http_method", "POST"),
+                parameters=inv.llm_notes.get("parameters"),
+                response_evidence=_ev,
+                llm_call=lambda p, m="": llm(p) or "",
+            )
+            inv.attempt_evidence = inv.attempt_evidence or {}
+            inv.attempt_evidence["rediagnosis"] = _rediag
+            if _rediag.get("class_was_wrong") and _rediag.get("correct_vuln_class"):
+                _new_class = _rediag["correct_vuln_class"]
+                step((f"[rediagnosis] clase incorrecta detectada: '{inv.vuln_class}' → '{_new_class}' "
+                      f"(Qwen: {_rediag.get('diagnosis', '')})" if es else
+                      f"[rediagnosis] wrong class detected: '{inv.vuln_class}' → '{_new_class}' "
+                      f"(Qwen: {_rediag.get('diagnosis', '')})"))
+                inv.llm_notes["vuln_class"] = _new_class
+                inv.vuln_class = _new_class
+                # Mark so next investigate_cve call uses correct class automatically
+                inv.llm_notes["_rediagnosis_corrected"] = True
+                inv.llm_notes["_rediagnosis_original_class"] = inv.vuln_class
+            elif _rediag.get("auth_fix_needed") and not inv.llm_notes.get("auth_required"):
+                step(("[rediagnosis] el lab requiere autenticación — marcando auth_required=True "
+                      "para el próximo intento" if es else
+                      "[rediagnosis] lab requires auth — setting auth_required=True for next run"))
+                inv.llm_notes["auth_required"] = True
+            elif _rediag.get("endpoint_fix_needed"):
+                step(("[rediagnosis] endpoint probablemente incorrecto (404) — "
+                      "revisa el endpoint en el próximo intento" if es else
+                      "[rediagnosis] endpoint likely wrong (404) — "
+                      "review the endpoint on next run"))
+        except Exception:
+            pass
 
     save_investigation_to_cache(inv)
 
