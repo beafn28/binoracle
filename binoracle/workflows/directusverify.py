@@ -107,8 +107,31 @@ def _run_request_chain(base_url: str, chain: list, bearer: Optional[str],
 
         step(f"  directus chain[{idx}]: {method} {ep}")
         try:
-            r = _http_request(method, url, data=body_data if method in ("POST", "PUT", "PATCH")
-                              else None, headers=hdrs, timeout=20)
+            multipart_fields = step_def.get("multipart_fields")
+            if multipart_fields:
+                # Build requests-style multipart payload: {name: (filename, data, ctype) or (None, value)}
+                import requests as _req_mp
+                mp_files = {}
+                for field_name, field_def in multipart_fields.items():
+                    if isinstance(field_def, dict) and "content" in field_def:
+                        content = field_def["content"]
+                        if isinstance(content, str):
+                            content = _substitute(content).encode()
+                        mp_files[field_name] = (
+                            field_def.get("filename"),
+                            content,
+                            field_def.get("content_type", "text/plain"),
+                        )
+                    elif isinstance(field_def, dict) and "value" in field_def:
+                        mp_files[field_name] = (None, _substitute(str(field_def["value"])))
+                    else:
+                        mp_files[field_name] = (None, _substitute(str(field_def)))
+                auth_hdr = hdrs.get("Authorization")
+                extra_hdrs = {k: v for k, v in hdrs.items() if k != "Content-Type"}
+                r = _req_mp.request(method, url, files=mp_files, headers=extra_hdrs, timeout=30)
+            else:
+                r = _http_request(method, url, data=body_data if method in ("POST", "PUT", "PATCH")
+                                  else None, headers=hdrs, timeout=20)
         except Exception as exc:
             return False, f"chain[{idx}] request error: {exc}", {}
 

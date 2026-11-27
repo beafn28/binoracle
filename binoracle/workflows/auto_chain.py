@@ -5165,7 +5165,12 @@ def process_never_attempted_cves(
         if not isinstance(d, dict):
             continue
         if d.get("verified"):
-            continue
+            # Only skip if dynamically verified — outer verified=True without
+            # dynamic_verify.verified=True is a false positive that must be retried.
+            _dv_outer = d.get("dynamic_verify")
+            if isinstance(_dv_outer, dict) and _dv_outer.get("verified"):
+                continue
+            # False positive: outer verified=True but no dynamic confirmation → fall through
         # Skip only if a real attempt was made (not just intel enrichment/patch analysis)
         # attempt_evidence with just patch data (raw_patch_text, patch_analysis) is intel
         # enrichment, not a verification attempt — only skip if "attempted": True is set.
