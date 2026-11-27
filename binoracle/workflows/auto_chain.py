@@ -5577,8 +5577,18 @@ def _build_repair_prompt(
         dominant = 0
 
     hints: list = []
+    _tech_hint = str(llm_notes.get("tech") or llm_notes.get("docker_image") or "").lower()
+    _is_wp = any(x in _tech_hint for x in ("wordpress", "wp-", "plugin"))
     if dominant == 404:
-        hints.append("HTTP 404: endpoint no existe — corrige 'endpoint'")
+        if _is_wp:
+            hints.append(
+                "HTTP 404 en WordPress: el plugin no está instalado/activado en el lab. "
+                "Corrige el endpoint a /wp-json/<namespace>/v1/<ruta> exacto del plugin, "
+                "o añade setup_cmds para activar el plugin: "
+                "'wp plugin activate <slug> --allow-root'"
+            )
+        else:
+            hints.append("HTTP 404: endpoint no existe — corrige 'endpoint'")
     elif dominant == 400:
         hints.append("HTTP 400: parámetros incorrectos — corrige 'parameters' o el Content-Type (json vs form)")
     elif dominant in (401, 403):
