@@ -8947,6 +8947,18 @@ def verify_generic_jwt_bypass(
         except Exception:
             _kid_attacks = []
 
+        # Baseline: probe without auth to check if endpoint is public (would FP otherwise)
+        step("JWT baseline: probando endpoint sin Authorization header...")
+        try:
+            _bl_r = _http_request(http_method, base_url.rstrip("/") + endpoint,
+                                   headers={"Content-Type": "application/json"}, timeout=10.0)
+            _baseline_status = _bl_r.status_code
+            _baseline_body = getattr(_bl_r, "text", "") or ""
+        except Exception:
+            _baseline_status = -1
+            _baseline_body = ""
+        step(f"  JWT baseline sin auth: status={_baseline_status}")
+
         for label, jwt_token in [
             ("alg:none bypass", _make_jwt_none(payload_data)),
             ("alg:none expired resign", _make_jwt_expired_resign(payload_data)),
@@ -8971,7 +8983,9 @@ def verify_generic_jwt_bypass(
             if confirm_string and confirm_string in body:
                 confirmed = True
             elif not confirm_string and st in (200, 201, 202, 204):
-                confirmed = True
+                # Only flag if the endpoint was NOT already publicly accessible
+                if _baseline_status not in (200, 201, 202, 204):
+                    confirmed = True
             if confirmed:
                 res.verified = True
                 res.ok = True
