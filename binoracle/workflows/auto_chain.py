@@ -1838,8 +1838,14 @@ def _generate_wrapper_app(cve_id: str, cve_info, llm_notes: dict,
                 llm_notes["dockerfile_body"] = wrapper_files.get("Dockerfile", "")
             extra_files = {k: v for k, v in wrapper_files.items()
                            if k not in ("Dockerfile", "_meta")}
-            if extra_files and not llm_notes.get("extra_files"):
-                llm_notes["extra_files"] = extra_files
+            if extra_files:
+                # Always merge deterministic wrapper files — they are authoritative.
+                # LLM-generated extra_files may be missing e.g. requirements.txt
+                # which the wrapper Dockerfile needs; merge preserves analyst overrides
+                # for files they explicitly provided while ensuring wrapper deps are present.
+                _merged = dict(extra_files)
+                _merged.update(llm_notes.get("extra_files") or {})
+                llm_notes["extra_files"] = _merged
             _ef_count = len(llm_notes.get("extra_files") or {})
             step(f"  wrapper-det: {lib_key} — Dockerfile + {_ef_count} archivo(s) "
                  f"inyectados en llm_notes para los verificadores")

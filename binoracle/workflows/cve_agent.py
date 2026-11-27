@@ -13155,6 +13155,45 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
         notes["alt_endpoints"] = [{"endpoint": ep} for ep in _ep_cands
                                    if ep != notes.get("endpoint")]
         inv.llm_notes = notes
+    # Description-based docker_image inference: when Qwen didn't set docker_image but the
+    # description/source clearly names a known product, fill it in automatically.
+    # This covers cases where the LLM analysis ran without a docker_image hint.
+    if not notes.get("docker_image") and not notes.get("dockerfile_body"):
+        _desc_low = (inv.description or "").lower()
+        _src_low  = (getattr(inv, "source", None) or "").lower()
+        _full_low = _desc_low + " " + _src_low
+        _KNOWN_IMAGE_HINTS: list[tuple[tuple[str, ...], str]] = [
+            # Strapi headless CMS (Node.js)
+            (("strapi",),                   "strapi/strapi:5.19.0"),
+            # Paperless-ngx document manager
+            (("paperless-ngx", "paperless"), "ghcr.io/paperless-ngx/paperless-ngx:2.8.5"),
+            # Ghost blogging platform
+            (("ghost",),                     "ghost:5.113.0"),
+            # Directus headless CMS
+            (("directus",),                  "directus/directus:10.13.0"),
+            # Audiobookshelf
+            (("audiobookshelf",),            "advplyr/audiobookshelf:2.19.1"),
+            # pgAdmin4
+            (("pgadmin4", "pgadmin 4", "pgadmin"),  "dpage/pgadmin4:8.14"),
+            # Zitadel identity provider
+            (("zitadel",),                   "ghcr.io/zitadel/zitadel:v2.65.1"),
+            # Mattermost team messaging
+            (("mattermost",),                "mattermost/mattermost-team-edition:9.4.1"),
+            # Etherpad collaborative editor
+            (("etherpad",),                  "etherpad/etherpad:2.2.6"),
+            # Drupal CMS
+            (("drupal",),                    "drupal:10.3.4"),
+            # Craft CMS
+            (("craft cms", "craftcms", "craft"), "craftcms/craft:5.4.6"),
+            # Gradio ML UI
+            (("gradio",),                    "python:3.11-slim"),
+        ]
+        for _keywords, _img in _KNOWN_IMAGE_HINTS:
+            if any(kw in _full_low for kw in _keywords):
+                step(f"[docker-hint] docker_image inferred from description: {_img}")
+                notes["docker_image"] = _img
+                inv.llm_notes = notes
+                break
     # CVE sobre una herramienta CLI LOCAL (sin servicio escuchando, sin endpoint HTTP) -- ver
     # cliverify.py, confirmado en vivo con CVE-2025-64756 (glob npm CLI). Reusa la clase
     # command-injection/os-command-injection de siempre (asi la clasifica classify_cve() sobre
