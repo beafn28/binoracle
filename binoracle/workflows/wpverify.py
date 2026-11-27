@@ -12672,6 +12672,22 @@ def verify_wordpress_missing_auth_probe(
                                   f"pero opcion '{post_verify_wp_option}'='{_opt_actual}' "
                                   f"(esperado: '{post_verify_expected}') — impacto no confirmado")
             else:
+                # Sensitive-data heuristic: if body contains private field names, verify
+                _SENSITIVE_WP = (
+                    "user_email", "user_pass", "user_login", "admin_email",
+                    "\"email\"", "\"password\"", "\"secret\"", "\"token\"",
+                    "\"api_key\"", "\"access_token\"", "\"nonce\"", "\"auth_cookie\"",
+                    "\"private_key\"", "\"secret_key\"", "user_registered",
+                )
+                _body_low = body.lower()
+                _sf = next((s for s in _SENSITIVE_WP if s in _body_low), None)
+                if _sf and status == 200 and len(body) > 20:
+                    res.verified = True
+                    res.detail = (f"sonda no-auth: endpoint REST responde HTTP {status} con campo "
+                                  f"sensible '{_sf}' sin autenticacion — missing-authorization "
+                                  f"confirmada (heuristica de datos privados)")
+                    res.evidence["sensitive_field"] = _sf
+                    return res
                 # Strengthen weak probe: compare anonymous response with subscriber.
                 # If both get the same content, the endpoint clearly skips auth checks.
                 # If subscriber gets 401/403 but anon gets 200, it's a broken-access anomaly.
