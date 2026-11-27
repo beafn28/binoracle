@@ -19975,7 +19975,12 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     and notes.get("steps")))):
                 from .genericverify import verify_generic_multistep
                 _ms_cs      = notes.get("confirm_string") or ""
-                _ms_steps   = notes.get("steps") or []
+                # notes["steps"] is always human-readable string instructions from the LLM.
+                # Only use items that are dicts (machine-readable step specs).
+                # Prefer request_chain (always dict format) over steps.
+                _ms_steps = [s for s in (notes.get("request_chain") or []) if isinstance(s, dict)]
+                if not _ms_steps:
+                    _ms_steps = [s for s in (notes.get("steps") or []) if isinstance(s, dict)]
                 step(("intentando verificacion DINAMICA GENERICA -- MULTI-STEP CHAIN "
                       "(extraccion de token + explotacion en cadena)..." if es else
                       "attempting GENERIC DYNAMIC verification -- MULTI-STEP CHAIN "
