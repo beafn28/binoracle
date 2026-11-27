@@ -2920,6 +2920,51 @@ def _static_vuln_precheck(local_path: str, plugin_dir: str, vuln_class: str,
         except Exception:
             pass
 
+    # --- Check 29: Hardcoded credentials / backdoor strings in plugin source ---
+    # Triggers for all vuln classes that could involve backdoors or static auth bypass.
+    # Does NOT fail (ok=False) but adds signal as ok=True precheck evidence.
+    if vuln_class in ("broken-authentication", "auth-bypass", "missing-authorization",
+                      "broken-access-control", "backdoor", "rce") and local_path:
+        import os as _os_hc
+        _HARDCODED_RE = re.compile(
+            r"['\"](?:password|passwd|pass|secret|token|api_key|apikey)['\"]"
+            r"\s*(?:=>|=|:)\s*['\"]([A-Za-z0-9!@#$%^&*]{6,})['\"]"
+            r"|define\s*\(\s*['\"](?:MASTER_PASS|BACKDOOR_KEY|ADMIN_SECRET)['\"],\s*['\"]([^'\"]+)['\"]"
+            r"|\bif\s*\(\s*\$_(?:GET|POST|REQUEST)\s*\[['\"](?:backdoor|debug|cmd|shell)['\"]",
+            re.IGNORECASE,
+        )
+        _hc_hits: list[str] = []
+        _exts_hc = {".php", ".js", ".py"}
+        try:
+            for _r29, _d29, _f29 in _os_hc.walk(local_path):
+                _d29[:] = [d for d in _d29
+                           if d not in (".git", "node_modules", "__pycache__", "vendor")]
+                for _fn29 in _f29:
+                    if not any(_fn29.endswith(e) for e in _exts_hc):
+                        continue
+                    _fp29 = _os_hc.path.join(_r29, _fn29)
+                    try:
+                        _txt29 = open(_fp29, encoding="utf-8", errors="ignore").read(100_000)
+                        for _m29 in _HARDCODED_RE.finditer(_txt29):
+                            _rel = _os_hc.path.relpath(_fp29, local_path)
+                            _val = (_m29.group(1) or _m29.group(2) or "")[:20]
+                            _hc_hits.append(f"{_rel}: {_m29.group(0)[:60]} (val={_val!r})")
+                            if len(_hc_hits) >= 3:
+                                break
+                    except Exception:
+                        continue
+                if len(_hc_hits) >= 3:
+                    break
+        except Exception:
+            pass
+        if _hc_hits:
+            return {
+                "ok": True,
+                "reason": (f"pre-check: credenciales/backdoor hardcodeadas en fuente — "
+                           f"{'; '.join(_hc_hits[:2])}"),
+                "confidence": 0.0,
+            }
+
     # --- Check 28: CSRF — missing nonce/check_ajax_referer in AJAX handler ---
     if vuln_class in ("csrf", "cross-site-request-forgery", "xsrf") and local_path and plugin_dir:
         import os as _os_csrf
