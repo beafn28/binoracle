@@ -1979,20 +1979,30 @@ _JOIN_RELATIONSHIP_RE = re.compile(
 
 
 _PHP_MAGIC_RE = re.compile(
-    r'function\s+(__wakeup|__destruct|__toString|__call|__callStatic|__get|__set|__invoke)\s*\(',
+    r'function\s+(__wakeup|__destruct|__toString|__call|__callStatic|__get|__set|__invoke'
+    r'|__sleep|__clone|__unserialize)\s*\(',
     re.IGNORECASE,
 )
 _PHP_DANGEROUS_SINK_RE = re.compile(
     r'(?:'
-    r'(?:exec|shell_exec|system|passthru|proc_open|popen)\s*\('
+    r'(?:exec|shell_exec|system|passthru|proc_open|popen|pcntl_exec)\s*\('
     r'|eval\s*\('
-    r'|file_put_contents\s*\(.*\$(?:this|data|content)'
+    r'|assert\s*\(\s*\$'
+    r'|call_user_func(?:_array)?\s*\(\s*\$'
+    r'|file_put_contents\s*\('
+    r'|file_put_contents\s*\(.*\$(?:this|data|content|path)'
     r'|unlink\s*\(.*\$(?:this|path|file)'
-    r'|include\s*\(\s*\$(?:this|path|file)'
-    r'|require\s*\(\s*\$(?:this|path|file)'
+    r'|rename\s*\(.*\$(?:this|path|file)'
+    r'|copy\s*\(.*\$(?:this|path|file)'
+    r'|include\s*[\(\s]\s*\$(?:this|path|file|url)'
+    r'|require\s*[\(\s]\s*\$(?:this|path|file|url)'
+    r'|include_once\s*[\(\s]\s*\$(?:this|path|file|url)'
+    r'|require_once\s*[\(\s]\s*\$(?:this|path|file|url)'
     r'|file_get_contents\s*\(\s*\$(?:this|url|path)'
     r'|curl_exec\s*\('
-    r'|mysqli_query|pg_query|wpdb->query'
+    r'|fopen\s*\(.*\$(?:this|path|file)'
+    r'|mysqli_query\s*\(|pg_query\s*\(|\$wpdb\s*->\s*query\s*\('
+    r'|preg_replace\s*\([^,]*\/e[^,]*,'
     r')',
     re.IGNORECASE,
 )

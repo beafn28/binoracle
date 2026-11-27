@@ -1837,18 +1837,25 @@ def _static_vuln_precheck(local_path: str, plugin_dir: str, vuln_class: str,
                       "rce") and local_path:
         import os as _os_ds
         _DESER_SINK_RE = re.compile(
-            # PHP
-            r'unserialize\s*\(\s*\$_(?:GET|POST|REQUEST|COOKIE)'
-            r'|unserialize\s*\(\s*\$(?:data|input|body|value|payload|raw)'
+            # PHP — direct superglobal
+            r'unserialize\s*\(\s*\$_(?:GET|POST|REQUEST|COOKIE|SERVER)'
+            r'|unserialize\s*\(\s*\$(?:data|input|body|value|payload|raw|serial|blob|content)'
+            # PHP — base64_decode then unserialize (common pattern for cookies/options)
+            r'|unserialize\s*\(\s*base64_decode\s*\('
+            r'|unserialize\s*\(\s*maybe_unserialize\s*\('
+            r'|maybe_unserialize\s*\(\s*\$(?:option|value|meta|data)'
             # Python
             r'|pickle\.loads\s*\(\s*(?!b["\'])'   # pickle.loads(variable)
             r'|yaml\.load\s*\([^,)]+\)'            # yaml.load(x) without Loader
             r'|marshal\.loads\s*\('                # marshal.loads
+            r'|jsonpickle\.decode\s*\('            # jsonpickle (less safe)
             # Java
             r'|readObject\s*\(\s*\)'               # ObjectInputStream.readObject()
-            # Node.js
+            r'|XStream.*fromXML\s*\('              # XStream XML deserialization
+            # Node.js / Ruby
             r'|\.deserialize\s*\(\s*(?:req|body|input)'
-            r'|node-serialize.*\.unserialize\s*\(',
+            r'|node-serialize.*\.unserialize\s*\('
+            r'|Marshal\.load\s*\(',                # Ruby Marshal
             re.IGNORECASE,
         )
         _DESER_SAFE_RE = re.compile(
