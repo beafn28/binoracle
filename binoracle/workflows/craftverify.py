@@ -334,7 +334,7 @@ def verify_craft_web_cve(
                             break
                         else:
                             step(f"  craftverify: gen canary GET {_post_attack_path_gen} HTTP {_pa_r2.status_code} intento {_ci2+1}/4 — no confirm")
-                            if _pa_r2.status_code == 200:
+                            if _pa_r2.status_code == 200 and _pa_body2.strip():
                                 break
                     except Exception as _pa_e2:
                         step(f"  craftverify: gen canary GET error intento {_ci2+1}/4 — {_pa_e2}")
@@ -526,8 +526,9 @@ def verify_craft_web_cve(
                             break
                         else:
                             step(f"  craftverify: canary GET {_post_attack_path} HTTP {_pa_r.status_code} intento {_ci+1}/4 — no confirm")
-                            if _pa_r.status_code == 200:
-                                break  # Got 200 but no confirm — stop retrying
+                            # Only stop if body non-empty: empty=file not yet written (keep retrying)
+                            if _pa_r.status_code == 200 and _pa_body.strip():
+                                break
                     except Exception as _pa_e:
                         step(f"  craftverify: canary GET error intento {_ci+1}/4 — {_pa_e}")
                     if res.verified:

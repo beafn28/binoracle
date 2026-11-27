@@ -271,6 +271,20 @@ def _stage_index(stage: str) -> int:
         return -1
 
 
+def _llm_notes_hash(notes: dict) -> str:
+    """Short hash of the analyst-critical keys in llm_notes for cache invalidation.
+
+    When an analyst updates endpoint/parameters/setup_cmds/confirm_string in the
+    batch JSON, the checkpoint must be discarded so the new config is used.
+    """
+    import hashlib as _h, json as _j
+    keys = ("endpoint", "parameters", "setup_cmds", "confirm_string",
+            "http_method", "custom_headers", "extra_files", "dockerfile_body",
+            "request_chain", "analyst_endpoint_lock")
+    subset = {k: notes.get(k) for k in keys if k in notes}
+    return _h.md5(_j.dumps(subset, sort_keys=True, default=str).encode()).hexdigest()[:12]
+
+
 def _save_checkpoint(result: ChainResult, llm_notes: dict, stage: str) -> None:
     """Persist chain state after a completed stage.
 
@@ -301,6 +315,7 @@ def _save_checkpoint(result: ChainResult, llm_notes: dict, stage: str) -> None:
                         "detail": s.detail, "elapsed": s.elapsed}
                        for s in result.steps],
             "saved_at": time.time(),
+            "notes_hash": _llm_notes_hash(llm_notes),  # for cache invalidation
         }
         with open(_checkpoint_path(result.cve_id), "w", encoding="utf-8") as f:
             _json.dump(_data, f, indent=2, default=str)
@@ -3215,8 +3230,15 @@ def run_full_chain(
     # ── Checkpoint resume ─────────────────────────────────────────────────────
     # If a previous run was interrupted (timeout, crash) and a checkpoint was
     # saved within the last 24h, restore what we know and skip completed stages.
+    # INVALIDATION: if the analyst updated the batch JSON (endpoint/params/cmds),
+    # the checkpoint's notes_hash will differ → discard so new config is used.
     llm_notes: dict = {}
     _ckpt = _load_checkpoint(cve_id) if not no_cache else None
+    if _ckpt and hints and _ckpt.get("notes_hash"):
+        _current_hash = _llm_notes_hash(hints)
+        if _ckpt["notes_hash"] != _current_hash:
+            step(f"  checkpoint descartado — config actualizada (hash: {_ckpt['notes_hash']!r} → {_current_hash!r})")
+            _ckpt = None
     if _ckpt:
         step(f"  checkpoint encontrado (stage={_ckpt.get('last_stage', '?')}, "
              f"{int(time.time() - _ckpt.get('saved_at', 0))/60:.0f}min atrás) — reanudando")
