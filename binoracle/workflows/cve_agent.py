@@ -20540,6 +20540,9 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None, fast_l
             "sqli_param", "url_param", "ssrf_param", "path_param",
             "url_suffix", "custom_headers", "setup_cmds", "budget_s",
             "source_url", "companion_plugins",
+            # Bypass-specific fields — must carry forward so stage-5 uses analyst's bypass
+            "bypass_url", "bypass_header", "bypass_value",
+            "docker_port", "startup_wait",
         }
         def _load_analyst_notes(cve_id_key: str) -> Optional[dict]:
             """Load analyst-set notes from cache or batch reports, return None if not found."""

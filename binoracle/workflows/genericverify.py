@@ -2290,6 +2290,8 @@ def _bootstrap_generic_lab(source_dir: str, step, res: WpVerifyResult,
             _known_cms_images = {
                 "ghost": "ghost", "strapi": "strapi", "directus": "directus",
                 "payload": "payload", "ghost/ghost": "ghost",
+                "paperless-ngx": "paperless", "audiobookshelf": "audiobookshelf",
+                "nextcloud": "nextcloud", "pgadmin": "pgadmin", "mattermost": "mattermost",
             }
             for _img_key, _cms_val in _known_cms_images.items():
                 if _img_key in docker_image.lower():

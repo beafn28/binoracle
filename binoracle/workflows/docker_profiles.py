@@ -54,10 +54,10 @@ _DOCKER_IMAGE_PROFILES: dict[str, dict] = {
         "health_path": "/server/health",
     },
     "advplyr/audiobookshelf:": {
-        "port": 3000,
+        "port": 80,
         "envs": {},
         "cmd": None,
-        "startup_wait": 20,
+        "startup_wait": 30,
         "health_path": "/healthcheck",
     },
     "daptin/daptin:": {
