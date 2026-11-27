@@ -367,23 +367,44 @@ def analyze_patch_diff(raw_diff: str) -> dict:
 
 
 def find_vulnerable_function(source_dir: str, function_names: list) -> list:
-    """Scan plugin source for exact file:line of each function name."""
+    """Scan source for exact file:line of each function name, across all supported languages."""
     if not source_dir or not function_names:
         return []
     results = []
-    _fn_re = {
-        fn: re.compile(
-            rf"\bfunction\s+{re.escape(fn)}\s*\(", re.IGNORECASE
-        )
-        for fn in function_names
+    # Language-specific function declaration patterns
+    _lang_patterns = {
+        ".php":  lambda fn: re.compile(rf"\bfunction\s+{re.escape(fn)}\s*\(", re.IGNORECASE),
+        ".py":   lambda fn: re.compile(rf"\bdef\s+{re.escape(fn)}\s*\(", re.IGNORECASE),
+        ".js":   lambda fn: re.compile(
+            rf"(?:function\s+{re.escape(fn)}\s*\(|{re.escape(fn)}\s*[:=]\s*(?:async\s+)?function"
+            rf"|\basync\s+function\s+{re.escape(fn)}\s*\()", re.IGNORECASE),
+        ".ts":   lambda fn: re.compile(
+            rf"(?:function\s+{re.escape(fn)}\s*\(|{re.escape(fn)}\s*[:=]\s*(?:async\s+)?function"
+            rf"|\basync\s+function\s+{re.escape(fn)}\s*\()", re.IGNORECASE),
+        ".rb":   lambda fn: re.compile(rf"\bdef\s+{re.escape(fn)}\b", re.IGNORECASE),
+        ".java": lambda fn: re.compile(
+            rf"(?:public|private|protected|static|\s)+\w[\w<>\[\]]*\s+{re.escape(fn)}\s*\(", re.IGNORECASE),
+        ".go":   lambda fn: re.compile(rf"\bfunc\s+(?:\(\w+\s+\*?\w+\)\s+)?{re.escape(fn)}\s*\("),
+        ".cs":   lambda fn: re.compile(
+            rf"(?:public|private|protected|internal|static|\s)+\w[\w<>\[\]]*\s+{re.escape(fn)}\s*\(", re.IGNORECASE),
     }
-    for php_file in glob.glob(os.path.join(source_dir, "**", "*.php"), recursive=True):
+    _exts = set(_lang_patterns.keys())
+    # Pre-compile patterns per function per extension
+    _compiled: dict[str, dict[str, re.Pattern]] = {ext: {} for ext in _exts}
+    for ext, pat_fn in _lang_patterns.items():
+        for fn in function_names:
+            _compiled[ext][fn] = pat_fn(fn)
+
+    for src_file in glob.glob(os.path.join(source_dir, "**", "*"), recursive=True):
+        ext = os.path.splitext(src_file)[1].lower()
+        if ext not in _exts:
+            continue
         try:
-            with open(php_file, encoding="utf-8", errors="replace") as fh:
+            with open(src_file, encoding="utf-8", errors="replace") as fh:
                 for lineno, line in enumerate(fh, 1):
-                    for fn, pattern in _fn_re.items():
+                    for fn, pattern in _compiled[ext].items():
                         if pattern.search(line):
-                            rel = os.path.relpath(php_file, source_dir)
+                            rel = os.path.relpath(src_file, source_dir)
                             results.append({
                                 "function": fn,
                                 "file": rel,

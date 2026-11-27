@@ -10935,60 +10935,95 @@ def verify_generic_race_condition(
         with lab.running() as boot:
             import requests as _rq
 
-            def _fire():
-                try:
-                    r = _rq.request(http_method.upper(), boot.base_url + endpoint,
-                                    data=_params, json=_params if
-                                    any(isinstance(v, dict) for v in _params.values()) else None,
-                                    timeout=15)
-                    with _lock:
-                        _results.append({"status": r.status_code, "body": (r.text or "")[:300]})
-                except Exception as e:
-                    with _lock:
-                        _results.append({"status": -1, "error": str(e)})
+            _use_json = bool(_params and any(isinstance(v, dict) for v in _params.values()))
+            _meth = http_method.upper()
+            _url = boot.base_url + endpoint
 
-            step(f"lanzando {concurrent_requests} peticiones concurrentes a {endpoint}...")
-            threads = [_thr.Thread(target=_fire) for _ in range(concurrent_requests)]
-            for t in threads:
-                t.start()
-            for t in threads:
-                t.join(timeout=20)
+            # Use a Barrier so all threads release simultaneously (Last Frame Sync technique)
+            # This maximises the probability of the race window being hit
+            def _make_burst(n: int, barrier: _thr.Barrier) -> list:
+                _burst_results: list = []
+                _blast_lock = _thr.Lock()
+
+                def _fire():
+                    # Pre-open connection (warm up TCP before the barrier)
+                    try:
+                        _sess = _rq.Session()
+                        _sess.headers.update({"Connection": "keep-alive"})
+                        # Warm up: HEAD request to establish the TCP connection
+                        try:
+                            _sess.head(_url, timeout=5)
+                        except Exception:
+                            pass
+                        barrier.wait(timeout=10)  # synchronize burst
+                        r = _sess.request(_meth, _url,
+                                          data=_params if not _use_json else None,
+                                          json=_params if _use_json else None,
+                                          timeout=15)
+                        with _blast_lock:
+                            _burst_results.append({"status": r.status_code, "body": (r.text or "")[:400]})
+                    except _thr.BrokenBarrierError:
+                        pass
+                    except Exception as exc:
+                        with _blast_lock:
+                            _burst_results.append({"status": -1, "error": str(exc)})
+
+                ts = [_thr.Thread(target=_fire) for _ in range(n)]
+                for t in ts:
+                    t.start()
+                for t in ts:
+                    t.join(timeout=25)
+                return _burst_results
+
+            # Fire 3 synchronized bursts with slightly increasing sizes to widen race window
+            _burst_sizes = [concurrent_requests, concurrent_requests + 10, concurrent_requests + 20]
+            for _bi, _bsz in enumerate(_burst_sizes):
+                step(f"rafaga {_bi + 1}/3: {_bsz} peticiones sincronizadas (barrier) a {endpoint}...")
+                _barrier = _thr.Barrier(_bsz)
+                _batch = _make_burst(_bsz, _barrier)
+                _results.extend(_batch)
+
+                # Check after each burst
+                for r in _batch:
+                    if confirm_string and confirm_string in r.get("body", ""):
+                        _all_statuses = [x["status"] for x in _results]
+                        _uniq = {s for s in _all_statuses if s != -1}
+                        _ok_count = sum(1 for s in _all_statuses if s in (200, 201, 204))
+                        res.verified = True
+                        res.ok = True
+                        res.evidence.update({
+                            "endpoint": endpoint,
+                            "burst_round": _bi + 1,
+                            "concurrent_requests": _bsz,
+                            "winning_response": r["body"],
+                            "status_codes_distribution": str(_uniq),
+                            "success_count": _ok_count,
+                        })
+                        step(f"VERIFICADO — race condition ganada en rafaga {_bi + 1} "
+                             f"({_bsz} threads sincronizados, barrier)")
+                        return res
 
             statuses = [r["status"] for r in _results]
             _success_count = sum(1 for s in statuses if s in (200, 201, 204))
             _uniq_statuses = {s for s in statuses if s != -1}
 
-            for r in _results:
-                if confirm_string and confirm_string in r.get("body", ""):
-                    res.verified = True
-                    res.ok = True
-                    res.evidence.update({
-                        "endpoint": endpoint,
-                        "concurrent_requests": concurrent_requests,
-                        "winning_response": r["body"],
-                        "status_codes_distribution": str(_uniq_statuses),
-                        "success_count": _success_count,
-                    })
-                    step(f"VERIFICADO — race condition: confirm_string encontrada en respuesta "
-                         f"de rafaga ({_success_count}/{concurrent_requests} exitosas)")
-                    return res
-
             # Inconsistency detection (no confirm_string but state corruption observed)
+            # More than 2 distinct status codes in a uniform request set → non-atomic state
             if len(_uniq_statuses) > 2 and _success_count > 0:
                 res.evidence.update({
                     "endpoint": endpoint,
-                    "concurrent_requests": concurrent_requests,
+                    "total_requests": len(_results),
                     "status_codes_distribution": str(_uniq_statuses),
                     "inconsistency_detected": True,
                     "success_count": _success_count,
                 })
                 res.confidence = "probable"
                 step(f"race condition PROBABLE: {len(_uniq_statuses)} status codes distintos "
-                     f"en {concurrent_requests} peticiones → estado no atómico")
+                     f"en {len(_results)} peticiones → estado no atómico")
 
             res.ok = True
-            res.detail = (f"race-condition: {concurrent_requests} peticiones concurrentes a "
-                          f"{endpoint}, confirm_string no encontrada. "
+            res.detail = (f"race-condition: {len(_results)} peticiones sincronizadas en 3 rafagas "
+                          f"({'+'.join(str(b) for b in _burst_sizes)}), confirm_string no encontrada. "
                           f"Status distribution: {_uniq_statuses}")
             return res
     except Exception as e:
