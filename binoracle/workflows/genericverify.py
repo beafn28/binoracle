@@ -1959,6 +1959,30 @@ def _scan_web_routes(source_dir: str) -> list:
             ep = m_exp.group(2)
             routes.append((ep, {}, meth))
 
+    # --- TypeScript (h3/Hono/Nitro/Express-TS): scan .ts files for route patterns ---
+    for ts_file in _glob.glob(os.path.join(source_dir, "**", "*.ts"), recursive=True):
+        try:
+            content = open(ts_file).read()
+        except Exception:
+            continue
+        # Express/NestJS: app.get('/path', ...) / router.post('/path', ...)
+        for m_exp in re.finditer(
+                r'(?:app|router|server)\.(get|post|put|patch|delete)\s*\(\s*["\']([^"\']+)["\']',
+                content):
+            routes.append((m_exp.group(2), {}, m_exp.group(1).upper()))
+        # Hono: app.get('/path', ...) — same pattern
+        # h3: defineEventHandler with no explicit route in URL — skip
+        # Nitro: eventHandler / H3Event routes via useRouter().get('/path', ...)
+        for m_h3 in re.finditer(
+                r'router\s*\.\s*(get|post|put|patch|delete)\s*\(\s*["\']([^"\']+)["\']',
+                content):
+            routes.append((m_h3.group(2), {}, m_h3.group(1).upper()))
+        # Hono: c.req.param('/path') — static serving
+        for m_hon in re.finditer(
+                r'(?:app|hono)\.(get|post|put|patch|delete)\s*\(\s*["\']([^"\']+)["\']',
+                content):
+            routes.append((m_hon.group(2), {}, m_hon.group(1).upper()))
+
     # Deduplicate while preserving order
     seen: set = set()
     uniq = []
