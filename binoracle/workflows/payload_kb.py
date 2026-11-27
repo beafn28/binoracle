@@ -955,15 +955,35 @@ def load_el_injection_payloads(a: int, b: int) -> List[str]:
     """
     _expr = f"{a}+{b}"
     return [
+        # Spring SpEL
         f"${{{_expr}}}",
-        f"#{{{_expr}}}",
-        f"{{{{ {_expr} }}}}",
         f"${{{{{_expr}}}}}",
         f"${{({_expr})}}",
-        f"<%= {_expr} %>",
-        f"${{{_expr}?string}}",
+        # Thymeleaf / JSP EL
+        f"#{{{_expr}}}",
         f"#{{({_expr})}}",
+        # Jinja2 / Pebble / Twig
+        f"{{{{ {_expr} }}}}",
+        # FreeMarker (truncated syntax)
+        f"${{{_expr}?string}}",
+        # EJS / Lodash template
+        f"<%= {_expr} %>",
+        # OGNL (Struts2) — %{expr}
+        f"%{{{_expr}}}",
+        f"%{{({_expr})}}",
+        # Velocity #set
+        f"#set( $x = {_expr} )${{x}}",
+        f"#set($a = {a})#set($b = {b})#set($r = $a + $b)${{r}}",
+        # Handlebars/Nunjucks inline math (not natively evaluated, but detects template eval)
+        f"{{{{math {a} '+' {b}}}}}",
+        # Mvel
+        f"({_expr})",
+        # SpEL inline (alternative notation)
         f"@({_expr})",
+        # Groovy GString (server-side template)
+        f"${{{a} + {b}}}",
+        # Pebble set tag
+        f"{{% set r = {a} + {b} %}}{{{{ r }}}}",
     ]
 
 
