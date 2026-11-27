@@ -84,6 +84,21 @@ _WP_IMAGE = os.environ.get("BINORACLE_WP_IMAGE", "wordpress:php8.2-apache")
 _WPCLI_IMAGE = "wordpress:cli"
 _ALPINE_IMAGE = "alpine:3.20"
 
+import threading as _threading
+_wp_image_ctx = _threading.local()
+
+def _get_active_wp_image() -> str:
+    """Return per-CVE WP image override (set by cve_agent before calling a verifier)
+    or the process-level default."""
+    return getattr(_wp_image_ctx, "image", None) or _WP_IMAGE
+
+def set_wp_image_override(image: str) -> None:
+    """Set a thread-local WP image override for the current CVE verification."""
+    _wp_image_ctx.image = image if image else None
+
+def clear_wp_image_override() -> None:
+    _wp_image_ctx.image = None
+
 _ID_HINTS = ("user_id", "uid", "id", "target", "target_id", "user")
 _EMAIL_HINTS = ("email", "mail", "user_email")
 _PASS_HINTS = ("pass", "password", "pwd", "user_pass")
@@ -1420,7 +1435,7 @@ class _Lab:
         self.sh("run", "-d", "--name", self.wp, "--network", self.net, "--platform", "linux/amd64",
                "-v", f"{self.vol}:/var/www/html", *self._db_env,
                "--cpus", "2.0", "--memory", "768m", "--pids-limit", "400",
-               "-p", "0.0.0.0::80", _WP_IMAGE, timeout=90)
+               "-p", "0.0.0.0::80", _get_active_wp_image(), timeout=90)
         self._created.append(("container", self.wp))
         r = self.sh("port", self.wp, "80", timeout=15)
         m = re.search(r":(\d+)\s*$", (r.stdout or "").strip())
@@ -2939,11 +2954,39 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
         elif not wpcli_registration_error:
             step(f"ERROR: activacion del plugin fallo (rc={r.returncode}): "
                  f"{activation_output[:200]}")
-            res.detail = f"activacion del plugin fallo: {activation_output[:300]}"
-            res.limitations.append("si el slug/version descargados no coinciden con el afectado, "
-                                   "la activacion puede fallar por requisitos del propio plugin")
-            res.evidence["screenshots"] = shots
-            return None
+            # rc=255 with empty output = PHP crashed (OOM, fatal error) during activation hook.
+            # WP-CLI may have written the plugin to active_plugins BEFORE the crash (depends on
+            # timing in activate_plugin()). Check the DB first, then force-activate via DB
+            # so the lab can still attempt the exploit.
+            if r.returncode == 255 and not activation_output.strip():
+                _r_ap_chk = lab.wp_cli("eval",
+                    "echo implode('|', (array)get_option('active_plugins'));",
+                    "--skip-plugins", "--skip-themes", timeout=15)
+                _ap_active = (_r_ap_chk.stdout or "").strip()
+                if slug in _ap_active:
+                    _activate_ok = True
+                    step(f"plugin '{slug}' ya estaba activo en BD (PHP crasheo DESPUES de escribirlo) — continuando")
+                else:
+                    # Force-activate by writing directly to active_plugins in the DB
+                    _r_force = lab.wp_cli("eval",
+                        f"$c = (array)get_option('active_plugins'); "
+                        f"$s = '{slug}/{slug}.php'; "
+                        f"if (!in_array($s, $c)) {{ $c[] = $s; sort($c); "
+                        f"update_option('active_plugins', $c); }} "
+                        f"echo in_array($s, (array)get_option('active_plugins')) ? 'OK' : 'FAIL';",
+                        "--skip-plugins", "--skip-themes", timeout=20)
+                    if (_r_force.stdout or "").strip().endswith("OK"):
+                        _activate_ok = True
+                        step(f"plugin '{slug}' forzado activo en BD (PHP crasheo durante hook, "
+                             f"forzando via eval --skip-plugins)")
+                    else:
+                        step(f"no se pudo forzar activacion via DB: {(_r_force.stdout or '')[:100]}")
+            if not _activate_ok:
+                res.detail = f"activacion del plugin fallo: {activation_output[:300]}"
+                res.limitations.append("si el slug/version descargados no coinciden con el afectado, "
+                                       "la activacion puede fallar por requisitos del propio plugin")
+                res.evidence["screenshots"] = shots
+                return None
         else:
             step("plugin activo (rc!=0 pero patron WP-CLI registration-error -- el plugin SI esta registrado)")
     else:
