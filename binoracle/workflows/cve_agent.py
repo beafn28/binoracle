@@ -2838,6 +2838,24 @@ def _static_vuln_precheck(local_path: str, plugin_dir: str, vuln_class: str,
                 "confidence": 0.75,
             }
 
+    # --- Check 27: HTTP Parameter Pollution (HPP) — $_(GET|POST) param used in security-sensitive sink ---
+    if vuln_class in ("parameter-pollution", "http-parameter-pollution", "hpp",
+                      "sqli", "sql-injection", "auth-bypass", "missing-authorization",
+                      "open-redirect") and local_path and plugin_dir:
+        try:
+            from .websource import find_hpp_candidates
+            _hpp_candidates = find_hpp_candidates(local_path, plugin_dir)
+            if _hpp_candidates:
+                _hpp0 = _hpp_candidates[0]
+                return {
+                    "ok": True,
+                    "reason": (f"pre-check HPP: {_hpp0.param_access!r} (parámetro '{_hpp0.param_name}') "
+                               f"usado en sink sensible en {_hpp0.file}:{_hpp0.line} — HPP/injection posible"),
+                    "confidence": 0.0,
+                }
+        except Exception:
+            pass
+
     return {"ok": True, "reason": "pre-check OK", "confidence": 1.0}
 
 

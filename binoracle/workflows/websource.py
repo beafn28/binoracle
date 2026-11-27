@@ -2201,6 +2201,97 @@ def find_toctou_candidates(local_path: str, plugin_dir: str = "") -> List[Toctou
     return candidates[:10]
 
 
+# ---------------------------------------------------------------------------
+# HTTP Parameter Pollution (HPP) static scanner
+# ---------------------------------------------------------------------------
+
+@dataclass
+class HppCandidate:
+    """A potential HTTP Parameter Pollution vulnerability — code consumes only first/last param."""
+    param_access: str    # the access pattern (e.g. $_GET['id'], $_POST['action'])
+    param_name: str      # parameter name
+    context: str         # surrounding code showing how it's used
+    file: str
+    line: int
+
+
+# PHP: direct superglobal access patterns (vulnerable to HPP if used in SQL/redirect/auth)
+_HPP_PARAM_RE = re.compile(
+    r"\$_(GET|POST|REQUEST|COOKIE)\s*\[\s*['\"]([A-Za-z0-9_\-]+)['\"]\s*\]",
+    re.IGNORECASE,
+)
+
+# Sinks where HPP can escalate (SQL, redirect, auth check)
+_HPP_SINK_RE = re.compile(
+    r"\b(wpdb->(?:query|get_results|get_var|prepare)|wp_redirect|wp_safe_redirect"
+    r"|current_user_can|check_ajax_referer|wp_verify_nonce|header\s*\("
+    r"|mysqli_query|pg_query|sqlite_query)\b",
+    re.IGNORECASE,
+)
+
+
+def find_hpp_candidates(local_path: str, plugin_dir: str = "") -> List[HppCandidate]:
+    """Scan PHP files for HTTP Parameter Pollution (HPP) patterns.
+
+    HPP occurs when a parameter used in a security-sensitive context (SQL, redirect, auth)
+    is accessed via $_GET/$_POST directly — sending the same param twice can bypass filters
+    or hit an unexpected value depending on framework merge order.
+    """
+    candidates: List[HppCandidate] = []
+    scanned = 0
+    _WINDOW = 10
+
+    target_dir = os.path.join(local_path, plugin_dir) if plugin_dir else local_path
+    if not os.path.isdir(target_dir):
+        target_dir = local_path
+
+    for root, dirs, files in os.walk(target_dir):
+        dirs[:] = [d for d in dirs if d not in _TOCTOU_SKIP_DIRS]
+        for fname in files:
+            if not fname.endswith(".php"):
+                continue
+            fp = os.path.join(root, fname)
+            rel_fp = os.path.relpath(fp, local_path)
+            try:
+                with open(fp, encoding="utf-8", errors="replace") as fh:
+                    content = fh.read()
+            except OSError:
+                continue
+            scanned += 1
+            lines = content.splitlines()
+
+            for i, line in enumerate(lines):
+                pm = _HPP_PARAM_RE.search(line)
+                if not pm:
+                    continue
+                param_name = pm.group(2)
+                # Check if this param or surrounding lines touch a dangerous sink
+                window_start = max(0, i - 3)
+                window_end = min(i + _WINDOW, len(lines))
+                window_text = "\n".join(lines[window_start:window_end])
+                if _HPP_SINK_RE.search(window_text):
+                    candidates.append(HppCandidate(
+                        param_access=pm.group(0)[:80],
+                        param_name=param_name,
+                        context=line.strip()[:200],
+                        file=rel_fp,
+                        line=i + 1,
+                    ))
+
+            if scanned >= _MAX_SCAN_FILES:
+                break
+
+    # Deduplicate by (file, param_name) — keep one per param per file
+    seen: set = set()
+    deduped: List[HppCandidate] = []
+    for c in candidates:
+        key = (c.file, c.param_name)
+        if key not in seen:
+            seen.add(key)
+            deduped.append(c)
+    return deduped[:10]
+
+
 def find_join_relationship_table(local_path: str, plugin_dir: str) -> Optional[dict]:
     """Busca un LEFT JOIN de WordPress contra una tabla de relacion PROPIA del plugin, enlazada
     por post ID (`LEFT JOIN {$wpdb->tabla} AS alias ON alias.columna = {$wpdb->posts}.ID`) --
