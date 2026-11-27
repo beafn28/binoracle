@@ -551,7 +551,13 @@ _RESEARCH_SYS = (
     "construccion del mensaje como is_final=false y el paso de verificacion como is_final=true. "
     "NUNCA olvides que estos bugs requieren que el atacante construya un payload valido "
     "segun el algoritmo vulnerable (openssl, PyCrypto, etc.) -- doc_cmd_setup (opcional, "
-    "lista de comandos para instalar dependencias cripto en el lab) facilita esto."
+    "lista de comandos para instalar dependencias cripto en el lab) facilita esto. "
+    "Para CVEs de SSTI (server-side template injection): "
+    "ssti_engine_hint (nombre del motor de plantillas si lo menciona la descripcion: "
+    "'twig', 'smarty', 'blade', 'jinja2', 'velocity', 'freemarker', 'erb', 'nunjucks', 'pug', "
+    "'handlebars', 'mustache'; deja vacio si no se menciona explicitamente). "
+    "El motor de verificacion usara sintaxis especifica para el motor indicado y "
+    "probara RCE con payloads del motor correcto (Twig filter chain, Jinja2 subclasses, etc.)."
 )
 
 
@@ -3164,6 +3170,15 @@ _CHEERLEADER_SYS = (
     "7. Era el parametro vulnerable realmente el que se probo?\n"
     "8. FIELD NAME: si el upload falla con campo generico, revisar la documentacion/codigo para el "
     "nombre REAL del campo.\n"
+    "9. DIFF ANALYSIS — si 'diff_analysis' tiene datos, razona sobre ellos:\n"
+    "   - 'bypass_hints': si no vacio, el parche tiene un bypass conocido — sugerirlo en retry_hypothesis.\n"
+    "   - 'auth_checks_added': si el parche agrego una comprobacion de capabilities/nonce, "
+    "la hipotesis debe incluir esa comprobacion en auth_required=true y sugerir bypass si no es trivial.\n"
+    "   - 'fix_completeness': si es 'partial', el parche no cubrio todos los codepaths — "
+    "sugerir un vector alternativo que el parche no cubrio.\n"
+    "   - 'input_path': la traza de entradas que llega al sumidero — usarla para afinar el parametro.\n"
+    "10. STATIC ANALYSIS — si 'static_analysis_candidates' tiene datos, el primer candidato es "
+    "probablemente el sumidero real. Usar 'file', 'line', 'param' del candidato en suggested_fix.\n"
     "REGLA CRITICA: Razona SOLO en el contexto del framework/CMS real indicado en 'target_framework' "
     "del contexto. NUNCA sugieras endpoints de WordPress (admin-ajax.php, wp-json/, post_type, "
     "wp_ajax_) salvo que target_framework contenga 'wordpress'. "
@@ -3177,6 +3192,7 @@ _CHEERLEADER_SYS = (
     "\"retry_hypothesis\": \"accion especifica a probar en el siguiente intento\", "
     "\"confidence\": 0.0-1.0, "
     "\"assumption_challenged\": \"que suposicion era incorrecta\", "
+    "\"diff_bypass_used\": \"bypass derivado de diff_analysis.bypass_hints (o null)\", "
     "\"suggested_fix\": {\"endpoint\": \"...\", \"param\": \"...\", \"sqli_param\": \"...\", "
     "\"http_method\": \"GET|POST\", \"auth_required\": true/false}}"
     "\nUsa 'sqli_param' para CVEs de tipo sqli/sql-injection. "
@@ -17481,11 +17497,13 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                      "plantillas (WordPress+MySQL efimero en Docker)..." if es else
                      "attempting DYNAMIC verification -- arithmetic computed by the template "
                      "engine (ephemeral WordPress+MySQL in Docker)..."))
+                _ssti_eng_hint = (notes.get("ssti_engine_hint") or "").lower().strip()
                 wr = verify_wordpress_ssti(fr.local_path, plugin_dir, notes.get("endpoint"),
                                            notes.get("http_method") or "GET", params,
                                            ssti_param_hint=ssti_p or "", on_step=step, budget_s=budget_s,
                                            companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic,
-                                           keep_lab_on_failure=keep_lab_on_failure)
+                                           keep_lab_on_failure=keep_lab_on_failure,
+                                           ssti_engine_hint=_ssti_eng_hint)
                 ssti_wp_extra_nonce_pages: List[str] = []
                 ssti_wp_extra_setup_trigger_paths: List[str] = []
                 def _on_ssti_wp_suggestion(sug):
@@ -17498,7 +17516,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic,
                         keep_lab_on_failure=keep_lab_on_failure,
                         extra_nonce_pages=list(ssti_wp_extra_nonce_pages),
-                        extra_setup_trigger_paths=list(ssti_wp_extra_setup_trigger_paths))
+                        extra_setup_trigger_paths=list(ssti_wp_extra_setup_trigger_paths),
+                        ssti_engine_hint=_ssti_eng_hint)
                 wr = _retry_or_keep_lab_alive(
                     keep_lab_on_failure, step, es, wr, lambda: _run_evidence_retry_loop(
                         llm, step, es, _WP_GENERIC_RETRY_SYS, _WP_GENERIC_RETRY_EVIDENCE_KEYS,

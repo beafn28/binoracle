@@ -10704,6 +10704,7 @@ def verify_wordpress_ssti(
     extra_setup_trigger_paths: Optional[list] = None,
     shortcode_name: Optional[str] = None,
     keep_lab_on_failure: bool = False,
+    ssti_engine_hint: str = "",
 ) -> WpVerifyResult:
     """Verifica server-side template injection con la misma idea que command injection: el payload
     pide al motor de plantillas que CALCULE un producto de dos numeros aleatorios (sintaxis de
@@ -10738,7 +10739,20 @@ def verify_wordpress_ssti(
         a, b = secrets.randbelow(90) + 10, secrets.randbelow(90) + 10
         expected = a * b
         mul = f"{a}*{b}"
-        attempts = [
+        # Build attempts list — if engine hint known, put its syntax first
+        _engine_norm = (ssti_engine_hint or "").lower().strip()
+        _engine_first: list[str] = []
+        if _engine_norm in ("twig", "jinja2", "nunjucks"):
+            _engine_first = [f"{{{{{mul}}}}}"]
+        elif _engine_norm in ("smarty", "velocity", "freemarker"):
+            _engine_first = [f"${{{mul}}}", f"${{T(java.lang.Math).sqrt({a*a})}}"]
+        elif _engine_norm in ("erb", "ruby"):
+            _engine_first = [f"<%= {mul} %>", f"#{{  {mul}  }}"]
+        elif _engine_norm in ("blade",):
+            _engine_first = [f"{{{{ {mul} }}}}"]
+        elif _engine_norm in ("handlebars", "mustache", "pug"):
+            _engine_first = [f"{{{{{mul}}}}}"]
+        attempts = _engine_first + [
             # sintaxis directa de cada motor (Jinja2/Twig, Smarty/Velocity-like, Ruby/Slim, ERB,
             # Pebble, Freemarker/single-brace)
             f"{{{{{mul}}}}}", f"${{{mul}}}", f"#{{{mul}}}", f"<%= {mul} %>",
