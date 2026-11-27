@@ -251,6 +251,10 @@ def verify_craft_web_cve(
                 except Exception:
                     pass
 
+            _post_attack_path_gen = None
+            if isinstance(parameters, dict) and "{post_attack_path}" in parameters:
+                _post_attack_path_gen = parameters.pop("{post_attack_path}")
+
             target_url = base_url + endpoint
             headers = {}
             if cookie:
@@ -313,6 +317,17 @@ def verify_craft_web_cve(
                     res.detail = "HTTP %d — confirm_string no encontrado" % r.status_code
             else:
                 res.detail = f"HTTP {r.status_code} — endpoint no accesible"
+            if not res.verified and _post_attack_path_gen and _effective_confirm:
+                try:
+                    _pa_r2 = _http_request("GET", base_url + _post_attack_path_gen, timeout=10)
+                    if _effective_confirm in (_pa_r2.text or ""):
+                        res.verified = True
+                        res.ok = True
+                        res.confidence = "confirmed"
+                        res.detail = f"VERIFICADO: '{_effective_confirm}' en canary GET {_post_attack_path_gen}"
+                        step(f"  craftverify: VERIFICADO (canary GET {_post_attack_path_gen})")
+                except Exception as _pa_e2:
+                    step(f"  craftverify: post-attack GET error — {_pa_e2}")
             return res
     except Exception as e:
         step(f"  craftverify: generic lab error — {e}, trying Craft-specific lab")
@@ -411,6 +426,13 @@ def verify_craft_web_cve(
                 except Exception as _pre_e:
                     step(f"  craftverify: pre-attack error — {_pre_e}")
 
+            # Post-attack canary check: if parameters contains "{post_attack_path}", extract and
+            # save it before the POST. After the main request, GET that path and check confirm_string.
+            # Useful for gadget chains that write a file (e.g. PhpManager file_put_contents canary).
+            _post_attack_path = None
+            if isinstance(parameters, dict) and "{post_attack_path}" in parameters:
+                _post_attack_path = parameters.pop("{post_attack_path}")
+
             target_url = base_url + endpoint
             headers = {}
             if cookie:
@@ -472,6 +494,22 @@ def verify_craft_web_cve(
                     res.detail = "HTTP %d — confirm_string no encontrado" % r.status_code
             else:
                 res.detail = f"HTTP {r.status_code}"
+            # Post-attack canary file check (e.g. PhpManager file_put_contents → readable URL).
+            # Only run if main request did not already verify and a post_attack_path was given.
+            if not res.verified and _post_attack_path and _effective_confirm:
+                try:
+                    _pa_r = _http_request("GET", base_url + _post_attack_path, timeout=10)
+                    _pa_body = _pa_r.text or ""
+                    if _effective_confirm in _pa_body:
+                        res.verified = True
+                        res.ok = True
+                        res.confidence = "confirmed"
+                        res.detail = f"VERIFICADO: '{_effective_confirm}' en canary POST {_post_attack_path}"
+                        step(f"  craftverify: VERIFICADO (canary GET {_post_attack_path})")
+                    else:
+                        step(f"  craftverify: canary GET {_post_attack_path} HTTP {_pa_r.status_code} — no confirm")
+                except Exception as _pa_e:
+                    step(f"  craftverify: post-attack GET error — {_pa_e}")
     except Exception as e:
         res.detail = f"Error: {e}"
     finally:
