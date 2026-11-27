@@ -140,6 +140,16 @@ _CLASSES = [
     ("session-fixation", ("session fixation", "session hijack", "session riding",
                           "token fixation"),
      "fija/hijack el ID de sesion antes del login para tomar control de la sesion", []),
+    ("el-injection", ("el injection", "expression language injection", "spel", "ognl injection",
+                      "thymeleaf injection", "freemarker injection", "velocity injection",
+                      "jndi injection", "jndi", "expression injection", "template expression"),
+     "el motor EL evalua una expresion del atacante como codigo (p.ej. SpEL/OGNL/Thymeleaf)", []),
+    ("http-smuggling", ("http request smuggling", "request smuggling", "http smuggling",
+                        "te.cl", "cl.te", "te.te", "desync attack", "http desync"),
+     "dessincronizacion frontend/backend via ambiguedad Transfer-Encoding/Content-Length", []),
+    ("zip-slip", ("zip slip", "archive traversal", "zip path traversal", "tar slip",
+                  "archive extraction traversal"),
+     "extrae un archivo con path relativo que sobreescribe ficheros fuera del destino", []),
 ]
 
 # clases que NO son corrupcion de memoria nativa: el PoC es una peticion HTTP (o una pagina para CSRF/
@@ -186,6 +196,11 @@ WEB_CLASSES = frozenset({
     "unvalidated-redirect",
     "xml-injection", "html-injection", "template-injection",
     "cache-poisoning", "web-cache-poisoning", "request-smuggling",
+    "http-request-smuggling", "http-smuggling", "smuggling", "te-cl", "cl-te", "te-te",
+    "el-injection", "el_injection", "expression-language-injection", "spel-injection",
+    "ognl-injection", "thymeleaf-injection", "freemarker-injection", "velocity-injection",
+    "jndi-injection",
+    "zip-slip", "archive-traversal", "zip-path-traversal", "tar-slip",
     "clickjacking", "ui-redress",
     "cve-class-unknown", "unknown",  # allow web stage to run on unknown
 })
