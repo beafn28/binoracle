@@ -660,12 +660,32 @@ def _cms_dockerfile_lines(cms: str, source_dir: str,
         return (_base, 80, lines)
 
     if cms == "mattermost":
-        # Use official Mattermost Team Edition image
+        # Mattermost 9.x requires MySQL or PostgreSQL — SQLite was removed in 7.x.
+        # Bundle MariaDB inside the container for a self-contained lab.
         _base = _pin_cms_image("mattermost/mattermost-team-edition:latest", pkg_version)
-        lines = (["WORKDIR /mattermost"] + proxy +
-                 ["ENV MM_SQLSETTINGS_DRIVERNAME=sqlite3",
-                  "ENV MM_SQLSETTINGS_DATASOURCE=/mattermost/data/mattermost.db",
-                  "ENV MM_SERVICESETTINGS_SITEURL=http://localhost:8065"])
+        lines = (["USER root",
+                  "RUN apt-get update -qq && apt-get install -y --no-install-recommends "
+                  "mariadb-server && rm -rf /var/lib/apt/lists/*",
+                  # Bootstrap MariaDB and create mattermost database
+                  "RUN mysqld_safe --skip-networking & sleep 6 && "
+                  "mysql -u root -e \"CREATE DATABASE mattermost CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;\" && "
+                  "mysql -u root -e \"CREATE USER 'mmuser'@'localhost' IDENTIFIED BY 'mmuser-password';\" && "
+                  "mysql -u root -e \"GRANT ALL PRIVILEGES ON mattermost.* TO 'mmuser'@'localhost';\" && "
+                  "mysql -u root -e \"FLUSH PRIVILEGES;\" && "
+                  "mysqladmin shutdown",
+                  "ENV MM_SQLSETTINGS_DRIVERNAME=mysql",
+                  "ENV MM_SQLSETTINGS_DATASOURCE=\"mmuser:mmuser-password@tcp(localhost:3306)/mattermost?charset=utf8mb4,utf8&readTimeout=30s&writeTimeout=30s\"",
+                  "ENV MM_SERVICESETTINGS_SITEURL=http://localhost:8065",
+                  "ENV MM_EMAILSETTINGS_SMTPSERVER=localhost",
+                  "ENV MM_EMAILSETTINGS_SMTPPORT=10025",
+                  "ENV MM_EMAILSETTINGS_ENABLESMTPAUTH=false",
+                  "ENV MM_LOGSETTINGS_ENABLECONSOLE=true",
+                  "ENV MM_LOGSETTINGS_CONSOLELEVEL=INFO",
+                  "RUN cp /entrypoint.sh /orig_entrypoint.sh",
+                  "RUN printf '#!/bin/sh\\nmysqld_safe --skip-syslog &\\nsleep 8\\nexec /orig_entrypoint.sh \"$@\"' > /start.sh && chmod +x /start.sh",
+                  "WORKDIR /mattermost",
+                  "EXPOSE 8065",
+                  "CMD [\"/start.sh\"]"] + proxy)
         return (_base, 8065, lines)
 
     if cms == "craft":
@@ -3632,6 +3652,13 @@ def _try_acquire_app_token(base_url: str, step) -> Optional[str]:
         {"email": "admin@example.com", "password": "BinOracle123!"},
         {"email": "admin@example.com", "password": "Admin1234!"},
     ]
+    # Username-based credentials for apps that use username instead of email
+    # (audiobookshelf, Mattermost, generic REST APIs)
+    _creds_user = [
+        {"username": "binoadmin", "password": "BinOracle123!"},
+        {"username": "admin", "password": "BinOracle123!"},
+        {"username": "admin", "password": "Admin1234!"},
+    ]
     # ── 1. JSON bearer token endpoints ─────────────────────────────────────────
     _login_endpoints = [
         "/auth/login",             # Directus
@@ -3647,7 +3674,11 @@ def _try_acquire_app_token(base_url: str, step) -> Optional[str]:
     # Also try with login_id key for Mattermost-style APIs
     _creds_mm = [{"login_id": c["email"], "password": c["password"]} for c in _creds]
     for ep in _login_endpoints:
-        for cred in list(_creds) + (_creds_mm if "v4" in ep else []):
+        _ep_creds = list(_creds) + (_creds_mm if "v4" in ep else [])
+        # For /api/login include username-based credentials (audiobookshelf, etc.)
+        if "login" in ep.split("/")[-1]:
+            _ep_creds = _ep_creds + _creds_user
+        for cred in _ep_creds:
             try:
                 r = _http_request("POST", base_url + ep, timeout=10, json=cred,
                                   headers={"Content-Type": "application/json"})
@@ -3663,6 +3694,9 @@ def _try_acquire_app_token(base_url: str, step) -> Optional[str]:
                         _tok = (body.get("data", {}) or {}).get("access_token")
                         if not _tok:
                             _tok = body.get("access_token") or body.get("token") or body.get("jwt")
+                        # audiobookshelf: {"user": {"token": "..."}}
+                        if not _tok:
+                            _tok = (body.get("user") or {}).get("token")
                     if _tok:
                         step(f"auth: token obtenido via {ep} ({ep.split('/')[-1]}) → {str(_tok)[:12]}...")
                         return str(_tok)
@@ -8467,17 +8501,23 @@ def _try_mattermost_auth(base_url: str, on_step=None) -> dict:
     """Authenticate against Mattermost and return a token dict.
 
     Mattermost REST API v4: POST /api/v4/users/login with JSON credentials.
-    Dev user: mm_admin / Admin12345! (created in Dockerfile setup)
+    Dev user: admin / BinOracle123! or mm_admin / Admin12345! (created in setup_cmds).
     Returns {"bearer": "Bearer <tok>", "headers": {...}} or empty dict.
     """
     import json as _j
     step = on_step or (lambda _m: None)
-    _user, _pwd = "mm_admin", "Admin12345!"
+    # Try standard binoracle credentials first (admin/BinOracle123! created by setup_cmds),
+    # then legacy mm_admin/Admin12345! for older setups, then admin@example.com as email
+    _creds = [
+        ("admin", "BinOracle123!"),
+        ("mm_admin", "Admin12345!"),
+        ("admin@example.com", "BinOracle123!"),
+    ]
     _base = base_url.rstrip("/")
-    for _ep in ["/api/v4/users/login"]:
+    for _user, _pwd in _creds:
         try:
             _r = _http_request(
-                "POST", _base + _ep,
+                "POST", _base + "/api/v4/users/login",
                 data=_j.dumps({"login_id": _user, "password": _pwd}),
                 headers={"Content-Type": "application/json"},
                 timeout=8)
@@ -8490,7 +8530,7 @@ def _try_mattermost_auth(base_url: str, on_step=None) -> dict:
                     _d = _j.loads(_r.text or "{}")
                     _tok = _d.get("token") or ""
                 if _tok:
-                    step(f"  mattermost-auth: token via {_ep} → {_tok[:8]}...")
+                    step(f"  mattermost-auth: token via {_user} → {_tok[:8]}...")
                     return {"bearer": f"Bearer {_tok}",
                             "headers": {"Authorization": f"Bearer {_tok}"}}
         except Exception:
