@@ -2376,7 +2376,6 @@ def verify_generic_command_injection(
     if boot is None:
         return res
     lab, base_url, container = boot
-    lab = None
     try:
         # Auth acquisition (pgAdmin, Django admin, Flask-Login, etc.)
         if auth_required:
@@ -2694,6 +2693,13 @@ def verify_generic_path_traversal(
     path_param = path_param_hint or _pick_param(parameters, _PATH_HINTS)
     _url_path_mode = _is_url_path_mode(parameters) or _url_path_mode_from_template
 
+    # Double-slash endpoint detection: when the analyst sets an endpoint that contains
+    # '//' (absolute-path bypass pattern like '/@fs//etc/passwd' in Vite), activate
+    # URL_PATH mode automatically so the traversal loop treats it as a base path.
+    # This handles cases where the payload is embedded in the endpoint itself.
+    if not _url_path_mode and _analyst_owns_lab and endpoint and '//' in endpoint:
+        _url_path_mode = True
+
     # Gap real (confirmado con CVE-2024-23334 / aiohttp): muchos path-traversal inyectan el
     # payload en el PATH de la URL, no en un query-param -- e.g. GET /static/../../etc/passwd.
     # El LLM puede indicarlo con path_param_hint="URL_PATH" (o pasando "url_path" como parametro).
@@ -2740,7 +2746,6 @@ def verify_generic_path_traversal(
     if boot is None:
         return res
     lab, base_url, container = boot
-    lab = None
     try:
         # Auth acquisition before traversal attempts
         if auth_required:
@@ -3227,7 +3232,6 @@ def verify_generic_lfi_rce(
     if boot is None:
         return res
     lab, base_url, container = boot
-    lab = None
     try:
         marker = f"binoracle_lfi_rce_{_token()}"
         poison_ua = f"<?php system('echo {marker}'); ?>"
@@ -3419,7 +3423,6 @@ def verify_generic_idor(
     if boot is None:
         return res
     lab, base_url, container = boot
-    lab = None
     try:
         m = (http_method or "GET").upper().split("/")[0].split("|")[0].strip() or "GET"
         base_params = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
@@ -3527,7 +3530,6 @@ def verify_generic_file_upload(
         return res
     lab, base_url, container = boot
     m = "POST"
-    lab = None
     try:
         secret = _token() * 4
         file_param = file_param_hint or _pick_param(other_parameters, _FILE_UPLOAD_HINTS) or "file"
@@ -4465,7 +4467,6 @@ def verify_generic_sqli_blind(
     if boot is None:
         return res
     lab, base_url, container = boot
-    lab = None
     try:
         # Auth acquisition for APIs that require a bearer token (Mattermost, Directus, etc.)
         if auth_required:
@@ -5377,7 +5378,6 @@ def verify_generic_xxe(
     if boot is None:
         return res
     lab, base_url, container = boot
-    lab = None
     try:
         secret = secrets.token_hex(16)
         canary_path = f"/tmp/binoracle_canary_{_token()}.txt"
@@ -5550,7 +5550,6 @@ def verify_generic_open_redirect(
     if boot is None:
         return res
     lab, base_url, container = boot
-    lab = None
     try:
         token = _token()
         evil_host = f"binoracle-lab-redirect-{token}.invalid"
@@ -5860,7 +5859,6 @@ def verify_generic_ssti(
     if boot is None:
         return res
     lab, base_url, container = boot
-    lab = None
     try:
         a, b = secrets.randbelow(90) + 10, secrets.randbelow(90) + 10
         expected = a * b
@@ -6180,7 +6178,6 @@ def verify_generic_header_bypass(
     if boot is None:
         return res
     lab, base_url, container = boot
-    lab = None
     try:
         m = (http_method or "GET").upper().split("/")[0].split("|")[0].strip() or "GET"
         url = base_url + endpoint
@@ -7168,8 +7165,6 @@ def verify_generic_header_bypass_candidates(
     if boot is None:
         return res
     lab, base_url, container = boot
-
-    lab = None
     try:
         m = (http_method or "GET").upper().split("/")[0].strip() or "GET"
         url = base_url + endpoint
@@ -7489,8 +7484,6 @@ def verify_generic_graphql_bypass(
     if tup is None:
         return res
     lab, base_url, container = tup
-
-    lab = None
     try:
         endpoint_url = base_url.rstrip("/") + "/" + graphql_endpoint.lstrip("/")
         gql_headers = {"Content-Type": "application/json", "Accept": "application/json"}
@@ -7624,8 +7617,6 @@ def verify_generic_boolean_oracle(
     if tup is None:
         return res
     lab, base_url, container = tup
-
-    lab = None
     try:
         hdrs = dict(extra_headers or {})
         hdrs.setdefault("Accept", "application/json")
@@ -7726,7 +7717,6 @@ def verify_generic_cors_misconfig(
     if boot is None:
         return res
     lab, base_url, container = boot
-    lab = None
     try:
         m = (http_method or "GET").upper().split("/")[0].strip() or "GET"
         cors_token = f"http://binoracle-cors-{_token()}.invalid"
@@ -8227,7 +8217,6 @@ def verify_generic_http_confirm(
     if boot is None:
         return res
     lab, base_url, container = boot
-    lab = None
     try:
         if setup_wait_extra_s > 0:
             step(f"esperando {setup_wait_extra_s:.0f}s adicionales para que el lab este listo...")
@@ -8412,7 +8401,6 @@ def verify_generic_prototype_pollution(
     if boot is None:
         return res
     lab, base_url, container = boot
-    lab = None
     try:
         import json as _json
         token = _token()
@@ -8750,7 +8738,6 @@ def verify_generic_jwt_bypass(
     if boot is None:
         return res
     lab, base_url, container = boot
-    lab = None
     try:
         def _make_jwt_none(payload: dict) -> str:
             header = _b64.urlsafe_b64encode(
@@ -8891,7 +8878,6 @@ def verify_generic_nosql_injection(
     if boot is None:
         return res
     lab, base_url, container = boot
-    lab = None
     try:
         token_id = _token()
         payloads = [
@@ -8993,7 +8979,6 @@ def verify_generic_csrf(
     if boot is None:
         return res
     lab, base_url, container = boot
-    lab = None
     try:
         params = dict(parameters or {})
         body_data = "&".join(f"{k}={v}" for k, v in params.items()) if params else ""
@@ -9078,7 +9063,6 @@ def verify_generic_crlf_injection(
     if boot is None:
         return res
     lab, base_url, container = boot
-    lab = None
     try:
         params = dict(parameters or {})
         param = inject_param or _pick_param(params, ["url", "redirect", "next", "return",
@@ -9412,8 +9396,6 @@ def verify_generic_mass_assignment(
     if boot is None:
         return res
     lab, base_url, container = boot
-
-    lab = None
     try:
         token_id = _token()
         base_email = f"binoracle-{token_id}@test.local"
@@ -9720,8 +9702,6 @@ def verify_generic_php_object_injection(
     if boot is None:
         return res
     lab, base_url, container = boot
-
-    lab = None
     try:
         m = (http_method or "POST").upper().strip() or "POST"
         full_url = base_url.rstrip("/") + endpoint
@@ -10107,7 +10087,6 @@ def verify_generic_redos(
     if boot is None:
         return res
     lab, base_url, container = boot
-    lab = None
     try:
         m = (http_method or "POST").upper()
         # Default ReDoS payload: evil regex trigger for (a+)+ / (a|aa)+ patterns

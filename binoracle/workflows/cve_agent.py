@@ -3944,6 +3944,40 @@ _CONTAINER_SAFETY_VIOLATIONS = [
 ]
 
 
+def _fix_multiline_echo_in_dockerfile(dockerfile_body: str) -> str:
+    """Convert multiline echo "..." to printf '...\n' to prevent Docker BuildKit from
+    treating content lines that start at column 0 as Dockerfile instructions.
+
+    Example that breaks Docker BuildKit:
+        RUN echo "<Directory /cgi-bin>
+    Options +ExecCGI        <-- column 0: BuildKit misparses as 'OPTIONS' instruction
+    </Directory>" >> file
+
+    Fixed:
+        RUN printf '<Directory /cgi-bin>\\nOptions +ExecCGI\\n</Directory>\\n' >> file
+    """
+    import re as _re_mecho
+    if not dockerfile_body or '\n' not in dockerfile_body:
+        return dockerfile_body
+
+    def _convert(m: "_re_mecho.Match") -> str:
+        prefix = m.group(1)   # e.g. ' && ' or just the leading space+&&
+        content = m.group(2)  # the string content between the outer double quotes
+        suffix = m.group(3)   # redirect + rest, e.g. ' >> /etc/file'
+        # Escape single quotes for shell printf, then replace real newlines with \n
+        escaped = content.replace("\\", "\\\\").replace("'", r"'\''")
+        escaped = escaped.replace('\n', '\\n')
+        return f"{prefix}printf '{escaped}\\n'{suffix}"
+
+    # Match: (optional && prefix)(echo "content with real newlines")(optional redirect suffix)
+    # Only convert when the string spans more than one line.
+    pattern = _re_mecho.compile(
+        r'( *(?:&&\s*)?)echo "((?:[^"\\]|\\.)*\n(?:[^"\\]|\\.)*)"( *(?:>>?[^\n\\]*)?)',
+        _re_mecho.DOTALL,
+    )
+    return pattern.sub(_convert, dockerfile_body)
+
+
 def _validate_dockerfile_safety(dockerfile_body: str, step=None) -> List[str]:
     """Verifica el Dockerfile generado por el LLM contra politica de seguridad.
     Devuelve lista de warnings con severidad, descripcion y linea aproximada.
@@ -4947,6 +4981,7 @@ def _inject_custom_docker_lab(source_dir: str, notes: dict, step=None) -> None:
         df_content = dockerfile_body + "\n"
     else:
         df_content = dockerfile_body + "\n"
+    df_content = _fix_multiline_echo_in_dockerfile(df_content)
     with open(df_path, "w") as fh:
         fh.write(df_content)
     for fname, fcontent in (notes.get("extra_files") or {}).items():
@@ -10491,7 +10526,9 @@ def _scaffold_httpd_lab(version: str, notes: dict, on_step) -> Optional[str]:
     with open(_os.path.join(lab_dir, "Dockerfile"), "w") as f:
         f.write(dockerfile)
     # Endpoint: /uploads/ en modo URL_PATH -- la genericverify probara .%2e/ etc.
-    notes["endpoint"] = "/uploads/"
+    # No sobreescribir si el analista bloqueo el endpoint (analyst_endpoint_lock).
+    if not notes.get("analyst_endpoint_lock"):
+        notes["endpoint"] = "/uploads/"
     notes["http_method"] = "GET"
     notes["parameters"] = ["URL_PATH"]
     on_step(f"scaffolded Apache httpd {ver} lab at {lab_dir} (CVE path-traversal via /uploads/)")
@@ -14583,7 +14620,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     if _scf:
                         _pt_dockerfile   = _scf["dockerfile_body"]
                         _pt_extra_files  = _scf["extra_files"]
-                        _pt_ep           = _scf.get("endpoint") or _pt_ep
+                        if not notes.get("analyst_endpoint_lock"):
+                            _pt_ep           = _scf.get("endpoint") or _pt_ep
                         _pt_url_suffix   = _scf.get("url_suffix") or _pt_url_suffix
                         _pt_query_suffix = _scf.get("query_suffix") or _pt_query_suffix
                         if _scf.get("path_param"):
@@ -14622,7 +14660,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             break
                         _pt_dockerfile   = _fb["dockerfile_body"]
                         _pt_extra_files  = _fb["extra_files"]
-                        _pt_ep           = _fb.get("endpoint") or _pt_ep
+                        if not notes.get("analyst_endpoint_lock"):
+                            _pt_ep           = _fb.get("endpoint") or _pt_ep
                         _pt_url_suffix   = _fb.get("url_suffix") or _pt_url_suffix
                         _pt_query_suffix = _fb.get("query_suffix") or _pt_query_suffix
                         if _fb.get("parameters"):
@@ -14663,10 +14702,14 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         setup_commands=_pt_setup_cmds, auth_required=_pt_auth_req,
                         docker_image=_pt_docker_image,
                         confirm_string=_pt_confirm_str)
+                _pt_ep_lock = bool(notes.get("analyst_endpoint_lock")
+                                   or notes.get("poc_raw_http_lock")
+                                   or notes.get("poc_llm_endpoint_lock"))
                 wr = _run_evidence_retry_loop(
                     llm, step, es, _GENERIC_PATH_TRAVERSAL_RETRY_SYS,
                     _GENERIC_PATH_TRAVERSAL_RETRY_EVIDENCE_KEYS, _attempt_pt, wr,
-                    _pt_ep, path_p, technique_label="path-traversal generico")
+                    _pt_ep, path_p, technique_label="path-traversal generico",
+                    lock_endpoint=_pt_ep_lock)
                 # Si no se verifico todavia, probar los endpoints adicionales (p.ej. /cgi-bin/
                 # cuando el endpoint del PoC era /icons/ -- CVE-2021-41773 / Apache httpd).
                 for _ep_extra in _extra_pt_eps:
