@@ -3745,6 +3745,22 @@ _LAB_SCAFFOLD_MISSING_AUTH_SYS = (
     "\"confirm_string\": \"...\", \"server_port\": 3000, \"parameters\": {}}"
 )
 
+_LAB_SCAFFOLD_MISSING_AUTH_WP_SYS = (
+    "Eres un experto en seguridad WordPress. Genera un lab PHP/WordPress para missing-authorization. "
+    "REGLAS CRITICAS:\n"
+    "1. Usa WordPress core con un mini-plugin PHP que registre el endpoint REST vulnerable\n"
+    "2. El endpoint REST (via register_rest_route) NO verifica autenticacion "
+    "('permission_callback' => '__return_true' o ausente)\n"
+    "3. El endpoint devuelve JSON con un campo 'email' o 'password' que contiene el CONFIRM_STRING\n"
+    "4. Usa Docker con wordpress:latest, mysql como db, y WP-CLI para instalar WP rapidamente\n"
+    "5. El verificador accede sin credenciales a /wp-json/<namespace>/v1/<ruta> y busca el CONFIRM_STRING\n"
+    "6. CONFIRM_STRING debe estar en el JSON de respuesta del endpoint REST (no en HTML)\n"
+    "Responde SOLO con JSON sin markdown: "
+    "{\"server_code\": \"plugin.php\", \"dockerfile\": \"FROM wordpress:latest...\", "
+    "\"endpoint\": \"/wp-json/myplugin/v1/data\", "
+    "\"confirm_string\": \"SECRET_VALUE\", \"server_port\": 80, \"parameters\": {}}"
+)
+
 _LAB_SCAFFOLD_XSS_SYS = (
     "Eres un experto en seguridad. Genera un servidor para un lab de XSS ALMACENADO (stored). "
     "El servidor almacena un comentario/mensaje del usuario y lo renderiza SIN escapar en otra "
@@ -12533,6 +12549,7 @@ def _scaffold_llm_lab_for_class(llm, source_dir: str, notes: dict, cve_id: str,
         "_LAB_SCAFFOLD_INFORMATION_DISCLOSURE_SYS": _LAB_SCAFFOLD_INFORMATION_DISCLOSURE_SYS,
         "_LAB_SCAFFOLD_EL_INJECTION_SYS":           _LAB_SCAFFOLD_EL_INJECTION_SYS,
         "_LAB_SCAFFOLD_HTTP_SMUGGLING_SYS":         _LAB_SCAFFOLD_HTTP_SMUGGLING_SYS,
+        "_LAB_SCAFFOLD_MISSING_AUTH_WP_SYS":        _LAB_SCAFFOLD_MISSING_AUTH_WP_SYS,
     }
     sys_key = _SCAFFOLD_SYS_FOR_CLASS.get(vuln_class)
     if sys_key is None and vuln_class:
@@ -12599,6 +12616,14 @@ def _scaffold_llm_lab_for_class(llm, source_dir: str, notes: dict, cve_id: str,
             sys_key = "_LAB_SCAFFOLD_EL_INJECTION_SYS"
         elif any(x in _vc for x in ("smuggling", "desync", "cl.te", "te.cl", "http-request-smug")):
             sys_key = "_LAB_SCAFFOLD_HTTP_SMUGGLING_SYS"
+    # WordPress missing-auth needs a PHP/WP-specific scaffold, not a generic Node server
+    _wp_tech = any(x in (tech or "").lower() for x in ("wordpress", "php"))
+    _missing_auth_key = sys_key in ("_LAB_SCAFFOLD_MISSING_AUTH_SYS", None) and \
+        any(x in vuln_class.lower() for x in ("missing-auth", "auth-bypass", "unauthorized",
+                                               "broken-access", "idor", "access-control"))
+    if _wp_tech and _missing_auth_key:
+        sys_key = "_LAB_SCAFFOLD_MISSING_AUTH_WP_SYS"
+
     sys_prompt = _SYS_MAP.get(sys_key) if sys_key else None
     if sys_prompt is None or llm is None:
         return None
