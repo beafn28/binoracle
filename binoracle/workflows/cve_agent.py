@@ -17659,11 +17659,14 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             # auth probe instead — confirming the endpoint works without auth and that the
             # JSON success response is returned proves the server executes the request.
             _params_dict = notes.get("parameters") or {}
+            _url_key_hints = ("url", "remote_url", "file_url")
+            _params_keys: list = (list(_params_dict.keys()) if isinstance(_params_dict, dict)
+                                  else list(_params_dict) if isinstance(_params_dict, list) else [])
             _is_url_based_upload = (
                 inv.vuln_class in ("file-upload", "arbitrary-file-upload") and
-                isinstance(_params_dict, dict) and
-                any("[url]" in str(k).lower() or k.lower() in ("url", "remote_url", "file_url")
-                    for k in _params_dict) and
+                bool(_params_keys) and
+                any("[url]" in str(k).lower() or str(k).lower() in _url_key_hints
+                    for k in _params_keys) and
                 not notes.get("url_upload_skip_shortcut")
             )
             if (_is_url_based_upload and plugin_dir and notes.get("endpoint") and
