@@ -19286,7 +19286,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 wr = verify_generic_cors_misconfig(
                     _cors_src, cors_ep, cors_method,
                     on_step=step, budget_s=budget_s, custom_headers=cors_hdrs,
-                    dockerfile_body=_cors_dockerfile, extra_files=_cors_extra_files)
+                    dockerfile_body=_cors_dockerfile, extra_files=_cors_extra_files,
+                    docker_image=notes.get("docker_image") or "")
                 if _scf_cors and not wr.verified:
                     _lab_cfg_cors = {
                         "dockerfile_body": _cors_dockerfile, "extra_files": _cors_extra_files,
@@ -19307,7 +19308,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         wr_fb = verify_generic_cors_misconfig(
                             fr.local_path, cors_ep, cors_method,
                             on_step=step, budget_s=budget_s, custom_headers=cors_hdrs,
-                            dockerfile_body=_cors_dockerfile, extra_files=_cors_extra_files)
+                            dockerfile_body=_cors_dockerfile, extra_files=_cors_extra_files,
+                            docker_image=notes.get("docker_image") or "")
                         wr = wr_fb
                         if wr_fb.verified:
                             break

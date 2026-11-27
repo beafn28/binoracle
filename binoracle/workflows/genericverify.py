@@ -4524,6 +4524,7 @@ def verify_generic_sqli_blind(
     sqli_header_hint: str = "",
     auth_required: bool = False,
     nonce_endpoint: str = "",
+    docker_image: str = "",
 ) -> WpVerifyResult:
     """SQL injection ciega por TIEMPO contra cualquier objetivo con su propio Dockerfile/compose.
     Deliberadamente mas limitada que verify_wordpress_sqli: sin saber el motor real de BD (puede
@@ -4571,7 +4572,8 @@ def verify_generic_sqli_blind(
     boot = _bootstrap_generic_lab(source_dir, step, res, budget_s,
                                    setup_commands=setup_commands,
                                    dockerfile_body=dockerfile_body,
-                                   extra_files=extra_files)
+                                   extra_files=extra_files,
+                                   docker_image=docker_image)
     if boot is None:
         return res
     lab, base_url, container = boot
@@ -7966,6 +7968,7 @@ def verify_generic_cors_misconfig(
     budget_s: float = 900.0, custom_headers: Optional[dict] = None,
     dockerfile_body: str = "", extra_files: Optional[dict] = None,
     confirm_string: str = "",
+    docker_image: str = "",
 ) -> WpVerifyResult:
     """Verifica CORS misconfiguration: reflexion del Origin en Access-Control-Allow-Origin
     + Access-Control-Allow-Credentials: true (CVE-2025-53092 Strapi y otros).
@@ -7988,7 +7991,8 @@ def verify_generic_cors_misconfig(
         return res
 
     boot = _bootstrap_generic_lab(source_dir, step, res, budget_s,
-                                   dockerfile_body=dockerfile_body, extra_files=extra_files)
+                                   dockerfile_body=dockerfile_body, extra_files=extra_files,
+                                   docker_image=docker_image)
     if boot is None:
         return res
     lab, base_url, container = boot
