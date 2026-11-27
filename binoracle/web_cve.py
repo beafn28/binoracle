@@ -236,10 +236,21 @@ def _is_truly_verified(rec: dict) -> bool:
     return bool(rec.get("verified", False))
 
 
+_verified_count_cache: tuple[float, int] | None = None
+_VERIFIED_COUNT_TTL = 60.0  # seconds
+
+
 def _count_all_verified() -> int:
     """Count unique DYNAMICALLY VERIFIED CVEs across history and batch reports.
     Only counts CVEs where dynamic_verify.verified=True to prevent false positives
-    from LLM-reasoned hypotheses or static analysis."""
+    from LLM-reasoned hypotheses or static analysis.
+    Result is cached for 60 s to avoid re-reading all files on every page load."""
+    global _verified_count_cache
+    import time as _time
+    if _verified_count_cache is not None:
+        _ts, _cnt = _verified_count_cache
+        if _time.monotonic() - _ts < _VERIFIED_COUNT_TTL:
+            return _cnt
     seen: set[str] = set()
     # From history
     try:
@@ -271,7 +282,9 @@ def _count_all_verified() -> int:
                 pass
     except Exception:
         pass
-    return len(seen)
+    _result = len(seen)
+    _verified_count_cache = (_time.monotonic(), _result)
+    return _result
 
 
 def _load_history(limit: int = 20, offset: int = 0, verified_only: bool = False) -> tuple:
@@ -1427,7 +1440,11 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def _serve_html(self):
-        hist_total = _count_all_verified()
+        # Return cached count instantly; JS polls /api/verified-count so the
+        # badge updates soon after. This avoids blocking the page load while
+        # _count_all_verified() reads hundreds of JSON files.
+        global _verified_count_cache
+        hist_total = _verified_count_cache[1] if _verified_count_cache else 0
         page = _HTML_PAGE.replace(
             'id="hist-count">0<',
             f'id="hist-count">{hist_total}<'
@@ -1438,6 +1455,10 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+        # Kick off background count refresh if cache is stale
+        import threading as _thr, time as _t
+        if _verified_count_cache is None or _t.monotonic() - _verified_count_cache[0] >= _VERIFIED_COUNT_TTL:
+            _thr.Thread(target=_count_all_verified, daemon=True).start()
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
