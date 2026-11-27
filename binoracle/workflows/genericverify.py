@@ -3275,13 +3275,18 @@ def verify_generic_lfi_rce(
 
         found = False
         tried = []
+        _lfi_waf = _WafGuard()
         for payload_value in attempts:
+            if _lfi_waf.is_blocked:
+                break
             payload = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
             payload[path_param] = payload_value
             try:
                 resp = _http_request(m, base_url + endpoint, timeout=15,
                                         data=payload if m != "GET" else None,
                                         params=payload if m == "GET" else None)
+                if _lfi_waf.check(resp, step):
+                    break
             except Exception as e:
                 tried.append({"payload": payload_value, "error": str(e)})
                 continue
@@ -5931,13 +5936,18 @@ def verify_generic_ssti(
         tried_all: list = []
         win_ep = endpoint or "/"
         win_param = ssti_param
+        _ssti_waf = _WafGuard()
 
         for cand_ep, cand_params, cand_meth, cand_p, from_scan in candidates:
+            if found or _ssti_waf.is_blocked:
+                break
             if from_scan:
                 step(f"escaneo de fuente: probando ruta descubierta: {cand_ep} param={cand_p}")
             ep_path = cand_ep.split("?")[0] if cand_ep and "?" in cand_ep else (cand_ep or "/")
             tried: list = []
             for payload_value, payload_expected in attempt_pairs:
+                if found or _ssti_waf.is_blocked:
+                    break
                 pattern = re.compile(rf"(?<!\d){payload_expected}(?!\d)")
                 payload = dict(cand_params) if isinstance(cand_params, dict) else dict.fromkeys(cand_params or [], "")
                 payload[cand_p] = payload_value
@@ -5946,6 +5956,8 @@ def verify_generic_ssti(
                                          data=payload if cand_meth != "GET" else None,
                                          params=payload if cand_meth == "GET" else None,
                                          headers=custom_headers or None)
+                    if _ssti_waf.check(resp, step):
+                        break
                 except Exception as e:
                     tried.append({"payload": payload_value, "error": str(e)})
                     continue
