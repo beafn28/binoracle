@@ -2431,6 +2431,7 @@ def verify_generic_command_injection(
     dockerfile_body: str = "", extra_files: Optional[dict] = None,
     setup_commands: Optional[List[str]] = None,
     auth_required: bool = False,
+    docker_image: str = "",
 ) -> WpVerifyResult:
     """Verifica OS command injection contra CUALQUIER objetivo que traiga su propio Dockerfile/
     docker-compose.yml, sin asumir el stack (Python/Node/Go/PHP/Java/Ruby... todos escriben a
@@ -2446,7 +2447,7 @@ def verify_generic_command_injection(
 
     boot = _bootstrap_generic_lab(source_dir, step, res, budget_s,
                                    dockerfile_body=dockerfile_body, extra_files=extra_files,
-                                   setup_commands=setup_commands)
+                                   setup_commands=setup_commands, docker_image=docker_image)
     if boot is None:
         return res
     lab, base_url, container = boot

@@ -16322,7 +16322,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             elif (not plugin_dir and fr.local_path and
                   inv.vuln_class in ("xss", "sqli", "sql-injection", "ssrf", "idor",
                                      "missing-authorization", "auth-bypass",
-                                     "broken-access-control")
+                                     "broken-access-control", "command-injection",
+                                     "os-command-injection", "rce", "ssti", "code-injection")
                   and notes.get("endpoint")):
                 from .pythonverify import detect_python_framework, verify_python_web_cve
                 _py_fw = detect_python_framework(str(fr.local_path))
@@ -16398,6 +16399,23 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         wr = verify_generic_ssrf(
                             _gen_lp, _gen_ep, _gen_m, _gen_params,
                             url_param_hint=_url_p_gen or "",
+                            on_step=step, budget_s=budget_s,
+                            custom_headers=_gen_hdrs,
+                            dockerfile_body=_gen_df, extra_files=_gen_ef,
+                            setup_commands=_gen_sc,
+                            auth_required=_gen_auth,
+                            docker_image=_gen_di)
+                        _apply_wpverify_result(inv, wr, es, llm)
+                    elif inv.vuln_class in ("command-injection", "os-command-injection") and not notes.get("confirm_string"):
+                        from .genericverify import verify_generic_command_injection
+                        _cmdi_p_gen = (notes.get("cmd_param") or notes.get("injection_param") or
+                                       notes.get("sqli_param") or "")
+                        step(("intentando verificacion DINAMICA GENERICA (Python/generic) -- command injection..."
+                              if es else
+                              "attempting GENERIC DYNAMIC verification (Python/generic) -- command injection..."))
+                        wr = verify_generic_command_injection(
+                            _gen_lp, _gen_ep, _gen_m, _gen_params,
+                            cmd_param_hint=_cmdi_p_gen or "",
                             on_step=step, budget_s=budget_s,
                             custom_headers=_gen_hdrs,
                             dockerfile_body=_gen_df, extra_files=_gen_ef,
