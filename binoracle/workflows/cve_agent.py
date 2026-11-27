@@ -15499,7 +15499,9 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                   and inv.vuln_class in ("xss", "sqli", "sql-injection", "ssrf", "idor",
                                          "missing-authorization", "auth-bypass",
                                          "broken-access-control", "ssti", "rce",
-                                         "path-traversal")
+                                         "path-traversal", "file-upload",
+                                         "arbitrary-file-upload", "file-write",
+                                         "arbitrary-file-write")
                   and notes.get("endpoint")):
                 from .directusverify import detect_directus, verify_directus_web_cve
                 _directus_path = str(fr.local_path) if fr.local_path else ""
@@ -19386,6 +19388,8 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None, fast_l
                     "dockerfile_body", "extra_files", "docker_image", "setup_commands",
                     "affected_version", "patched_version", "pkg_version",
                     "_ep_source", "_ep_confidence", "companion_plugins",
+                    "sqli_param", "url_param", "ssrf_param", "path_param",
+                    "url_suffix", "custom_headers", "setup_cmds", "budget_s",
                 }
                 for _k, _v in notes.items():
                     if _k not in _ANALYST_LOCKED_KEYS:

@@ -5294,7 +5294,12 @@ def process_never_attempted_cves(
             def _step_capture(msg: str, _orig_step=step):
                 _orig_step(msg)
                 _exec_logs.append(str(msg))
-            r = run_full_chain(cve_id, lang=lang, budget_s=budget_s,
+            # Allow per-CVE budget override via llm_notes.budget_s
+            _per_cve_budget = float((_analyst_hints or {}).get("budget_s") or 0)
+            _cve_budget = max(budget_s, _per_cve_budget) if _per_cve_budget else budget_s
+            if _cve_budget != budget_s:
+                step(f"  budget override: {_cve_budget:.0f}s (default={budget_s:.0f}s)")
+            r = run_full_chain(cve_id, lang=lang, budget_s=_cve_budget,
                                on_step=_step_capture, save_report=True,
                                config=_shared_config, llm=_shared_llm,
                                fast_llm=_shared_fast_llm,
