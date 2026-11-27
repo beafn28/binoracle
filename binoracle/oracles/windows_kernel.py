@@ -193,12 +193,12 @@ def assess_kernel_mitigations(winver: Optional[str] = None) -> dict:
     are expected to be present. This is a static version-based assessment —
     actual presence depends on SKU and hardware.
     """
-    expected: dict[str, bool] = {m: False for m in _WIN_KERNEL_MITIGATIONS}
+    expected: dict[str, bool] = dict.fromkeys(_WIN_KERNEL_MITIGATIONS, False)
     if not winver:
         return expected
     try:
         parts = winver.strip().split(".")
-        major, minor, build = int(parts[0]), int(parts[1]), int(parts[2]) if len(parts) > 2 else 0
+        major, _minor, build = int(parts[0]), int(parts[1]), int(parts[2]) if len(parts) > 2 else 0
     except Exception:
         return expected
 

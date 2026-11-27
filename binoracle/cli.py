@@ -2203,7 +2203,7 @@ def _run_investigate_batch_and_report(cve_ids, config, parallel: int, budget_s: 
         "bypass_header", "bypass_value", "bypass_url", "poc_cmd",
     }
     hints_by_cve: dict = {}
-    import json as _j, os as _os_b
+    import json as _j
     for _cve_id in cve_ids:
         _bp = out_dir / f"{_cve_id}.json"
         if not _bp.exists():

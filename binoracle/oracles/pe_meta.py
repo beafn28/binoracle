@@ -3,11 +3,8 @@
 Uses pefile when available; falls back to r2pipe/radare2 for systems without it."""
 from __future__ import annotations
 
-import os
 import shutil
-import struct
 import subprocess
-from typing import Optional
 
 from .base import Oracle, Tool, ToolResult
 

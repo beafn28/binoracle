@@ -16,6 +16,7 @@ import subprocess
 import time
 from typing import Callable, Optional
 
+from .genericverify import _build_http_params
 from .wpverify import WpVerifyResult, _docker_daemon_ok, _http_request, _run, _lab_host
 
 _WAGTAIL_PORT = 8000

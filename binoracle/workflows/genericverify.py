@@ -3680,7 +3680,6 @@ def _try_acquire_app_token(base_url: str, step) -> Optional[str]:
     then form-based session login (pgAdmin, Flask, Django, etc.).
     Returns the token/cookie string or None if all attempts fail.
     """
-    import json as _j
     import re as _re_auth
     _creds = [
         {"email": "admin@example.com", "password": "BinOracle123!"},
@@ -4007,7 +4006,7 @@ def verify_generic_ssrf(
                     h["cloud"]: h.get("body_preview", "")[:120] for h in _cloud_hits
                 }
                 _ssrf_wep_impact = (
-                    f"SSRF confirmed — cloud IMDS reachable: "
+                    "SSRF confirmed — cloud IMDS reachable: "
                     + (f"{_cred_hit['cloud']} credentials exposed" if _cred_hit
                        else ", ".join(h["cloud"] for h in _cloud_hits) + " metadata accessible")
                 )

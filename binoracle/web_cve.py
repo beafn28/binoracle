@@ -1013,7 +1013,6 @@ class _Handler(BaseHTTPRequestHandler):
                 if not stored_logs:
                     # Fallback: minimal synthesis
                     ve = result.get("verified_evidence") or {}
-                    detail = (result.get("verified_detail") or result.get("detail") or "").strip()
                     vuln_class = result.get("vuln_class", "")
                     stored_logs = [{"t": 0.0, "msg": f"[HIST] {cve_id_hist} — resultado recuperado del disco"}]
                     if vuln_class:

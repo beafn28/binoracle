@@ -1759,7 +1759,7 @@ def _get_deterministic_wrapper_files(lib_key: str, cve_version: str = "",
     if not files:
         return {}
 
-    result = {k: v for k, v in files.items()}  # shallow copy
+    result = dict(files)  # shallow copy
 
     # Inject default Dockerfile if the entry didn't supply one
     if "Dockerfile" not in result:
@@ -1946,7 +1946,6 @@ def _run_web_stage(cve_id: str, cve_info, llm_notes: dict,
     # 1. _is_library_cve: conservative generic check (no endpoint, not a CMS)
     # 2. _detect_deterministic_wrapper: a known library wrapper exists (safe even when
     #    endpoint is already set, since compose_lab_url check prevents WP/CMS false positives)
-    wrapper_url = None
     wrapper_container = None
     _src_for_wrapper = getattr(cve_info, "source_dir", "") or ""
     _det_wrapper = _detect_deterministic_wrapper(cve_info, _src_for_wrapper)
@@ -3183,7 +3182,7 @@ def run_full_chain(
             config = {}
     if llm is None:
         try:
-            from ..llm import make_backend, make_fast_backend as _mbfb
+            from ..llm import make_backend
             llm = make_backend(config)
             step(f"  LLM: {getattr(llm, 'model', '?')}")
         except Exception:
@@ -5370,9 +5369,9 @@ def process_never_attempted_cves(
                 pass
             # Collect every step message for historial replay (last 800 lines max)
             _exec_logs: list[str] = []
-            def _step_capture(msg: str, _orig_step=step):
+            def _step_capture(msg: str, _orig_step=step, _logs=_exec_logs):
                 _orig_step(msg)
-                _exec_logs.append(str(msg))
+                _logs.append(str(msg))
             # Allow per-CVE budget override via llm_notes.budget_s
             _per_cve_budget = float((_analyst_hints or {}).get("budget_s") or 0)
             _cve_budget = max(budget_s, _per_cve_budget) if _per_cve_budget else budget_s

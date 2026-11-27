@@ -712,7 +712,6 @@ def verify_drupal_exposure(
     (module_source_dir=None, slug=None)."""
     step = on_step or (lambda _m: None)
     res = WpVerifyResult()
-    t0 = time.time()
 
     if not _docker_daemon_ok():
         res.available = False

@@ -126,7 +126,6 @@ def _run_request_chain(base_url: str, chain: list, bearer: Optional[str],
                         mp_files[field_name] = (None, _substitute(str(field_def["value"])))
                     else:
                         mp_files[field_name] = (None, _substitute(str(field_def)))
-                auth_hdr = hdrs.get("Authorization")
                 extra_hdrs = {k: v for k, v in hdrs.items() if k != "Content-Type"}
                 r = _req_mp.request(method, url, files=mp_files, headers=extra_hdrs, timeout=30)
             else:
@@ -223,7 +222,6 @@ def verify_directus_web_cve(
         ], timeout=30)
 
         # Poll until Directus HTTP is ready (up to 120s — it's slow to initialize DB)
-        import socket as _sock
         host = _lab_host()
         base_url = f"http://{host}:{_DIRECTUS_PORT}"
         _ready = False

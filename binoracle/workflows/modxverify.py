@@ -12,6 +12,7 @@ import json
 import os
 from typing import Callable, Optional
 
+from .genericverify import _build_http_params
 from .wpverify import WpVerifyResult, _docker_daemon_ok, _http_request
 
 _MODX_PORT = 8080

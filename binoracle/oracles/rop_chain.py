@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 from .base import Oracle, Tool, ToolParam, ToolResult
