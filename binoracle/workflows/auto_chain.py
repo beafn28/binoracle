@@ -5544,17 +5544,36 @@ def _build_repair_prompt(
             except (KeyError, TypeError, ValueError):
                 pass
 
-    dominant = statuses[0] if statuses else 0
+    # Pick the most diagnostic status code — prefer specific error codes (4xx, 5xx) over
+    # 200s, since a 200 with wrong content is less informative than a 404 that tells us
+    # the endpoint is wrong. Most common non-200/non-0 wins; fall back to first seen.
+    _status_counts: dict = {}
+    for _s in statuses:
+        if _s not in (0, -1):
+            _status_counts[_s] = _status_counts.get(_s, 0) + 1
+    _error_statuses = {s: c for s, c in _status_counts.items() if s not in (200, 201, 204)}
+    if _error_statuses:
+        dominant = max(_error_statuses, key=lambda s: (_error_statuses[s], -s))
+    elif statuses:
+        dominant = statuses[0]
+    else:
+        dominant = 0
 
     hints: list = []
     if dominant == 404:
         hints.append("HTTP 404: endpoint no existe — corrige 'endpoint'")
     elif dominant == 400:
-        hints.append("HTTP 400: parámetros incorrectos — corrige 'parameters' o el formato")
+        hints.append("HTTP 400: parámetros incorrectos — corrige 'parameters' o el Content-Type (json vs form)")
     elif dominant in (401, 403):
-        hints.append(f"HTTP {dominant}: acceso denegado — considera auth_required=true")
-    elif dominant == 301:
-        hints.append("HTTP 301: redirect — prueba un endpoint alternativo")
+        hints.append(f"HTTP {dominant}: acceso denegado — considera auth_required=true o bypass_header")
+    elif dominant in (301, 302, 303):
+        hints.append(f"HTTP {dominant}: redirect — sigue el Location o usa el endpoint destino directamente")
+    elif dominant == 405:
+        hints.append("HTTP 405: Method Not Allowed — corrige http_method (prueba POST si era GET, o viceversa)")
+    elif dominant == 422:
+        hints.append("HTTP 422: Unprocessable Entity — el schema de parámetros es incorrecto; revisa nombres y tipos")
+    elif dominant == 429:
+        hints.append("HTTP 429: Rate limit — añade delay entre peticiones o usa setup_cmds para limpiar el estado")
     elif dominant == 200:
         snippets = [
             str(_i.get("respuesta_recorte") or _i.get("respuesta") or "")[:100]
