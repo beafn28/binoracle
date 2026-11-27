@@ -2106,7 +2106,9 @@ def _bootstrap_generic_lab(source_dir: str, step, res: WpVerifyResult,
     `extra_files` (opcional): diccionario {nombre_fichero: contenido} que se escribe en el
     directorio de contexto Docker ANTES de construir -- necesario para COPY app.py etc."""
     # Cleanup stale containers from interrupted runs (non-fatal)
-    _stale = cleanup_stale_lab_containers(prefix="bo_lab_", max_age_minutes=60)
+    # Cleans both naming conventions: legacy bo_lab_ and current binoracle-genverify-
+    _stale = cleanup_stale_lab_containers(prefix="binoracle-genverify-", max_age_minutes=60)
+    _stale += cleanup_stale_lab_containers(prefix="bo_lab_", max_age_minutes=60)
     if _stale:
         step(f"  cleanup: {len(_stale)} contenedor(es) huérfano(s) eliminados: "
              f"{', '.join(_stale[:3])}")
