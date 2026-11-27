@@ -17082,7 +17082,13 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     sqli_via_request_uri=_via_uri,
                     sqli_via_rawurldecode=_via_rawurldecode,
                     sqli_via_orderby=_via_orderby,
-                    required_role=notes.get("required_role") or "subscriber",
+                    required_role=notes.get("required_role") or (
+                        "administrator"
+                        if (notes.get("auth_required") and
+                            any(w in (inv.description or "").lower()
+                                for w in ("administrator", "admin", "admin user")))
+                        else "subscriber"
+                    ),
                     seed_sql=notes.get("seed_sql") or [],
                     nonce_action=notes.get("nonce_action") or "",
                     extra_nonce_pages=list(extra_nonce_pages),
@@ -17157,7 +17163,13 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         sqli_via_request_uri=_via_uri,
                         sqli_via_rawurldecode=_via_rawurldecode,
                         sqli_via_orderby=_via_orderby,
-                        required_role=notes.get("required_role") or "subscriber",
+                        required_role=notes.get("required_role") or (
+                            "administrator"
+                            if (notes.get("auth_required") and
+                                any(w in (inv.description or "").lower()
+                                    for w in ("administrator", "admin", "admin user")))
+                            else "subscriber"
+                        ),
                         seed_sql=notes.get("seed_sql") or [],
                         nonce_action=notes.get("nonce_action") or "")
                 _ep_lock_active = bool(notes.get("analyst_endpoint_lock")
