@@ -15283,7 +15283,12 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 elif (_py_fw == "generic"
                       and not inv.verified
                       and (notes.get("docker_image") or notes.get("dockerfile_body"))
-                      and notes.get("endpoint")):
+                      and notes.get("endpoint")
+                      # Skip CMS-specific images that have dedicated verifiers later in the chain
+                      and not any(cms in (notes.get("docker_image") or "").lower()
+                                  for cms in ("ghost", "directus", "mattermost", "zitadel",
+                                              "matomo", "concretecms", "concrete5",
+                                              "strapi", "payload", "wagtail"))):
                     # Scaffolded lab (no detectable framework signals) — route to right verifier.
                     _gen_lp = str(fr.local_path)
                     _gen_ep = notes.get("endpoint") or "/"
