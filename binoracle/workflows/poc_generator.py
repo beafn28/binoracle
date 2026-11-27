@@ -402,9 +402,19 @@ def _coerce_params(params: Any) -> dict:
 
 def _guess_severity(vuln_class: str) -> str:
     high = {"rce", "arbitrary-file-upload", "file-upload", "sqli", "sql-injection",
-            "ssrf", "path-traversal", "broken-authentication"}
+            "ssrf", "path-traversal", "broken-authentication",
+            "xxe", "xml-external-entity",
+            "el-injection", "expression-language-injection", "spring-spel",
+            "command-injection", "os-injection",
+            "deserialization", "java-deserialization",
+            "http-request-smuggling", "request-smuggling",
+            "zip-slip", "arbitrary-file-write"}
     medium = {"xss", "csrf", "missing-authorization", "broken-access-control",
-              "idor", "open-redirect"}
+              "idor", "bola", "open-redirect",
+              "mass-assignment", "account-takeover", "race-condition",
+              "prototype-pollution", "user-enumeration", "redos",
+              "crlf-injection", "http-response-splitting",
+              "information-disclosure", "sensitive-data-exposure"}
     vc = (vuln_class or "").lower()
     if vc in high:
         return "HIGH / CRITICAL"
