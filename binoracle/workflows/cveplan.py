@@ -359,7 +359,14 @@ def classify_cve(text: str) -> Optional[str]:
        has("rest", "api") and ("auth" in t or "unauthenticated" in t) or \
        has("arbitrary", "options", "update") or has("options", "update", "plugin") or \
        (has("without", "verifying") and "permission" in t) or \
-       (has("sin", "verificar") and ("permiso" in t or "autoriza" in t)):
+       (has("sin", "verificar") and ("permiso" in t or "autoriza" in t)) or \
+       has("does", "not", "check", "permission") or \
+       has("does", "not", "verify", "permission") or \
+       has("without", "checking", "permission") or \
+       (has("component", "does", "not") and "permission" in t) or \
+       (has("without", "authentication") and not "bypass" in t) or \
+       has("unauthenticated", "read") or has("unauthenticated", "write") or \
+       has("unauthenticated", "delete") or has("unauthenticated", "update"):
         return "missing-authorization"
     if has("insecure", "direct", "object") or has("idor"):
         return "idor"
