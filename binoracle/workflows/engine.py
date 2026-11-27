@@ -1500,6 +1500,50 @@ class ExploitReasoningEngine:
          "MySQL 'table doesn't exist' — the plugin custom table was never created (plugin not "
          "activated or dbDelta never ran); add a CREATE TABLE IF NOT EXISTS + INSERT to seed_sql "
          "in the CVE JSON to create and populate the table before the attack"),
+
+        # INJECTION_CONTEXT — NoSQL / MongoDB operator injection errors
+        (r'\b(?:MongoError|MongoServerError|BSONTypeError|'
+         r'MongoParseError|CastError.*ObjectId|'
+         r'Cast\s+to\s+ObjectId\s+failed|'
+         r'\$where.*MongoError|unknown\s+operator.*\$)\b',
+         "INJECTION_CONTEXT", 0.80,
+         "MongoDB error — NoSQL injection may have broken query parsing; "
+         "if 'unknown operator' try $ne/$gt/$regex instead of $where; "
+         "if 'CastError ObjectId' the ID format is wrong (use a valid 24-hex ObjectId)"),
+
+        # AUTH_GATE_FIRED — Rate limiting / brute-force protection
+        (r'\b(?:rate\s+limit(?:ed)?|too\s+many\s+(?:requests|attempts|failures)|'
+         r'try\s+again\s+(?:later|in\s+\d+\s+(?:second|minute))|'
+         r'blocked\s+for\s+\d+\s+(?:second|minute)|'
+         r'"retry_after"\s*:|"reset_in"\s*:)\b',
+         "AUTH_GATE_FIRED", 0.75,
+         "Rate limit or brute-force protection — slow down (add delays between requests), "
+         "rotate IP via X-Forwarded-For header (if rate is per-IP), or use different accounts"),
+
+        # INJECTION_CONTEXT — Rust/Actix-web panics from injection
+        (r'\b(?:thread\s+\'main\'\s+panicked|called\s+`Option::unwrap`\s+on\s+a\s+`None`|'
+         r'index\s+out\s+of\s+bounds|task\s+<.*>\s+panicked|'
+         r'actix_web.*error|tower.*Service.*error)\b',
+         "INJECTION_CONTEXT", 0.70,
+         "Rust/Actix-web panic — injection broke the request parsing; "
+         "check if the panic points to a deserializer (serde_json) or a DB query; "
+         "try sending clean JSON first, then inject inside a string field"),
+
+        # RESOURCE_NOT_FOUND — Ghost / headless CMS content not found
+        (r'\b(?:Ghost.*resource\s+not\s+found|'
+         r'"type"\s*:\s*"NotFoundError"\s*,\s*"message".*not\s+found|'
+         r'Resource.*not\s+found.*Ghost)\b',
+         "RESOURCE_NOT_FOUND", 0.80,
+         "Ghost CMS: resource not found — verify the content API key (Content-API-Key header), "
+         "the content type (posts/pages/authors/tags), and the slug/ID"),
+
+        # INJECTION_CONTEXT — Directus / headless CMS SQL or permission errors
+        (r'\b(?:RECORD_NOT_UNIQUE|FORBIDDEN|'
+         r'directus.*invalid_credentials|'
+         r'"errors"\s*:\s*\[.*"extensions"\s*:\s*\{"code"\s*:\s*"FORBIDDEN")\b',
+         "AUTH_GATE_FIRED", 0.80,
+         "Directus access control — FORBIDDEN means the user lacks collection permission; "
+         "use an admin token or check if the endpoint is accessible with public role"),
     ]
 
     # Signals derived from HTTP status code alone
