@@ -20509,6 +20509,55 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None, fast_l
                  (f"{cve_id}: result already cached locally, reusing it (pass --no-cache to "
                  f"force a fresh investigation)"))
             return cached
+
+    # Auto-load analyst hints from any prior investigation (cache OR batch report).
+    # Preserves analyst-set values (analyst_endpoint_lock, docker_image, endpoint, etc.)
+    # across fresh web UI re-runs without requiring manual hint passing.
+    # Only loads keys that the analyst explicitly set (analyst_endpoint_lock guard).
+    # NOTE: batch reports are checked even when cache doesn't exist — the cache is only
+    # written when verified OR attempted, so a pre-lab failure leaves no cache entry.
+    if not hints and not binary:
+        _ANALYST_HINT_KEYS = {
+            "analyst_endpoint_lock", "endpoint", "parameters", "http_method",
+            "confirm_string", "payload", "auth_required", "vuln_class",
+            "dockerfile_body", "extra_files", "docker_image", "setup_commands",
+            "affected_version", "patched_version", "pkg_version",
+            "sqli_param", "url_param", "ssrf_param", "path_param",
+            "url_suffix", "custom_headers", "setup_cmds", "budget_s",
+            "source_url", "companion_plugins",
+        }
+        def _load_analyst_notes(cve_id_key: str) -> Optional[dict]:
+            """Load analyst-set notes from cache or batch reports, return None if not found."""
+            # 1. Try investigation cache first
+            _prev = load_investigation_from_cache(cve_id_key)
+            if _prev is not None:
+                return _prev.llm_notes or {}
+            # 2. Fall back to batch reports (exists even when cache was never created)
+            import pathlib as _pl
+            _cve_safe = cve_id_key.upper().replace("/", "-")
+            for _rdir in ("binoracle_batch_reports", "../binoracle_batch_reports"):
+                _rp = _pl.Path(os.path.dirname(os.path.dirname(os.path.dirname(
+                    os.path.abspath(__file__))))) / "binoracle_batch_reports" / f"{_cve_safe}.json"
+                if _rp.exists():
+                    try:
+                        import json as _j
+                        return _j.loads(_rp.read_text(encoding="utf-8")).get("llm_notes") or {}
+                    except Exception:
+                        pass
+            return None
+        try:
+            _prev_notes = _load_analyst_notes(cve_id)
+            if _prev_notes is not None and _prev_notes.get("analyst_endpoint_lock"):
+                hints = {k: v for k, v in _prev_notes.items()
+                         if k in _ANALYST_HINT_KEYS and v not in (None, "", [], {})}
+                if hints:
+                    step((f"[auto-hints] analista habia fijado {len(hints)} fact(s) en "
+                          f"investigacion anterior — aplicando automaticamente" if es else
+                          f"[auto-hints] analyst had set {len(hints)} fact(s) in prior "
+                          f"investigation — applying automatically"))
+        except Exception:
+            pass
+
     config = config or load_config()
     if llm is None:
         try:
