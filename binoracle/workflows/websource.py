@@ -4790,7 +4790,19 @@ _DOM_XSS_SOURCE_RE = re.compile(
     r"|\.hash\b"                                   # hash fragment
     r"|history\.(?:pushState|replaceState)\s*\("   # history API pollution
     r"|JSON\.parse\s*\(.*(?:location|hash|storage)"  # JSON.parse of attacker input
-    r"|import\s*\(.*(?:location|hash|search)",         # dynamic import from URL
+    r"|import\s*\(.*(?:location|hash|search)"         # dynamic import from URL
+    # Next.js / React Router sources
+    r"|router\.query\b"                               # Next.js pages router query params
+    r"|useSearchParams\s*\(\s*\)"                     # Next.js App Router / React Router 6
+    r"|useParams\s*\(\s*\)"                           # React Router URL params
+    r"|searchParams\.get\s*\("                        # URLSearchParams.get() on searchParams
+    r"|params\[(?:['\"])[^'\"]+(?:['\"])\]"           # params['id'] / params["slug"]
+    # Nuxt.js sources
+    r"|useRoute\s*\(\s*\)\.query"                     # Nuxt useRoute().query
+    r"|useRoute\s*\(\s*\)\.params"                    # Nuxt useRoute().params
+    # SvelteKit
+    r"|page\.url\.searchParams"                       # SvelteKit page store
+    r"\|\$page\.params\b",                            # SvelteKit $page.params
     re.IGNORECASE,
 )
 _DOM_XSS_SINK_RE = re.compile(

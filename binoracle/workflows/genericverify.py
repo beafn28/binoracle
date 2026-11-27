@@ -9307,7 +9307,8 @@ def verify_generic_crlf_injection(
         param = inject_param or _pick_param(params, ["url", "redirect", "next", "return",
                                                        "location", "path", "goto"]) or "url"
         canary_header = "X-Injected-By"
-        canary_value  = "binoracle-crlf"
+        # Unique per-run token so body reflection doesn't FP
+        canary_value  = f"binoracle-crlf-{_token()[:8]}"
 
         # Load full payload set from payload_kb (39 variants) + fallback hardcoded core
         try:
@@ -9354,16 +9355,23 @@ def verify_generic_crlf_injection(
             step(f"CRLF: payload {payload[:50]!r} → status={st}")
 
             resp_hdrs_lower = {k.lower(): v for k, v in (resp_hdrs or {}).items()}
-            # Confirm: injected header appears in response headers OR body
-            # Also check for Set-Cookie injection and body injection markers
-            injected = (
+            # Confirm: injected header appears in response HEADERS (primary — no FP risk).
+            # Body check is secondary and only valid if the app doesn't echo the raw param.
+            _header_hit = (
                 canary_header.lower() in resp_hdrs_lower
-                or canary_value.lower() in body.lower()
                 or any(canary_value.lower() in str(v).lower()
                        for v in resp_hdrs_lower.values())
                 or ("set-cookie" in resp_hdrs_lower
                     and canary_value.lower() in resp_hdrs_lower.get("set-cookie", "").lower())
             )
+            # Body check: only valid if the canary appears as an HTTP header line
+            # (i.e. "X-Injected-By: binoracle-crlf-xxx"), not just reflected as plain text
+            _body_hit = (
+                canary_value.lower() in body.lower()
+                and re.search(rf"(?i){re.escape(canary_header)}\s*:\s*{re.escape(canary_value)}",
+                              body) is not None
+            )
+            injected = _header_hit or _body_hit
 
             if injected:
                 res.verified = True
