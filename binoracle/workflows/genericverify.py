@@ -7333,7 +7333,16 @@ def verify_generic_header_bypass_candidates(
             "idor", "auth-bypass",
         )
         if _is_missing_auth and status_normal in range(200, 300):
-            string_hit = (not confirm_string) or (confirm_string in body_normal)
+            # Require confirm_string OR body contains non-trivial sensitive content.
+            # Without this gate, any publicly-accessible endpoint returns 200 and
+            # would be incorrectly marked as a missing-auth vulnerability (FP).
+            _body_has_sensitive = bool(re.search(
+                r'(?i)("id"\s*:|"email"\s*:|"password"\s*:|"token"\s*:|"secret"\s*:'
+                r'|"admin"\s*:|"role"\s*:|"permissions"\s*:|"apiKey"\s*:'
+                r'|"access_token"\s*:|"auth"\s*:)',
+                body_normal[:2000]
+            ))
+            string_hit = (confirm_string and confirm_string in body_normal) or _body_has_sensitive
             if string_hit:
                 ok_res = WpVerifyResult()
                 ok_res.verified = True
@@ -7358,7 +7367,7 @@ def verify_generic_header_bypass_candidates(
                     ok_res.detail += f"\n\nImpacto escalado: {_esc['escalation_summary']}"
                     step(f"  escalación: {_esc['impact_class']} / {_esc['max_impact_found']}")
                 return ok_res
-            step(f"  endpoint accesible ({status_normal}) pero confirm_string '{confirm_string}' no encontrado")
+            step(f"  endpoint accesible ({status_normal}) pero sin confirm_string ni campos sensibles en body — continuando con bypass headers")
 
         # Try each candidate in the same running lab
         last_res = res
@@ -11658,6 +11667,43 @@ def verify_generic_expression_language_injection(
                          setup_commands=setup_commands or [], on_step=step)
         with lab.running() as boot:
             import requests as _rq
+
+            # Baseline probe: check if the expected sum already appears in an
+            # uninjected response (static HTML port/constant). If so, re-roll the
+            # operands to avoid a false positive. Max 3 retries.
+            _baseline_body = ""
+            try:
+                _r_base = _rq.get(boot.base_url + endpoint, timeout=8)
+                _baseline_body = _r_base.text or ""
+            except Exception:
+                pass
+            for _retry in range(3):
+                if not _pat.search(_baseline_body):
+                    break
+                _a = _sec.randbelow(9000) + 1000
+                _b = _sec.randbelow(9000) + 1000
+                _expected = _a + _b
+                _pat = re.compile(rf"(?<!\d){_expected}(?!\d)")
+                # Rebuild payloads with new operands
+                _EL_BASE = [
+                    "${T(java.lang.Runtime).getRuntime().exec('id')}",
+                    "#{T(java.lang.Math).sqrt(1234)}",
+                    f"${{1 * {_a} + {_b}}}",
+                    f"#{{{_a} + {_b}}}",
+                    f"__${{{_a} + {_b}}}__::~{{}}/",
+                    f"${{{_a} + {_b}}}",
+                    f"#set($x = {_a} + {_b})${{x}}",
+                    f"%{{{_a}+{_b}}}",
+                    f"{{% set x = {_a} + {_b} %}}{{{{ x }}}}",
+                    f"({_a} + {_b})",
+                ]
+                try:
+                    from .payload_kb import load_el_injection_payloads as _lel
+                    _EL_KB = _lel(_a, _b)
+                except Exception:
+                    _EL_KB = []
+                _EL_VARIANTS = list(dict.fromkeys(_EL_BASE + _EL_KB))
+                step(f"baseline ya contiene {_expected} — re-generando operandos ({_retry+1}/3)")
 
             for _pl in _EL_VARIANTS:
                 step(f"probando EL payload: {_pl[:40]}…")
