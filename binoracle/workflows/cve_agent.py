@@ -19344,10 +19344,14 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                   inv.vuln_class in ("business-logic", "logic-flaw", "logic-bypass",
                                      "insufficient-validation", "workflow-bypass",
                                      "quota-bypass")):
-                from .genericverify import verify_generic_confirm_string
-                _biz_ep     = notes.get("endpoint") or "/api/transfer"
-                _biz_method = notes.get("http_method") or "POST"
-                _biz_cs     = notes.get("confirm_string") or ""
+                from .genericverify import (verify_generic_confirm_string,
+                                            verify_generic_business_logic)
+                _biz_ep      = notes.get("endpoint") or "/api/transfer"
+                _biz_method  = notes.get("http_method") or "POST"
+                _biz_cs      = notes.get("confirm_string") or ""
+                _biz_price_p = notes.get("price_param") or "price"
+                _biz_qty_p   = notes.get("qty_param") or "quantity"
+                _biz_params  = notes.get("parameters") or {}
                 step(("intentando verificacion DINAMICA GENERICA -- Business Logic "
                       "(invariante no validado)..." if es else
                       "attempting GENERIC DYNAMIC verification -- Business Logic "
@@ -19364,39 +19368,67 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         _biz_extra_files = _scf["extra_files"]
                         _biz_ep          = _scf.get("endpoint") or _biz_ep
                         _biz_cs          = _scf.get("confirm_string") or _biz_cs
+                        if _scf.get("parameters"):
+                            _biz_params = _scf["parameters"]
                         _scf_biz         = True
-                if _biz_cs or _scf_biz:
+                # Primary: price/quantity manipulation verifier (more specific than confirm-string)
+                if _biz_dockerfile or _scf_biz:
+                    wr = verify_generic_business_logic(
+                        fr.local_path, _biz_ep, _biz_method,
+                        price_param=_biz_price_p, qty_param=_biz_qty_p,
+                        confirm_string=_biz_cs, parameters=_biz_params,
+                        on_step=step, budget_s=budget_s,
+                        dockerfile_body=_biz_dockerfile, extra_files=_biz_extra_files)
+                    if not wr.verified and _biz_cs:
+                        # Fallback: confirm-string verifier for non-price business logic
+                        wr = verify_generic_confirm_string(
+                            fr.local_path, _biz_ep, _biz_method,
+                            confirm_string=_biz_cs,
+                            on_step=step, budget_s=budget_s,
+                            dockerfile_body=_biz_dockerfile, extra_files=_biz_extra_files)
+                elif _biz_cs:
                     wr = verify_generic_confirm_string(
                         fr.local_path, _biz_ep, _biz_method,
                         confirm_string=_biz_cs,
                         on_step=step, budget_s=budget_s,
                         dockerfile_body=_biz_dockerfile, extra_files=_biz_extra_files)
-                    if _scf_biz and not wr.verified:
-                        _lab_cfg_biz = {
-                            "dockerfile_body": _biz_dockerfile, "extra_files": _biz_extra_files,
-                            "endpoint": _biz_ep, "confirm_string": _biz_cs, "parameters": {},
-                        }
-                        def _biz_verifier(cfg):
-                            return verify_generic_confirm_string(
+                else:
+                    wr = verify_generic_business_logic(
+                        fr.local_path, _biz_ep, _biz_method,
+                        price_param=_biz_price_p, qty_param=_biz_qty_p,
+                        on_step=step, budget_s=budget_s)
+                if _scf_biz and not wr.verified:
+                    _lab_cfg_biz = {
+                        "dockerfile_body": _biz_dockerfile, "extra_files": _biz_extra_files,
+                        "endpoint": _biz_ep, "confirm_string": _biz_cs, "parameters": _biz_params,
+                    }
+                    def _biz_verifier(cfg):
+                        # Try specific BL verifier first, fallback to confirm-string
+                        _bv_r = verify_generic_business_logic(
+                            fr.local_path, cfg.get("endpoint", _biz_ep), _biz_method,
+                            price_param=_biz_price_p, qty_param=_biz_qty_p,
+                            confirm_string=cfg.get("confirm_string", _biz_cs),
+                            parameters=cfg.get("parameters", _biz_params),
+                            on_step=step, budget_s=budget_s,
+                            dockerfile_body=cfg["dockerfile_body"],
+                            extra_files=cfg.get("extra_files"))
+                        if not _bv_r.verified and cfg.get("confirm_string"):
+                            _bv_r = verify_generic_confirm_string(
                                 fr.local_path, cfg.get("endpoint", _biz_ep), _biz_method,
                                 confirm_string=cfg.get("confirm_string", _biz_cs),
                                 on_step=step, budget_s=budget_s,
                                 dockerfile_body=cfg["dockerfile_body"],
                                 extra_files=cfg.get("extra_files"))
-                        wr, _lab_cfg_biz, _prog = _feedback_loop(
-                            llm, _biz_verifier, wr, _lab_cfg_biz, step, es,
-                            vuln_class=inv.vuln_class, cve_description=inv.description)
-                        if not wr.verified:
-                            _escalate_to_analyst(inv, getattr(wr, 'detail', '') or "",
-                                                 _lab_cfg_biz, es, progress_level=_prog)
-                        else:
-                            _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path), notes), "business-logic")] = _lab_cfg_biz
-                    _apply_wpverify_result(inv, wr, es, llm)
-                else:
-                    inv.blockers.append(("business-logic: se necesita confirm_string del "
-                                         "estado explotado para verificar" if es else
-                                         "business-logic: confirm_string of exploited state "
-                                         "needed to verify"))
+                        return _bv_r
+                    wr, _lab_cfg_biz, _prog = _feedback_loop(
+                        llm, _biz_verifier, wr, _lab_cfg_biz, step, es,
+                        vuln_class=inv.vuln_class, cve_description=inv.description)
+                    if not wr.verified:
+                        _escalate_to_analyst(inv, getattr(wr, 'detail', '') or "",
+                                             _lab_cfg_biz, es, progress_level=_prog)
+                    else:
+                        _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path), notes), "business-logic")] = _lab_cfg_biz
+                _apply_wpverify_result(inv, wr, es, llm)
             # CSRF: peticion cross-origin sin token
             elif (not plugin_dir and
                   (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and

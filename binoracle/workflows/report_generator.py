@@ -488,6 +488,10 @@ def _s_verification(inv: Any, lang: str) -> str:
         if _wep_data.get("etc_passwd_lines"):
             _rich_items.append(("/etc/passwd (SSTI file read)" if es else "/etc/passwd (SSTI file read)",
                                 " | ".join(_wep_data["etc_passwd_lines"][:2])))
+    # Direct SSTI /etc/passwd read (from wpverify.py ssti_etc_passwd)
+    if _ev.get("ssti_etc_passwd"):
+        _rich_items.append(("/etc/passwd (SSTI directo)" if es else "/etc/passwd (SSTI direct)",
+                            " | ".join(str(l) for l in _ev["ssti_etc_passwd"][:2])))
     # SSRF internal metadata (from weaponize.py _weaponize_ssrf)
     if _wep and _wep.get("technique") == "ssrf_probe":
         _probed = _wep_data.get("probed") or {}
