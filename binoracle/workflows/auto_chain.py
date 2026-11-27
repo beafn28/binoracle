@@ -1645,8 +1645,8 @@ CMD ["bundle", "exec", "rackup", "--host", "0.0.0.0", "-p", "5000", "config.ru"]
     },
     # Django QuerySet SQLi (CVE-2024-42005, CVE-2025-64459)
     "django": {
-        "_meta": {"endpoint": "/query", "param": "field", "method": "GET",
-                  "extra_params": {"connector": "OR"}},
+        "_meta": {"endpoint": "/search/", "param": "field", "method": "GET",
+                  "extra_params": {"connector": "OR", "_connector": "OR"}},
         "app.py": """\
 import os, sys, django
 from django.conf import settings
@@ -1700,7 +1700,14 @@ def query_view(request):
     except Exception as e:
         return HttpResponse(f"error:{type(e).__name__}:{e}", status=500)
 
-urlpatterns = [url_path("query", query_view)]
+urlpatterns = [
+    url_path("query", query_view),
+    url_path("search/", query_view),
+    url_path("search", query_view),
+    url_path("api/search", query_view),
+    url_path("api/search/", query_view),
+    url_path("", query_view),
+]
 application = get_wsgi_application()
 
 from wsgiref.simple_server import make_server

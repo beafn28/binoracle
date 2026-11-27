@@ -46,9 +46,11 @@ _DOCKER_IMAGE_PROFILES: dict[str, dict] = {
             "ADMIN_PASSWORD": "BinOracle123!",
             "DB_CLIENT": "sqlite3",
             "DB_FILENAME": "/directus/database/data.db",
+            # Allow IPv4-mapped IPv6 addresses in file import (needed for SSRF lab)
+            "IMPORT_IP_DENY_LIST": "",
         },
         "cmd": None,
-        "startup_wait": 20,
+        "startup_wait": 30,
         "health_path": "/server/health",
     },
     "advplyr/audiobookshelf:": {
