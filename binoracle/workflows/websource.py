@@ -4732,7 +4732,15 @@ _DOM_XSS_SINK_RE = re.compile(
     r"|new Function\s*\("
     r"|\.html\s*\(\s*[^)]*(?:location|hash|search|data|input)"   # jQuery .html()
     r"|dangerouslySetInnerHTML\s*=\s*\{"                          # React
-    r"|\bv-html\s*=",                                             # Vue.js
+    r"|\bv-html\s*="                                              # Vue.js
+    r"|bypassSecurityTrustHtml\s*\("                              # Angular DomSanitizer bypass
+    r"|bypassSecurityTrustScript\s*\("                            # Angular script bypass
+    r"|bypassSecurityTrustUrl\s*\("                               # Angular URL bypass
+    r"|\{@html\s+"                                                # Svelte raw HTML
+    r"|\.setAttributeNS\s*\([^,]+,\s*[\"'](?:src|href|action|formaction)[\"']"  # DOM attribute injection
+    r"|\.setAttribute\s*\(\s*[\"'](?:src|href|action|formaction|on\w+)[\"']"    # on* event injection
+    r"|jinja2\.Markup\s*\("                                       # Python Jinja2 Markup bypass
+    r"|flask\.Markup\s*\(",                                       # Flask Markup bypass
     re.IGNORECASE,
 )
 _DOM_XSS_SAFE_RE = re.compile(
