@@ -889,6 +889,36 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
   <td class="td-desc">h3 (npm package) versions &lt;= 2.0.1-rc.14 contain a path traversal vulnerability in serveStatic(). On Node.js deployments, event.url.pathname is not normalized, so percent-encoded dot segments (%2e%2e) are passed to decod</td>
   <td class="td-links"><span class="badge badge-sm" style="background:#0369a1" title="path-traversal">path-traversal</span> &middot; <a href="file:///Users/beatrizfresnonaumova/.binoracle/reports/CVE-2026-86253.md" target="_blank" title="Ver informe">informe</a></td>
 </tr>
+
+<tr class="cve-row" data-cls="cors-misconfiguration" data-sev="medium" data-poc="false" data-auth="false" data-gap="true">
+  <td class="td-num">50</td>
+  <td class="td-cve"><code>CVE-2025-53092</code></td>
+  <td><span class="badge" style="background:#374151">6.5 MEDIUM</span></td>
+  <td><span class="badge badge-sm" style="background:#374151">cors-misconfiguration</span></td>
+  <td><code class="tech">cors-misconfiguration</code></td>
+  <td><span class="badge badge-sm" style="background:#065f46">✓ Verif.</span></td>
+  <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
+  <td><span class="badge badge-conf-low" title="Confianza del motor">BAJO 0%</span></td>
+  <td class="td-aff"><code>strapi</code></td>
+  <td class="td-pub">2025-10-16</td>
+  <td class="td-desc">Strapi is an open source headless content management system. Strapi versions prior to 5.20.0 contain a CORS misconfiguration vulnerability in default installations. By default, Strapi reflects the value of the Origin hea</td>
+  <td class="td-links"><span class="badge badge-sm" style="background:#0369a1" title="cors-misconfiguration">cors-misconfiguration</span> &middot; <a href="file:///Users/beatrizfresnonaumova/.binoracle/reports/CVE-2025-53092.md" target="_blank" title="Ver informe">informe</a></td>
+</tr>
+
+<tr class="cve-row" data-cls="open-redirect" data-sev="medium" data-poc="false" data-auth="false" data-gap="true">
+  <td class="td-num">51</td>
+  <td class="td-cve"><code>CVE-2024-29041</code></td>
+  <td><span class="badge" style="background:#374151">6.1 MEDIUM</span></td>
+  <td><span class="badge badge-sm" style="background:#374151">open-redirect</span></td>
+  <td><code class="tech">open-redirect</code></td>
+  <td><span class="badge badge-sm" style="background:#065f46">✓ Verif.</span></td>
+  <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
+  <td><span class="badge badge-conf-low" title="Confianza del motor">BAJO 0%</span></td>
+  <td class="td-aff"><code>express</code></td>
+  <td class="td-pub">2024-03-25</td>
+  <td class="td-desc">Express.js minimalist web framework for node. Versions of Express.js prior to 4.19.0 and all pre-release alpha and beta versions of 5.0 are affected by an open redirect vulnerability using malformed URLs. When a user of </td>
+  <td class="td-links"><span class="badge badge-sm" style="background:#0369a1" title="open-redirect">open-redirect</span> &middot; <a href="file:///Users/beatrizfresnonaumova/.binoracle/reports/CVE-2024-29041.md" target="_blank" title="Ver informe">informe</a></td>
+</tr>
 </tbody>
 </table>
 <div class="no-results" id="no-results">Sin resultados para los filtros seleccionados.</div>

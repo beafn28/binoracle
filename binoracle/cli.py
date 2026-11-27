@@ -2258,9 +2258,12 @@ def cmd_investigate_never_attempted(args, config):
     budget_s  = float(getattr(args, "budget", 300) or 300)
     lang      = getattr(args, "lang", "es") or "es"
     reports   = getattr(args, "reports_dir", "binoracle_batch_reports") or "binoracle_batch_reports"
+    cve_ids   = list(getattr(args, "cve_ids", None) or [])
     results   = process_never_attempted_cves(
         max_cves=max_cves, min_cvss=min_cvss, lang=lang,
-        budget_s=budget_s, reports_dir=reports, on_step=print)
+        budget_s=budget_s, reports_dir=reports,
+        cve_filter=cve_ids or None,
+        on_step=print)
     verified = sum(1 for r in results if r.verified)
     print(f"\nTotal: {len(results)} CVEs procesados, {verified} verificados")
 
@@ -3325,6 +3328,8 @@ def build_parser() -> argparse.ArgumentParser:
     ina.add_argument("--lang", choices=["es", "en"], default="es")
     ina.add_argument("--reports-dir", default="binoracle_batch_reports",
                      help="directory containing the batch JSON reports (default binoracle_batch_reports)")
+    ina.add_argument("--cve-ids", nargs="*", metavar="CVE-ID",
+                     help="optional list of CVE IDs to process (bypasses min-cvss filter)")
     ina.set_defaults(func=cmd_investigate_never_attempted)
 
     raf = sub.add_parser("re-analyze-failed",

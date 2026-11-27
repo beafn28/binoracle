@@ -1484,10 +1484,13 @@ from jinja2.sandbox import SandboxedEnvironment
 
 app = Flask(__name__)
 
-# CVE-2024-56326: custom filter that invokes .format() on its arg
-# (the sandbox bypass works via indirect calls through such filters)
+# CVE-2024-56326: custom filter that calls value as a callable (not value.format).
+# Payload: {%- set fmt = "BINORACLE_{0.__class__.__name__}".format -%}
+#          {{ fmt|call_format("CVE_56326") }}  → "BINORACLE_str"
+# value is the .format bound-method of the string; calling it directly works,
+# calling value.format() would AttributeError on the method object.
 def call_format(value, *args, **kwargs):
-    return value.format(*args, **kwargs)
+    return value(*args, **kwargs)
 
 sandbox_env = SandboxedEnvironment()
 sandbox_env.filters["call_format"] = call_format
@@ -1806,13 +1809,17 @@ def _generate_wrapper_app(cve_id: str, cve_info, llm_notes: dict,
         wrapper_files = _get_deterministic_wrapper_files(lib_key, cve_version, step)
         if wrapper_files:
             meta = wrapper_files.get("_meta", {})
-            # Inject Dockerfile and app files into llm_notes for verifiers
-            llm_notes["dockerfile_body"] = wrapper_files.get("Dockerfile", "")
+            # Inject wrapper files only if analyst hasn't already provided custom ones.
+            # Analyst-provided dockerfile_body / extra_files take priority — they were
+            # loaded from the batch JSON hints and win over the generic wrapper template.
+            if not llm_notes.get("dockerfile_body"):
+                llm_notes["dockerfile_body"] = wrapper_files.get("Dockerfile", "")
             extra_files = {k: v for k, v in wrapper_files.items()
                            if k not in ("Dockerfile", "_meta")}
-            if extra_files:
+            if extra_files and not llm_notes.get("extra_files"):
                 llm_notes["extra_files"] = extra_files
-            step(f"  wrapper-det: {lib_key} — Dockerfile + {len(extra_files)} archivo(s) "
+            _ef_count = len(llm_notes.get("extra_files") or {})
+            step(f"  wrapper-det: {lib_key} — Dockerfile + {_ef_count} archivo(s) "
                  f"inyectados en llm_notes para los verificadores")
             return None, meta
         step(f"  wrapper-det: sin plantilla para {lib_key} — intentando con LLM")
