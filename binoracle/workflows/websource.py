@@ -4198,6 +4198,96 @@ _XSS_PATTERNS = [
 ]
 
 
+_DOM_XSS_SOURCE_RE = re.compile(
+    r"location\.(?:search|hash|href|pathname)"
+    r"|document\.(?:URL|referrer|cookie)"
+    r"|window\.(?:name|location\.search)"
+    r"|URLSearchParams\s*\("
+    r"|getParameterByName\s*\("
+    r"|(?:window|document)\.__REDUX_STATE__"   # React/Redux state from server
+    r"|wp\.data\.select\s*\("                  # Gutenberg data store
+    r"|document\.getElementById.*\.value"      # form value from DOM
+    r"|localStorage\.getItem\s*\("
+    r"|sessionStorage\.getItem\s*\(",
+    re.IGNORECASE,
+)
+_DOM_XSS_SINK_RE = re.compile(
+    r"innerHTML\s*="
+    r"|outerHTML\s*="
+    r"|insertAdjacentHTML\s*\("
+    r"|document\.write\s*\("
+    r"|document\.writeln\s*\("
+    r"|eval\s*\("
+    r"|setTimeout\s*\(\s*[^,\)]*(?:location|hash|search|params)"
+    r"|setInterval\s*\(\s*[^,\)]*(?:location|hash|search|params)"
+    r"|new Function\s*\("
+    r"|\.html\s*\(\s*[^)]*(?:location|hash|search|data|input)"   # jQuery .html()
+    r"|dangerouslySetInnerHTML\s*=\s*\{"                          # React
+    r"|\bv-html\s*=",                                             # Vue.js
+    re.IGNORECASE,
+)
+_DOM_XSS_SAFE_RE = re.compile(
+    r"textContent\s*="
+    r"|innerText\s*="
+    r"|createTextNode\s*\("
+    r"|DOMPurify\.sanitize\s*\("
+    r"|sanitizeHtml\s*\("
+    r"|escapeHtml\s*\("
+    r"|__(?:html|sanitized)__\s*:"   # React pattern
+    r"|wp\.utils\.escapeHTML\s*\(",   # Gutenberg escape
+    re.IGNORECASE,
+)
+
+
+def find_dom_xss_sinks(local_path: str) -> List[VulnSink]:
+    """Scan JavaScript/TypeScript files in WordPress plugins for DOM XSS sinks.
+
+    Detects source→sink flows: location.search/hash → innerHTML/eval/dangerouslySetInnerHTML.
+    Covers vanilla JS, jQuery .html(), React dangerouslySetInnerHTML, Vue v-html,
+    and WordPress Gutenberg data store reads.
+    """
+    sinks: List[VulnSink] = []
+    scanned = 0
+    _exts = {".js", ".ts", ".mjs", ".jsx", ".tsx"}
+    for dirpath, _dirs, files in os.walk(local_path):
+        _dirs[:] = [d for d in _dirs
+                    if d not in ("node_modules", ".git", "dist", "build", "vendor")]
+        for fn in files:
+            if not any(fn.endswith(e) for e in _exts) or scanned >= _MAX_SCAN_FILES:
+                continue
+            scanned += 1
+            fp = os.path.join(dirpath, fn)
+            try:
+                with open(fp, "r", encoding="utf-8", errors="replace") as f:
+                    lines = f.readlines()
+            except OSError:
+                continue
+            current_function = ""
+            for i, line in enumerate(lines):
+                fn_m = re.search(r"\bfunction\s+([A-Za-z0-9_]+)\s*\(|"
+                                 r"const\s+([A-Za-z0-9_]+)\s*=\s*(?:async\s+)?\(", line)
+                if fn_m:
+                    current_function = fn_m.group(1) or fn_m.group(2) or current_function
+                if not _DOM_XSS_SINK_RE.search(line):
+                    continue
+                if _DOM_XSS_SAFE_RE.search(line):
+                    continue
+                # Check 10-line window before for a user-controlled source
+                _window = "".join(lines[max(0, i - 10): i + 1])
+                has_source = bool(_DOM_XSS_SOURCE_RE.search(_window))
+                sinks.append(VulnSink(
+                    param="dom_input" if has_source else "unknown_source",
+                    function=current_function,
+                    file=os.path.relpath(fp, local_path),
+                    line=i + 1,
+                    snippet=line.strip()[:300],
+                    source_confirmed=has_source,
+                ))
+        if scanned >= _MAX_SCAN_FILES:
+            break
+    return sinks
+
+
 def find_xss_sinks_generic(local_path: str, tech: str = "auto") -> List[VulnSink]:
     """Find XSS sinks for ANY language."""
     if tech == "auto":

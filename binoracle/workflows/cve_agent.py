@@ -1961,6 +1961,32 @@ def _static_vuln_precheck(local_path: str, plugin_dir: str, vuln_class: str,
                 "confidence": 0.0,  # positive signal
             }
 
+    # --- Check 14b: DOM XSS — JavaScript sink scanner for Gutenberg/React/Vue plugins ---
+    if vuln_class in ("xss", "dom-xss", "reflected-xss", "cross-site-scripting") and local_path and plugin_dir:
+        try:
+            from .websource import find_dom_xss_sinks
+            _dom_sinks = find_dom_xss_sinks(local_path)
+            _confirmed_dom = [s for s in _dom_sinks if getattr(s, "source_confirmed", False)]
+            if _confirmed_dom:
+                return {
+                    "ok": True,
+                    "reason": (f"pre-check DOM XSS: {len(_confirmed_dom)} sink(s) con fuente "
+                               f"user-controlled confirmada — "
+                               f"{_confirmed_dom[0].file}:{_confirmed_dom[0].line} "
+                               f"`{_confirmed_dom[0].snippet[:80]}`"),
+                    "confidence": 0.0,
+                }
+            elif _dom_sinks:
+                return {
+                    "ok": True,
+                    "reason": (f"pre-check DOM XSS: {len(_dom_sinks)} sink(s) JS peligroso(s) "
+                               f"(innerHTML/eval/dangerouslySetInnerHTML) — fuente no confirmada "
+                               f"— {_dom_sinks[0].file}:{_dom_sinks[0].line}"),
+                    "confidence": 0.1,
+                }
+        except Exception:
+            pass
+
     # ── Check 13: PHP Object Injection (unserialize() on user input) ─────────
     _vc_lower = (vuln_class or "").lower().replace(" ", "-")
     if _vc_lower in ("php-object-injection", "object-injection", "php-deserialization",

