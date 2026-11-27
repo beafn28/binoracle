@@ -492,7 +492,10 @@ def _start_job(cve_id: str, config) -> _Job:
                 "poc_source": getattr(inv, "poc_source_used", ""),
                 "affected_version": sf.get("resolved_version", ""),
                 "exploit_poc": _dv.get("exploit_poc", {}),
-                "poc_script": getattr(inv, "exploit_script", "") or getattr(inv, "poc_script", "") or "",
+                "poc_script": (getattr(inv, "standalone_poc", "")
+                               or getattr(inv, "exploit_script", "")
+                               or getattr(inv, "poc_script", "") or ""),
+                "poc_script_filename": getattr(inv, "standalone_poc_filename", "") or "",
                 "poc_kind": getattr(inv, "poc_kind", "http") or "http",
                 "blockers": list(getattr(inv, "blockers", []) or []),
                 "confidence": getattr(inv, "confidence", "none") or "none",
@@ -517,6 +520,8 @@ def _start_job(cve_id: str, config) -> _Job:
                 "patch_intel": _extract_patch_intel(getattr(inv, "_cve_info_refs", [])),
                 # CVE correlation
                 "correlation": getattr(inv, "_correlation", {}),
+                # Version range discovered after verification
+                "version_matrix": getattr(inv, "version_matrix", None) or {},
             }
             _save_history(job)
             # Post-lab cleanup: remove stopped containers and orphan lab images immediately
@@ -1254,7 +1259,8 @@ class _Handler(BaseHTTPRequestHandler):
         script = ""
         poc_kind = "http"
         if inv is not None:
-            script   = str(getattr(inv, "exploit_script", "") or
+            script   = str(getattr(inv, "standalone_poc", "") or
+                           getattr(inv, "exploit_script", "") or
                            getattr(inv, "poc_script", "") or
                            (result or {}).get("poc_script", "") or "")
             poc_kind = str(getattr(inv, "poc_kind", None) or
@@ -1348,7 +1354,7 @@ class _Handler(BaseHTTPRequestHandler):
                 "synthesized_exploit": _cve_intel.get("synthesized_exploit") or {},
             }
 
-        script   = str(getattr(inv, "exploit_script", "") or getattr(inv, "poc_script", "") or (result or {}).get("poc_script", "") or "")
+        script   = str(getattr(inv, "standalone_poc", "") or getattr(inv, "exploit_script", "") or getattr(inv, "poc_script", "") or (result or {}).get("poc_script", "") or "")
         poc_kind = str(getattr(inv, "poc_kind", "http") or "http")
         markdown = str(getattr(inv, "markdown_report", "") or (result or {}).get("markdown_report", "") or (result or {}).get("detail", "") or "")
 
