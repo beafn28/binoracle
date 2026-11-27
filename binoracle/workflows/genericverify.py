@@ -7657,8 +7657,17 @@ def verify_generic_graphql_bypass(
 
         confirmed = (s_byp == 200 and confirm_field and confirm_field in byp_body)
         if not confirmed and s_byp == 200 and not confirm_field:
-            # Sin campo de confirmación: si el bypass da 200 y el anon daba != 200
-            confirmed = (s_anon != 200)
+            # GraphQL always returns 200 — status code alone is not proof.
+            # Require: anon response contained an auth error in body AND bypass body does not.
+            _anon_has_auth_err = bool(re.search(
+                r'(?i)(unauthorized|unauthenticated|not authorized|access denied|forbidden|'
+                r'must be logged in|login required|permission denied)',
+                anon_body))
+            _byp_has_auth_err = bool(re.search(
+                r'(?i)(unauthorized|unauthenticated|not authorized|access denied|forbidden|'
+                r'must be logged in|login required|permission denied)',
+                byp_body))
+            confirmed = _anon_has_auth_err and not _byp_has_auth_err and s_anon != 200
 
         if confirmed:
             res.verified = True
@@ -12037,7 +12046,10 @@ def verify_generic_account_takeover(
                                       data=_params, headers=_ph, timeout=15)
                     _pbody = r_p.text or ""
                     _ploc  = r_p.headers.get("Location", "")
-                    if "attacker.test" in _pbody or "attacker.test" in _ploc:
+                    # Require "attacker.test" in a link/URL context in body, or in Location header.
+                    # Plain reflection (e.g. Host header echoed in HTML title) is not a takeover.
+                    _in_link = bool(re.search(r'https?://attacker\.test', _pbody))
+                    if _in_link or "attacker.test" in _ploc:
                         res.verified = True
                         res.ok = True
                         res.evidence.update({
@@ -12066,7 +12078,25 @@ def verify_generic_account_takeover(
                             r_login = _rq.post(boot.base_url + login_endpoint,
                                                data={"email": _victim_email, "password": _new_pass},
                                                timeout=10)
-                            if r_login.status_code in (200, 302):
+                            # 200/302 alone is NOT enough — many apps return these even
+                            # on failed login (re-rendered form or redirect to login).
+                            # Require proof of authenticated session:
+                            # - confirm_string present in response body, OR
+                            # - Set-Cookie with a session/auth token name
+                            _login_body = r_login.text or ""
+                            _login_cookies = r_login.headers.get("Set-Cookie", "")
+                            _has_session = bool(
+                                re.search(r'(?i)(session|auth|token|jwt|sid)[\w_-]*\s*=\s*[A-Za-z0-9%._-]{8,}',
+                                          _login_cookies)
+                            )
+                            _login_proven = (
+                                (confirm_string and confirm_string in _login_body)
+                                or (_has_session and r_login.status_code in (200, 302)
+                                    and "invalid" not in _login_body.lower()
+                                    and "incorrect" not in _login_body.lower()
+                                    and "wrong" not in _login_body.lower())
+                            )
+                            if r_login.status_code in (200, 302) and _login_proven:
                                 res.verified = True
                                 res.ok = True
                                 res.evidence.update({
@@ -12075,6 +12105,7 @@ def verify_generic_account_takeover(
                                     "victim_email": _victim_email,
                                     "new_password": _new_pass,
                                     "login_status": r_login.status_code,
+                                    "session_cookie_found": _has_session,
                                 })
                                 step(f"VERIFICADO — account takeover: token predecible '{_tok}' "
                                      f"permitió reset y login como {_victim_email}")
