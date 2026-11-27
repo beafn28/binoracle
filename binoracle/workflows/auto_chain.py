@@ -4433,6 +4433,16 @@ def run_full_chain(
         _les_bh = _les_notes.get("bypass_header") or ""
         _les_bv = _les_notes.get("bypass_value") or ""
         _les_vc = (getattr(inv, "vuln_class", "") or _les_notes.get("vuln_class", "")) if inv else ""
+        # If vuln_class is vague ("web", empty) — infer from CVE description
+        if not _les_vc or _les_vc in ("web", "unknown", "?"):
+            try:
+                from .cveplan import classify_cve as _cve_cls
+                _cls_desc = _les_desc or (cve_info.get("title") or "") if cve_info else ""
+                _inferred = _cve_cls(_cls_desc) if _cls_desc else None
+                if _inferred and _inferred not in ("web", "unknown"):
+                    _les_vc = _inferred
+            except Exception:
+                pass
         _les_hm = _les_notes.get("http_method") or "GET"
         _les_cs = _les_notes.get("confirm_string") or ""
         _les_pv = _les_notes.get("vulnerable_version") or _les_notes.get("pkg_version") or ""
