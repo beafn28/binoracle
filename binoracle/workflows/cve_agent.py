@@ -12640,7 +12640,8 @@ def _scaffold_llm_lab_for_class(llm, source_dir: str, notes: dict, cve_id: str,
         elif any(x in _vc for x in ("smuggling", "desync", "cl.te", "te.cl", "http-request-smug")):
             sys_key = "_LAB_SCAFFOLD_HTTP_SMUGGLING_SYS"
     # WordPress missing-auth needs a PHP/WP-specific scaffold, not a generic Node server
-    _wp_tech = any(x in (tech or "").lower() for x in ("wordpress", "php"))
+    _tech_hint = (notes.get("tech") or notes.get("docker_image") or notes.get("target_binary") or "")
+    _wp_tech = any(x in _tech_hint.lower() for x in ("wordpress", "php"))
     _missing_auth_key = sys_key in ("_LAB_SCAFFOLD_MISSING_AUTH_SYS", None) and \
         any(x in vuln_class.lower() for x in ("missing-auth", "auth-bypass", "unauthorized",
                                                "broken-access", "idor", "access-control"))
