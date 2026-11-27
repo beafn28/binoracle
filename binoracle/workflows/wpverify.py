@@ -10468,6 +10468,21 @@ def verify_wordpress_xss(
                         data=sample_params if m != "GET" else None,
                         params=sample_params if m == "GET" else None, timeout=15)
                     res.evidence["respuesta_cuerpo_recorte"] = (sample_resp.text or "")[:500]
+                    _csp = (sample_resp.headers.get("Content-Security-Policy") or
+                            sample_resp.headers.get("content-security-policy") or "")
+                    if _csp:
+                        res.evidence["csp_header"] = _csp
+                        # note common weaknesses for the report
+                        _csp_issues = []
+                        if "'unsafe-inline'" in _csp:
+                            _csp_issues.append("unsafe-inline present — inline scripts allowed")
+                        if "'unsafe-eval'" in _csp:
+                            _csp_issues.append("unsafe-eval present — eval() allowed")
+                        if "script-src *" in _csp or "default-src *" in _csp:
+                            _csp_issues.append("wildcard script-src — any origin allowed")
+                        if not _csp_issues:
+                            _csp_issues.append("CSP present — may limit exploitability")
+                        res.evidence["csp_analysis"] = _csp_issues
                 except Exception:
                     pass
         res.evidence["screenshots"] = boot.shots
