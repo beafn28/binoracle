@@ -2024,10 +2024,23 @@ def _static_vuln_precheck(local_path: str, plugin_dir: str, vuln_class: str,
         except Exception:
             pass
         if _poi_files:
+            # Enrich with gadget chain candidates
+            _gadget_summary = ""
+            if plugin_dir:
+                try:
+                    from .websource import find_php_gadget_chains
+                    _gadgets = find_php_gadget_chains(local_path, plugin_dir)
+                    if _gadgets:
+                        _g0 = _gadgets[0]
+                        _gadget_summary = (f" | gadget: {_g0.class_name}::{_g0.magic_method} → "
+                                           f"{_g0.dangerous_sink} ({_g0.file}:{_g0.sink_line})")
+                except Exception:
+                    pass
             return {
                 "ok": True,
                 "reason": (f"pre-check PHP Object Injection: unserialize() de input de usuario "
-                           f"detectado en {', '.join(_poi_files[:2])} — gadget chain explotable posible"),
+                           f"detectado en {', '.join(_poi_files[:2])} — gadget chain explotable posible"
+                           f"{_gadget_summary}"),
                 "confidence": 0.0,
             }
         if _poi_filtered and not _poi_files:

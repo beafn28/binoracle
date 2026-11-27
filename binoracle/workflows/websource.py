@@ -1978,6 +1978,113 @@ _JOIN_RELATIONSHIP_RE = re.compile(
     re.IGNORECASE)
 
 
+_PHP_MAGIC_RE = re.compile(
+    r'function\s+(__wakeup|__destruct|__toString|__call|__callStatic|__get|__set|__invoke)\s*\(',
+    re.IGNORECASE,
+)
+_PHP_DANGEROUS_SINK_RE = re.compile(
+    r'(?:'
+    r'(?:exec|shell_exec|system|passthru|proc_open|popen)\s*\('
+    r'|eval\s*\('
+    r'|file_put_contents\s*\(.*\$(?:this|data|content)'
+    r'|unlink\s*\(.*\$(?:this|path|file)'
+    r'|include\s*\(\s*\$(?:this|path|file)'
+    r'|require\s*\(\s*\$(?:this|path|file)'
+    r'|file_get_contents\s*\(\s*\$(?:this|url|path)'
+    r'|curl_exec\s*\('
+    r'|mysqli_query|pg_query|wpdb->query'
+    r')',
+    re.IGNORECASE,
+)
+
+
+@dataclass
+class GadgetCandidate:
+    class_name: str
+    magic_method: str
+    dangerous_sink: str
+    file: str
+    magic_line: int
+    sink_line: int
+    snippet: str
+
+
+def find_php_gadget_chains(local_path: str, plugin_dir: str = "") -> List[GadgetCandidate]:
+    """Scan PHP plugin files for gadget chain candidates.
+
+    A gadget candidate is a PHP class with a dangerous magic method
+    (__wakeup, __destruct, __toString, __call, etc.) that also contains
+    a dangerous sink (exec, eval, file_put_contents, unlink, include, etc.)
+    in the same class body. Used for PHP Object Injection vulnerability class.
+
+    Returns list of GadgetCandidate sorted by danger (exec > eval > file_ops).
+    """
+    base = os.path.join(local_path, plugin_dir) if plugin_dir else local_path
+    candidates: List[GadgetCandidate] = []
+    scanned = 0
+
+    for dirpath, dirs, files in os.walk(base):
+        dirs[:] = [d for d in dirs
+                   if d not in (".git", "node_modules", "__pycache__", "vendor", "tests")]
+        for fn in files:
+            if not fn.endswith(".php") or scanned >= _MAX_SCAN_FILES:
+                continue
+            scanned += 1
+            fp = os.path.join(dirpath, fn)
+            try:
+                with open(fp, "r", encoding="utf-8", errors="replace") as f:
+                    text = f.read(500_000)
+            except OSError:
+                continue
+            rel_fp = os.path.relpath(fp, local_path)
+            lines = text.splitlines()
+
+            # Find class boundaries and magic methods
+            class_name = ""
+            brace_depth = 0
+
+            for i, line in enumerate(lines, 1):
+                # Track class declarations
+                cm = re.search(r'\bclass\s+([A-Za-z0-9_]+)\s*(?:extends|implements|\{)', line)
+                if cm:
+                    class_name = cm.group(1)
+                    brace_depth = 0
+
+                brace_depth += line.count("{") - line.count("}")
+
+                mm = _PHP_MAGIC_RE.search(line)
+                if not mm or not class_name:
+                    continue
+
+                magic_method = mm.group(1)
+                # Look for dangerous sink within 50 lines of this magic method
+                window_end = min(i + 50, len(lines))
+                window = "\n".join(lines[i:window_end])
+                sm = _PHP_DANGEROUS_SINK_RE.search(window)
+                if sm:
+                    sink_line = i + window[:sm.start()].count("\n") + 1
+                    snippet = lines[min(sink_line - 1, len(lines) - 1)].strip()[:200]
+                    candidates.append(GadgetCandidate(
+                        class_name=class_name,
+                        magic_method=magic_method,
+                        dangerous_sink=sm.group(0).rstrip("(").strip(),
+                        file=rel_fp,
+                        magic_line=i,
+                        sink_line=sink_line,
+                        snippet=snippet,
+                    ))
+        if scanned >= _MAX_SCAN_FILES:
+            break
+
+    # Sort by danger: RCE > eval > file write > file read > sql
+    _danger_rank = {"exec": 0, "shell_exec": 0, "system": 0, "passthru": 0,
+                    "proc_open": 0, "popen": 0, "eval": 1, "file_put_contents": 2,
+                    "unlink": 3, "include": 4, "require": 4, "file_get_contents": 5,
+                    "curl_exec": 6, "wpdb->query": 7, "mysqli_query": 7, "pg_query": 7}
+    candidates.sort(key=lambda c: _danger_rank.get(c.dangerous_sink, 99))
+    return candidates[:10]
+
+
 def find_join_relationship_table(local_path: str, plugin_dir: str) -> Optional[dict]:
     """Busca un LEFT JOIN de WordPress contra una tabla de relacion PROPIA del plugin, enlazada
     por post ID (`LEFT JOIN {$wpdb->tabla} AS alias ON alias.columna = {$wpdb->posts}.ID`) --
