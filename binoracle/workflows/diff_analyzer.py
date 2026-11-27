@@ -427,6 +427,9 @@ def find_vulnerable_function(source_dir: str, function_names: list) -> list:
         ".go":   lambda fn: re.compile(rf"\bfunc\s+(?:\(\w+\s+\*?\w+\)\s+)?{re.escape(fn)}\s*\("),
         ".cs":   lambda fn: re.compile(
             rf"(?:public|private|protected|internal|static|\s)+\w[\w<>\[\]]*\s+{re.escape(fn)}\s*\(", re.IGNORECASE),
+        ".rs":   lambda fn: re.compile(rf"\bfn\s+{re.escape(fn)}\s*[(<]"),
+        ".kt":   lambda fn: re.compile(rf"\bfun\s+{re.escape(fn)}\s*\("),
+        ".swift": lambda fn: re.compile(rf"\bfunc\s+{re.escape(fn)}\s*\("),
     }
     _exts = set(_lang_patterns.keys())
     # Pre-compile patterns per function per extension
