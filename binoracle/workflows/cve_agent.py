@@ -6399,11 +6399,40 @@ def _synthesize_exploit_from_intel(
         f"{c} ({_cwe_map.get(c, c)})" for c in cve_intel.get("cwes", []))
     patch_summary = ""
     if isinstance(patch_diff, dict) and patch_diff.get("ok"):
+        # Enrich patch_diff with deterministic diff analysis before sending to LLM
+        try:
+            from .diff_analyzer import analyze_patch_diff, extract_input_path
+            _raw = patch_diff.get("raw_diff_snippet", "") or ""
+            if _raw:
+                _da = analyze_patch_diff(_raw)
+                # Merge deterministic findings into patch_diff (non-destructive)
+                if _da.get("patched_functions") and not patch_diff.get("vuln_functions"):
+                    patch_diff["vuln_functions"] = _da["patched_functions"]
+                if _da.get("fix_type") and not patch_diff.get("fix_type"):
+                    patch_diff["fix_type"] = _da["fix_type"]
+                if _da.get("auth_checks_added"):
+                    patch_diff["auth_checks_added"] = _da["auth_checks_added"]
+                if _da.get("bypass_hints"):
+                    patch_diff["bypass_hints"] = _da["bypass_hints"]
+                if _da.get("fix_completeness"):
+                    patch_diff["fix_completeness"] = _da["fix_completeness"]
+                # Extract input path for the first sink candidate
+                _sinks = _da.get("sink_candidates", [])
+                if _sinks:
+                    _ipath = extract_input_path(_raw, _sinks[0])
+                    if _ipath:
+                        patch_diff["input_path"] = _ipath
+        except Exception:
+            pass
         patch_summary = (
             f"Patch diff (what changed to fix it):\n"
             f"- Files: {patch_diff.get('changed_files', [])}\n"
             f"- Vulnerable functions: {patch_diff.get('vuln_functions', [])}\n"
             f"- Fix type: {patch_diff.get('fix_type', '')}\n"
+            f"- Auth checks added: {patch_diff.get('auth_checks_added', [])}\n"
+            f"- Fix completeness: {patch_diff.get('fix_completeness', 'unknown')}\n"
+            f"- Input path to sink: {patch_diff.get('input_path', '')}\n"
+            f"- Bypass hints: {patch_diff.get('bypass_hints', [])}\n"
             f"- Diff snippet:\n{patch_diff.get('raw_diff_snippet', '')[:800]}")
     _poc_code = (schema_hints or {}).get("public_poc_code", "")
     schema_str = ""
@@ -14316,6 +14345,29 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             companion_plugins=companion_plugins,
                             shortcode_name=shortcode_name_generic,
                             keep_lab_on_failure=keep_lab_on_failure)
+                # SEXTA-BIS: multi-step request_chain para WordPress plugins.
+                # Cuando el LLM propone un 'request_chain' (array de pasos) Y tenemos el plugin
+                # instalado, usa verify_wordpress_request_chain que levanta un lab WP completo
+                # y ejecuta la cadena con sesiones admin/subscriber/anon independientes.
+                # Esto permite: nonce harvest → privileged action → verify effect, en un solo lab.
+                if (wr is None and plugin_dir and
+                        notes.get("request_chain") and
+                        isinstance(notes.get("request_chain"), list)):
+                    from .wpverify import verify_wordpress_request_chain
+                    step(("intentando verificacion DINAMICA: cadena multi-paso WP "
+                          f"({len(notes['request_chain'])} pasos) en Docker..." if es else
+                          f"attempting DYNAMIC verification: WP multi-step chain "
+                          f"({len(notes['request_chain'])} steps) in Docker..."))
+                    wr = verify_wordpress_request_chain(
+                        fr.local_path, plugin_dir,
+                        request_chain=notes["request_chain"],
+                        on_step=step, budget_s=budget_s,
+                        companion_plugins=companion_plugins,
+                        setup_wp_options=notes.get("setup_wp_options") or None,
+                        setup_wp_commands=notes.get("setup_wp_commands") or None,
+                        keep_lab_on_failure=keep_lab_on_failure)
+                    if wr is not None:
+                        _apply_wpverify_result(inv, wr, es, llm)
                 # SEXTA forma: sonda de endpoint no-auth para information-disclosure/missing-auth
                 # sin cuenta objetivo. Para CVEs donde el AJAX endpoint simplemente devuelve datos
                 # sin comprobar autenticacion. No se pone verified=True: solo ok=True si la

