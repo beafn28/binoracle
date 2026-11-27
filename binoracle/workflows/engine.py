@@ -1544,6 +1544,34 @@ class ExploitReasoningEngine:
          "AUTH_GATE_FIRED", 0.80,
          "Directus access control — FORBIDDEN means the user lacks collection permission; "
          "use an admin token or check if the endpoint is accessible with public role"),
+
+        # INJECTION_CONTEXT — Strapi-specific errors
+        (r'\b(?:strapi.*[Ee]rror|'
+         r'"status"\s*:\s*(?:400|403|422).*"name"\s*:\s*"ValidationError"|'
+         r'"errors"\s*:\s*\{.*"id"\s*:\s*".*strapi|'
+         r'strapi.*policy\s+returned\s+false)\b',
+         "AUTH_GATE_FIRED", 0.75,
+         "Strapi error — ValidationError=wrong field types/required; "
+         "policy returned false=route policy blocks anonymous access (needs JWT); "
+         "try with Authorization: Bearer <admin-jwt> from /admin/auth/local"),
+
+        # INJECTION_CONTEXT — Audiobookshelf / Node.js JWT or session errors
+        (r'\b(?:JsonWebTokenError|TokenExpiredError|'
+         r'invalid\s+signature|jwt\s+malformed|'
+         r'No\s+authorization\s+token\s+was\s+found|'
+         r'User\s+is\s+not\s+logged\s+in)\b',
+         "AUTH_GATE_FIRED", 0.85,
+         "JWT authentication error — token is missing, expired, or malformed; "
+         "set auth_required=true and use the /login endpoint to get a fresh token"),
+
+        # INJECTION_CONTEXT — h3/Nitro/Nuxt server errors
+        (r'\b(?:H3Error|createError.*statusCode|'
+         r'unhandledError.*h3|'
+         r'"statusCode"\s*:\s*4\d{2}\s*,\s*"statusMessage"\s*:|'
+         r'useRuntimeConfig.*undefined)\b',
+         "INJECTION_CONTEXT", 0.65,
+         "h3/Nuxt/Nitro server error — check endpoint and parameter names; "
+         "createError with statusCode usually means auth guard or validation"),
     ]
 
     # Signals derived from HTTP status code alone
@@ -1562,8 +1590,18 @@ class ExploitReasoningEngine:
         422: ("WRONG_PARAM_TYPE", 0.80,
               "422 Unprocessable Entity — FastAPI/DRF validation error; "
               "check request body schema and field types"),
+        400: ("WRONG_PARAM_TYPE", 0.70,
+              "400 Bad Request — malformed parameters or wrong Content-Type; try JSON body"),
+        405: ("WRONG_PARAM_TYPE", 0.80,
+              "405 Method Not Allowed — wrong HTTP verb; swap GET↔POST or try PUT/PATCH"),
+        409: ("INJECTION_CONTEXT", 0.55,
+              "409 Conflict — unique constraint or duplicate; resource state may already exist"),
+        415: ("WRONG_PARAM_TYPE", 0.80,
+              "415 Unsupported Media Type — set Content-Type: application/json"),
         500: ("INJECTION_CONTEXT", 0.60, "500 error — possible injection syntax error; "
               "check debug output for SQL trace"),
+        502: ("INJECTION_CONTEXT", 0.40, "502 Bad Gateway — backend crashed; injection may have caused panic"),
+        503: ("AUTH_GATE_FIRED", 0.30, "503 Service Unavailable — backend overloaded or Docker startup delay"),
     }
 
     def analyze_response(
