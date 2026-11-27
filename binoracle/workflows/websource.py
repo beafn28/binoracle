@@ -2085,6 +2085,122 @@ def find_php_gadget_chains(local_path: str, plugin_dir: str = "") -> List[Gadget
     return candidates[:10]
 
 
+# ---------------------------------------------------------------------------
+# Race condition / TOCTOU static scanner
+# ---------------------------------------------------------------------------
+
+_TOCTOU_SKIP_DIRS = {"node_modules", "vendor", ".git", "__pycache__", "dist", "build"}
+
+
+@dataclass
+class ToctouCandidate:
+    """A potential TOCTOU (time-of-check/time-of-use) or race condition in PHP source."""
+    check_fn: str          # the check function (file_exists, is_readable, etc.)
+    use_fn: str            # the use function (file_get_contents, include, etc.)
+    file: str
+    check_line: int
+    use_line: int
+    gap_lines: int         # lines between check and use — larger gap = more race window
+    snippet: str
+
+
+# PHP TOCTOU: check functions that test a resource
+_TOCTOU_CHECK_RE = re.compile(
+    r"\b(file_exists|is_readable|is_writable|is_file|is_dir|is_link"
+    r"|file_put_contents|strlen|isset|array_key_exists|in_array"
+    r"|wp_verify_nonce|current_user_can|check_ajax_referer)\s*\(",
+    re.IGNORECASE,
+)
+
+# PHP TOCTOU: use/action functions that consume the same resource
+_TOCTOU_USE_RE = re.compile(
+    r"\b(file_get_contents|file_put_contents|include|include_once|require|require_once"
+    r"|unlink|rename|copy|move_uploaded_file|readfile|fopen|file\b"
+    r"|wp_remote_get|wp_remote_post|do_action|call_user_func|eval)\s*\(",
+    re.IGNORECASE,
+)
+
+# DB race: SELECT followed by UPDATE without transaction
+_DB_SELECT_RE = re.compile(r"\bSELECT\b", re.IGNORECASE)
+_DB_UPDATE_RE = re.compile(r"\b(UPDATE|INSERT|DELETE)\b", re.IGNORECASE)
+_DB_TRANSACTION_RE = re.compile(
+    r"\bSTART\s+TRANSACTION\b|\bBEGIN\b|\bCOMMIT\b|\bROLLBACK\b"
+    r"|\$wpdb->query\s*\(\s*['\"]START", re.IGNORECASE
+)
+
+
+def find_toctou_candidates(local_path: str, plugin_dir: str = "") -> List[ToctouCandidate]:
+    """Scan PHP files for TOCTOU / race condition patterns.
+
+    Looks for check-then-use sequences where a resource state checked on line N
+    is consumed on line N+k with no atomic lock between them.
+    """
+    candidates: List[ToctouCandidate] = []
+    scanned = 0
+    _WINDOW = 20  # max lines gap between check and use to be interesting
+
+    target_dir = os.path.join(local_path, plugin_dir) if plugin_dir else local_path
+    if not os.path.isdir(target_dir):
+        target_dir = local_path
+
+    for root, dirs, files in os.walk(target_dir):
+        dirs[:] = [d for d in dirs if d not in _TOCTOU_SKIP_DIRS]
+        for fname in files:
+            if not fname.endswith(".php"):
+                continue
+            fp = os.path.join(root, fname)
+            rel_fp = os.path.relpath(fp, local_path)
+            try:
+                with open(fp, encoding="utf-8", errors="replace") as fh:
+                    content = fh.read()
+            except OSError:
+                continue
+            scanned += 1
+            lines = content.splitlines()
+
+            # Scan for check lines; then look for use within window
+            for i, line in enumerate(lines):
+                cm = _TOCTOU_CHECK_RE.search(line)
+                if not cm:
+                    continue
+                check_fn = cm.group(1)
+                # Search for a use function in the next _WINDOW lines
+                window_end = min(i + _WINDOW, len(lines))
+                has_lock = False
+                for j in range(i + 1, window_end):
+                    um = _TOCTOU_USE_RE.search(lines[j])
+                    if um:
+                        use_fn = um.group(1)
+                        # Skip obvious false positives: same function (file_put_contents check+use)
+                        # unless check was a guard and use is an action
+                        if check_fn == use_fn and check_fn not in (
+                            "file_put_contents", "file_get_contents"
+                        ):
+                            continue
+                        candidates.append(ToctouCandidate(
+                            check_fn=check_fn,
+                            use_fn=use_fn,
+                            file=rel_fp,
+                            check_line=i + 1,
+                            use_line=j + 1,
+                            gap_lines=j - i,
+                            snippet=lines[j].strip()[:200],
+                        ))
+                        break
+                    # If a transaction or lock keyword appears, mark safe
+                    if _DB_TRANSACTION_RE.search(lines[j]):
+                        has_lock = True
+                        break
+                _ = has_lock  # used as early-exit marker above
+
+            if scanned >= _MAX_SCAN_FILES:
+                break
+
+    # Sort by smallest gap (tightest TOCTOU = most likely exploitable)
+    candidates.sort(key=lambda c: c.gap_lines)
+    return candidates[:10]
+
+
 def find_join_relationship_table(local_path: str, plugin_dir: str) -> Optional[dict]:
     """Busca un LEFT JOIN de WordPress contra una tabla de relacion PROPIA del plugin, enlazada
     por post ID (`LEFT JOIN {$wpdb->tabla} AS alias ON alias.columna = {$wpdb->posts}.ID`) --

@@ -2227,6 +2227,23 @@ def _static_vuln_precheck(local_path: str, plugin_dir: str, vuln_class: str,
                         continue
         except Exception:
             pass
+        # Enhanced: PHP-specific TOCTOU scanner (more precise than generic regex)
+        _toctou_php: list = []
+        if plugin_dir:
+            try:
+                from .websource import find_toctou_candidates
+                _toctou_php = find_toctou_candidates(local_path, plugin_dir)
+            except Exception:
+                pass
+        if _toctou_php:
+            _tc0 = _toctou_php[0]
+            return {
+                "ok": True,
+                "reason": (f"pre-check TOCTOU/Race: {_tc0.check_fn}() en línea {_tc0.check_line} "
+                           f"seguido de {_tc0.use_fn}() en línea {_tc0.use_line} sin lock en "
+                           f"{_tc0.file} (gap={_tc0.gap_lines} líneas)"),
+                "confidence": 0.0,
+            }
         if _race_safe_files and not _race_unsafe_files:
             return {
                 "ok": False,
