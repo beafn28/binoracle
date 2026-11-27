@@ -10021,11 +10021,20 @@ _MASS_ASSIGN_FIELD_SETS = [
     {"user_type": "admin", "account_type": "admin"},
 ]
 
-#: Signals in a successful registration/update response that suggest admin was set
+#: Patterns that confirm the FIELD VALUE (not just key name) indicates admin was set.
+#: These are checked against the response body — require key+admin-value together.
 _MASS_ASSIGN_ADMIN_SIGNALS = [
-    '"role"', '"admin"', '"superAdmin"', '"is_admin"', '"isAdmin"',
-    '"is_staff"', '"is_superuser"', '"group":', '"permissions"',
+    '"role":"admin"', '"role": "admin"',
+    '"role":"superAdmin"', '"role": "superAdmin"',
+    '"role":"superuser"', '"role": "superuser"',
+    '"isAdmin":true', '"isAdmin": true',
+    '"is_admin":true', '"is_admin": true',
+    '"is_staff":true', '"is_staff": true',
+    '"is_superuser":true', '"is_superuser": true',
+    '"admin":true', '"admin": true',
+    '"superAdmin":true', '"superAdmin": true',
     '"type":"admin"', '"type": "admin"',
+    '"scope":"admin"', '"scope": "admin"',
 ]
 
 
@@ -10156,7 +10165,7 @@ def verify_generic_mass_assignment(
                 status_code=st,
             )
 
-            if string_ok or (admin_signals and len(admin_signals) >= 2) or (admin_signals and analysis.get("partial_confidence", 0) >= 0.75):
+            if string_ok or admin_signals or (not confirm_string and not admin_signals and analysis.get("partial_confidence", 0) >= 0.90):
                 res.verified = True
                 res.ok = True
                 res.evidence = {
