@@ -1576,18 +1576,24 @@ class _GenericLab:
     # HTTP antes de haber terminado su inicialización (migraciones, primer arranque) lo que
     # genera falsos positivos en discover_http — las peticiones llegan a un app a medio boot.
     _CMS_READY_SIGNALS: dict = {
-        "ghost":      ["Ghost is running in development", "Your site is accessible"],
-        "strapi":     ["Project is fully loaded", "Project started"],
-        "directus":   ["Server started", "Directus ready", "Starting server on"],
-        "payload":    ["Listening on port", "Server started"],
-        "wagtail":    ["Starting development server", "Quit the server"],
-        "djangocms":  ["Starting development server", "Quit the server"],
-        "drupal":     ["apache2-foreground", "AH00558: apache2"],
-        "joomla":     ["apache2-foreground", "AH00558: apache2"],
-        "typo3":      ["apache2-foreground", "AH00558: apache2"],
-        "contao":     ["apache2-foreground", "AH00558: apache2"],
-        "prestashop": ["apache2-foreground", "AH00558: apache2"],
-        "craft":      ["apache2-foreground", "AH00558: apache2"],
+        "ghost":            ["Ghost is running in development", "Your site is accessible"],
+        "strapi":           ["Project is fully loaded", "Project started"],
+        "directus":         ["Server started", "Directus ready", "Starting server on"],
+        "payload":          ["Listening on port", "Server started"],
+        "wagtail":          ["Starting development server", "Quit the server"],
+        "djangocms":        ["Starting development server", "Quit the server"],
+        "drupal":           ["apache2-foreground", "AH00558: apache2"],
+        "joomla":           ["apache2-foreground", "AH00558: apache2"],
+        "typo3":            ["apache2-foreground", "AH00558: apache2"],
+        "contao":           ["apache2-foreground", "AH00558: apache2"],
+        "prestashop":       ["apache2-foreground", "AH00558: apache2"],
+        "craft":            ["apache2-foreground", "AH00558: apache2"],
+        "pgadmin":          ["pgAdmin 4 - Application Initialisation"],
+        "audiobookshelf":   ["Listening on port", "Server started"],
+        "mattermost":       ["Server is listening on", "Started Server"],
+        "gitea":            ["Listening on port"],
+        "paperless":        ["Ready for connections", "Listening on"],
+        "nextcloud":        ["Apache started successfully", "Starting Apache"],
     }
 
     def _container_ip(self, container: str, timeout=10.0) -> Optional[str]:
@@ -1627,7 +1633,9 @@ class _GenericLab:
                      "typo3", "contao", "prestashop",
                      # Ruby/Python heavy-boot: Rails runs db:migrate at startup; Django
                      # may run migrations; Gradio downloads model weights on first run
-                     "rails", "django", "gradio"}
+                     "rails", "django", "gradio",
+                     # Slow-boot apps that take 90-120s before HTTP is ready
+                     "pgadmin", "mattermost", "nextcloud", "paperless", "audiobookshelf"}
         if cms and cms.lower() in heavy_cms and tries < 90:
             tries = 90
         ready_signals = self._CMS_READY_SIGNALS.get((cms or "").lower(), [])
@@ -1653,7 +1661,11 @@ class _GenericLab:
             # Siempre intentar HTTP directamente (para apps sin señal específica).
             # Algunas apps (Gradio 4.x) devuelven 500 en "/" pero 200 en rutas propias;
             # probar estas rutas alternativas antes de dormir.
-            _FALLBACK_PROBE_PATHS = ["/info", "/health", "/queue/status", "/api/health"]
+            _FALLBACK_PROBE_PATHS = ["/info", "/health", "/queue/status", "/api/health",
+                                      "/misc/ping",   # pgAdmin 4
+                                      "/ping",        # various apps
+                                      "/status",      # general status
+                                      ]
             for c in self.running_containers():
                 ports = self.published_ports(c)
                 # Cuando el Dockerfile no tiene EXPOSE (o el run no usó -P), `docker port` devuelve

@@ -318,16 +318,28 @@ def verify_craft_web_cve(
             else:
                 res.detail = f"HTTP {r.status_code} — endpoint no accesible"
             if not res.verified and _post_attack_path_gen and _effective_confirm:
-                try:
-                    _pa_r2 = _http_request("GET", base_url + _post_attack_path_gen, timeout=10)
-                    if _effective_confirm in (_pa_r2.text or ""):
-                        res.verified = True
-                        res.ok = True
-                        res.confidence = "confirmed"
-                        res.detail = f"VERIFICADO: '{_effective_confirm}' en canary GET {_post_attack_path_gen}"
-                        step(f"  craftverify: VERIFICADO (canary GET {_post_attack_path_gen})")
-                except Exception as _pa_e2:
-                    step(f"  craftverify: post-attack GET error — {_pa_e2}")
+                _canary_delays2 = [2, 4, 6, 10]
+                for _ci2, _delay2 in enumerate(_canary_delays2):
+                    import time as _time_c2
+                    _time_c2.sleep(_delay2)
+                    try:
+                        _pa_r2 = _http_request("GET", base_url + _post_attack_path_gen, timeout=12)
+                        _pa_body2 = _pa_r2.text or ""
+                        if _effective_confirm in _pa_body2:
+                            res.verified = True
+                            res.ok = True
+                            res.confidence = "confirmed"
+                            res.detail = f"VERIFICADO: '{_effective_confirm}' en canary GET {_post_attack_path_gen} (intento {_ci2+1})"
+                            step(f"  craftverify: VERIFICADO (canary GET {_post_attack_path_gen})")
+                            break
+                        else:
+                            step(f"  craftverify: gen canary GET {_post_attack_path_gen} HTTP {_pa_r2.status_code} intento {_ci2+1}/4 — no confirm")
+                            if _pa_r2.status_code == 200:
+                                break
+                    except Exception as _pa_e2:
+                        step(f"  craftverify: gen canary GET error intento {_ci2+1}/4 — {_pa_e2}")
+                    if res.verified:
+                        break
             return res
     except Exception as e:
         step(f"  craftverify: generic lab error — {e}, trying Craft-specific lab")
@@ -496,20 +508,30 @@ def verify_craft_web_cve(
                 res.detail = f"HTTP {r.status_code}"
             # Post-attack canary file check (e.g. PhpManager file_put_contents → readable URL).
             # Only run if main request did not already verify and a post_attack_path was given.
+            # Retry up to 4 times with increasing delay: PHP crash / 503 may resolve quickly.
             if not res.verified and _post_attack_path and _effective_confirm:
-                try:
-                    _pa_r = _http_request("GET", base_url + _post_attack_path, timeout=10)
-                    _pa_body = _pa_r.text or ""
-                    if _effective_confirm in _pa_body:
-                        res.verified = True
-                        res.ok = True
-                        res.confidence = "confirmed"
-                        res.detail = f"VERIFICADO: '{_effective_confirm}' en canary POST {_post_attack_path}"
-                        step(f"  craftverify: VERIFICADO (canary GET {_post_attack_path})")
-                    else:
-                        step(f"  craftverify: canary GET {_post_attack_path} HTTP {_pa_r.status_code} — no confirm")
-                except Exception as _pa_e:
-                    step(f"  craftverify: post-attack GET error — {_pa_e}")
+                _canary_delays = [2, 4, 6, 10]  # seconds before each attempt
+                for _ci, _delay in enumerate(_canary_delays):
+                    import time as _time_c
+                    _time_c.sleep(_delay)
+                    try:
+                        _pa_r = _http_request("GET", base_url + _post_attack_path, timeout=12)
+                        _pa_body = _pa_r.text or ""
+                        if _effective_confirm in _pa_body:
+                            res.verified = True
+                            res.ok = True
+                            res.confidence = "confirmed"
+                            res.detail = f"VERIFICADO: '{_effective_confirm}' en canary GET {_post_attack_path} (intento {_ci+1})"
+                            step(f"  craftverify: VERIFICADO (canary GET {_post_attack_path})")
+                            break
+                        else:
+                            step(f"  craftverify: canary GET {_post_attack_path} HTTP {_pa_r.status_code} intento {_ci+1}/4 — no confirm")
+                            if _pa_r.status_code == 200:
+                                break  # Got 200 but no confirm — stop retrying
+                    except Exception as _pa_e:
+                        step(f"  craftverify: canary GET error intento {_ci+1}/4 — {_pa_e}")
+                    if res.verified:
+                        break
     except Exception as e:
         res.detail = f"Error: {e}"
     finally:

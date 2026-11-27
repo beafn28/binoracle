@@ -4965,13 +4965,17 @@ _SLOW_DOCKER_IMAGES: dict[str, float] = {
     "ghost":               90.0,
     "tryghost":            90.0,
     "zitadel":             90.0,
-    "dpage/pgadmin4":      60.0,
+    "dpage/pgadmin4":     120.0,   # pgAdmin takes 90-120s for HTTP to be ready after TCP bind
     "directus/directus":   60.0,
     "mattermost":          90.0,
     "gitea":               60.0,
     "gitlab":             120.0,
     "nextcloud":           90.0,
     "discourse":          120.0,
+    "audiobookshelf":      60.0,
+    "advplyr/audiobookshelf": 60.0,
+    "paperless":           60.0,
+    "ghcr.io/paperless-ngx": 60.0,
 }
 
 def _auto_setup_wait_s(docker_image: str, dockerfile_body: str = "") -> float:
