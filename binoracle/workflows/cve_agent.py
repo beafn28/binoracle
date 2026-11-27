@@ -4679,6 +4679,51 @@ _LAB_SCAFFOLD_MASS_ASSIGNMENT_SYS = (
     "\"parameters\": {\"username\": \"attacker\", \"password\": \"pass\", \"role\": \"admin\"}}"
 )
 
+_LAB_SCAFFOLD_EL_INJECTION_SYS = (
+    "Eres un experto en seguridad. Genera un servidor Java o Python para un lab de EL injection "
+    "(Expression Language Injection). El servidor evalua una expresion del usuario SIN sanitizar. "
+    "CRITICO: bind en 0.0.0.0. REGLAS DEL LAB:\n"
+    "1. Para Spring/Java: endpoint POST /api/render que recibe un parametro 'expression' y lo "
+    "   evalua con SpelExpressionParser.parseExpression(input).getValue() — devuelve el resultado\n"
+    "2. Para Python/Flask: endpoint POST /api/render que recibe 'template' y lo renderiza con "
+    "   jinja2.Environment(undefined=jinja2.Undefined).from_string(input).render()\n"
+    "3. Para FreeMarker/Velocity: endoint POST que recibe 'tpl' y lo renderiza con el motor\n"
+    "4. El atacante envia un payload matematico (p.ej. ${1234+5678}) y verifica que la respuesta "
+    "   contiene el resultado numerico correcto (6912) → confirma ejecucion de expresiones\n"
+    "5. SIN ningun filtrado ni escape del input del usuario\n"
+    "6. Para Docker: FROM openjdk:17-alpine o FROM python:3.11-alpine segun el stack del CVE\n"
+    "IMPORTANTE: el 'inject_param' viene del prompt del usuario (puede ser 'expression', 'query', "
+    "'template', 'name', etc.). Usa ese nombre exacto para el parametro inyectable.\n"
+    "Responde SOLO con JSON sin markdown: "
+    "{\"server_code\": \"...codigo completo...\", "
+    "\"dockerfile\": \"FROM python:3.11-alpine\\nWORKDIR /app\\nRUN pip install flask jinja2\\n"
+    "COPY server.py .\\nEXPOSE 3000\\nCMD ['python','server.py']\", "
+    "\"endpoint\": \"/api/render\", \"inject_param\": \"template\", "
+    "\"http_method\": \"POST\", \"server_port\": 3000, "
+    "\"parameters\": {\"template\": \"hello\"}}"
+)
+
+_LAB_SCAFFOLD_HTTP_SMUGGLING_SYS = (
+    "Eres un experto en seguridad. Genera un servidor Node.js con HTTP/1.1 vulnerable a "
+    "HTTP Request Smuggling (CL.TE). El servidor tiene un comportamiento ambiguo con las "
+    "cabeceras Content-Length y Transfer-Encoding. REGLAS DEL LAB:\n"
+    "1. Usa el modulo 'http' nativo de Node.js (NO express) para tener control total del parsing\n"
+    "2. El servidor responde a POST / normalmente pero NO descarta Transfer-Encoding si CL es mayor\n"
+    "3. Para simular el front-end vs back-end: el mismo servidor actua de ambos pero con "
+    "   un keepAliveTimeout de 0 (sin keepalive) para que CL.TE produzca timeout medible\n"
+    "4. Endpoint GET /smuggle-probe devuelve 200 con body 'SMUGGLED' cuando recibe una "
+    "   peticion smuggled (detectada por header X-Smuggled: 1)\n"
+    "5. CRITICO: bind en 0.0.0.0, puerto 80 (HTTP sin TLS para permitir raw TCP)\n"
+    "IMPORTANTE: el verificador usa raw sockets para enviar CL.TE contradictorios y mide "
+    "el timeout de respuesta (>8x baseline) como prueba de smuggling.\n"
+    "Responde SOLO con JSON sin markdown: "
+    "{\"server_code\": \"...codigo Node.js completo con http nativo...\", "
+    "\"dockerfile\": \"FROM node:18-alpine\\nWORKDIR /app\\nCOPY server.js .\\n"
+    "EXPOSE 80\\nCMD ['node','server.js']\", "
+    "\"endpoint\": \"/\", \"http_method\": \"POST\", \"server_port\": 80, "
+    "\"confirm_string\": \"SMUGGLED\", \"parameters\": {}}"
+)
+
 _LAB_SCAFFOLD_OAUTH_SYS = (
     "Eres un experto en seguridad. Genera un servidor para un lab de OAuth bypass. "
     "El servidor tiene un flujo OAuth simplificado con un bypass de state/redirect_uri. REGLAS:\n"
@@ -12177,6 +12222,18 @@ _SCAFFOLD_SYS_FOR_CLASS = {
     "xsrf":                        "_LAB_SCAFFOLD_CSRF_SYS",
     "crlf":                        "_LAB_SCAFFOLD_CRLF_SYS",
     "http-response-splitting":     "_LAB_SCAFFOLD_CRLF_SYS",
+    # HTTP Request Smuggling (CL.TE / TE.CL)
+    "http-request-smuggling":           "_LAB_SCAFFOLD_HTTP_SMUGGLING_SYS",
+    "request-smuggling":                "_LAB_SCAFFOLD_HTTP_SMUGGLING_SYS",
+    "http-desync":                      "_LAB_SCAFFOLD_HTTP_SMUGGLING_SYS",
+    "desync-attack":                    "_LAB_SCAFFOLD_HTTP_SMUGGLING_SYS",
+    # Expression language injection (Spring SpEL, Thymeleaf, FreeMarker, Jinja2)
+    "el-injection":                     "_LAB_SCAFFOLD_EL_INJECTION_SYS",
+    "expression-language-injection":    "_LAB_SCAFFOLD_EL_INJECTION_SYS",
+    "spring-spel":                      "_LAB_SCAFFOLD_EL_INJECTION_SYS",
+    "spel-injection":                   "_LAB_SCAFFOLD_EL_INJECTION_SYS",
+    "spring-expression":                "_LAB_SCAFFOLD_EL_INJECTION_SYS",
+    "template-language-injection":      "_LAB_SCAFFOLD_EL_INJECTION_SYS",
     # Mass assignment / parameter pollution
     "mass-assignment":             "_LAB_SCAFFOLD_MASS_ASSIGNMENT_SYS",
     "bulk-assignment":             "_LAB_SCAFFOLD_MASS_ASSIGNMENT_SYS",
@@ -12454,6 +12511,8 @@ def _scaffold_llm_lab_for_class(llm, source_dir: str, notes: dict, cve_id: str,
         "_LAB_SCAFFOLD_ZIP_SLIP_SYS":            _LAB_SCAFFOLD_ZIP_SLIP_SYS,
         "_LAB_SCAFFOLD_ACCOUNT_TAKEOVER_SYS":    _LAB_SCAFFOLD_ACCOUNT_TAKEOVER_SYS,
         "_LAB_SCAFFOLD_INFORMATION_DISCLOSURE_SYS": _LAB_SCAFFOLD_INFORMATION_DISCLOSURE_SYS,
+        "_LAB_SCAFFOLD_EL_INJECTION_SYS":           _LAB_SCAFFOLD_EL_INJECTION_SYS,
+        "_LAB_SCAFFOLD_HTTP_SMUGGLING_SYS":         _LAB_SCAFFOLD_HTTP_SMUGGLING_SYS,
     }
     sys_key = _SCAFFOLD_SYS_FOR_CLASS.get(vuln_class)
     if sys_key is None and vuln_class:
@@ -12515,6 +12574,11 @@ def _scaffold_llm_lab_for_class(llm, source_dir: str, notes: dict, cve_id: str,
             sys_key = "_LAB_SCAFFOLD_BOOLEAN_ORACLE_SYS"
         elif any(x in _vc for x in ("redos", "regex-dos", "algorithmic", "backtrack", "catastrophic")):
             sys_key = "_LAB_SCAFFOLD_REDOS_SYS"
+        elif any(x in _vc for x in ("el-inject", "expression-lang", "spel", "spring-spel",
+                                      "template-lang", "freemarker", "velocity", "thymeleaf")):
+            sys_key = "_LAB_SCAFFOLD_EL_INJECTION_SYS"
+        elif any(x in _vc for x in ("smuggling", "desync", "cl.te", "te.cl", "http-request-smug")):
+            sys_key = "_LAB_SCAFFOLD_HTTP_SMUGGLING_SYS"
     sys_prompt = _SYS_MAP.get(sys_key) if sys_key else None
     if sys_prompt is None or llm is None:
         return None
