@@ -108,6 +108,9 @@ def verify_wagtail_web_cve(
     pkg_version: str = "",
     on_step: Optional[Callable] = None,
     budget_s: float = 240.0,
+    request_chain: Optional[list] = None,
+    bypass_header: str = "",
+    bypass_value: str = "",
 ) -> WpVerifyResult:
     """Verify a Wagtail CMS CVE dynamically in an ephemeral Docker lab."""
     step = on_step or print
@@ -148,43 +151,118 @@ def verify_wagtail_web_cve(
         time.sleep(2)
 
         # Auth
-        cookie = None
-        if auth_required:
-            cookie = _get_wagtail_session(base_url, step)
+        auth_cookie = ""
+        if auth_required or request_chain:
+            auth_cookie = _get_wagtail_session(base_url, step) or ""
+
+        # Multi-step request chain (generic)
+        if request_chain:
+            from .ghostverify import _ghost_run_request_chain
+            verified, detail, evidence = _ghost_run_request_chain(
+                base_url, request_chain, auth_cookie, step)
+            res.verified = verified
+            res.ok = True
+            res.detail = detail
+            res.evidence = {**evidence, "base_url": base_url, "vuln_class": vuln_class,
+                            "tecnica": "request_chain"}
+            return res
+
+        _vc = (vuln_class or "").lower()
+
+        # SSTI generic probe: Wagtail uses Django template engine
+        if _vc == "ssti" and not payload:
+            payload = "{{7*7}}"
+            if not confirm_string:
+                confirm_string = "49"
+            step("  wagtail: SSTI: usando payload generico {{7*7}} (Django templates)")
+
+        # Path traversal generic probe
+        if _vc == "path-traversal" and not confirm_string:
+            if not payload:
+                payload = "../../../etc/passwd"
+            confirm_string = "root:"
+            step("  wagtail: path-traversal: buscando root: en la respuesta")
 
         # Fire PoC
+        m = http_method.upper() or "GET"
         target_url = base_url + endpoint
-        headers = {}
-        if cookie:
-            headers["Cookie"] = cookie
+        headers: dict = {}
+        if auth_cookie:
+            headers["Cookie"] = auth_cookie
+        if bypass_header and bypass_value:
+            headers[bypass_header] = bypass_value
 
         body, target_url, headers = _build_http_params(
-            parameters, payload, http_method, target_url, headers)
+            parameters, payload, m, target_url, headers)
 
-        step(f"  wagtail: {http_method} {target_url}")
-        r = _http_request(http_method.upper(), target_url,
-                          data=body, headers=headers, timeout=15)
-        res.evidence["status"] = r.status_code
-        res.evidence["body_snippet"] = (r.text or "")[:300]
-        res.evidence["endpoint"] = target_url
+        step(f"  wagtail: {m} {target_url}")
+        r = _http_request(m, target_url, data=body, headers=headers, timeout=15)
+        status = r.status_code
+        body_text = r.text or ""
 
-        if r.status_code == 200:
-            if confirm_string and confirm_string in (r.text or ""):
-                res.verified = True
-                res.ok = True
-                res.confidence = "confirmed"
-                res.detail = f"VERIFICADO: '{confirm_string}' en respuesta Wagtail"
-                step("  wagtail: VERIFICADO")
-            elif not confirm_string and payload and payload in (r.text or ""):
-                res.verified = True
-                res.ok = True
-                res.confidence = "probable"
-                res.detail = "VERIFICADO (probable): payload reflejado"
-            else:
-                res.ok = True
-                res.detail = "HTTP 200 — confirm_string no encontrado"
+        # HTTP method rotation on 405
+        if status == 405:
+            m = "GET" if m != "GET" else "POST"
+            step(f"  wagtail: 405 → reintentando con {m}")
+            try:
+                r2 = _http_request(m, target_url, data=body if m != "GET" else None,
+                                   headers=headers, timeout=15)
+                status = r2.status_code
+                body_text = r2.text or ""
+            except Exception:
+                pass
+
+        res.evidence.update({"status": status, "body_snippet": body_text[:300],
+                             "endpoint": target_url, "vuln_class": vuln_class})
+
+        string_ok = (not confirm_string) or (confirm_string in body_text)
+        bypassed = status in range(200, 300)
+
+        # Missing-auth comparison
+        if _vc == "missing-authorization" and not auth_required and bypassed:
+            try:
+                _auth_sess = _get_wagtail_session(base_url, lambda _: None)
+                if _auth_sess:
+                    _auth_hdrs = {**headers, "Cookie": _auth_sess}
+                    _r_auth = _http_request(m, target_url, data=body, headers=_auth_hdrs,
+                                            timeout=15)
+                    _auth_body = _r_auth.text or ""
+                    _same_len = abs(len(_auth_body) - len(body_text)) < max(50, len(body_text) * 0.1)
+                    res.evidence["auth_comparison"] = (
+                        "no_auth_differentiation" if _same_len else "auth_changes_response")
+                    step(f"  wagtail: auth comparison: {res.evidence['auth_comparison']}")
+            except Exception:
+                pass
+
+        if bypassed and string_ok:
+            res.verified = True
+            res.ok = True
+            res.confidence = "confirmed"
+            res.detail = (
+                f"VERIFICADO: {m} {endpoint} → HTTP {status}"
+                + (f" — confirm_string '{confirm_string}' presente" if confirm_string else "")
+            )
+            step("  wagtail: VERIFICADO")
+        elif bypassed and not confirm_string and payload and payload in body_text:
+            res.verified = True
+            res.ok = True
+            res.confidence = "probable"
+            res.detail = "VERIFICADO (probable): payload reflejado en respuesta"
+            step("  wagtail: VERIFICADO (payload reflejado)")
         else:
-            res.detail = f"HTTP {r.status_code} — endpoint no accesible"
+            res.ok = True
+            if bypassed and body_text:
+                from .genericverify import _analyze_response_body
+                _analysis = _analyze_response_body(
+                    body_text, vuln_class, payload=payload,
+                    confirm_string=confirm_string, status_code=status)
+                if _analysis.get("interesting"):
+                    res.evidence["response_analysis"] = _analysis
+            res.detail = (
+                f"no confirmado: {m} {endpoint} → HTTP {status}"
+                + (f", confirm_string={string_ok}" if confirm_string else "")
+            )
+            step(f"  wagtail: no confirmado HTTP {status}")
 
     except subprocess.CalledProcessError as e:
         res.detail = f"Docker error: {e}"
