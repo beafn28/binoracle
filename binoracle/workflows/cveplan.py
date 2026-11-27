@@ -297,6 +297,31 @@ def classify_cve(text: str) -> Optional[str]:
                  "not unserializ" in t or "without unserializ" in t)
     if not _dser_neg and ("deserializ" in t or "unserializ" in t or "object injection" in t):
         return "deserialization"
+    # EL-INJECTION ANTES que _CLASSES["ssti"]: "SpEL injection", "Thymeleaf template injection",
+    # "OGNL injection", "FreeMarker injection", "Velocity injection", "JNDI injection" se
+    # clasificarian como "ssti" porque "template inject" aparece en los keywords de SSTI.
+    # El verificador EL usa arithmetic canary + notaciones especificas (SpEL/OGNL/Thymeleaf);
+    # clasificar como "ssti" manda al verificador SSTI generico que no prueba esas notaciones.
+    _el_specific = (
+        "spel" in t or "spring expression" in t or
+        "ognl" in t or "struts" in t and "inject" in t or
+        "thymeleaf" in t and ("inject" in t or "template" in t) or
+        "freemarker" in t and "inject" in t or
+        "velocity" in t and "inject" in t or
+        "jndi" in t and ("inject" in t or "lookup" in t) or
+        ("expression language" in t and "inject" in t) or
+        "el injection" in t
+    )
+    if _el_specific:
+        return "el-injection"
+    # ZIP-SLIP ANTES que _CLASSES["path-traversal"]: "zip slip" o "archive traversal" se
+    # clasificarian como "path-traversal" sin activar el verificador especifico de zip-slip.
+    if "zip slip" in t or "zip-slip" in t or ("archive" in t and "traversal" in t) or "tar slip" in t:
+        return "zip-slip"
+    # HTTP-SMUGGLING ANTES que _CLASSES para evitar clasificacion como "xss" o "sqli".
+    if ("smuggling" in t and ("http" in t or "request" in t)) or "desync attack" in t or \
+       ("te.cl" in t or "cl.te" in t or "te.te" in t):
+        return "http-smuggling"
     for cls, kws, _prim, _refs in _CLASSES:
         if any(k in t for k in kws):
             return cls
