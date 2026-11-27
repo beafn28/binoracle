@@ -5574,6 +5574,10 @@ def _build_repair_prompt(
         hints.append("HTTP 422: Unprocessable Entity — el schema de parámetros es incorrecto; revisa nombres y tipos")
     elif dominant == 429:
         hints.append("HTTP 429: Rate limit — añade delay entre peticiones o usa setup_cmds para limpiar el estado")
+    elif dominant in (500, 502, 503):
+        hints.append(f"HTTP {dominant}: error interno del servidor — el payload causó una excepción; "
+                     "prueba Content-Type application/json si era form-encoded, verifica tipos de parámetros "
+                     "(int vs string), y añade setup_commands para inicializar el estado del servidor si es necesario")
     elif dominant == 200:
         snippets = [
             str(_i.get("respuesta_recorte") or _i.get("respuesta") or "")[:100]
