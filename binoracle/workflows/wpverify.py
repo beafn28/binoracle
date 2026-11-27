@@ -12240,6 +12240,187 @@ def verify_wordpress_csrf(
         _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
 
 
+def verify_wordpress_idor(
+    plugin_source_dir: str, slug: str, endpoint: str, http_method: str,
+    parameters, id_param_hint: str = "",
+    on_step: Optional[Callable[[str], None]] = None, budget_s: float = 900.0,
+    companion_plugins: Optional[list] = None,
+    keep_lab_on_failure: bool = False,
+    confirm_string: Optional[str] = None,
+    json_body: bool = False,
+) -> WpVerifyResult:
+    """Verifica IDOR (Insecure Direct Object Reference) en WordPress.
+
+    Pasos:
+    1. Crea un post PRIVADO como admin (wp post create --post_status=private).
+    2. Verifica que un anonimo NO puede leerlo via el permalink normal (prueba de control).
+    3. Accede via el endpoint vulnerable como anonimo con el ID del post privado.
+       Si la respuesta contiene datos del post (titulo, contenido), IDOR confirmado.
+    4. Enumeracion: prueba IDs adyacentes (id-1, id, id+1) para demostrar el alcance
+       de la enumeracion en la evidencia.
+    5. Comprueba la frontera de privilegios: anon puede leer item del admin pero subscriber
+       no puede leer via el endpoint directo (si es un verdadero IDOR vs. missing-auth).
+    """
+    step = on_step or (lambda _m: None)
+    pre = _check_prereqs(plugin_source_dir, slug)
+    if pre is not None:
+        return pre
+    res = WpVerifyResult()
+    t0 = time.time()
+    lab = _Lab(_token())
+    boot = None
+    try:
+        boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
+                              companion_plugins=companion_plugins)
+        if boot is None:
+            res.detail = "fallo al arrancar el laboratorio WordPress"
+            return res
+
+        m = (http_method or "GET").upper()
+        params_base = (parameters if isinstance(parameters, dict)
+                       else dict.fromkeys(parameters or [], ""))
+        id_p = id_param_hint or _pick_param(parameters, _ID_HINTS) or "id"
+
+        # 1. Create a private post as admin and get its ID
+        step("idor: creando post privado como admin para usar como objeto de prueba...")
+        _secret_content = f"BINORACLE-IDOR-SECRET-{_token()}"
+        _create = lab.wp_cli("post", "create",
+                             "--post_title=binoracle-idor-test",
+                             f"--post_content={_secret_content}",
+                             "--post_status=private",
+                             "--porcelain",
+                             timeout=30)
+        _post_id_str = (_create.stdout or "").strip()
+        _post_id = None
+        if _post_id_str.isdigit():
+            _post_id = int(_post_id_str)
+        if not _post_id:
+            res.detail = "no se pudo crear el post de prueba via wp-cli"
+            res.ok = True
+            return res
+        step(f"idor: post privado creado con ID={_post_id}")
+
+        # 2. Control check: anon CANNOT read via normal permalink
+        anon_sess = _make_session()
+        _permalink_r = anon_sess.get(
+            f"{boot.base_url}/?p={_post_id}", timeout=15, allow_redirects=True)
+        _anon_direct_blocked = (_permalink_r.status_code in (401, 403, 404) or
+                                _secret_content not in (_permalink_r.text or ""))
+        res.evidence["control_permalink_blocked"] = _anon_direct_blocked
+        res.evidence["control_permalink_status"] = _permalink_r.status_code
+
+        # 3. Try vulnerable endpoint as anon with the private post ID
+        _exploit_params = {**params_base, id_p: str(_post_id)}
+        step(f"idor: probando endpoint {endpoint!r} con ID={_post_id} como anonimo...")
+        try:
+            _exploit_r = anon_sess.request(
+                m, boot.base_url + endpoint,
+                json=_exploit_params if (m not in ("GET", "HEAD") and json_body) else None,
+                data=_exploit_params if (m not in ("GET", "HEAD") and not json_body) else None,
+                params=_exploit_params if m == "GET" else None,
+                timeout=20, allow_redirects=True)
+            _exploit_status = _exploit_r.status_code
+            _exploit_body = (_exploit_r.text or "")[:2000]
+        except Exception as _e:
+            res.detail = f"error de red al probar endpoint IDOR: {_e}"
+            res.ok = True
+            return res
+
+        res.evidence["idor_endpoint"] = endpoint
+        res.evidence["idor_id_param"] = id_p
+        res.evidence["idor_post_id"] = _post_id
+        res.evidence["idor_status"] = _exploit_status
+        res.evidence["idor_body_snippet"] = _exploit_body[:300]
+
+        _secret_found = _secret_content in _exploit_body
+        _confirm_found = (confirm_string and confirm_string.lower() in _exploit_body.lower())
+        _idor_succeeded = _secret_found or _confirm_found
+
+        # 4. ID enumeration: probe adjacent IDs to show enumeration surface
+        step("idor: enumerando IDs adyacentes...")
+        _enumerated: list = []
+        for _adj_id in [max(1, _post_id - 1), _post_id, _post_id + 1]:
+            try:
+                _adj_params = {**params_base, id_p: str(_adj_id)}
+                _adj_r = anon_sess.request(
+                    m, boot.base_url + endpoint,
+                    json=_adj_params if (m not in ("GET", "HEAD") and json_body) else None,
+                    data=_adj_params if (m not in ("GET", "HEAD") and not json_body) else None,
+                    params=_adj_params if m == "GET" else None,
+                    timeout=15, allow_redirects=True)
+                _non_trivial = (_adj_r.status_code == 200 and
+                                len(_adj_r.text or "") > 20 and
+                                (_adj_r.text or "").strip() not in ("", "0", "-1", "null"))
+                _enumerated.append({
+                    "id": _adj_id,
+                    "status": _adj_r.status_code,
+                    "accessible": _non_trivial,
+                    "body_len": len(_adj_r.text or ""),
+                })
+            except Exception:
+                pass
+        res.evidence["enumerated_ids"] = _enumerated
+
+        # 5. Privilege boundary: check that subscriber also gets blocked on normal permalink
+        # but can access the vulnerable endpoint (proves it's IDOR, not just missing-auth)
+        try:
+            _sub_sess = _wp_login(boot.base_url, boot.sub_user, boot.sub_pass, on_step=step)
+            if _sub_sess:
+                _sub_pl = _sub_sess.get(
+                    f"{boot.base_url}/?p={_post_id}", timeout=15, allow_redirects=True)
+                _sub_direct_blocked = (_sub_pl.status_code in (401, 403, 404) or
+                                       _secret_content not in (_sub_pl.text or ""))
+                _sub_ep = _sub_sess.request(
+                    m, boot.base_url + endpoint,
+                    json=_exploit_params if (m not in ("GET", "HEAD") and json_body) else None,
+                    data=_exploit_params if (m not in ("GET", "HEAD") and not json_body) else None,
+                    params=_exploit_params if m == "GET" else None,
+                    timeout=15, allow_redirects=True)
+                res.evidence["privilege_bypass"] = {
+                    "subscriber_permalink_blocked": _sub_direct_blocked,
+                    "subscriber_endpoint_status": _sub_ep.status_code,
+                    "subscriber_endpoint_accessible": (
+                        _sub_ep.status_code == 200 and len(_sub_ep.text or "") > 20),
+                    "finding": (
+                        "IDOR: anon can access private post via endpoint (permalink blocked)" if (
+                            _idor_succeeded and _anon_direct_blocked)
+                        else "endpoint bypasses WP access control for all roles"),
+                }
+        except Exception:
+            pass
+
+        if _idor_succeeded and _anon_direct_blocked:
+            res.verified = True
+            res.ok = True
+            _why = "secreto del post encontrado en respuesta" if _secret_found else f"confirm_string '{confirm_string}' encontrada"
+            res.detail = (f"IDOR confirmado: post privado (ID={_post_id}) inaccesible via "
+                          f"permalink (HTTP {_permalink_r.status_code}) pero accesible via "
+                          f"endpoint {endpoint!r} como anonimo ({_why}). "
+                          f"{len([e for e in _enumerated if e.get('accessible')])} de "
+                          f"{len(_enumerated)} IDs adyacentes tambien accesibles.")
+            step(f"VERIFICADO: IDOR confirmado — post privado leido como anonimo via {endpoint!r}")
+        elif _idor_succeeded:
+            res.ok = True
+            res.detail = (f"IDOR parcial: endpoint devolvio contenido del post (ID={_post_id}) "
+                          f"pero el permalink tampoco bloqueo el acceso (acceso WP roto en este lab)")
+        else:
+            res.ok = True
+            res.detail = (f"IDOR no confirmado: endpoint {endpoint!r} respondio HTTP "
+                          f"{_exploit_status} pero no se encontro el contenido del post privado "
+                          f"en la respuesta — puede que el ID o endpoint no sean los correctos")
+        res.evidence["screenshots"] = boot.shots
+        res.evidence["http_captures"] = boot.http_captures
+        return res
+    except subprocess.TimeoutExpired as e:
+        res.detail = f"timeout de infraestructura: {e}"
+        return res
+    except Exception as e:
+        res.detail = f"error inesperado: {e}"
+        return res
+    finally:
+        _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
+
+
 def verify_wordpress_deserialization(
     plugin_source_dir: str, slug: str, endpoint: str, http_method: str,
     parameters, serial_param_hint: str = "",

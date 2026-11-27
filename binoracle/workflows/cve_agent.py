@@ -3142,6 +3142,19 @@ def _cheerleader_analysis(llm, inv, wr, es: bool) -> dict:
             _target_framework = _repo.rstrip("/")
         else:
             _target_framework = _source_url or "unknown"
+        # Include diff_analyzer output when available (precise patch analysis)
+        _patch_diff = getattr(inv, "patch_diff", None) or _notes.get("patch_diff") or {}
+        _diff_analysis = {}
+        if isinstance(_patch_diff, dict) and _patch_diff.get("ok"):
+            _diff_analysis = {
+                "patched_functions": _patch_diff.get("vuln_functions", [])[:5],
+                "auth_checks_added": _patch_diff.get("auth_checks_added", [])[:5],
+                "bypass_hints": _patch_diff.get("bypass_hints", [])[:3],
+                "input_path": (_patch_diff.get("input_path") or "")[:200],
+                "fix_completeness": _patch_diff.get("fix_completeness", ""),
+            }
+        # Include pre-attempt validation failure reason if available
+        _pre_validate = getattr(inv, "pre_validate_result", None) or {}
         context = {
             "cve_id": getattr(inv, "cve_id", ""),
             "vuln_class": getattr(inv, "vuln_class", ""),
@@ -3157,6 +3170,8 @@ def _cheerleader_analysis(llm, inv, wr, es: bool) -> dict:
             "source_grounding": _grounding_snippet,
             "static_analysis_candidates": _static_candidates,
             "source_grounding_summary": (_grounding.get("summary", "") or "")[:400],
+            "diff_analysis": _diff_analysis,
+            "pre_validate_issues": (_pre_validate.get("issues") or [])[:3],
         }
         import json
         prompt = f"Evidencia real del intento fallido:\n{json.dumps(context, ensure_ascii=False)[:4000]}"
@@ -18048,6 +18063,26 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                            email_param_hint=email_p or "",
                                            pass_param_hint=pass_p or "", on_step=step, budget_s=budget_s,
                                            companion_plugins=companion_plugins, keep_lab_on_failure=keep_lab_on_failure)
+                _apply_wpverify_result(inv, wr, es, llm)
+            elif (not is_drupal and not is_joomla and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
+                  and inv.vuln_class in ("idor", "broken-object-level-authorization", "bola",
+                                         "unauthorized-read", "data-exposure")
+                  and notes.get("endpoint")):
+                from .wpverify import verify_wordpress_idor, _pick_param, _ID_HINTS
+                params = notes.get("parameters") or []
+                id_p = _notes_param("id_param", notes, params, _pick_param, _ID_HINTS)
+                step(("intentando verificacion DINAMICA -- IDOR: post privado de admin accesible "
+                     "como anonimo via endpoint (WordPress+MySQL efimero en Docker)..." if es else
+                     "attempting DYNAMIC verification -- IDOR: admin private post readable by "
+                     "anon via endpoint (ephemeral WordPress+MySQL in Docker)..."))
+                wr = verify_wordpress_idor(
+                    fr.local_path, plugin_dir, notes.get("endpoint"),
+                    notes.get("http_method") or "GET", params,
+                    id_param_hint=id_p or "", on_step=step, budget_s=budget_s,
+                    companion_plugins=companion_plugins,
+                    confirm_string=notes.get("confirm_string") or None,
+                    json_body=bool(notes.get("json_body")),
+                    keep_lab_on_failure=keep_lab_on_failure)
                 _apply_wpverify_result(inv, wr, es, llm)
             # deserializacion insegura (PHP Object Injection) -- ver deserialize_gadgets.py: a
             # diferencia de las demas clases, el gadget se busca PRIMERO en el codigo real (sin
