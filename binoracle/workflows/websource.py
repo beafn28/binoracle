@@ -4590,6 +4590,70 @@ def find_zip_slip_sinks(local_path: str) -> List[VulnSink]:
     return results[:5]
 
 
+# ── EL injection sinks ───────────────────────────────────────────────────────
+
+_EL_EVAL_RE = re.compile(
+    # Spring SpEL / OGNL
+    r"\bparseExpression\s*\(|ExpressionParser\b|SpelExpressionParser\b"
+    # Thymeleaf / EL eval
+    r"|\bspring\.el\b|\bognl\.Ognl\b|\.getValue\s*\("
+    # Template engines evaluating user input
+    r"|\bnunjucks\.renderString\s*\(|Handlebars\.compile\s*\("
+    r"|\bpug\.render\s*\(|\bejs\.render\s*\(|\bejs\.renderFile\s*\("
+    # FreeMarker / Velocity
+    r"|\bnew\s+Template\s*\(|Configuration\.getTemplate\s*\("
+    r"|\bvelocity(?:Engine|Context|Template)\b",
+    re.IGNORECASE,
+)
+_EL_USER_INPUT_RE = re.compile(
+    r"request\.(args|form|json|data|GET|POST|params?|query)\b"
+    r"|\$_(?:GET|POST|REQUEST)\b"
+    r"|\breq\.(?:body|query|params)\b"
+    r"|getParameter\s*\(|@RequestParam\b|@PathVariable\b",
+    re.IGNORECASE,
+)
+
+
+def find_el_injection_sinks(local_path: str) -> List[VulnSink]:
+    """Detect EL injection sinks (SpEL/OGNL/Thymeleaf/FreeMarker with user input)."""
+    import os as _os
+    results: List[VulnSink] = []
+    _exts = {".php", ".py", ".js", ".ts", ".java", ".rb", ".kt", ".groovy"}
+    for root, dirs, files in _os.walk(local_path):
+        dirs[:] = [d for d in dirs if d not in (".git", "node_modules", "__pycache__", "vendor")]
+        for fname in files:
+            if _os.path.splitext(fname)[1].lower() not in _exts:
+                continue
+            fpath = _os.path.join(root, fname)
+            try:
+                txt = open(fpath, encoding="utf-8", errors="ignore").read(100_000)
+            except OSError:
+                continue
+            if not _EL_EVAL_RE.search(txt):
+                continue
+            if not _EL_USER_INPUT_RE.search(txt):
+                continue
+            for lineno, line in enumerate(txt.splitlines(), 1):
+                if _EL_EVAL_RE.search(line) or _EL_USER_INPUT_RE.search(line):
+                    # Only report lines that have both eval and user input nearby
+                    ctx_start = max(0, lineno - 5)
+                    ctx = "\n".join(txt.splitlines()[ctx_start:lineno + 5])
+                    if _EL_EVAL_RE.search(ctx) and _EL_USER_INPUT_RE.search(ctx):
+                        rel = _os.path.relpath(fpath, local_path)
+                        results.append(VulnSink(
+                            file=rel, line=lineno,
+                            snippet=line.strip()[:120],
+                            param="expression_input",
+                            sink="el_eval",
+                            tech="auto",
+                            confidence=2,
+                        ))
+                        break
+        if len(results) >= 5:
+            break
+    return results[:5]
+
+
 # ── SSRF sinks ────────────────────────────────────────────────────────────────
 
 _SSRF_PATTERNS = [

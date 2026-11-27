@@ -7626,7 +7626,8 @@ def _prescan_source_for_llm_context(source_dir: str, vuln_class: str,
         from .websource import (detect_tech_stack, find_sqli_sinks_generic,
                                 find_rce_sinks, find_path_traversal_sinks,
                                 find_xss_sinks_generic, find_auth_bypass_generic,
-                                find_ssrf_sinks, VulnSink)  # noqa: F401
+                                find_ssrf_sinks, find_zip_slip_sinks,
+                                find_el_injection_sinks, VulnSink)  # noqa: F401
     except ImportError:
         return result
 
@@ -7643,6 +7644,11 @@ def _prescan_source_for_llm_context(source_dir: str, vuln_class: str,
             sinks = find_rce_sinks(source_dir, tech)[:8]
         elif _vc in ("path-traversal", "lfi"):
             sinks = find_path_traversal_sinks(source_dir, tech)[:8]
+        elif _vc in ("zip-slip", "archive-traversal"):
+            sinks = find_zip_slip_sinks(source_dir)[:8]
+        elif _vc in ("el-injection", "expression-language-injection", "spel-injection",
+                     "ognl-injection", "thymeleaf-injection", "jndi-injection"):
+            sinks = find_el_injection_sinks(source_dir)[:8]
         elif _vc in ("xss",):
             sinks = find_xss_sinks_generic(source_dir, tech)[:8]
         elif _vc in ("auth-bypass", "missing-authorization", "idor", "graphql-bypass",
