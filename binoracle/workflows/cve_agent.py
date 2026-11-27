@@ -19986,6 +19986,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _bac_adm   = notes.get("admin_endpoint") or ""
                 _bac_df    = _notes_dockerfile(notes)
                 _bac_extra = notes.get("extra_files") or None
+                _bac_sc    = notes.get("setup_cmds") or None
                 if not _bac_df and llm is not None:
                     _scf = _scaffold_llm_lab_for_class(
                         llm, str(fr.local_path), notes, inv.cve_id,
@@ -19999,7 +20000,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 wr = verify_generic_broken_access_control(
                     fr.local_path, _bac_ep, _bac_m, _bac_cs, _bac_adm,
                     on_step=step, budget_s=budget_s,
-                    dockerfile_body=_bac_df, extra_files=_bac_extra)
+                    dockerfile_body=_bac_df, extra_files=_bac_extra,
+                    setup_commands=_bac_sc)
                 _apply_wpverify_result(inv, wr, es, llm)
             # --- Expression Language injection (Spring SpEL, JSP EL, Thymeleaf, Velocity) ---
             elif (not plugin_dir and
@@ -20018,6 +20020,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _el_param = notes.get("inject_param") or notes.get("sqli_param") or "query"
                 _el_df    = _notes_dockerfile(notes)
                 _el_extra = notes.get("extra_files") or None
+                _el_sc    = notes.get("setup_cmds") or None
                 if not _el_df and llm is not None:
                     _scf = _scaffold_llm_lab_for_class(
                         llm, str(fr.local_path), notes, inv.cve_id,
@@ -20031,7 +20034,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 wr = verify_generic_expression_language_injection(
                     fr.local_path, _el_ep, _el_m, _el_param,
                     on_step=step, budget_s=budget_s,
-                    dockerfile_body=_el_df, extra_files=_el_extra)
+                    dockerfile_body=_el_df, extra_files=_el_extra,
+                    setup_commands=_el_sc)
                 _apply_wpverify_result(inv, wr, es, llm)
             # --- Race condition / TOCTOU (concurrent requests burst) ---
             elif (not plugin_dir and
@@ -20050,6 +20054,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _rc_n      = int(notes.get("concurrent_requests") or 20)
                 _rc_df     = _notes_dockerfile(notes)
                 _rc_extra  = notes.get("extra_files") or None
+                _rc_sc     = notes.get("setup_cmds") or None
                 if not _rc_df and llm is not None:
                     _scf = _scaffold_llm_lab_for_class(
                         llm, str(fr.local_path), notes, inv.cve_id,
@@ -20065,7 +20070,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     race_params=_rc_params if isinstance(_rc_params, dict) else {},
                     confirm_string=_rc_cs, concurrent_requests=_rc_n,
                     on_step=step, budget_s=budget_s,
-                    dockerfile_body=_rc_df, extra_files=_rc_extra)
+                    dockerfile_body=_rc_df, extra_files=_rc_extra,
+                    setup_commands=_rc_sc)
                 _apply_wpverify_result(inv, wr, es, llm)
             # --- Account takeover (password reset token prediction / session fixation) ---
             elif (not plugin_dir and
@@ -20086,6 +20092,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _at_login  = notes.get("login_endpoint") or ""
                 _at_df     = _notes_dockerfile(notes)
                 _at_extra  = notes.get("extra_files") or None
+                _at_sc     = notes.get("setup_cmds") or None
                 if not _at_df and llm is not None:
                     _scf = _scaffold_llm_lab_for_class(
                         llm, str(fr.local_path), notes, inv.cve_id,
@@ -20102,7 +20109,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     takeover_params=_at_params if isinstance(_at_params, dict) else {},
                     confirm_string=_at_cs, login_endpoint=_at_login,
                     on_step=step, budget_s=budget_s,
-                    dockerfile_body=_at_df, extra_files=_at_extra)
+                    dockerfile_body=_at_df, extra_files=_at_extra,
+                    setup_commands=_at_sc)
                 _apply_wpverify_result(inv, wr, es, llm)
             # --- User / Email Enumeration (probe existing vs non-existing accounts) ---
             elif (not plugin_dir and
@@ -20147,6 +20155,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _hrs_ep  = notes.get("endpoint") or "/"
                 _hrs_df  = _notes_dockerfile(notes)
                 _hrs_ext = notes.get("extra_files") or None
+                _hrs_sc  = notes.get("setup_cmds") or None
                 if not _hrs_df and llm is not None:
                     _scf = _scaffold_llm_lab_for_class(
                         llm, str(fr.local_path), notes, inv.cve_id,
@@ -20159,7 +20168,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 wr = verify_generic_http_request_smuggling(
                     fr.local_path, _hrs_ep,
                     on_step=step, budget_s=budget_s,
-                    dockerfile_body=_hrs_df, extra_files=_hrs_ext)
+                    dockerfile_body=_hrs_df, extra_files=_hrs_ext,
+                    setup_commands=_hrs_sc)
                 _apply_wpverify_result(inv, wr, es, llm)
         else:
             step(f"no se pudo obtener el codigo: {fr.note}" if es else
