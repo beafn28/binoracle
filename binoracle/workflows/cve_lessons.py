@@ -43,6 +43,11 @@ _STACK_KEYWORDS: Dict[str, List[str]] = {
     "authentik":   ["authentik"],
     "jellyfin":    ["jellyfin"],
     "audiobookshelf": ["audiobookshelf"],
+    "directus":    ["directus"],
+    "nuxt":        ["nuxt.js", "nuxtjs", "h3 framework", "nitro server"],
+    "rust-actix":  ["actix-web", "actix_web", "axum", "warp framework", "rocket framework"],
+    "updraftplus": ["updraftplus"],
+    "h3":          [" h3 ", "h3.js"],
 }
 
 
