@@ -253,6 +253,46 @@ _REGEX_PATTERNS: dict = {
         (r'register_rest_route\s*\([^;]*(?!permission_callback)',
          "rest_route_no_permission"),
     ],
+    "business-logic": [
+        # Price/quantity parameter manipulation (server-side value not validated)
+        (r'(?:price|amount|cost|total|quantity|qty)\s*=\s*\$_(?:GET|POST|REQUEST)',
+         "price_from_user_input_php"),
+        (r'(?:price|amount|quantity|qty)\s*=\s*(?:request|req)\.(?:body|query|form)',
+         "price_from_user_input_py_js"),
+        # Negative price/quantity not checked
+        (r'intval\s*\(\s*\$_(?:GET|POST|REQUEST)\s*\[["\'](?:quantity|qty|amount)["\']',
+         "qty_intval_no_min_check"),
+        # Coupon/discount applied without limit
+        (r'apply_coupon|discount_code|promo_code',
+         "coupon_no_limit"),
+    ],
+    "information-disclosure": [
+        # Debug mode / verbose error output
+        (r'(?:WP_DEBUG\s*,\s*true|define\s*\(\s*["\']DEBUG["\'],\s*true)',
+         "debug_mode_enabled"),
+        # Stack trace exposure
+        (r'(?:print_r|var_dump|var_export)\s*\(\s*(?:\$e|exception)',
+         "stack_trace_exposed_php"),
+        # Hardcoded internal paths in error messages
+        (r'__FILE__|__DIR__',
+         "file_path_disclosure"),
+        # API keys in source
+        (r'(?:api_key|api_secret|secret_key|access_token)\s*=\s*["\'][A-Za-z0-9]{16,}["\']',
+         "hardcoded_api_key"),
+    ],
+    "zip-slip": [
+        # Archive extraction without canonicalization
+        (r'->extractTo\s*\(|->extract\s*\(|\.extractall\s*\(|\.extract\s*\([^,]+,',
+         "archive_extract_no_canonical_check"),
+    ],
+    "account-takeover": [
+        # Password reset token not validated (token used directly from request)
+        (r'\$_(?:GET|POST|REQUEST)\s*\[["\'](?:token|reset_token|key)["\']',
+         "reset_token_from_request_php"),
+        # Email change without re-auth
+        (r'(?:update_user_meta|wp_update_user)\s*\([^;]*email',
+         "email_change_no_reauth_wp"),
+    ],
 }
 
 # Semgrep rule keyword filters per vuln class
@@ -278,6 +318,10 @@ _SEMGREP_FILTER: dict = {
     "jwt-bypass": ["jwt", "token", "bypass", "alg"],
     "csrf": ["csrf", "nonce", "ajax", "referer"],
     "missing-authorization": ["authorization", "capability", "permission", "nonce"],
+    "business-logic": ["price", "amount", "quantity", "coupon", "discount", "business-logic"],
+    "information-disclosure": ["debug", "disclosure", "stack-trace", "api-key", "verbose"],
+    "zip-slip": ["zip", "extract", "archive", "path-traversal", "zip-slip"],
+    "account-takeover": ["account", "takeover", "reset", "token", "email-change"],
 }
 
 
