@@ -3886,6 +3886,14 @@ def verify_generic_ssrf(
                     # URL-encoded dot: some filters split on literal "." only
                     f"http://{listener_ip.replace('.', '%2e')}:8080/{path}",
                 ]
+            # Alternative schemes: some URL allowlists only block http:// / https://
+            _base_path = path.lstrip("/")
+            urls += [
+                f"gopher://{lab.listener}:8080/_{_base_path}",
+                f"dict://{lab.listener}:8080/binoracle:{_base_path}",
+                f"http://0.0.0.0:8080/{_base_path}",
+                f"http://[::1]:8080/{_base_path}",
+            ]
             return urls
 
         first_resp_captured = False
