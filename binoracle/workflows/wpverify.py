@@ -9604,7 +9604,24 @@ def verify_wordpress_ssrf(
                                      "\"health\":", "\"status\":\"ok\"",
                                      "\"runtimeInfo\"", "\"goroutineCount\"",
                                      "\"numExecutors\"", "\"jobs\":",
-                                     "\"grafanaVersion\"")
+                                     "\"grafanaVersion\"",
+                                     # GCP IMDS
+                                     "\"email\":", "\"scopes\":", "serviceAccountEmail",
+                                     "\"zone\":", "\"machineType\":",
+                                     # Azure IMDS
+                                     "\"azEnvironment\"", "\"tenantId\"", "\"resourceGroupName\"",
+                                     # Consul
+                                     "\"Config\":", "\"Member\":", "\"NodeName\":",
+                                     # Elasticsearch
+                                     "\"cluster_uuid\"", "\"lucene_version\"",
+                                     # Hashicorp Vault
+                                     "\"initialized\":", "\"sealed\":", "vault",
+                                     # etcd (K8s data store)
+                                     "\"etcdserver\"", "\"etcdcluster\"",
+                                     # Mongo Express, MySQL, pgAdmin
+                                     "\"mongoExpressVersion\"", "\"Uptime\":",
+                                     # MinIO
+                                     "\"mode\":\"standalone\"", "\"deploymentID\":")
                         if any(kw in _sbody for kw in _meta_kws):
                             _ssrf_post_hits.append({
                                 "service": _svc_name,
