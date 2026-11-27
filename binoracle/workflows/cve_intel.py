@@ -590,6 +590,26 @@ def auto_enrich_before_analysis(cve_id: str, notes: dict) -> dict:
             if alias.startswith("GHSA-") and not out.get("_intel_ghsa_url"):
                 out["_intel_ghsa_url"] = f"https://github.com/advisories/{alias}"
                 out["_intel_ghsa_id"] = alias
+                # Fetch the full GHSA advisory for affected version ranges and vuln details
+                if not out.get("_intel_ghsa_data"):
+                    try:
+                        _ghsa = fetch_ghsa_advisory(alias)
+                        if _ghsa:
+                            # Pull the most useful fields; don't overwrite existing analyst data
+                            _ghsa_summary: dict = {}
+                            if _ghsa.get("affected"):
+                                _ghsa_summary["affected"] = _ghsa["affected"][:3]
+                            if _ghsa.get("severity"):
+                                _ghsa_summary["severity"] = _ghsa["severity"][:3]
+                            if _ghsa.get("references"):
+                                _ghsa_summary["references"] = [
+                                    r for r in (_ghsa["references"] or [])[:5]
+                                    if "patch" in str(r).lower() or "commit" in str(r).lower()
+                                ]
+                            if _ghsa_summary:
+                                out["_intel_ghsa_data"] = _ghsa_summary
+                    except Exception:
+                        pass
 
     # Nuclei: get endpoint / confirm_string
     nuclei = fetch_nuclei_template(cve_id)
