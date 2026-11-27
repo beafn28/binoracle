@@ -22,7 +22,7 @@ _DOCKER_IMAGE_PROFILES: dict[str, dict] = {
             "server__host": "0.0.0.0",
         },
         "cmd": None,
-        "startup_wait": 15,
+        "startup_wait": 25,
         "health_path": "/ghost/api/admin/site/",
     },
     "ghcr.io/zitadel/zitadel:": {
@@ -70,9 +70,11 @@ _DOCKER_IMAGE_PROFILES: dict[str, dict] = {
         "envs": {
             "PGADMIN_DEFAULT_EMAIL": "admin@example.com",
             "PGADMIN_DEFAULT_PASSWORD": "BinOracle123!",
+            # Disable external process spawning restrictions for lab (needed for SMTP test injection)
+            "PGADMIN_CONFIG_CHECK_EMAIL_DELIVERABILITY": "False",
         },
         "cmd": None,
-        "startup_wait": 15,
+        "startup_wait": 30,
         "health_path": "/misc/ping",
     },
     # needs postgres — cannot run standalone; LLM must handle it
@@ -124,7 +126,7 @@ _DOCKER_IMAGE_PROFILES: dict[str, dict] = {
             "STRAPI_DISABLE_STARTUP_MESSAGE": "true",
         },
         "cmd": None,
-        "startup_wait": 30,
+        "startup_wait": 45,
         "health_path": "/",
     },
     # --- Paperless-ngx (Django-based DMS) ---
