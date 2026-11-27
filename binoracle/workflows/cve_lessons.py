@@ -404,6 +404,34 @@ def format_lessons_for_llm(stack: str, vuln_class: str = "",
         _osv_top = [p for p, _ in _osv_counter.most_common(3)]
         lines.append(f"- Paquetes OSV afectados en este stack: {', '.join(_osv_top)}")
 
+    # Weaponization techniques seen on this stack (helps LLM know what escalation worked)
+    _wep_counter: Counter = Counter()
+    for r in runs:
+        if r.get("verified") and r.get("weaponization_technique"):
+            _wep_counter[r["weaponization_technique"]] += 1
+    if _wep_counter:
+        _wep_top = [t for t, _ in _wep_counter.most_common(2)]
+        lines.append(f"- Tecnicas de weaponization verificadas: {', '.join(_wep_top)}")
+
+    # SSTI engines confirmed in this stack
+    _ssti_engines: list = []
+    for r in runs:
+        if r.get("verified") and r.get("ssti_engine") and r["ssti_engine"] not in _ssti_engines:
+            _ssti_engines.append(r["ssti_engine"])
+    if _ssti_engines:
+        lines.append(f"- Engines SSTI confirmados: {', '.join(_ssti_engines[:3])}")
+
+    # Blast radius distribution from impact chain analysis
+    _blast_counter: Counter = Counter()
+    for r in runs:
+        if r.get("verified") and r.get("blast_radius"):
+            _blast_counter[r["blast_radius"]] += 1
+    if _blast_counter:
+        _br_top = [f"{br}({n})" for br, n in _blast_counter.most_common(3)]
+        lines.append(f"- Blast radius observado: {', '.join(_br_top)}")
+        if _blast_counter.get("critical", 0) + _blast_counter.get("high", 0) >= 2:
+            lines.append("  NOTA: impacto critico/alto frecuente — priorizar escalada post-exploit")
+
     summary = "\n".join(lines)
     # Truncate to stay within token budget (approx 4 chars/token)
     if len(summary) > max_tokens * 4:
@@ -572,6 +600,19 @@ def learn_from_chain_result(result: object) -> None:
                                 _run["weaponization_technique"] = _wep["technique"]
                                 if _wep.get("impact"):
                                     _run["weaponization_impact"] = _wep["impact"][:200]
+                            # Impact chain analysis (from adversarial_agent.impact_chain_analysis)
+                            _dv = getattr(result, "dynamic_verify", {}) or {}
+                            _ic = _dv.get("impact_chain") or {}
+                            if isinstance(_ic, dict) and _ic.get("blast_radius"):
+                                _run["blast_radius"] = _ic["blast_radius"]
+                            # Prototype pollution / JWT engine markers
+                            if ev.get("pp_technique"):
+                                _run["pp_technique"] = ev["pp_technique"]
+                            if ev.get("jwt_technique"):
+                                _run["jwt_technique"] = ev["jwt_technique"]
+                            # Zip-slip confirmation
+                            if ev.get("zipslip_path"):
+                                _run["zipslip_path"] = ev["zipslip_path"]
                             break
                     _save(data)
 

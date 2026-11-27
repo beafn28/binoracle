@@ -4731,6 +4731,54 @@ _LAB_SCAFFOLD_PROTOTYPE_POLLUTION_SYS = (
     "\"confirm_string\": \"binoracle-polluted\", \"server_port\": 3000}"
 )
 
+_LAB_SCAFFOLD_ZIP_SLIP_SYS = (
+    "Eres un experto en seguridad. Genera un servidor web con un endpoint de upload de archivos "
+    "ZIP que extraiga el contenido SIN validar las rutas de las entradas (path traversal via archive). "
+    "REGLAS:\n"
+    "1. El endpoint POST /upload acepta un fichero ZIP via multipart (campo 'file')\n"
+    "2. El servidor extrae el ZIP con path.join(extractDir, entry.name) sin canonicalizar ni "
+    "   rechazar entradas con '../'\n"
+    "3. extractDir es /app/uploads/ — una entrada '../../../tmp/evil.txt' debe extraerse a /tmp/evil.txt\n"
+    "4. El servidor tiene un endpoint GET /status que lista ficheros en /tmp/ para verificar que "
+    "   el fichero traverseado llegó ahí\n"
+    "5. Stack: Node.js + express + unzipper (npm) O Python + Flask + zipfile — elige el que tenga "
+    "   el codigo fuente del CVE para simular el patron real\n"
+    "Responde SOLO con JSON sin markdown: "
+    "{\"server_code\": \"...\", \"dockerfile\": \"...\", \"endpoint\": \"/upload\", "
+    "\"confirm_endpoint\": \"/status\", \"file_param\": \"file\", \"server_port\": 3000}"
+)
+
+_LAB_SCAFFOLD_ACCOUNT_TAKEOVER_SYS = (
+    "Eres un experto en seguridad. Genera un servidor web con un flujo de recuperacion de contrasena "
+    "VULNERABLE a account takeover. REGLAS:\n"
+    "1. POST /auth/reset-request recibe {email} y guarda un token predecible o lo expone en la respuesta\n"
+    "2. El token debe ser predecible: MD5 del email, timestamp, numero incremental, o UUID corto\n"
+    "3. POST /auth/reset-confirm recibe {token, password} y cambia la contrasena SI el token es correcto\n"
+    "4. POST /auth/login recibe {email, password} y devuelve {success: true, user: {...}} si las "
+    "   credenciales son correctas\n"
+    "5. VULNERABILIDAD: el token no es criptograficamente aleatorio, o se devuelve en la respuesta "
+    "   de reset-request, permitiendo que un atacante cambie la contrasena de otro usuario\n"
+    "Responde SOLO con JSON sin markdown: "
+    "{\"server_code\": \"...\", \"dockerfile\": \"...\", \"endpoint\": \"/auth/reset-request\", "
+    "\"login_endpoint\": \"/auth/login\", \"server_port\": 3000, "
+    "\"confirm_string\": \"\\\"success\\\":true\"}"
+)
+
+_LAB_SCAFFOLD_INFORMATION_DISCLOSURE_SYS = (
+    "Eres un experto en seguridad. Genera un servidor web con un endpoint de information disclosure: "
+    "expone datos sensibles como secretos de entorno, rutas internas, stack traces, o contenido de "
+    "ficheros de configuracion. REGLAS:\n"
+    "1. El servidor debe tener al menos UN endpoint que devuelva secretos, ya sea:\n"
+    "   - GET /.env o GET /api/config que devuelve variables de entorno con claves SECRET/PASSWORD/KEY\n"
+    "   - GET /debug o GET /actuator/env con valores de configuracion internos\n"
+    "   - GET /api/status que incluye rutas de ficheros internas o credenciales de BD\n"
+    "2. Planta un secreto ficticio en la variable de entorno SECRET_KEY='binoracle_secret_12345'\n"
+    "3. El endpoint expone ese secreto sin autenticacion\n"
+    "Responde SOLO con JSON sin markdown: "
+    "{\"server_code\": \"...\", \"dockerfile\": \"...\", \"endpoint\": \"/.env\", "
+    "\"confirm_string\": \"binoracle_secret\", \"server_port\": 3000}"
+)
+
 _LAB_FEEDBACK_GENERIC_SYS = (
     "Una verificacion de vulnerabilidad fallo contra un laboratorio Docker. "
     "Diagnostica el motivo EXACTO del fallo y genera una version corregida del servidor.\n\n"
@@ -12079,7 +12127,11 @@ _SCAFFOLD_SYS_FOR_CLASS = {
     "boolean-injection":           "_LAB_SCAFFOLD_BOOLEAN_ORACLE_SYS",
     "data-leak":                   "_LAB_SCAFFOLD_BOOLEAN_ORACLE_SYS",
     "filter-bypass":               "_LAB_SCAFFOLD_BOOLEAN_ORACLE_SYS",
-    "information-disclosure":      "_LAB_SCAFFOLD_BOOLEAN_ORACLE_SYS",
+    # Information disclosure — dedicated scaffold (not bool oracle)
+    "information-disclosure":      "_LAB_SCAFFOLD_INFORMATION_DISCLOSURE_SYS",
+    "sensitive-data-exposure":     "_LAB_SCAFFOLD_INFORMATION_DISCLOSURE_SYS",
+    "credential-exposure":         "_LAB_SCAFFOLD_INFORMATION_DISCLOSURE_SYS",
+    "config-disclosure":           "_LAB_SCAFFOLD_INFORMATION_DISCLOSURE_SYS",
     # OAuth / OIDC
     "oauth-bypass":                "_LAB_SCAFFOLD_OAUTH_SYS",
     "oauth":                       "_LAB_SCAFFOLD_OAUTH_SYS",
@@ -12136,12 +12188,20 @@ _SCAFFOLD_SYS_FOR_CLASS = {
     "auth-chain":                  "_LAB_SCAFFOLD_MULTISTEP_SYS",
     "multistep":                   "_LAB_SCAFFOLD_MULTISTEP_SYS",
     "authentication-bypass":       "_LAB_SCAFFOLD_MULTISTEP_SYS",
-    # Session fixation / account takeover
-    "session-fixation":            "_LAB_SCAFFOLD_MULTISTEP_SYS",
-    "session-hijacking":           "_LAB_SCAFFOLD_MULTISTEP_SYS",
-    "token-fixation":              "_LAB_SCAFFOLD_MULTISTEP_SYS",
-    "account-takeover":            "_LAB_SCAFFOLD_MULTISTEP_SYS",
-    "password-reset-bypass":       "_LAB_SCAFFOLD_MULTISTEP_SYS",
+    # Session fixation / account takeover — dedicated scaffold (more precise than multistep)
+    "session-fixation":            "_LAB_SCAFFOLD_ACCOUNT_TAKEOVER_SYS",
+    "session-hijacking":           "_LAB_SCAFFOLD_ACCOUNT_TAKEOVER_SYS",
+    "token-fixation":              "_LAB_SCAFFOLD_ACCOUNT_TAKEOVER_SYS",
+    "account-takeover":            "_LAB_SCAFFOLD_ACCOUNT_TAKEOVER_SYS",
+    "password-reset-bypass":       "_LAB_SCAFFOLD_ACCOUNT_TAKEOVER_SYS",
+    "predictable-token":           "_LAB_SCAFFOLD_ACCOUNT_TAKEOVER_SYS",
+    "insecure-password-reset":     "_LAB_SCAFFOLD_ACCOUNT_TAKEOVER_SYS",
+    # Zip-slip / archive extraction traversal — dedicated scaffold
+    "zip-slip":                          "_LAB_SCAFFOLD_ZIP_SLIP_SYS",
+    "zip_slip":                          "_LAB_SCAFFOLD_ZIP_SLIP_SYS",
+    "archive-extraction":                "_LAB_SCAFFOLD_ZIP_SLIP_SYS",
+    "path-traversal-zip":                "_LAB_SCAFFOLD_ZIP_SLIP_SYS",
+    "arbitrary-file-write":              "_LAB_SCAFFOLD_ZIP_SLIP_SYS",
     # ReDoS / algorithmic complexity
     "redos":                             "_LAB_SCAFFOLD_REDOS_SYS",
     "regex-dos":                         "_LAB_SCAFFOLD_REDOS_SYS",
@@ -12391,6 +12451,9 @@ def _scaffold_llm_lab_for_class(llm, source_dir: str, notes: dict, cve_id: str,
         "_LAB_SCAFFOLD_SQLI_SYS":                _LAB_SCAFFOLD_SQLI_SYS,
         "_LAB_SCAFFOLD_MASS_ASSIGNMENT_SYS":     _LAB_SCAFFOLD_MASS_ASSIGNMENT_SYS,
         "_LAB_SCAFFOLD_REDOS_SYS":               _LAB_SCAFFOLD_REDOS_SYS,
+        "_LAB_SCAFFOLD_ZIP_SLIP_SYS":            _LAB_SCAFFOLD_ZIP_SLIP_SYS,
+        "_LAB_SCAFFOLD_ACCOUNT_TAKEOVER_SYS":    _LAB_SCAFFOLD_ACCOUNT_TAKEOVER_SYS,
+        "_LAB_SCAFFOLD_INFORMATION_DISCLOSURE_SYS": _LAB_SCAFFOLD_INFORMATION_DISCLOSURE_SYS,
     }
     sys_key = _SCAFFOLD_SYS_FOR_CLASS.get(vuln_class)
     if sys_key is None and vuln_class:
@@ -12440,6 +12503,14 @@ def _scaffold_llm_lab_for_class(llm, source_dir: str, notes: dict, cve_id: str,
                                       "privilege", "auth", "access-control", "file-upload",
                                       "arbitrary-file", "file-write", "file-delete")):
             sys_key = "_LAB_SCAFFOLD_MISSING_AUTH_SYS"
+        elif any(x in _vc for x in ("zip-slip", "zip_slip", "archive-extract", "arbitrary-file-write")):
+            sys_key = "_LAB_SCAFFOLD_ZIP_SLIP_SYS"
+        elif any(x in _vc for x in ("account-take", "password-reset", "predictable-token",
+                                      "token-fix", "session-fix", "insecure-password")):
+            sys_key = "_LAB_SCAFFOLD_ACCOUNT_TAKEOVER_SYS"
+        elif any(x in _vc for x in ("information-disc", "config-disc", "credential-expo",
+                                      "sensitive-data", "env-expo")):
+            sys_key = "_LAB_SCAFFOLD_INFORMATION_DISCLOSURE_SYS"
         elif any(x in _vc for x in ("boolean", "data-leak", "info", "exposure")):
             sys_key = "_LAB_SCAFFOLD_BOOLEAN_ORACLE_SYS"
         elif any(x in _vc for x in ("redos", "regex-dos", "algorithmic", "backtrack", "catastrophic")):
@@ -12645,13 +12716,19 @@ def _scaffold_llm_lab_for_class(llm, source_dir: str, notes: dict, cve_id: str,
         "redirect_param":  data.get("redirect_param") or "",
         "file_param":      data.get("file_param") or "",
         "graphql_query":   data.get("graphql_query") or "",
-        "poll_endpoint":   data.get("poll_endpoint") or "/api/status",
-        "poll_prop":       data.get("poll_prop") or "binoracle_pwned",
-        "true_param":      data.get("true_param") or "",
-        "true_value":      data.get("true_value") or "",
-        "false_param":     data.get("false_param") or "",
-        "false_value":     data.get("false_value") or "",
-        "confirm_field":   data.get("confirm_field") or data.get("confirm_string") or confirm,
+        "poll_endpoint":     data.get("poll_endpoint") or "/api/status",
+        "poll_prop":         data.get("poll_prop") or "binoracle_pwned",
+        "true_param":        data.get("true_param") or "",
+        "true_value":        data.get("true_value") or "",
+        "false_param":       data.get("false_param") or "",
+        "false_value":       data.get("false_value") or "",
+        "confirm_field":     data.get("confirm_field") or data.get("confirm_string") or confirm,
+        # Zip-slip specific
+        "confirm_endpoint":  data.get("confirm_endpoint") or "",
+        # Account takeover specific
+        "login_endpoint":    data.get("login_endpoint") or "",
+        # server code (stored for caching and feedback)
+        "server_code":       server_code,
     }
     # NOTA: el cache (tech, vuln_class) se escribe SOLO cuando el lab generado aqui
     # termina verificandose de verdad (ver los call-sites de _scaffold_llm_lab_for_class,
