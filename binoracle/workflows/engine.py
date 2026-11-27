@@ -1572,6 +1572,42 @@ class ExploitReasoningEngine:
          "INJECTION_CONTEXT", 0.65,
          "h3/Nuxt/Nitro server error — check endpoint and parameter names; "
          "createError with statusCode usually means auth guard or validation"),
+
+        # AUTH_GATE_FIRED — Craft CMS GraphQL / controller errors
+        (r'\b(?:craft\s*cms.*error|'
+         r'"type"\s*:\s*"(?:ForbiddenHttpException|BadRequestHttpException|'
+         r'UnauthorizedHttpException|NotFoundHttpException)"|'
+         r'craftcms.*security\s+token|'
+         r'csrf.*required|'
+         r'Invalid\s+CSRF\s+token)\b',
+         "AUTH_GATE_FIRED", 0.85,
+         "Craft CMS access error — ForbiddenHttpException=capability check; "
+         "CSRF token required: scrape {{csrfTokenName}} from page and pass in request"),
+
+        # RESOURCE_NOT_FOUND — Craft CMS element not found
+        (r'\b(?:Element\s+not\s+found|'
+         r'No\s+element\s+exists\s+with\s+the\s+ID|'
+         r'Invalid\s+element\s+type)\b',
+         "RESOURCE_NOT_FOUND", 0.80,
+         "Craft CMS element not found — seed the DB with an element of the required type, "
+         "or fetch a valid element ID from /api/element endpoint first"),
+
+        # AUTH_GATE_FIRED — UpdraftPlus nonce/capability
+        (r'\b(?:UpdraftPlus.*nonce|updraftplus.*security\s+check|'
+         r'updraft.*auth(?:entication)?\s+fail|'
+         r'"updraft".*"error".*"nonce"\b)\b',
+         "AUTH_GATE_FIRED", 0.85,
+         "UpdraftPlus nonce/auth error — UpdraftPlus uses its own nonce key (updraftplus_csrf); "
+         "fetch it from /wp-admin/admin.php?page=updraftplus using an authenticated session"),
+
+        # INJECTION_CONTEXT — Next.js / server-side rendering errors
+        (r'\b(?:NEXT_NOT_FOUND|notFound.*next/navigation|'
+         r'NextResponse.*redirect|NextRequest.*error|'
+         r'/__nextjs_original-stack-frames|'
+         r'getServerSideProps.*error)\b',
+         "RESOURCE_NOT_FOUND", 0.70,
+         "Next.js: NEXT_NOT_FOUND or redirect — the route exists but the resource doesn't; "
+         "check the page slug/ID or use the Next.js API route (/api/) instead of SSR pages"),
     ]
 
     # Signals derived from HTTP status code alone
