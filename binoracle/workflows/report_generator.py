@@ -479,6 +479,20 @@ def _s_verification(inv: Any, lang: str) -> str:
         _rich_items.append(("IDOR user metadata (admin ID=1)" if es else "IDOR user metadata (admin ID=1)",
                             f"email leakeado, status={_ui.get('status')}" if es else
                             f"email leaked, status={_ui.get('status')}"))
+    # SSTI post-exploit weaponization (from weaponize.py _weaponize_ssti)
+    _wep_data = (_wep or {}).get("data") or {}
+    if _wep and _wep.get("technique") == "ssti_post_exploit":
+        if _wep_data.get("id_output"):
+            _rich_items.append(("SSTI RCE id output" if es else "SSTI RCE id output",
+                                _wep_data["id_output"]))
+        if _wep_data.get("etc_passwd_lines"):
+            _rich_items.append(("/etc/passwd (SSTI file read)" if es else "/etc/passwd (SSTI file read)",
+                                " | ".join(_wep_data["etc_passwd_lines"][:2])))
+    # SSRF internal metadata (from weaponize.py _weaponize_ssrf)
+    if _wep and _wep.get("technique") == "ssrf_probe":
+        _probed = _wep_data.get("probed") or {}
+        for _lbl, _probe_info in list(_probed.items())[:3]:
+            _rich_items.append((f"SSRF → {_lbl}", _probe_info.get("snippet", "")[:100]))
     if _rich_items:
         lines.append("")
         lines.append("**" + ("Datos extraídos de la explotación:" if es else "Data extracted via exploitation:") + "**")
