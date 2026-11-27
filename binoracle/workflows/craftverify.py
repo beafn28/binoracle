@@ -370,7 +370,7 @@ def verify_craft_web_cve(
                 step(f"  craftverify: imagen cacheada {_cache_tag} encontrada — reutilizando")
             else:
                 step("  craftverify: construyendo imagen Craft CMS (primera vez, ~3-5 min)…")
-                _run(["docker", "build", "-t", _cache_tag, tmpdir], timeout=480)
+                _run(["docker", "build", "-t", _cache_tag, tmpdir], timeout=900)
                 step(f"  craftverify: imagen construida y cacheada como {_cache_tag}")
             _run(["docker", "run", "-d", "--rm", "--name", container,
                   "-p", f"{_CRAFT_PORT}:{_CRAFT_PORT}", _cache_tag], timeout=30)

@@ -322,17 +322,38 @@ def verify_python_web_cve(source_path: str, endpoint: str,
             _wrote_dockerfile = True
             step(f"  pythonverify: Dockerfile generado para {framework}")
 
-    port = 8000 if framework in ("django", "fastapi") else 5000
+    _container_port = 8000 if framework in ("django", "fastapi") else 5000
     container = f"bo_pyverify_{os.path.basename(source_path.rstrip('/'))}"
+
+    # Pick a free dynamic host port to avoid conflicts with the binoracle web server
+    # (which runs on 8000) and other lab containers.
+    import socket as _sock
+    def _free_port() -> int:
+        with _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM) as s:
+            s.bind(("", 0))
+            return s.getsockname()[1]
+    port = _free_port()
+
+    # Stop any previous container with the same name before starting a new one.
+    _run(["docker", "rm", "-f", container], timeout=10)
 
     try:
         # Build + start container
         step(f"  pythonverify: construyendo imagen {container}…")
-        _run(["docker", "build", "-t", container, source_path], timeout=120)
-        _run(["docker", "run", "-d", "--rm", "--name", container,
-              "-p", f"{port}:{port}", container], timeout=30)
+        _build_r = _run(["docker", "build", "-t", container, source_path], timeout=180)
+        if _build_r.returncode != 0:
+            raise RuntimeError(
+                f"docker build failed (rc={_build_r.returncode}): "
+                f"{(_build_r.stderr or '')[-400:]}"
+            )
+        _run_r = _run(["docker", "run", "-d", "--rm", "--name", container,
+              "-p", f"{port}:{_container_port}", container], timeout=30)
+        if _run_r.returncode != 0:
+            raise RuntimeError(
+                f"docker run failed (rc={_run_r.returncode}): "
+                f"{(_run_r.stderr or '')[-300:]}"
+            )
         # Poll until port is open (up to 30s) instead of blind sleep
-        import socket as _sock
         host = _lab_host()
         for _i in range(30):
             try:
