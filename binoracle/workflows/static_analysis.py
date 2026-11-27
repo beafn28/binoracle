@@ -365,6 +365,22 @@ _REGEX_PATTERNS: dict = {
         (r'(http\.createServer|net\.Listen)\s*\(.*\n.*(?!keepAliveTimeout)',
          "js_go_server_no_ka_timeout"),
     ],
+    "sqli": [
+        # Rust: raw SQL format! macro with user input (sqlx, diesel)
+        (r'(sqlx::query|diesel::sql_query|query!)\s*\([^)]*format!\s*\(',
+         "rust_raw_sql_format_macro"),
+        # Rust: execute() with format string (string interpolation in SQL)
+        (r'\.execute\s*\(\s*&?format!\s*\([\'"].*\{',
+         "rust_execute_format_string"),
+    ],
+    "command-injection": [
+        # Rust: std::process::Command with user input
+        (r'Command::new\s*\([^)]*(?:request|query|param|arg)',
+         "rust_command_new_user_input"),
+        # Kotlin/JVM: Runtime.exec with user input
+        (r'Runtime\.getRuntime\(\)\.exec\s*\([^)]*(?:request|param|input)',
+         "kotlin_runtime_exec_user_input"),
+    ],
 }
 
 # Semgrep rule keyword filters per vuln class
@@ -403,7 +419,7 @@ _SEMGREP_FILTER: dict = {
 }
 
 
-def _walk_source_files(source_dir: str, extensions: tuple = (".php", ".js", ".ts", ".py", ".rb", ".go", ".java")) -> List[str]:
+def _walk_source_files(source_dir: str, extensions: tuple = (".php", ".js", ".ts", ".py", ".rb", ".go", ".java", ".rs", ".kt", ".swift")) -> List[str]:
     """Enumerate all source files under source_dir with given extensions."""
     files = []
     for root, dirs, fnames in os.walk(source_dir):
