@@ -183,11 +183,68 @@ def analyze_patch_diff(raw_diff: str) -> dict:
                 f"Sink reached directly: {line.strip()[:100]}"
             )
 
+    # Deeper bypass hints from the fix pattern itself
+    _cap_added = result.get("capability_added")
+    if _cap_added:
+        # Suggest minimum role that might have this capability
+        _high_caps = {"manage_options", "edit_theme_options", "install_plugins",
+                      "update_plugins", "delete_plugins", "activate_plugins"}
+        _mid_caps = {"edit_posts", "edit_pages", "publish_posts", "edit_others_posts",
+                     "delete_posts", "upload_files"}
+        _low_caps = {"read", "edit_comments", "moderate_comments"}
+        if _cap_added in _high_caps:
+            result["bypass_hints"].append(
+                f"Fix adds '{_cap_added}' capability check — requires admin/editor role; "
+                f"test if lower-privilege route (Subscriber, Contributor) still exposes the endpoint"
+            )
+        elif _cap_added in _mid_caps:
+            result["bypass_hints"].append(
+                f"Fix adds '{_cap_added}' capability check — Contributor/Author may have this; "
+                f"try with unauthenticated request or Subscriber role first"
+            )
+        elif _cap_added in _low_caps:
+            result["bypass_hints"].append(
+                f"Fix adds '{_cap_added}' — this is a low-bar capability; "
+                f"try unauthenticated access (wp_ajax_nopriv_) if handler also has nopriv hook"
+            )
+        else:
+            result["bypass_hints"].append(
+                f"Fix adds capability check '{_cap_added}' — verify if nopriv handler still exists"
+            )
+    if result.get("nonce_checks_added") and not _cap_added:
+        # Nonce-only fix: nonces are obtainable if user is logged in
+        result["bypass_hints"].append(
+            "Fix adds nonce check only (no capability check) — nonce is obtainable by any logged-in "
+            "user via wp_create_nonce(); Subscriber role may still be able to bypass"
+        )
+    if result.get("fix_completeness") == "partial":
+        result["bypass_hints"].append(
+            "Fix appears partial (single file, multiple sink patterns) — look for alternate "
+            "code paths in other files that reach the same sink without the new check"
+        )
+    # Sanitization bypass hints
+    for line in result.get("added_checks", []):
+        if "intval(" in line or "absint(" in line:
+            result["bypass_hints"].append(
+                f"Fix uses intval()/absint() — only protects numeric parameters; "
+                f"string params may still be unsanitized: {line[:80]}"
+            )
+            break
+        if "sanitize_text_field" in line:
+            result["bypass_hints"].append(
+                "Fix uses sanitize_text_field() — strips HTML tags but does NOT protect against "
+                "SQL injection; check if output goes into a query without prepare()"
+            )
+            break
+
     # Fix completeness: partial if only 1 file, same sink pattern in multiple hunks
     if len(files_changed) == 1 and len(result["sink_candidates"]) > 1:
         result["fix_completeness"] = "partial"
     elif files_changed:
         result["fix_completeness"] = "complete"
+
+    # Deduplicate bypass hints
+    result["bypass_hints"] = list(dict.fromkeys(result["bypass_hints"]))[:8]
 
     return result
 
