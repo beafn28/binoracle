@@ -197,6 +197,7 @@ WEB_CLASSES = frozenset({
     "xml-injection", "html-injection", "template-injection",
     "cache-poisoning", "web-cache-poisoning", "request-smuggling",
     "http-request-smuggling", "http-smuggling", "smuggling", "te-cl", "cl-te", "te-te",
+    "desync-attack", "http-desync", "request-desync",
     "el-injection", "el_injection", "expression-language-injection", "spel-injection",
     "ognl-injection", "thymeleaf-injection", "freemarker-injection", "velocity-injection",
     "jndi-injection",
