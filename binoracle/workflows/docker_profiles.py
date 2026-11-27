@@ -128,7 +128,7 @@ _DOCKER_IMAGE_PROFILES: dict[str, dict] = {
             "STRAPI_DISABLE_STARTUP_MESSAGE": "true",
         },
         "cmd": None,
-        "startup_wait": 45,
+        "startup_wait": 120,
         "health_path": "/",
     },
     # --- Paperless-ngx (Django-based DMS) ---
@@ -143,9 +143,11 @@ _DOCKER_IMAGE_PROFILES: dict[str, dict] = {
             "PAPERLESS_REDIS": "",
             "PAPERLESS_DBENGINE": "sqlite",
             "PAPERLESS_DBNAME": "/tmp/paperless.db",
+            "PAPERLESS_ENABLE_HTTP_REMOTE_USER": "True",
+            "PAPERLESS_HTTP_REMOTE_USER_HEADER_NAME": "HTTP_REMOTE_USER",
         },
         "cmd": None,
-        "startup_wait": 30,
+        "startup_wait": 120,
         "health_path": "/api/",
     },
     # --- Etherpad collaborative editor ---

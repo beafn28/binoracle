@@ -1491,6 +1491,14 @@ def fetch_source(target: str, version: str = "", on_step: Optional[Callable[[str
     if not target:
         return SourceFetchResult(note="sin source_url/slug para resolver")
 
+    # Si target es una ruta local ya existente (p.ej. un lab scaffolded en /tmp/...),
+    # devolverla directamente sin intentar resolverla como gem/pypi/npm.
+    import os as _os
+    if target.startswith("/") and _os.path.isdir(target):
+        step = on_step or (lambda _m: None)
+        step(f"fetch_source: ruta local detectada '{target}' — usándola directamente")
+        return SourceFetchResult(ok=True, local_path=target, kind="local", note="ruta local scaffolded")
+
     # Optimización: para cualquier repo GitHub con versión conocida, intentar el tarball
     # del tag exacto (/archive/refs/tags/v<ver>.tar.gz) antes de git clone — mucho más
     # rápido (sólo el snapshot, sin historial git). No requiere tabla hardcodeada: funciona

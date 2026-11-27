@@ -949,6 +949,36 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
   <td class="td-desc">An issue was discovered in Django v5.1.1, v5.0.9, and v4.2.16. The django.contrib.auth.forms.PasswordResetForm class, when used in a view implementing password reset flows, allows remote attackers to enumerate user e-mai</td>
   <td class="td-links"><span class="badge badge-sm" style="background:#0369a1" title="user-enumeration">user-enumeration</span> &middot; <a href="file:///Users/beatrizfresnonaumova/.binoracle/reports/CVE-2024-45231.md" target="_blank" title="Ver informe">informe</a></td>
 </tr>
+
+<tr class="cve-row" data-cls="sqli" data-sev="high" data-poc="false" data-auth="false" data-gap="true">
+  <td class="td-num">54</td>
+  <td class="td-cve"><code>CVE-2024-42005</code></td>
+  <td><span class="badge" style="background:#d97706">7.3 HIGH</span></td>
+  <td><span class="badge badge-sm" style="background:#374151">sqli</span></td>
+  <td><code class="tech">sqli</code></td>
+  <td><span class="badge badge-sm" style="background:#065f46">✓ Verif.</span></td>
+  <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
+  <td><span class="badge badge-conf-low" title="Confianza del motor">BAJO 0%</span></td>
+  <td class="td-aff"><code>pkg-2024-42005</code></td>
+  <td class="td-pub">2024-08-07</td>
+  <td class="td-desc">An issue was discovered in Django 5.0 before 5.0.8 and 4.2 before 4.2.15. QuerySet.values() and values_list() methods on models with a JSONField are subject to SQL injection in column aliases via a crafted JSON object ke</td>
+  <td class="td-links"><span class="badge badge-sm" style="background:#0369a1" title="sqli">sqli</span> &middot; <a href="file:///Users/beatrizfresnonaumova/.binoracle/reports/CVE-2024-42005.md" target="_blank" title="Ver informe">informe</a></td>
+</tr>
+
+<tr class="cve-row" data-cls="ssti" data-sev="high" data-poc="false" data-auth="false" data-gap="true">
+  <td class="td-num">55</td>
+  <td class="td-cve"><code>CVE-2024-56201</code></td>
+  <td><span class="badge" style="background:#d97706">8.8 HIGH</span></td>
+  <td><span class="badge badge-sm" style="background:#374151">ssti</span></td>
+  <td><code class="tech">ssti</code></td>
+  <td><span class="badge badge-sm" style="background:#065f46">✓ Verif.</span></td>
+  <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
+  <td><span class="badge badge-conf-low" title="Confianza del motor">BAJO 0%</span></td>
+  <td class="td-aff"><code>jinja</code></td>
+  <td class="td-pub">2024-12-23</td>
+  <td class="td-desc">Jinja is an extensible templating engine. In versions on the 3.x branch prior to 3.1.5, a bug in the Jinja compiler allows an attacker that controls both the content and filename of a template to execute arbitrary Python</td>
+  <td class="td-links"><span class="badge badge-sm" style="background:#0369a1" title="ssti">ssti</span> &middot; <a href="file:///Users/beatrizfresnonaumova/.binoracle/reports/CVE-2024-56201.md" target="_blank" title="Ver informe">informe</a></td>
+</tr>
 </tbody>
 </table>
 <div class="no-results" id="no-results">Sin resultados para los filtros seleccionados.</div>
