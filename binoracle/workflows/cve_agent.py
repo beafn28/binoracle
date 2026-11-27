@@ -3746,18 +3746,19 @@ _LAB_SCAFFOLD_MISSING_AUTH_SYS = (
 )
 
 _LAB_SCAFFOLD_MISSING_AUTH_WP_SYS = (
-    "Eres un experto en seguridad WordPress. Genera un lab PHP/WordPress para missing-authorization. "
+    "Eres un experto en seguridad WordPress. Genera un lab PHP para missing-authorization en un plugin WP. "
     "REGLAS CRITICAS:\n"
-    "1. Usa WordPress core con un mini-plugin PHP que registre el endpoint REST vulnerable\n"
-    "2. El endpoint REST (via register_rest_route) NO verifica autenticacion "
-    "('permission_callback' => '__return_true' o ausente)\n"
-    "3. El endpoint devuelve JSON con un campo 'email' o 'password' que contiene el CONFIRM_STRING\n"
-    "4. Usa Docker con wordpress:latest, mysql como db, y WP-CLI para instalar WP rapidamente\n"
-    "5. El verificador accede sin credenciales a /wp-json/<namespace>/v1/<ruta> y busca el CONFIRM_STRING\n"
-    "6. CONFIRM_STRING debe estar en el JSON de respuesta del endpoint REST (no en HTML)\n"
+    "1. server_code = codigo PHP de un mini-plugin que registre un endpoint REST SIN autenticacion\n"
+    "2. El endpoint usa register_rest_route con 'permission_callback' => '__return_true'\n"
+    "3. El endpoint devuelve JSON con un campo 'email' que contiene exactamente el CONFIRM_STRING\n"
+    "4. El Dockerfile usa wordpress:latest con php-apache, instala mysql-client, "
+    "configura wp-config.php, y hace COPY index.php /var/www/html/wp-content/plugins/lab/lab.php "
+    "mas un wp-cli.phar para 'wp core install' + 'wp plugin activate lab' en entrypoint\n"
+    "5. server_port=80, endpoint=/wp-json/lab/v1/data\n"
+    "6. CONFIRM_STRING debe aparecer en el body JSON del endpoint REST (no en HTML)\n"
     "Responde SOLO con JSON sin markdown: "
-    "{\"server_code\": \"plugin.php\", \"dockerfile\": \"FROM wordpress:latest...\", "
-    "\"endpoint\": \"/wp-json/myplugin/v1/data\", "
+    "{\"server_code\": \"<?php ...register_rest_route...\", \"dockerfile\": \"FROM wordpress:latest...\", "
+    "\"endpoint\": \"/wp-json/lab/v1/data\", "
     "\"confirm_string\": \"SECRET_VALUE\", \"server_port\": 80, \"parameters\": {}}"
 )
 
@@ -11863,11 +11864,33 @@ def _detect_lab_tech_stack(source_dir: str, llm_notes: Optional[dict] = None) ->
             return "ruby"
         if any((p / f).exists() for f in ("pom.xml", "build.gradle")):
             return "java"
+        # PHP/WordPress detection: any .php file at root or composer.json
+        _php_files = list(p.glob("*.php")) + list(p.glob("**/*.php"))
+        if (p / "composer.json").exists() or _php_files:
+            # Distinguish WordPress plugin from generic PHP
+            _wp_markers = ("functions.php", "wp-login.php", "wp-config.php")
+            _is_wp = any((p / m).exists() for m in _wp_markers)
+            if not _is_wp:
+                for _pf in _php_files[:3]:
+                    try:
+                        _pf_text = _pf.read_text(errors="replace")[:500].lower()
+                        if any(kw in _pf_text for kw in
+                               ("register_rest_route", "add_action", "wp_", "plugin_name")):
+                            _is_wp = True
+                            break
+                    except OSError:
+                        pass
+            return "wordpress" if _is_wp else "php"
     # No source dir or no recognizable files — infer from llm_notes (dockerfile_body/docker_image)
     if llm_notes:
         _df = (llm_notes.get("dockerfile_body") or "").lower()
         _img = (llm_notes.get("docker_image") or "").lower()
         _hint = _df + " " + _img
+        if any(x in _hint for x in ("wordpress", "wp-cli", "register_rest_route", "wp plugin")):
+            return "wordpress"
+        if any(x in _hint for x in ("php", "composer", "laravel", "symfony", "php-apache",
+                                     "php:8", "php:7", "php:latest")):
+            return "php"
         if any(x in _hint for x in ("django", "flask", "fastapi", "python", "pip install", "pip3")):
             return "python"
         if any(x in _hint for x in ("rails", "ruby", "gem install", "bundle install", "rack")):
@@ -12793,7 +12816,8 @@ def _scaffold_llm_lab_for_class(llm, source_dir: str, notes: dict, cve_id: str,
         return None
 
     srv_file = {"nodejs": "server.js", "python": "app.py", "go": "main.go",
-                "ruby": "app.rb", "php": "index.php"}.get(tech, "server.js")
+                "ruby": "app.rb", "php": "index.php",
+                "wordpress": "index.php"}.get(tech, "server.js")
 
     reasoning = (data.get("reasoning") or "")[:200]
     if reasoning:
