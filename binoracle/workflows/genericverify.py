@@ -10636,9 +10636,14 @@ def verify_generic_redos(
                 elapsed = _time.monotonic() - t0
                 return elapsed, 0, "", str(exc)
 
-        step(f"probando ReDoS: midiendo baseline con input benigno a {endpoint}")
-        t_safe, _st_s, _body_s, _err_s = _timed_request(_safe)
-        step(f"baseline benigno: {t_safe:.2f}s (status={_st_s})")
+        step(f"probando ReDoS: midiendo baseline con input benigno a {endpoint} (3 muestras)")
+        _safe_times = []
+        for _ in range(3):
+            _ts, _st_s, _body_s, _err_s = _timed_request(_safe)
+            if _st_s not in (-1, 0):
+                _safe_times.append(_ts)
+        t_safe = sorted(_safe_times)[len(_safe_times) // 2] if _safe_times else 0.3
+        step(f"baseline benigno (mediana 3 muestras): {t_safe:.2f}s (status={_st_s})")
 
         _best_ratio = 0.0
         _best_t_evil = 0.0
@@ -10778,17 +10783,16 @@ def verify_generic_information_disclosure(
                 r'binoracle_db_url|app_secret)',
                 re.I)
             # High-confidence secret patterns — if matched, verify=True immediately
+            # NOTE: patterns must be specific enough to avoid FPs on normal HTML/JS content
             _SECRET_REGEXES = [
-                # AWS access key
-                re.compile(r'(?<![A-Z0-9])[A-Z0-9]{20}(?![A-Z0-9])'),
-                # AWS secret key
-                re.compile(r'[A-Za-z0-9/+]{40}'),
-                # Private key PEM header
+                # AWS access key (AKIA/ASIA/AROA prefix + 16 uppercase alphanum)
+                re.compile(r'(?:AKIA|ASIA|AROA|AGPA|AIDA|ANPA|ANVA|APKA)[A-Z0-9]{16}'),
+                # Private key PEM header (very specific, no FP risk)
                 re.compile(r'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----'),
-                # JWT (3-part base64url)
-                re.compile(r'eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}'),
-                # Generic bearer token in env-style
-                re.compile(r'(?i)(?:secret|token|key|password)\s*[=:]\s*["\']?[A-Za-z0-9/+_\-]{16,}'),
+                # JWT with all 3 parts (eyJ prefix is unique to JWT)
+                re.compile(r'eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}'),
+                # Env-style secret assignment (key=value where key contains secret/password/token)
+                re.compile(r'(?i)(?:^|\n|\s)(?:SECRET|PASSWORD|API_KEY|ACCESS_TOKEN|DB_PASS)\s*[=:]\s*["\']?[A-Za-z0-9/+_\-]{16,}'),
             ]
 
             _probe_endpoints = ([endpoint] if endpoint else []) + _DISCLOSURE_PATHS
