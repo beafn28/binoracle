@@ -41,11 +41,25 @@ _CLASS_GROUPS = {
     "injection": {
         "sqli", "sql-injection", "nosql-injection", "command-injection",
         "rce", "ssti", "template-injection", "ldap-injection",
+        "el-injection", "expression-language-injection", "spel-injection",
+        "ognl-injection", "thymeleaf-injection", "freemarker-injection",
+        "velocity-injection", "jndi-injection",
     },
     "xss": {"xss", "reflected-xss", "stored-xss", "dom-xss"},
-    "traversal": {"lfi", "path-traversal", "directory-traversal", "rfi"},
+    "traversal": {
+        "lfi", "path-traversal", "directory-traversal", "rfi",
+        "zip-slip", "archive-traversal", "zip-path-traversal", "tar-slip",
+    },
     "ssrf": {"ssrf", "open-redirect", "request-forgery"},
     "disclosure": {"information-disclosure", "sensitive-data-exposure", "exposure"},
+    "desync": {
+        "http-request-smuggling", "http-smuggling", "request-smuggling",
+        "desync-attack", "http-desync", "te-cl", "cl-te", "te-te",
+    },
+    "race": {
+        "race-condition", "race-cond", "toctou", "time-of-check-time-of-use",
+        "double-spend", "concurrency",
+    },
 }
 
 
