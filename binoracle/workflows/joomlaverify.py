@@ -101,7 +101,16 @@ class _Lab:
                    input_bytes=input_bytes)
 
     def setup_network(self):
-        self.sh("network", "create", self.net, timeout=30)
+        _net_err = ""
+        for _attempt in range(3):
+            r = self.sh("network", "create", self.net, timeout=30)
+            if r.returncode == 0:
+                break
+            _net_err = r.stderr.strip()[:200]
+            if _attempt < 2:
+                time.sleep(3)
+        else:
+            raise RuntimeError(f"docker network create failed: {_net_err}")
         self._created.append(("network", self.net))
 
     def start_mysql(self, root_pw: str, db_pw: str):
@@ -827,7 +836,16 @@ class _LegacySqlHarnessLab:
         return _run(["docker"] + list(args), timeout=timeout)
 
     def setup_network(self):
-        self.sh("network", "create", self.net, timeout=30)
+        _net_err = ""
+        for _attempt in range(3):
+            r = self.sh("network", "create", self.net, timeout=30)
+            if r.returncode == 0:
+                break
+            _net_err = r.stderr.strip()[:200]
+            if _attempt < 2:
+                time.sleep(3)
+        else:
+            raise RuntimeError(f"docker network create failed: {_net_err}")
         self._created.append(("network", self.net))
 
     def start_mysql(self, db_pw: str):

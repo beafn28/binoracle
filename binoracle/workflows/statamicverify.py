@@ -153,6 +153,7 @@ def verify_statamic_cve(
     bypass_header: str = "",
     bypass_value: str = "",
     pkg_version: str = "",
+    request_chain: Optional[list] = None,
 ) -> WpVerifyResult:
     """Verify a Statamic CMS CVE in a fresh Docker lab.
 
@@ -185,23 +186,51 @@ def verify_statamic_cve(
     try:
         m = (http_method or "GET").upper().strip() or "GET"
         url = base_url + endpoint
-        auth_header = ""
+        auth_cookie = ""
 
-        if auth_required:
+        if auth_required or request_chain:
             step("[Statamic lab] autenticando…")
             cookie = _get_statamic_session(base_url, step)
             if cookie:
-                auth_header = f"Cookie: {cookie}"
+                auth_cookie = cookie
             else:
                 res.limitations.append("autenticacion Statamic fallida — continuando sin sesion")
                 step("  autenticacion fallida, continuando sin sesion")
 
-        # Build headers
         headers: dict = {}
-        if auth_header.startswith("Cookie: "):
-            headers["Cookie"] = auth_header[len("Cookie: "):]
+        if auth_cookie:
+            headers["Cookie"] = auth_cookie
         if bypass_header and bypass_value:
             headers[bypass_header] = bypass_value
+
+        # Multi-step request chain (generic, shared with Ghost/Strapi)
+        if request_chain:
+            from .ghostverify import _ghost_run_request_chain
+            verified, detail, evidence = _ghost_run_request_chain(
+                base_url, request_chain, auth_cookie, step)
+            res.verified = verified
+            res.ok = True
+            res.detail = detail
+            res.evidence = {**evidence, "base_url": base_url, "vuln_class": vuln_class,
+                            "tecnica": "request_chain"}
+            return res
+
+        _vc = (vuln_class or "").lower()
+
+        # SSTI generic probe: Statamic uses Antlers template engine
+        if _vc == "ssti" and not payload:
+            payload = "{{7*7}}"
+            if not confirm_string:
+                confirm_string = "49"
+            step("[Statamic lab] SSTI: usando payload generico {{7*7}} (Antlers)")
+
+        # Path traversal generic probe
+        if _vc == "path-traversal" and not confirm_string:
+            if not payload:
+                payload = "../../../etc/passwd"
+            confirm_string = "root:"
+            step("[Statamic lab] path-traversal: buscando root: en la respuesta")
+
         if payload and m in ("POST", "PUT", "PATCH"):
             headers.setdefault("Content-Type", "application/json")
 
@@ -215,6 +244,19 @@ def verify_statamic_cve(
         except Exception as e:
             res.detail = f"error de red: {e}"
             return res
+
+        # HTTP method rotation: flip GET↔POST on 405
+        if status == 405:
+            m = "GET" if m != "GET" else "POST"
+            step(f"[Statamic lab] 405 → reintentando con {m}")
+            try:
+                r = _http_request(m, url, headers=headers,
+                                  data=body_data if m in ("POST", "PUT", "PATCH") else None,
+                                  timeout=15, allow_redirects=True)
+                status = r.status_code
+                body = getattr(r, "body", "") or getattr(r, "text", "") or ""
+            except Exception:
+                pass
 
         string_ok = (not confirm_string) or (confirm_string in body)
         bypassed = status in range(200, 300)
@@ -230,6 +272,22 @@ def verify_statamic_cve(
             "vuln_class": vuln_class,
         }
 
+        # Missing-auth comparison: fire auth request to prove no auth differentiation
+        if _vc == "missing-authorization" and not auth_required and bypassed:
+            try:
+                _auth_session = _get_statamic_session(base_url, lambda _: None)
+                if _auth_session:
+                    _auth_hdrs = {**headers, "Cookie": _auth_session}
+                    _r_auth = _http_request(m, url, headers=_auth_hdrs, data=body_data,
+                                            timeout=15, allow_redirects=True)
+                    _auth_body = getattr(_r_auth, "text", "") or ""
+                    _same_len = abs(len(_auth_body) - len(body)) < max(50, len(body) * 0.1)
+                    res.evidence["auth_comparison"] = (
+                        "no_auth_differentiation" if _same_len else "auth_changes_response")
+                    step(f"[Statamic lab] auth comparison: {res.evidence['auth_comparison']}")
+            except Exception:
+                pass
+
         if bypassed and string_ok:
             res.verified = True
             res.ok = True
@@ -240,7 +298,6 @@ def verify_statamic_cve(
             step(f"[Statamic lab] VERIFICADO: HTTP {status}")
         else:
             res.ok = True
-            # Semantic body analysis for partial confidence signals
             if bypassed and not string_ok and body:
                 from .genericverify import _analyze_response_body
                 _analysis = _analyze_response_body(
