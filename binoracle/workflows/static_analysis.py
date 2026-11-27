@@ -263,6 +263,15 @@ _REGEX_PATTERNS: dict = {
         # REST route without permission_callback
         (r'register_rest_route\s*\([^;]*(?!permission_callback)',
          "rest_route_no_permission"),
+        # Express/Strapi: router.get/post without auth middleware
+        (r'router\.(get|post|put|delete|patch)\s*\(\s*["\'][^"\']+["\'],\s*(async\s*)?\(',
+         "express_route_no_auth_middleware"),
+        # Directus: policy/middleware bypass pattern
+        (r'(app|router)\.(get|post|put|delete|patch)\s*\([^;]*\)\s*=>\s*\{[^}]*(?!authenticate|authorize|checkPermission)',
+         "directus_route_no_auth_check"),
+        # Python Flask route without login_required or auth check
+        (r'@(?:app|blueprint)\.(route|get|post|put|delete|patch)\s*\([^)]+\)\s*\n(?:(?:@[^\n]+\n)*)?(?:async\s+)?def\s+\w+\s*\(',
+         "flask_route_no_auth_decorator"),
     ],
     "business-logic": [
         # Price/quantity parameter manipulation (server-side value not validated)
@@ -292,9 +301,18 @@ _REGEX_PATTERNS: dict = {
          "hardcoded_api_key"),
     ],
     "zip-slip": [
-        # Archive extraction without canonicalization
+        # PHP/Java: extractTo / extract without canonical path check
         (r'->extractTo\s*\(|->extract\s*\(|\.extractall\s*\(|\.extract\s*\([^,]+,',
          "archive_extract_no_canonical_check"),
+        # Node.js / yauzl / unzipper / adm-zip without entry.fileName startsWith check
+        (r'(unzipper|yauzl|adm-zip|archiver|extract-zip)[^;]*\.extract\s*\(',
+         "js_unzip_no_path_check"),
+        # Python zipfile.ZipFile.extractall without member filtering
+        (r'ZipFile\s*\([^)]+\).*\.extractall\s*\(',
+         "py_zipfile_extractall"),
+        # Python tarfile.extractall without filter=
+        (r'tarfile\.open\s*\([^)]*\).*\.extractall\s*\(',
+         "py_tarfile_extractall_no_filter"),
     ],
     "account-takeover": [
         # Password reset token not validated (token used directly from request)
@@ -331,6 +349,18 @@ _REGEX_PATTERNS: dict = {
         # FreeMarker/Velocity template injection
         (r'(Template|Configuration)\.getTemplate\s*\(.*(?:request\.|req\.|\$_(GET|POST))',
          "freemarker_velocity_user_template"),
+        # Node.js Handlebars compile with user input (Ghost uses Handlebars)
+        (r'Handlebars\.compile\s*\(\s*(req\.|body\.|params\.)',
+         "js_handlebars_compile_user_input"),
+        # Nunjucks renderString with user input (Strapi/Ghost)
+        (r'nunjucks\.(renderString|render)\s*\(\s*(req\.|body\.|params\.)',
+         "js_nunjucks_render_user_input"),
+        # Pug/Jade render/compile with user input
+        (r'pug\.(render|renderFile|compile)\s*\(\s*(req\.|body\.|params\.)',
+         "js_pug_render_user_input"),
+        # EJS render with unsanitized user input
+        (r'ejs\.(render|renderFile)\s*\(\s*(req\.|body\.|params\.)',
+         "js_ejs_render_user_input"),
     ],
     "mass-assignment": [
         # JavaScript Object.assign / spread with request body (no allowlist)
