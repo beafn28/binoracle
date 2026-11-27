@@ -4268,63 +4268,118 @@ _SQLI_PATTERNS = [
          r"|\$(?:\w+->)*get_param\s*\(\s*['\"]([A-Za-z0-9_]+)['\"]"       # $request->get_param('param')
          r"|\$(?:request|req)\s*\[\s*['\"]([A-Za-z0-9_]+)['\"]"           # $request['param']
          r"|\bget_query_var\s*\(\s*['\"]([A-Za-z0-9_]+)['\"]"             # get_query_var('param')
+         r"|\bsanitize_text_field\s*\(\s*wp_unslash\s*\(\s*\$_(?:GET|POST|REQUEST)\s*\[\s*['\"]([A-Za-z0-9_]+)['\"]"  # sanitize_text_field(wp_unslash($_GET['x'])) still tainted
      ),
-     re.compile(r"\$wpdb\s*->\s*(?:query|get_results|get_var|get_row)\s*\("
-                r"|\bmysqli?_(?:query|fetch)\s*\("
-                r"|\bPDO::\w+\s*\(\s*[\"'].*\?(?!.*prepare)"
-                r"|->(?:query|execute)\s*\(\s*[\"']",
-                re.IGNORECASE),
+     re.compile(
+         r"\$wpdb\s*->\s*(?:query|get_results|get_var|get_row|get_col)\s*\("
+         r"|\bmysqli?_(?:query|fetch_array|fetch_assoc|num_rows|real_query)\s*\("
+         r"|\$wpdb\s*->\s*prepare\s*\([^)]{0,200}\{\s*\$"  # prepare() with {$var} interpolation bypass
+         r"|\$wpdb\s*->\s*(?:query|get_results|get_var|get_row)\s*\([^)]{0,200}\{\s*\$"  # any wpdb with {$var}
+         r"|\$pdo\s*->\s*query\s*\(\s*[\"']"
+         r"|->(?:query|execute)\s*\(\s*[\"']"
+         r"|\bODER\s+BY\s+[^;]{0,80}\{\s*\$"  # ORDER BY interpolation
+         r"|\bORDER\s+BY\s+[^;]{0,80}\{\s*\$",  # ORDER BY interpolation
+         re.IGNORECASE | re.DOTALL),
      [".php"]),
-    # Python (Django, Flask, FastAPI, raw cursor)
+    # Python (Django, Flask, FastAPI, SQLAlchemy, raw cursor)
     ("python",
      re.compile(r"request\.(?:GET|POST|args|form|json|data)\[?['\"]?([A-Za-z0-9_]+)['\"]?\]?"
                 r"|params\.get\(['\"]([A-Za-z0-9_]+)['\"]"
                 r"|request\.params\.get\(['\"]([A-Za-z0-9_]+)['\"]"),
-     re.compile(r"cursor\.execute\s*\(\s*[f\"'].*%[sd]"
-                r"|cursor\.execute\s*\(\s*f['\"]"
-                r"|\.raw\s*\(\s*[f\"']"
-                r"|\.objects\.filter\s*\([^)]*=\s*f['\"]"
-                r"|execute\s*\(\s*[\"'].*\+",
-                re.IGNORECASE),
+     re.compile(
+         r"cursor\.execute\s*\(\s*[f\"'].*%[sd]"
+         r"|cursor\.execute\s*\(\s*f['\"]"
+         r"|cursor\.execute\s*\([^,)]+%\s"           # cursor.execute(query % user)
+         r"|cursor\.execute\s*\([^,)]+\.format\s*\(" # cursor.execute("..." .format(user))
+         r"|\.raw\s*\(\s*[f\"']"
+         r"|\.objects\.filter\s*\([^)]*=\s*f['\"]"
+         r"|execute\s*\(\s*[\"'].*\+"
+         r"|text\s*\(\s*f['\"]"                      # SQLAlchemy text(f"SELECT ... {user}")
+         r"|text\s*\(\s*[\"'].*%[sd]"                # SQLAlchemy text("... %s" % var)
+         r"|session\.execute\s*\(\s*f['\"]"           # SQLAlchemy session.execute(f"...")
+         r"|db\.execute\s*\(\s*f['\"]"                # Flask-SQLAlchemy db.execute(f"...")
+         r"|tortoise_.*\.raw\s*\(",                   # Tortoise ORM .raw()
+         re.IGNORECASE),
      [".py"]),
-    # Node.js (Express, Fastify, raw pg/mysql)
+    # Node.js (Express, Fastify, raw pg/mysql/mysql2/mssql)
     ("nodejs",
      re.compile(r"req\.(?:body|query|params)\[?['\"]?([A-Za-z0-9_]+)['\"]?\]?"
-                r"|req\.(?:body|query|params)\.([A-Za-z0-9_]+)"),
-     re.compile(r"\.query\s*\(\s*`"
-                r"|\.query\s*\(\s*['\"].*\$\{"
-                r"|\.query\s*\(\s*['\"].*\+"
-                r"|knex\.raw\s*\("
-                r"|Sequelize\.literal\s*\(",
-                re.IGNORECASE),
+                r"|req\.(?:body|query|params)\.([A-Za-z0-9_]+)"
+                r"|ctx\.(?:query|request\.body)\.([A-Za-z0-9_]+)"),  # Koa ctx
+     re.compile(
+         r"\.query\s*\(\s*`"                            # template literal query
+         r"|\.query\s*\(\s*['\"].*\$\{"
+         r"|\.query\s*\(\s*['\"].*\+"
+         r"|knex\.raw\s*\("
+         r"|Sequelize\.literal\s*\("
+         r"|getRepository\s*\(.*\).*createQueryBuilder.*\.where\s*\(`"  # TypeORM QB with template
+         r"|createQueryBuilder.*\.where\s*\([`'\"]\w.*\$"               # TypeORM QB string interp
+         r"|getManager\s*\(\s*\).*query\s*\(\s*[`'\"]"                  # TypeORM getManager().query
+         r"|prisma\.\$queryRaw(?:Unsafe)?\s*\(`"                        # Prisma queryRawUnsafe
+         r"|prisma\.\$executeRaw(?:Unsafe)?\s*\(`"                      # Prisma executeRawUnsafe
+         r"|pool\.query\s*\(\s*[`'\"].*\$\{"                            # mysql2/pg pool with interp
+         r"|connection\.execute\s*\(\s*[`'\"].*\+",                     # mysql2 execute with concat
+         re.IGNORECASE),
      [".js", ".ts", ".mjs", ".cjs"]),
-    # Ruby (Rails, Sinatra)
+    # Ruby (Rails, Sinatra, Sequel)
     ("ruby",
      re.compile(r"params\[:([A-Za-z0-9_]+)\]"
                 r"|params\[['\"]([A-Za-z0-9_]+)['\"]"),
-     re.compile(r"\.where\s*\(\s*[\"'].*#\{"
-                r"|\.find_by_sql\s*\(\s*[\"'].*#\{"
-                r"|execute\s*\(\s*[\"'].*#\{"
-                r"|ActiveRecord::Base\.connection\.execute",
-                re.IGNORECASE),
+     re.compile(
+         r"\.where\s*\(\s*[\"'].*#\{"
+         r"|\.where\s*\(\s*[\"'].*\+"
+         r"|\.find_by_sql\s*\(\s*[\"'].*#\{"
+         r"|execute\s*\(\s*[\"'].*#\{"
+         r"|ActiveRecord::Base\.connection\.execute"
+         r"|DB\[.+\]\.where\s*\("           # Sequel raw string where
+         r"|Sequel\.lit\s*\(",              # Sequel.lit() with interpolation
+         re.IGNORECASE),
      [".rb"]),
-    # Java (Servlet, Spring)
+    # Java (Servlet, Spring, JPA, Hibernate, JdbcTemplate)
     ("java",
-     re.compile(r"request\.getParameter\s*\(\s*[\"']([A-Za-z0-9_]+)[\"']"),
-     re.compile(r"Statement\.execute(?:Query|Update)?\s*\(\s*[\"'].*\+"
-                r"|createQuery\s*\(\s*[\"'].*\+"
-                r"|prepareStatement\s*\(\s*[\"'].*\+",
-                re.IGNORECASE),
+     re.compile(r"request\.getParameter\s*\(\s*[\"']([A-Za-z0-9_]+)[\"']"
+                r"|@RequestParam\s+.*\bString\s+([A-Za-z0-9_]+)"        # @RequestParam String param
+                r"|getQueryParam\s*\(\s*[\"']([A-Za-z0-9_]+)[\"']"),
+     re.compile(
+         r"Statement\.execute(?:Query|Update)?\s*\(\s*[\"'].*\+"
+         r"|createQuery\s*\(\s*[\"'].*\+"
+         r"|prepareStatement\s*\(\s*[\"'].*\+"
+         r"|createNativeQuery\s*\(\s*[\"'].*\+"           # JPA createNativeQuery
+         r"|jdbcTemplate\.(?:query|queryFor\w+|update)\s*\([^;]{0,100}[+]"  # JdbcTemplate
+         r"|namedParameterJdbcTemplate\..*\(\s*[\"'].*\+" # Named param jdbc with concat
+         r"|EntityManager.*createQuery\s*\(\s*[\"'].*\+", # JPA JPQL concat
+         re.IGNORECASE),
      [".java"]),
-    # Go
+    # Go (database/sql, GORM, sqlx)
     ("go",
      re.compile(r"r\.FormValue\s*\(\s*[\"']([A-Za-z0-9_]+)[\"']"
-                r"|r\.URL\.Query\(\)\.Get\s*\(\s*[\"']([A-Za-z0-9_]+)[\"']"),
-     re.compile(r"db\.(?:Query|Exec)\s*\(\s*fmt\.Sprintf"
-                r"|db\.(?:Query|Exec)\s*\(\s*[\"'].*\+"
-                r"|\.QueryRow\s*\(\s*fmt\.Sprintf",
-                re.IGNORECASE),
+                r"|r\.URL\.Query\(\)\.Get\s*\(\s*[\"']([A-Za-z0-9_]+)[\"']"
+                r"|chi\.URLParam\s*\(\s*r\s*,\s*[\"']([A-Za-z0-9_]+)[\"']"   # chi router
+                r"|r\.PathValue\s*\(\s*[\"']([A-Za-z0-9_]+)[\"']"),           # stdlib 1.22
+     re.compile(
+         r"db\.(?:Query|Exec|QueryRow)\s*\(\s*fmt\.Sprintf"
+         r"|db\.(?:Query|Exec|QueryRow)\s*\(\s*[\"'].*\+"
+         r"|\.QueryRow\s*\(\s*fmt\.Sprintf"
+         r"|gorm\.(?:Raw|Exec)\s*\(\s*fmt\.Sprintf"      # GORM Raw/Exec with fmt.Sprintf
+         r"|gorm\.(?:Raw|Exec)\s*\(\s*[\"'].*\+"         # GORM Raw with concat
+         r"|db\.Select\s*\([^,]+fmt\.Sprintf"            # GORM .Select with fmt.Sprintf
+         r"|sqlx\.(?:Get|Select|Queryx)\s*\([^,]+fmt\.Sprintf",  # sqlx
+         re.IGNORECASE),
      [".go"]),
+    # C# (.NET/ASP.NET/Entity Framework/Dapper)
+    ("csharp",
+     re.compile(r"Request\[\"([A-Za-z0-9_]+)\"\]"
+                r"|HttpContext\.Request\.Query\[\"([A-Za-z0-9_]+)\"\]"
+                r"|Request\.Form\[\"([A-Za-z0-9_]+)\"\]"),
+     re.compile(
+         r"ExecuteReader\s*\(\s*CommandType\.Text\s*,\s*[\"'].*\+"
+         r"|SqlCommand\s*\(\s*[\"'].*\+"
+         r"|context\.Database\.ExecuteSql(?:Raw|Command)\s*\(\s*\$[\"']"  # EF ExecuteSqlRaw with interpolation
+         r"|context\.Database\.ExecuteSql(?:Raw|Command)\s*\(\s*[\"'].*\+"
+         r"|connection\.Execute\s*\(\s*[\"'].*\+"     # Dapper
+         r"|connection\.Query\s*\(\s*[\"'].*\+",      # Dapper Query
+         re.IGNORECASE),
+     [".cs"]),
 ]
 
 
@@ -4339,8 +4394,30 @@ def find_sqli_sinks_generic(local_path: str, tech: str = "auto") -> List[VulnSin
         # Fall back to scanning all known patterns
         pattern_sets = _SQLI_PATTERNS
     results: List[VulnSink] = []
+    # Simple PHP variable-taint regex: $var = $_GET/'param'] or similar
+    _VAR_ASSIGN_RE = re.compile(
+        r"""\$([A-Za-z_]\w*)\s*=\s*"""
+        r"""(?:[A-Za-z_][\w\\]*(?:::[A-Za-z_]\w*)?\s*\([^)]{0,80}\)\s*)?"""
+        r"""(?:\$_(?:GET|POST|REQUEST|COOKIE)\s*\[['\"]([A-Za-z0-9_]+)['\"]"""
+        r"""|\$(?:request|req)\s*\[['\"]([A-Za-z0-9_]+)['\"]"""
+        r"""|\$(?:\w+->)*get_param\s*\(['\"]([A-Za-z0-9_]+)['\"])""",
+        re.IGNORECASE,
+    )
+    _WINDOW = 20  # scan ±20 lines around each user-input or sink hit
+
     for _tech, _user_re, _sink_re, _exts in pattern_sets:
         for _abs_fp, rel_fp, lines in _walk_source_files(local_path, _exts):
+            # Build taint map: line_index → (var_name, param_name) for PHP variable assignments
+            taint_map: dict[int, tuple[str, str]] = {}
+            if _tech == "php":
+                for idx, line in enumerate(lines):
+                    m_assign = _VAR_ASSIGN_RE.search(line)
+                    if m_assign:
+                        var_name = m_assign.group(1)
+                        param = next((g for g in m_assign.groups()[1:] if g), "")
+                        if param:
+                            taint_map[idx] = (var_name, param)
+
             for i, line in enumerate(lines, 1):
                 _user_m = _user_re.search(line)
                 _sink_m = _sink_re.search(line)
@@ -4352,16 +4429,39 @@ def find_sqli_sinks_generic(local_path: str, tech: str = "auto") -> List[VulnSin
                         param=param, sink=_sink_m.group(0)[:60],
                         tech=_tech, confidence=3))
                     continue
-                # Sink line nearby a user-input read (within 10 lines)
+                # Sink line: look backward AND forward for user input
                 if _sink_m:
-                    window = "\n".join(lines[max(0, i-10):i])
-                    wu = _user_re.search(window)
+                    # Backward window
+                    back_start = max(0, i - 1 - _WINDOW)
+                    window_back = "\n".join(lines[back_start:i - 1])
+                    wu = _user_re.search(window_back)
                     if wu:
                         param = next((g for g in wu.groups() if g), "?")
                         results.append(VulnSink(
                             file=rel_fp, line=i, snippet=line.strip(),
                             param=param, sink=_sink_m.group(0)[:60],
                             tech=_tech, confidence=2))
+                        continue
+                    # Forward window (user input assignment before sink in same function scope)
+                    fwd_end = min(len(lines), i + _WINDOW)
+                    window_fwd = "\n".join(lines[i:fwd_end])
+                    wu_fwd = _user_re.search(window_fwd)
+                    if wu_fwd:
+                        param = next((g for g in wu_fwd.groups() if g), "?")
+                        results.append(VulnSink(
+                            file=rel_fp, line=i, snippet=line.strip(),
+                            param=param, sink=_sink_m.group(0)[:60],
+                            tech=_tech, confidence=1))
+                        continue
+                    # PHP taint-variable in sink line: check if any tainted $var appears
+                    if _tech == "php" and taint_map:
+                        for t_idx, (t_var, t_param) in taint_map.items():
+                            if abs(t_idx - (i - 1)) <= _WINDOW and f"${t_var}" in line:
+                                results.append(VulnSink(
+                                    file=rel_fp, line=i, snippet=line.strip(),
+                                    param=t_param, sink=_sink_m.group(0)[:60],
+                                    tech=_tech, confidence=2))
+                                break
     # Deduplicate by (file, line), keep highest confidence
     seen: dict = {}
     for s in results:
