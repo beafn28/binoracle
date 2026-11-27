@@ -3015,6 +3015,60 @@ def _static_vuln_precheck(local_path: str, plugin_dir: str, vuln_class: str,
                 "confidence": 0.65,
             }
 
+    # --- Check 30: CRLF Injection — header()/setcookie()/redirect with CR/LF in user input ---
+    if vuln_class in ("crlf-injection", "http-response-splitting", "header-injection",
+                      "crlf", "log-injection") and local_path:
+        import os as _os_crlf
+        _CRLF_SINK_RE = re.compile(
+            r'\bheader\s*\(\s*["\']?(?:Location|Set-Cookie|Content-Type|X-)'
+            r'|\bheader\s*\(\s*\$'
+            r'|\bsetcookie\s*\(\s*[^,]+,\s*\$'
+            r'|\bwp_redirect\s*\(\s*\$'
+            r'|\bres\.setHeader\s*\([^,]+,\s*req\.'
+            r'|\bres\.header\s*\([^,]+,\s*req\.',
+            re.IGNORECASE,
+        )
+        _CRLF_SANITIZED_RE = re.compile(
+            r'str_replace.*[\\r\\n]|preg_replace.*[\\r\\n]|filter_var.*FILTER_SANITIZE_URL'
+            r'|\besc_url\s*\(|\bwp_sanitize_redirect\s*\(|\bsanitize_url\s*\(',
+            re.IGNORECASE,
+        )
+        _crlf_hits: list[str] = []
+        _crlf_safe_hits: list[str] = []
+        _exts_crlf = {".php", ".py", ".js", ".ts", ".rb", ".go"}
+        try:
+            for _r30, _d30, _f30 in _os_crlf.walk(local_path):
+                _d30[:] = [d for d in _d30
+                           if d not in (".git", "node_modules", "__pycache__", "vendor")]
+                for _fn30 in _f30:
+                    if not any(_fn30.endswith(e) for e in _exts_crlf):
+                        continue
+                    _fp30 = _os_crlf.path.join(_r30, _fn30)
+                    try:
+                        _txt30 = open(_fp30, encoding="utf-8", errors="ignore").read(100_000)
+                        if _CRLF_SINK_RE.search(_txt30):
+                            _crlf_hits.append(_os_crlf.path.relpath(_fp30, local_path))
+                        if _CRLF_SANITIZED_RE.search(_txt30):
+                            _crlf_safe_hits.append(_os_crlf.path.relpath(_fp30, local_path))
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        if _crlf_safe_hits:
+            return {
+                "ok": False,
+                "reason": (f"pre-check CRLF: sanitizacion de CR/LF detectada en "
+                           f"{', '.join(_crlf_safe_hits[:2])} — CRLF injection no probable"),
+                "confidence": 0.65,
+            }
+        if _crlf_hits:
+            return {
+                "ok": True,
+                "reason": (f"pre-check CRLF: header()/setcookie() con input de usuario sin "
+                           f"sanitizar en {', '.join(_crlf_hits[:2])} — CRLF injection probable"),
+                "confidence": 0.0,
+            }
+
     return {"ok": True, "reason": "pre-check OK", "confidence": 1.0}
 
 
