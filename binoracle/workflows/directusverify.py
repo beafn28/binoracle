@@ -138,18 +138,29 @@ def _run_request_chain(base_url: str, chain: list, bearer: Optional[str],
         status = r.status_code
         body_text = r.text or ""
 
-        # Extract variables from response JSON
+        # Extract variables from response — supports 'json:path.to.field' and regex patterns
         if step_def.get("extract"):
+            resp_obj = None
             try:
                 resp_obj = json.loads(body_text)
-                for var_name, path_expr in step_def["extract"].items():
-                    if path_expr.startswith("json:"):
+            except Exception:
+                pass
+            for var_name, path_expr in step_def["extract"].items():
+                if path_expr.startswith("json:"):
+                    if resp_obj is not None:
                         val = _extract_json_path(resp_obj, path_expr[5:])
                         if val is not None:
                             vars_[var_name] = val
                             step(f"  directus chain[{idx}]: extracted {var_name}={str(val)[:40]}")
-            except Exception:
-                pass
+                else:
+                    # Treat as regex with one capture group
+                    try:
+                        m = _re.search(path_expr, body_text)
+                        if m:
+                            vars_[var_name] = m.group(1)
+                            step(f"  directus chain[{idx}]: extracted {var_name}={vars_[var_name][:40]!r}")
+                    except Exception:
+                        pass
 
         expect_status = step_def.get("confirm_status")
         if expect_status and status != expect_status:

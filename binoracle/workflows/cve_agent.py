@@ -14804,7 +14804,10 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             # marca `verified`, solo deja constancia de una diferencia real observada sin login.
             elif (not plugin_dir and
                   (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
-                  inv.vuln_class == "idor" and notes.get("endpoint")):
+                  inv.vuln_class == "idor" and notes.get("endpoint") and
+                  not notes.get("request_chain") and
+                  not any(cms in (notes.get("docker_image") or "").lower()
+                          for cms in ("directus", "ghost", "strapi", "payload", "wagtail"))):
                 from .genericverify import verify_generic_idor, _pick_param
                 from .wpverify import _ID_HINTS
                 params = notes.get("parameters") or []
@@ -14830,7 +14833,13 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                   not notes.get("analyst_endpoint_lock") and
                   (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
                   notes.get("request_chain") and
-                  isinstance(notes.get("request_chain"), list)):
+                  isinstance(notes.get("request_chain"), list) and
+                  # CMS with dedicated verifiers handle request_chain themselves — skip generic chain
+                  not any(cms in (notes.get("docker_image") or "").lower()
+                          for cms in ("directus", "ghost", "strapi", "payload", "wagtail",
+                                      "mattermost", "gitea", "gitlab", "nextcloud")) and
+                  not any(cms in (notes.get("cms") or "").lower()
+                          for cms in ("directus", "ghost", "strapi", "payload", "wagtail"))):
                 from .genericverify import run_request_chain
                 _inject_custom_docker_lab(str(fr.local_path), notes, step)
                 step((f"intentando verificacion DINAMICA: cadena de {len(notes['request_chain'])} "
@@ -15755,7 +15764,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             elif (not plugin_dir and fr.local_path and
                   inv.vuln_class in ("xss", "sqli", "sql-injection", "ssrf", "idor",
                                      "missing-authorization", "auth-bypass",
-                                     "broken-access-control", "ssti", "rce",
+                                     "broken-access-control", "rce",
                                      "command-injection", "os-command-injection")
                   and notes.get("endpoint")):
                 from .goverify import detect_go_framework, verify_go_web_cve
