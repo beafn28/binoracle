@@ -19215,7 +19215,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     }
                 _apply_wpverify_result(inv, wr, es, llm)
             # Boolean oracle / data-leak: diferencia TRUE/FALSE en respuesta filtra datos privados
-            elif (not plugin_dir and
+            elif (wr is None and
+                  not plugin_dir and
                   (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
                   inv.vuln_class in ("boolean-oracle", "boolean-injection", "data-leak",
                                      "filter-bypass", "information-disclosure",
