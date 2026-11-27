@@ -293,6 +293,78 @@ _REGEX_PATTERNS: dict = {
         (r'(?:update_user_meta|wp_update_user)\s*\([^;]*email',
          "email_change_no_reauth_wp"),
     ],
+    "xxe": [
+        # PHP SimpleXML / DOMDocument without LIBXML_NOENT protection
+        (r'(simplexml_load_string|simplexml_load_file|DOMDocument\b[^;]*->loadXML)',
+         "php_xml_parse_no_entity_protection"),
+        # Python xml.etree / lxml without resolve_entities=False
+        (r'(xml\.etree|ElementTree\.parse|lxml\.etree\.parse|etree\.fromstring)',
+         "py_xml_parse_no_entity_check"),
+        # Java DocumentBuilderFactory without FEATURE_EXTERNAL_GENERAL_ENTITIES=false
+        (r'(DocumentBuilderFactory\.newInstance|SAXParserFactory\.newInstance|XMLInputFactory\.newInstance)',
+         "java_xml_factory_no_secure_processing"),
+        # Node.js libxmljs / xml2js with explicitArray unsafe
+        (r'(libxmljs|xml2js\.parseString|xmldom\.DOMParser)',
+         "js_xml_parse_external_entity"),
+    ],
+    "expression-language-injection": [
+        # Spring SpEL evaluation of user input
+        (r'(ExpressionParser|SpelExpressionParser|EvaluationContext)[^;]*parseExpression\s*\(',
+         "spring_spel_user_input"),
+        # Python eval / exec of user-controlled input
+        (r'(eval|exec)\s*\(\s*(request\.|req\.|params\.|body\.|\$_(?:GET|POST))',
+         "py_js_eval_user_input"),
+        # Thymeleaf user-controlled fragment expressions
+        (r'th:(text|value|href|action)\s*=\s*["\']?\$\{[^}]*(?:request\.|param\.)',
+         "thymeleaf_el_user_input"),
+        # FreeMarker/Velocity template injection
+        (r'(Template|Configuration)\.getTemplate\s*\(.*(?:request\.|req\.|\$_(GET|POST))',
+         "freemarker_velocity_user_template"),
+    ],
+    "mass-assignment": [
+        # JavaScript Object.assign / spread with request body (no allowlist)
+        (r'Object\.assign\s*\(\s*\w+\s*,\s*(req\.body|request\.body)',
+         "js_object_assign_req_body"),
+        (r'\w+\s*=\s*\{?\s*\.\.\.(req\.body|request\.body)\s*\}?',
+         "js_spread_req_body"),
+        # Python model.update(**request.data) without field restriction
+        (r'\.(update|save)\s*\(\s*\*\*\s*(request\.data|request\.POST)',
+         "py_model_update_req_data"),
+        # Ruby / Rails: params.permit! (dangerous — allows all)
+        (r'params\.permit!',
+         "rails_permit_all_params"),
+        # PHP mass assignment (array merge/extract with $_POST)
+        (r'(extract|array_merge)\s*\(\s*\$_(POST|GET|REQUEST)',
+         "php_extract_request"),
+    ],
+    "race-condition": [
+        # Non-atomic check-then-act patterns (PHP)
+        (r'(file_exists|is_readable|is_writable)\s*\([^)]+\).*\n.*fopen\s*\(',
+         "php_toctou_file_exists_fopen"),
+        # Node.js fs.access then fs.readFile without O_EXCL
+        (r'fs\.(access|exists)\s*\([^)]+,\s*function|fs\.(access|exists)\s*\([^)]+\)\s*\.\s*then',
+         "js_fs_access_then_read"),
+        # DB read-then-update without transaction (Python ORM)
+        (r'(\.get\s*\(|\.filter\s*\()[^)]+\)[^;]*\n[^;]*(\.save\s*\(|\.update\s*\()',
+         "py_orm_read_then_write_no_txn"),
+    ],
+    "redos": [
+        # Known catastrophic regex patterns in PHP/Python/JS
+        (r're\.compile\s*\([\'"][^\'"]*((\?[^)]+){2,}|\.\+[^)]*\.\+|(\w+\?){3,})',
+         "py_catastrophic_regex"),
+        (r'new RegExp\s*\([\'"][^\'"]*((\?[^)]+){2,}|\.\+[^)]*\.\+)',
+         "js_catastrophic_regex"),
+        (r'preg_match\s*\([\'"][^\'"]*((\?[^)]+){2,}|\.\+[^)]*\.\+)',
+         "php_catastrophic_regex"),
+    ],
+    "http-request-smuggling": [
+        # Trusting untrusted proxy headers for Content-Length or Transfer-Encoding
+        (r'(Content-Length|Transfer-Encoding)\s*:\s*\$_(SERVER|HTTP|HEADER)',
+         "php_trust_cl_te_from_proxy"),
+        # Node.js / Go: HTTP/1.1 server without strict CL.TE handling
+        (r'(http\.createServer|net\.Listen)\s*\(.*\n.*(?!keepAliveTimeout)',
+         "js_go_server_no_ka_timeout"),
+    ],
 }
 
 # Semgrep rule keyword filters per vuln class
@@ -322,6 +394,12 @@ _SEMGREP_FILTER: dict = {
     "information-disclosure": ["debug", "disclosure", "stack-trace", "api-key", "verbose"],
     "zip-slip": ["zip", "extract", "archive", "path-traversal", "zip-slip"],
     "account-takeover": ["account", "takeover", "reset", "token", "email-change"],
+    "xxe": ["xml", "external", "entity", "dtd", "simplexml", "documentbuilder", "saxparser"],
+    "expression-language-injection": ["expression", "spel", "el", "thymeleaf", "freemarker", "velocity", "template"],
+    "mass-assignment": ["assign", "spread", "permit", "params", "req.body", "request.data"],
+    "race-condition": ["race", "toctou", "concurrent", "atomic", "mutex", "lock"],
+    "redos": ["regex", "catastrophic", "backtrack", "redos"],
+    "http-request-smuggling": ["content-length", "transfer-encoding", "smuggling", "cl.te", "te.cl"],
 }
 
 
