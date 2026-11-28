@@ -302,10 +302,11 @@ def verify_craft_web_cve(
                     res.detail = f"VERIFICADO: '{_effective_confirm}' en respuesta Craft"
                     step("  craftverify: VERIFICADO")
                 elif not _effective_confirm and payload and payload in body_text:
-                    res.verified = True
                     res.ok = True
                     res.confidence = "probable"
-                    res.detail = "VERIFICADO (probable): payload reflejado"
+                    res.evidence["not_verified_reason"] = (
+                        "payload reflejado en la respuesta no es prueba de ejecucion ni de explotacion -- muchos endpoints benignos reflejan el input del atacante (mensajes de error, formularios re-renderizados, busquedas, logs) sin que eso implique que el payload se ejecuto o que la vulnerabilidad es real")
+                    res.detail = "LEAD (no confirmado): payload reflejado"
                 elif _had_nonce and "mkdir" in body_text.lower():
                     res.verified = True
                     res.ok = True
@@ -491,10 +492,11 @@ def verify_craft_web_cve(
                     res.detail = f"VERIFICADO: '{_effective_confirm}' en respuesta Craft"
                     step("  craftverify: VERIFICADO")
                 elif not _effective_confirm and payload and payload in body_text:
-                    res.verified = True
                     res.ok = True
                     res.confidence = "probable"
-                    res.detail = "VERIFICADO (probable): payload reflejado"
+                    res.evidence["not_verified_reason"] = (
+                        "payload reflejado en la respuesta no es prueba de ejecucion ni de explotacion -- muchos endpoints benignos reflejan el input del atacante (mensajes de error, formularios re-renderizados, busquedas, logs) sin que eso implique que el payload se ejecuto o que la vulnerabilidad es real")
+                    res.detail = "LEAD (no confirmado): payload reflejado"
                 elif _had_nonce and "mkdir" in body_text.lower():
                     res.verified = True
                     res.ok = True

@@ -316,11 +316,12 @@ def verify_node_web_cve(source_path: str, endpoint: str,
                 res.detail = f"VERIFICADO: confirm_string '{confirm_string}' en respuesta"
                 step("  jsverify: VERIFICADO")
             elif not confirm_string and payload and payload in (r.text or ""):
-                res.verified = True
                 res.ok = True
                 res.confidence = "probable"
-                res.detail = "VERIFICADO (probable): payload reflejado en respuesta"
-                step("  jsverify: payload reflejado")
+                res.evidence["not_verified_reason"] = (
+                    "payload reflejado en la respuesta no es prueba de ejecucion ni de explotacion -- muchos endpoints benignos reflejan el input del atacante (mensajes de error, formularios re-renderizados, busquedas, logs) sin que eso implique que el payload se ejecuto o que la vulnerabilidad es real")
+                res.detail = "LEAD (no confirmado): payload reflejado en respuesta"
+                step("  jsverify: payload reflejado (lead, no confirmado)")
             else:
                 res.ok = True
                 res.detail = f"Endpoint accesible ({r.status_code}) — confirm_string no encontrado"

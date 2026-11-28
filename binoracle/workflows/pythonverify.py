@@ -428,11 +428,12 @@ def verify_python_web_cve(source_path: str, endpoint: str,
                 res.detail = f"VERIFICADO: confirm_string '{confirm_string}' en respuesta"
                 step("  pythonverify: VERIFICADO")
             elif not confirm_string and payload and payload in (r.text or ""):
-                res.verified = True
                 res.ok = True
                 res.confidence = "probable"
-                res.detail = "VERIFICADO (probable): payload reflejado en respuesta"
-                step("  pythonverify: payload reflejado")
+                res.evidence["not_verified_reason"] = (
+                    "payload reflejado en la respuesta no es prueba de ejecucion ni de explotacion -- muchos endpoints benignos reflejan el input del atacante (mensajes de error, formularios re-renderizados, busquedas, logs) sin que eso implique que el payload se ejecuto o que la vulnerabilidad es real")
+                res.detail = "LEAD (no confirmado): payload reflejado en respuesta"
+                step("  pythonverify: payload reflejado (lead, no confirmado)")
             else:
                 res.ok = True
                 res.detail = "Endpoint accesible (200) — confirm_string no encontrado"
