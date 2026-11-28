@@ -390,8 +390,16 @@ def verify_python_web_cve(source_path: str, endpoint: str,
             elif framework == "fastapi":
                 bearer = _get_fastapi_token(base_url, _user, _pwd, step)
             elif framework == "flask":
-                # Flask: try JSON login endpoints
+                # Flask: try JSON login endpoints first
                 bearer = _get_fastapi_token(base_url, _user, _pwd, step)
+                if not bearer:
+                    # Fall back to form-based login (pgAdmin, Flask-Login, etc.)
+                    from .genericverify import _try_acquire_app_token
+                    _auth_res = _try_acquire_app_token(base_url, step)
+                    if _auth_res and _auth_res.startswith("cookie:"):
+                        cookie = _auth_res[7:]
+                    elif _auth_res:
+                        bearer = f"Bearer {_auth_res}"
 
         # Fire the PoC
         target_url = base_url + endpoint
