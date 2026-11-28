@@ -154,25 +154,34 @@ def _auth_pgadmin(base: str, envs: dict, step: Callable) -> dict[str, str] | Non
 
 
 def _auth_audiobookshelf(base: str, envs: dict, step: Callable) -> dict[str, str] | None:
-    """POST /login → Bearer token (audiobookshelf uses {user: {token: ...}})."""
-    # audiobookshelf default first-run credentials
-    for user, pwd in [("admin", "admin"), ("root", "root")]:
-        status, body, _ = _post_json(f"{base}/login", {"username": user, "password": pwd})
+    """POST /api/login → Bearer token (audiobookshelf uses {user: {token: ...}})."""
+    _login_ep = f"{base}/api/login"
+    # Try all known credential sets including the binoracle setup default
+    _cred_list = [
+        ("binoadmin", "BinOracle123!"),  # setup_cmds credential (highest priority)
+        ("admin", "BinOracle123!"),
+        ("admin", "admin"),
+        ("root", "root"),
+    ]
+    for user, pwd in _cred_list:
+        status, body, _ = _post_json(_login_ep, {"username": user, "password": pwd})
         if status in (200, 201):
             tok = ((body.get("user") or {}).get("token") or
                    body.get("token") or body.get("access_token") or "")
             if tok:
-                step(f"audiobookshelf-auth: Bearer token obtained ({tok[:8]}...)")
+                step(f"audiobookshelf-auth: Bearer token obtained (user={user!r}, {tok[:8]}...)")
                 return {"Authorization": f"Bearer {tok}"}
-    # Try the register-then-login pattern for first boot
+    # Try the register-then-login pattern for first-boot containers without setup_cmds
+    _post_json(f"{base}/api/authorize",
+               {"username": "binoadmin", "password": "BinOracle123!"})
     _post_json(f"{base}/register", {"username": "binoadmin", "password": "BinOracle123!"})
-    status, body, _ = _post_json(f"{base}/login", {"username": "binoadmin", "password": "BinOracle123!"})
+    status, body, _ = _post_json(_login_ep, {"username": "binoadmin", "password": "BinOracle123!"})
     if status in (200, 201):
         tok = ((body.get("user") or {}).get("token") or body.get("token") or "")
         if tok:
             step(f"audiobookshelf-auth: registered+login ok ({tok[:8]}...)")
             return {"Authorization": f"Bearer {tok}"}
-    step(f"audiobookshelf-auth: login failed (HTTP {status})")
+    step(f"audiobookshelf-auth: all login attempts failed (last HTTP {status})")
     return None
 
 
