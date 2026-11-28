@@ -7329,6 +7329,20 @@ def verify_wordpress_sqli(
         if not _action_name:
             _action_m = re.search(r"[?&]action=(\w+)", endpoint or "")
             _action_name = _action_m.group(1) if _action_m else ""
+        # Auto-discover action from plugin source when admin-ajax.php endpoint but no action set.
+        # _scan_rest_routes scans add_action('wp_ajax(_nopriv)?_X') in plugin PHP files.
+        if not _action_name and "admin-ajax.php" in (endpoint or "").lower() and plugin_source_dir:
+            _discovered_eps = _scan_rest_routes(plugin_source_dir)
+            _ajax_actions_found = []
+            for _dep in _discovered_eps:
+                _da_m = re.search(r"[?&]action=(\w+)", _dep)
+                if _da_m:
+                    _ajax_actions_found.append(_da_m.group(1))
+            if _ajax_actions_found:
+                _action_name = _ajax_actions_found[0]
+                base_params["action"] = _action_name
+                step(f"[ajax-discovery] auto-filled action={_action_name!r} from plugin source "
+                     f"({len(_ajax_actions_found)} candidate(s) found)")
         _anon_attack = bool(_action_name and _detect_nopriv_from_source(plugin_source_dir, _action_name))
         if _anon_attack:
             step(f"fuente del plugin detecta wp_ajax_nopriv_{_action_name} → ataque anonimo (sin sesion de usuario)")
@@ -12431,6 +12445,15 @@ def verify_wordpress_file_upload(
     _nonce_action_cfg = _slug_cfg.get("nonce_action", "")  # accion real para wp_create_nonce
     _ajax_action_cfg  = _slug_cfg.get("ajax_action", "")   # valor de 'action' para admin-ajax.php
     _nopriv_cfg       = bool(_slug_cfg.get("nopriv", False))  # True → nopriv: sesion anonima + nonce uid=0
+    # Auto-discover ajax action from plugin source when endpoint is admin-ajax.php but no action known
+    if not _ajax_action_cfg and "admin-ajax" in (endpoint or "").lower() and plugin_source_dir:
+        _auto_disc_eps = _scan_rest_routes(plugin_source_dir)
+        for _adep in _auto_disc_eps:
+            _ada_m = re.search(r"[?&]action=(\w+)", _adep)
+            if _ada_m:
+                _ajax_action_cfg = _ada_m.group(1)
+                on_step and on_step(f"[ajax-discovery] action={_ajax_action_cfg!r} from plugin source")
+                break
 
     # Nonce param autoconfig: lo añadimos a base_params para que _auto_resolve_wp_blockers
     # lo rellene via scraping/eval. Si luego resolvemos form_id y conocemos la nonce_action

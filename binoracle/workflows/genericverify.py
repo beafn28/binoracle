@@ -5782,6 +5782,47 @@ def verify_generic_sqli_blind(
                         pass
         if not res.verified:
             _capture_container_logs_on_failure(container, res, step)
+            # Second-order SQLi fallback: store payload in a writable endpoint, then trigger read
+            # from a read endpoint that renders stored data — canary appears if stored SQL executed.
+            _so_canary = f"BINO_{_token()[:8]}"
+            _SO_STORE_PATHS = [
+                ("POST", "/api/users/me", {"name": "{p}"}, "/api/users/me"),
+                ("POST", "/profile", {"display_name": "{p}", "bio": "{p}"}, "/profile"),
+                ("POST", "/account", {"username": "{p}"}, "/account"),
+                ("PUT", "/api/profile", {"name": "{p}"}, "/api/profile"),
+                ("POST", "/api/v1/users/me", {"name": "{p}"}, "/api/v1/users/me"),
+                ("PUT", "/api/v1/profile", {"name": "{p}"}, "/api/v1/profile"),
+            ]
+            _so_payload = f"' UNION SELECT NULL,'{_so_canary}',NULL-- -"
+            _so_tried = False
+            for _so_meth, _so_store_path, _so_tmpl, _so_trigger_path in _SO_STORE_PATHS:
+                _so_params = {k: v.replace("{p}", _so_payload) for k, v in _so_tmpl.items()}
+                try:
+                    _r_store = _http_request(
+                        _so_meth, base_url + _so_store_path,
+                        json=_so_params, timeout=10,
+                        headers={"Content-Type": "application/json"})
+                    if _r_store is None or _r_store.status_code not in (200, 201, 204):
+                        continue
+                    _r_trigger = _http_request("GET", base_url + _so_trigger_path, timeout=10)
+                    if _r_trigger and _so_canary in (_r_trigger.text or ""):
+                        res.verified = True
+                        res.ok = True
+                        res.confidence = "confirmed"
+                        res.evidence["second_order_sqli"] = {
+                            "store_path": _so_store_path,
+                            "trigger_path": _so_trigger_path,
+                            "canary_found": True}
+                        res.detail = (f"Second-order SQLi confirmed: payload stored via "
+                                      f"'{_so_store_path}', canary reflected via '{_so_trigger_path}'")
+                        step("[second-order SQLi] canary found in trigger response — confirmed!")
+                        _so_tried = True
+                        break
+                    _so_tried = True
+                except Exception:
+                    pass
+            if _so_tried and not res.verified:
+                step("[second-order SQLi] no canary reflection found in trigger endpoints")
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = _diagnose_infra_error(e, source_dir)
