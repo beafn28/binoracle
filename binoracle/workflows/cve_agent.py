@@ -15723,17 +15723,24 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     pass
             # Endpoint "/" correction — LLM returned "/" when it had no idea.
             # If diff signals carry REST routes, use the first one as the endpoint.
+            # Guard: only replace "/" when the LLM didn't already set non-AJAX params,
+            # because "/" is the REAL endpoint for homepage-based attacks (e.g. /?name=payload).
             _ep_now = notes.get("endpoint") or ""
             if _ep_now in ("/", ):
                 _diff_now = getattr(inv, "diff_analysis", None) or {}
                 _rest_now = _diff_now.get("rest_routes") or []
                 _ajax_now = _diff_now.get("ajax_action_names") or []
-                if _ajax_now and not is_drupal and not is_joomla:
+                # Params that look like real homepage GET params (not AJAX boilerplate)
+                _params_now = notes.get("parameters") or {}
+                _non_ajax_keys = {k for k in (_params_now if isinstance(_params_now, dict) else {})
+                                  if k not in ("action", "nonce", "_wpnonce", "security")}
+                _skip_ep_fix = bool(_non_ajax_keys)  # LLM set real non-AJAX params → "/" is correct
+                if not _skip_ep_fix and _ajax_now and not is_drupal and not is_joomla:
                     notes["endpoint"] = "/wp-admin/admin-ajax.php"
                     notes.setdefault("parameters", {})["action"] = _ajax_now[0]
                     inv.llm_notes["endpoint"] = notes["endpoint"]
                     step(f"[ep-fix] '/' → admin-ajax.php action={_ajax_now[0]!r}")
-                elif _rest_now:
+                elif not _skip_ep_fix and _rest_now:
                     _rn = _rest_now[0]
                     if isinstance(_rn, str) and _rn.startswith("/"):
                         notes["endpoint"] = _rn
