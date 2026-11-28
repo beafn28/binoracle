@@ -12927,6 +12927,57 @@ def verify_wordpress_missing_auth_probe(
         res.evidence["http_captures"] = boot.http_captures
 
         if _rejected:
+            # Nonce-only bypass check: some WP REST endpoints reject anon requests with
+            # "rest_cookie_check_errors" because they check X-WP-Nonce (anti-CSRF), not
+            # actual capabilities. A subscriber-level nonce may satisfy the nonce check
+            # while still exposing admin-level data — proving a capability bypass.
+            _nonce_in_body = ("nonce" in body_low or "rest_cookie" in body_low
+                              or "rest_forbidden" in body_low)
+            if _nonce_in_body and status in (401, 403) and boot is not None:
+                try:
+                    _sub_ok2 = _wp_login(
+                        boot.base_url, boot.sub_user, boot.sub_pass, on_step=step)
+                    if _sub_ok2:
+                        # Get the subscriber user's ID via wp-cli
+                        _sub_id2 = "2"  # fallback
+                        try:
+                            _r_subid = lab.wp_cli(
+                                "user", "get", boot.sub_user, "--field=ID", timeout=10)
+                            _sub_id2 = (_r_subid.stdout or "").strip().split("\n")[-1].strip() or "2"
+                        except Exception:
+                            pass
+                        _eval_nonce2 = (f"$u = wp_set_current_user({_sub_id2}); "
+                                        f"echo wp_create_nonce('wp_rest');")
+                        _rn2 = lab.wp_cli("eval", _eval_nonce2, timeout=10)
+                        _sub_nonce2 = (_rn2.stdout or "").strip().split("\n")[-1].strip() if _rn2 else ""
+                        if len(_sub_nonce2) >= 8:
+                            _nonce_sess = _make_session()
+                            _nonce_sess.cookies.update(dict(_sub_ok2.cookies or {}))
+                            _nonce_sess.headers["X-WP-Nonce"] = _sub_nonce2
+                            _rn_resp = _nonce_sess.request(
+                                m, boot.base_url + endpoint,
+                                json=params_dict if (m not in ("GET", "HEAD") and json_body) else None,
+                                data=params_dict if (m not in ("GET", "HEAD") and not json_body) else None,
+                                params=params_dict if m == "GET" else None,
+                                timeout=20, allow_redirects=True)
+                            _nn_st = _rn_resp.status_code
+                            _nn_body = (_rn_resp.text or "")[:2000]
+                            res.evidence["nonce_bypass_attempt"] = {
+                                "status": _nn_st,
+                                "body_snippet": _nn_body[:200],
+                            }
+                            if _nn_st < 400 and len(_nn_body.strip()) > 20:
+                                step(f"NONCE BYPASS: subscriber nonce permite acceso ({_nn_st}/{len(_nn_body)}B) "
+                                     f"a endpoint que rechazaba anon ({status})")
+                                # Update status/body to the nonce-bypassed response for
+                                # subsequent checks (sensitive-field, sentinel, etc.)
+                                status, body, body_low = _nn_st, _nn_body, _nn_body.lower()
+                                res.evidence["nonce_bypass_proven"] = True
+                                _rejected = False  # fall through to positive checks
+                except Exception:
+                    pass
+
+        if _rejected:
             res.ok = True
             res.detail = (f"el endpoint responde HTTP {status} o devuelve senal de rechazo "
                           f"('{body.strip()[:60]}') sin autenticacion — la comprobacion parece "
