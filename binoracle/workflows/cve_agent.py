@@ -5704,6 +5704,45 @@ def _apply_wpverify_result(inv, wr, es: bool, llm=None) -> None:
         wr.verified = False
         if not getattr(wr, "confidence", None) or wr.confidence in ("confirmed", "none"):
             wr.confidence = "inconclusive"
+
+    # Post-verify confidence sanity gate.
+    # Challenge "probable" results with thin evidence to prevent FPs.
+    # "confirmed" (canary/sentinel/hard-string match) is never downgraded here.
+    _wr_conf = getattr(wr, "confidence", "none")
+    if wr.verified and _wr_conf not in ("confirmed",):
+        _ev = wr.evidence or {}
+        # Signals of thin evidence:
+        # 1. body size differential is tiny (bool-blind diff < 20B)
+        # 2. no confirm_string, no canary, no sentinel in evidence
+        # 3. response body itself is very small (could be default WP stub)
+        _body_len = len((_ev.get("anon_body_snippet") or _ev.get("respuesta_cuerpo_recorte") or "").strip())
+        _has_hard_proof = any([
+            _ev.get("confirm_string"),
+            _ev.get("sentinel_uuid"),
+            _ev.get("canary"),
+            _ev.get("canario_encontrado"),
+            _ev.get("mysql_version_extraida"),
+            _ev.get("postgres_version"),
+            _ev.get("db_version"),
+            _ev.get("command_output"),
+            _ev.get("file_read_success"),
+            _ev.get("loot"),
+        ])
+        _bool_diff = abs(
+            (_ev.get("true_len") or 0) - (_ev.get("false_len") or 0)
+        )
+        _thin_bool = (_bool_diff > 0 and _bool_diff < 20)
+        if not _has_hard_proof and (_body_len < 30 or _thin_bool):
+            if _wr_conf == "probable":
+                wr.confidence = "possible"
+            elif _wr_conf == "possible":
+                wr.confidence = "possible"  # keep, don't downgrade further
+            # Note in evidence for transparency
+            wr.evidence["sanity_gate"] = (
+                f"downgraded from {_wr_conf!r}: body_len={_body_len}, "
+                f"bool_diff={_bool_diff}, hard_proof=False"
+            )
+
     inv.dynamic_verify = {"attempted": True, "available": wr.available, "ok": wr.ok,
                           "verified": wr.verified, "detail": wr.detail, "logs": wr.logs,
                           "exploit_poc": getattr(wr, "exploit_poc", {}),
@@ -13910,6 +13949,14 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             and len(_auto_slug) < 100):
                         companion_plugins.append(_auto_slug)
                         step(f"companion_plugins vacío — auto-derivado del source_url: {_auto_slug!r}")
+                # Merge companion plugins detected from patch diff analysis.
+                # extract_companion_plugins() finds woocommerce/elementor/acf/etc. hooks in diff.
+                _diff_companions = (getattr(inv, "diff_analysis", None) or {}).get(
+                    "companion_plugins_detected") or []
+                for _dc in _diff_companions:
+                    if _dc and _dc not in companion_plugins:
+                        companion_plugins.append(_dc)
+                        step(f"companion_plugin detectado en patch diff: {_dc!r} — añadido al lab")
                 if companion_plugins:
                     step((f"el plugin requiere que {', '.join(companion_plugins)} este(n) "
                          f"activo(s) para cargar su propia funcionalidad (detectado en el "
@@ -15328,6 +15375,9 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                           "el endpoint responde sin autenticacion..." if es else
                           "attempting no-auth probe (information-disclosure): checking if "
                           "endpoint responds without authentication..."))
+                    _diff_rest_routes = []
+                    if getattr(inv, "diff_analysis", None):
+                        _diff_rest_routes = inv.diff_analysis.get("rest_routes") or []
                     wr = verify_wordpress_missing_auth_probe(
                         fr.local_path, plugin_dir, notes.get("endpoint"),
                         notes.get("http_method") or "POST", _probe_params,
@@ -15338,7 +15388,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         post_verify_wp_option=notes.get("post_verify_wp_option") or None,
                         post_verify_expected=notes.get("post_verify_expected") or None,
                         setup_wp_options=notes.get("setup_wp_options") or None,
-                        setup_wp_commands=notes.get("setup_wp_commands") or None)
+                        setup_wp_commands=notes.get("setup_wp_commands") or None,
+                        diff_rest_routes=_diff_rest_routes or None)
                 if wr is None:
                     inv.blockers.append(("verificacion dinamica no intentada: la hipotesis no trae "
                                          "ni un parametro de email/password ni uno de ID "
@@ -18830,12 +18881,14 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                       "con confirm_string para verificar que el endpoint responde sin login..." if es else
                       "attempting DYNAMIC verification -- URL-based upload: no-auth probe "
                       "with confirm_string to verify endpoint responds without login..."))
+                _diff_rest_routes2 = (getattr(inv, "diff_analysis", None) or {}).get("rest_routes") or []
                 wr = verify_wordpress_missing_auth_probe(
                     fr.local_path, plugin_dir, notes.get("endpoint"),
                     notes.get("http_method") or "POST", _params_dict,
                     on_step=step, budget_s=budget_s, companion_plugins=companion_plugins,
                     keep_lab_on_failure=keep_lab_on_failure,
-                    confirm_string=_url_cs, json_body=bool(notes.get("json_body")))
+                    confirm_string=_url_cs, json_body=bool(notes.get("json_body")),
+                    diff_rest_routes=_diff_rest_routes2 or None)
                 _apply_wpverify_result(inv, wr, es, llm)
                 # Si la sonda no-auth no confirmo con evidencia dura, intentar SSRF→file-write→RCE
                 # (el plugin fetcha una URL del atacante y escribe el contenido al filesystem).

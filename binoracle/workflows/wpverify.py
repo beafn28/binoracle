@@ -12806,6 +12806,7 @@ def verify_wordpress_missing_auth_probe(
     post_verify_expected: Optional[str] = None,
     setup_wp_options: Optional[list] = None,
     setup_wp_commands: Optional[list] = None,
+    diff_rest_routes: Optional[list] = None,
 ) -> WpVerifyResult:
     """Sonda no-autenticada para information-disclosure / missing-authorization.
 
@@ -13145,6 +13146,34 @@ def verify_wordpress_missing_auth_probe(
                               f"evidencia de que la comprobacion de autenticacion falta")
 
         # WP REST route discovery: when the endpoint returns 404, probe /wp-json/ to list
+        # Diff-route fallback: if the initial endpoint returned 404, try each REST route
+        # extracted by the diff analyzer (register_rest_route calls in removed lines).
+        # These are the actual routes the vulnerable code registered — more reliable than
+        # the LLM's convention-based guess.
+        if status == 404 and not res.verified and diff_rest_routes:
+            for _diff_ep in diff_rest_routes:
+                if _diff_ep == endpoint:
+                    continue  # already tried
+                step(f"probe: endpoint LLM={endpoint!r} → 404; reintentando con ruta del diff: {_diff_ep!r}")
+                try:
+                    _rdr = anon_sess.request(
+                        m, boot.base_url + _diff_ep,
+                        json=params_dict if (m not in ("GET", "HEAD") and json_body) else None,
+                        data=params_dict if (m not in ("GET", "HEAD") and not json_body) else None,
+                        params=params_dict if m == "GET" else None,
+                        timeout=20, allow_redirects=True)
+                    _drs = _rdr.status_code
+                    _drb = (_rdr.text or "")[:2000]
+                    if _drs != 404:
+                        step(f"probe: ruta diff {_diff_ep!r} → HTTP {_drs} ({len(_drb)}B)")
+                        # Re-run the main probe logic with the corrected endpoint
+                        status, body, endpoint = _drs, _drb, _diff_ep
+                        res.evidence["diff_route_used"] = _diff_ep
+                        res.evidence["original_endpoint_404"] = True
+                        break
+                except Exception:
+                    pass
+
         # the actual registered namespaces and routes — stored in evidence for the LLM to
         # use on the next retry attempt, reducing the need for analyst_endpoint_lock.
         if status == 404 and not res.verified:

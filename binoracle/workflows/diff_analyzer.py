@@ -123,6 +123,87 @@ _VAR_ASSIGN_RE = re.compile(
 )
 
 
+def extract_rest_routes(removed_lines: list) -> list:
+    """Extract REST API endpoint paths registered in removed (vulnerable) patch diff lines.
+
+    Finds register_rest_route() / add_rest_route() calls and returns a list of
+    endpoint path strings (e.g. ["/wp/v2/users", "/myplugin/v1/export"]).
+    Also covers Express.js router.get/post/put/delete and Flask @app.route.
+    """
+    routes: list[str] = []
+    # WordPress: register_rest_route('namespace', 'route', ...)
+    _wp_re = re.compile(
+        r"""register_rest_route\s*\(\s*['"]([^'"]+)['"]\s*,\s*['"]([^'"]+)['"]""",
+        re.IGNORECASE,
+    )
+    # Express.js: router.get('/path', ...) or app.post('/path', ...)
+    _express_re = re.compile(
+        r"""(?:router|app)\s*\.\s*(?:get|post|put|patch|delete|all)\s*\(\s*['"`]([^'"` ]+)['"`]""",
+        re.IGNORECASE,
+    )
+    # Flask: @app.route('/path') or @blueprint.route('/path')
+    _flask_re = re.compile(
+        r"""@[\w.]+\.route\s*\(\s*['"]([^'"]+)['"]""",
+        re.IGNORECASE,
+    )
+    # Hapi.js: server.route({ method: 'GET', path: '/path', ...})
+    _hapi_re = re.compile(
+        r"""path\s*:\s*['"`]([/][^'"` ,]+)['"`]""",
+        re.IGNORECASE,
+    )
+    for line in removed_lines:
+        m = _wp_re.search(line)
+        if m:
+            ns, path = m.group(1).rstrip("/"), m.group(2).lstrip("/")
+            full = f"/wp-json/{ns}/{path}"
+            if full not in routes:
+                routes.append(full)
+            continue
+        for pat in (_express_re, _flask_re, _hapi_re):
+            mx = pat.search(line)
+            if mx:
+                p = mx.group(1)
+                if p not in routes and len(p) > 1:
+                    routes.append(p)
+    return routes[:6]  # max 6 to avoid noise
+
+
+def extract_companion_plugins(removed_lines: list, added_lines: list) -> list:
+    """Detect companion plugin dependencies referenced in the diff.
+
+    When a vulnerable plugin hooks into WooCommerce, ACF, Elementor etc.,
+    the lab needs those plugins installed as companion_plugins. Returns a list
+    of known plugin slugs found in the diff lines.
+    """
+    _KNOWN_PLUGINS: dict[str, str] = {
+        "woocommerce": "woocommerce",
+        "elementor": "elementor",
+        "acf": "advanced-custom-fields",
+        "advanced-custom-fields": "advanced-custom-fields",
+        "wpforms": "wpforms-lite",
+        "gravityforms": "gravityforms",
+        "yoast": "wordpress-seo",
+        "jetpack": "jetpack",
+        "buddypress": "buddypress",
+        "bbpress": "bbpress",
+        "memberpress": "memberpress",
+        "learndash": "sfwd-lms",
+        "paid memberships pro": "paid-memberships-pro",
+        "ninja forms": "ninja-forms",
+        "contact form 7": "contact-form-7",
+        "tribe_events": "the-events-calendar",
+        "the-events-calendar": "the-events-calendar",
+    }
+    found: list[str] = []
+    all_lines = removed_lines + added_lines
+    for line in all_lines:
+        line_lower = line.lower()
+        for keyword, slug in _KNOWN_PLUGINS.items():
+            if keyword in line_lower and slug not in found:
+                found.append(slug)
+    return found[:4]
+
+
 def analyze_patch_diff(raw_diff: str) -> dict:
     """Parse a git unified diff and extract actionable exploit intelligence."""
     result: dict = {
@@ -419,6 +500,19 @@ def analyze_patch_diff(raw_diff: str) -> dict:
                 "SQL injection in numeric context (no surrounding quotes) — inject as "
                 "integer: e.g. '1 AND extractvalue(1,concat(0x7e,version()))'"
             )
+
+    # Extract REST endpoint paths registered in removed (vulnerable) lines.
+    # These are the actual endpoints the vulnerable code registered — the most
+    # reliable source for probe_endpoints rather than generic convention guesses.
+    rest_routes = extract_rest_routes(removed_lines)
+    if rest_routes:
+        result["rest_routes"] = rest_routes
+
+    # Detect companion plugin dependencies.
+    # If the diff hooks into WooCommerce / Elementor / etc., the lab needs them.
+    companion_plugins = extract_companion_plugins(removed_lines, added_lines)
+    if companion_plugins:
+        result["companion_plugins_detected"] = companion_plugins
 
     return result
 
