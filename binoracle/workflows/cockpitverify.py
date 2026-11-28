@@ -290,7 +290,14 @@ def verify_cockpit_cve(
             res.detail = f"error de red: {e}"
             return res
 
-        string_ok = (not confirm_string) or (confirm_string in body)
+        # Fix: string_ok auto-pasaba a True cuando no habia confirm_string
+        # ("(not confirm_string) or ..."), asi que "bypassed and string_ok" se
+        # reducia a "¿respondio 2xx?" -- cualquier endpoint con una respuesta de
+        # exito quedaba verified=True sin ninguna prueba real cuando el LLM no
+        # extrajo un confirm_string para el CVE (algo frecuente). Ahora
+        # string_ok solo es True cuando SI hay confirm_string y aparece en el
+        # cuerpo -- prueba dura real, no un 2xx cualquiera.
+        string_ok = bool(confirm_string) and (confirm_string in body)
         bypassed = status in range(200, 300)
 
         res.evidence = {
@@ -304,13 +311,10 @@ def verify_cockpit_cve(
             "vuln_class": vuln_class,
         }
 
-        if bypassed and string_ok:
+        if bypassed and confirm_string and string_ok:
             res.verified = True
             res.ok = True
-            res.detail = (
-                f"VERIFICADO: {m} {endpoint} → HTTP {status}"
-                + (f" — confirm_string '{confirm_string}' presente" if confirm_string else "")
-            )
+            res.detail = f"VERIFICADO: {m} {endpoint} → HTTP {status} — confirm_string '{confirm_string}' presente"
             step(f"[Cockpit lab] VERIFICADO: HTTP {status}")
 
             # Impact escalation for missing-auth class
@@ -326,12 +330,17 @@ def verify_cockpit_cve(
                     res.evidence["impact_escalation"] = _esc
                     res.detail += f"\n\nImpacto escalado: {_esc['escalation_summary']}"
                     step(f"  escalación: {_esc['impact_class']} / {_esc['max_impact_found']}")
+        elif bypassed and not confirm_string:
+            res.ok = True
+            res.evidence["not_verified_reason"] = (
+                "sin confirm_string una respuesta 2xx no prueba nada por si sola -- "
+                "el endpoint puede responder con exito sin que eso implique bypass "
+                "de autenticacion, inyeccion o ejecucion real")
+            res.detail = f"LEAD (no confirmado): {m} {endpoint} → HTTP {status}, sin confirm_string"
+            step(f"[Cockpit lab] lead sin confirmar: HTTP {status}")
         else:
             res.ok = True
-            res.detail = (
-                f"no confirmado: {m} {endpoint} → HTTP {status}"
-                + (f", confirm_string={string_ok}" if confirm_string else "")
-            )
+            res.detail = f"no confirmado: {m} {endpoint} → HTTP {status}, confirm_string no encontrado"
             step(f"[Cockpit lab] no confirmado: HTTP {status}")
 
         return res
