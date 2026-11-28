@@ -221,6 +221,7 @@ def verify_directus_web_cve(
             "-e", "DB_CLIENT=sqlite3",
             "-e", "DB_FILENAME=/directus/database/data.db",
             "-e", f"PUBLIC_URL=http://localhost:{_DIRECTUS_PORT}",
+            "-e", "IMPORT_IP_DENY_LIST=",
             _image,
         ], timeout=30)
 

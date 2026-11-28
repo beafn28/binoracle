@@ -2251,8 +2251,15 @@ def _run_investigate_batch_and_report(cve_ids, config, parallel: int, budget_s: 
         # 'investigate': el informe renderizado siempre trunca los cuerpos de respuesta reales,
         # y en un lote no hay forma de pedir --json por CVE individualmente.
         from dataclasses import asdict as _asdict
+        _inv_dict = _asdict(it.investigation)
+        # Re-apply analyst hints so the write-back never overwrites analyst configurations.
+        # The engine may update inv.llm_notes during investigation (e.g. docker_image);
+        # analyst-locked fields must survive the round-trip.
+        _orig_hints = hints_by_cve.get(it.cve_id) or {}
+        if _orig_hints and isinstance(_inv_dict.get("llm_notes"), dict):
+            _inv_dict["llm_notes"].update(_orig_hints)
         (out_dir / f"{it.cve_id}.json").write_text(
-            json.dumps(_asdict(it.investigation), indent=2, ensure_ascii=False))
+            json.dumps(_inv_dict, indent=2, ensure_ascii=False))
         if html_dir:
             from .report.html import render_investigation_page
             md_full = render_investigation(it.investigation, config.lang)
