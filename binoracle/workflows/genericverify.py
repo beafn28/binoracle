@@ -1616,6 +1616,8 @@ class _GenericLab:
         "gitea":            ["Listening on port"],
         "paperless":        ["Ready for connections", "Listening on"],
         "nextcloud":        ["Apache started successfully", "Starting Apache"],
+        "zitadel":          ["ZITADEL started successfully", "Starting HTTP server",
+                             "serving gRPC", "ZITADEL is running"],
     }
 
     def _container_ip(self, container: str, timeout=10.0) -> Optional[str]:
@@ -1661,7 +1663,8 @@ class _GenericLab:
                      # Zitadel: initialises SQLite/Postgres on start-from-init; needs 60s+
                      "zitadel"}
         # Strapi 5.x compiles TypeScript + migrates SQLite before serving; needs up to 6min
-        very_heavy_cms = {"strapi"}
+        # Zitadel initialises its DB (SQLite/CockroachDB) + runs schema migrations before serving
+        very_heavy_cms = {"strapi", "zitadel"}
         if cms and cms.lower() in very_heavy_cms and tries < 120:
             tries = 120
         elif cms and cms.lower() in heavy_cms and tries < 90:
