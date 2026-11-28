@@ -13103,6 +13103,7 @@ def verify_wordpress_missing_auth_probe(
     setup_wp_options: Optional[list] = None,
     setup_wp_commands: Optional[list] = None,
     diff_rest_routes: Optional[list] = None,
+    required_role: str = "subscriber",
 ) -> WpVerifyResult:
     """Sonda no-autenticada para information-disclosure / missing-authorization.
 
@@ -13813,6 +13814,39 @@ def verify_wordpress_missing_auth_probe(
                                   f"({len(_sub400_body.strip())}B) — el endpoint procesa requests de "
                                   f"subscriber sin verificar capability (missing capability check)")
                     step(f"SUB-ON-400: anon=400, sub={_sub400_st} → confirmed capability bypass")
+            except Exception:
+                pass
+
+        # Contributor-role PRIMARY escalation: when required_role='contributor' (or higher),
+        # run contributor comparison first — subscriber escalation won't confirm contributor-only endpoints.
+        if (not res.verified and required_role in ("contributor", "editor", "author", "administrator")
+                and _contrib_sess is not None and status in (200, 400)):
+            try:
+                _contr_p = _contrib_sess.request(
+                    m, boot.base_url + endpoint,
+                    json=params_dict if (m not in ("GET", "HEAD") and json_body) else None,
+                    data=params_dict if (m not in ("GET", "HEAD") and not json_body) else None,
+                    params=params_dict if m == "GET" else None,
+                    timeout=20, allow_redirects=True)
+                _contr_p_st = _contr_p.status_code
+                _contr_p_body = (_contr_p.text or "")[:2000]
+                _contr_p_ok = (_contr_p_st not in (401, 403) and
+                               not any(s in _contr_p_body.lower() for s in _AUTH_REJECT_SIGNALS))
+                _contr_p_better = (_contr_p_st != status or
+                                   len(_contr_p_body.strip()) > len(body.strip()) + 50)
+                if _contr_p_ok and _contr_p_better and len(_contr_p_body.strip()) > 10:
+                    res.verified = True
+                    res.confidence = "confirmed"
+                    res.evidence["contributor_primary_escalation"] = {
+                        "required_role": required_role, "anon_status": status,
+                        "contributor_status": _contr_p_st,
+                        "contributor_body_len": len(_contr_p_body.strip()),
+                        "contributor_snippet": _contr_p_body.strip()[:200],
+                    }
+                    res.detail = (f"capability bypass ({required_role}): anon→HTTP {status}, "
+                                  f"{required_role}→HTTP {_contr_p_st} "
+                                  f"({len(_contr_p_body.strip())}B) — missing capability check confirmed")
+                    step(f"PRIMARY ESCALATION ({required_role}): anon={status}, role={_contr_p_st} → confirmed")
             except Exception:
                 pass
 

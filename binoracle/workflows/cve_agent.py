@@ -12881,6 +12881,11 @@ _SCAFFOLD_SYS_FOR_CLASS = {
     "algorithmic-complexity":            "_LAB_SCAFFOLD_REDOS_SYS",
     "regular-expression-denial-of-service": "_LAB_SCAFFOLD_REDOS_SYS",
     "catastrophic-backtracking":         "_LAB_SCAFFOLD_REDOS_SYS",
+    # Werkzeug/Flask debug console RCE — use CMDI scaffold to generate a Flask app in debug mode
+    "werkzeug-debug":                    "_LAB_SCAFFOLD_CMDI_SYS",
+    "flask-debug":                       "_LAB_SCAFFOLD_CMDI_SYS",
+    "debug-console-rce":                 "_LAB_SCAFFOLD_CMDI_SYS",
+    "debugger-rce":                      "_LAB_SCAFFOLD_CMDI_SYS",
 }
 
 # Cache de scaffolds verificados: (tech, vuln_class) → lab_config dict.
@@ -13163,7 +13168,8 @@ def _scaffold_llm_lab_for_class(llm, source_dir: str, notes: dict, cve_id: str,
             sys_key = "_LAB_SCAFFOLD_HEADER_INJECTION_SYS"
         elif any(x in _vc for x in ("ssti", "template-inject")):
             sys_key = "_LAB_SCAFFOLD_SSTI_SYS"
-        elif any(x in _vc for x in ("command-inject", "os-command", "rce", "code-exec")):
+        elif any(x in _vc for x in ("command-inject", "os-command", "rce", "code-exec",
+                                      "werkzeug", "flask-debug", "debug-console", "debugger-rce")):
             sys_key = "_LAB_SCAFFOLD_CMDI_SYS"
         elif any(x in _vc for x in ("xxe", "xml-")):
             sys_key = "_LAB_SCAFFOLD_XXE_SYS"
@@ -14465,15 +14471,21 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 fr.local_path, plugin_dir)
             companion_plugins = []
             if not is_drupal and not is_joomla:
-                companion_plugins = detect_required_companion_plugins(fr.local_path, plugin_dir)
-                # Merge with analyst-provided companion plugins (--companion-plugins CLI flag).
-                # Needed when the dependency uses function_exists('WC') instead of
-                # is_plugin_active() — the auto-scanner only catches the latter.
-                _analyst_companions = notes.get("companion_plugins") or []
                 # Guard: never add the main vulnerable plugin itself as a companion —
                 # doing so installs the patched version from WP.org BEFORE the vulnerable
                 # copy, causing activation conflict (rc=255) or wrong version.
                 _main_slug = plugin_dir.rstrip("/").split("/")[-1] if plugin_dir else ""
+                _auto_detected = detect_required_companion_plugins(fr.local_path, plugin_dir)
+                for _det in _auto_detected:
+                    if _det and _det.lower() != _main_slug.lower():
+                        companion_plugins.append(_det)
+                    elif _det and _det.lower() == _main_slug.lower():
+                        step(f"companion_plugins (auto-detect): ignorando '{_det}' — es el "
+                             f"plugin principal siendo verificado (evitando conflicto de version)")
+                # Merge with analyst-provided companion plugins (--companion-plugins CLI flag).
+                # Needed when the dependency uses function_exists('WC') instead of
+                # is_plugin_active() — the auto-scanner only catches the latter.
+                _analyst_companions = notes.get("companion_plugins") or []
                 for _ac in _analyst_companions:
                     if (_ac and _ac not in companion_plugins
                             and _ac.lower() != _main_slug.lower()):
@@ -14497,7 +14509,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _diff_companions = (getattr(inv, "diff_analysis", None) or {}).get(
                     "companion_plugins_detected") or []
                 for _dc in _diff_companions:
-                    if _dc and _dc not in companion_plugins:
+                    if _dc and _dc not in companion_plugins and _dc.lower() != _main_slug.lower():
                         companion_plugins.append(_dc)
                         step(f"companion_plugin detectado en patch diff: {_dc!r} — añadido al lab")
                 if companion_plugins:
@@ -15953,6 +15965,16 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     _diff_rest_routes = []
                     if getattr(inv, "diff_analysis", None):
                         _diff_rest_routes = inv.diff_analysis.get("rest_routes") or []
+                    _desc_low_p = (inv.description or "").lower()
+                    _probe_role = (
+                        notes.get("required_role") or
+                        ("administrator" if any(w in _desc_low_p for w in
+                            ("administrator", "admin user", "admin role", "admin-only")) else
+                         "editor" if "editor" in _desc_low_p else
+                         "author" if "author" in _desc_low_p else
+                         "contributor" if "contributor" in _desc_low_p else
+                         "subscriber")
+                    )
                     wr = verify_wordpress_missing_auth_probe(
                         fr.local_path, plugin_dir, notes.get("endpoint"),
                         notes.get("http_method") or "POST", _probe_params,
@@ -15964,7 +15986,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         post_verify_expected=notes.get("post_verify_expected") or None,
                         setup_wp_options=notes.get("setup_wp_options") or None,
                         setup_wp_commands=notes.get("setup_wp_commands") or None,
-                        diff_rest_routes=_diff_rest_routes or None)
+                        diff_rest_routes=_diff_rest_routes or None,
+                        required_role=_probe_role)
                 if wr is None:
                     inv.blockers.append(("verificacion dinamica no intentada: la hipotesis no trae "
                                          "ni un parametro de email/password ni uno de ID "
@@ -19410,13 +19433,20 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                       "attempting DYNAMIC verification -- URL-based upload: no-auth probe "
                       "with confirm_string to verify endpoint responds without login..."))
                 _diff_rest_routes2 = (getattr(inv, "diff_analysis", None) or {}).get("rest_routes") or []
+                _desc_low_u = (inv.description or "").lower()
+                _url_role = (
+                    notes.get("required_role") or
+                    ("contributor" if "contributor" in _desc_low_u else
+                     "editor" if "editor" in _desc_low_u else "subscriber")
+                )
                 wr = verify_wordpress_missing_auth_probe(
                     fr.local_path, plugin_dir, notes.get("endpoint"),
                     notes.get("http_method") or "POST", _params_dict,
                     on_step=step, budget_s=budget_s, companion_plugins=companion_plugins,
                     keep_lab_on_failure=keep_lab_on_failure,
                     confirm_string=_url_cs, json_body=bool(notes.get("json_body")),
-                    diff_rest_routes=_diff_rest_routes2 or None)
+                    diff_rest_routes=_diff_rest_routes2 or None,
+                    required_role=_url_role)
                 _apply_wpverify_result(inv, wr, es, llm)
                 # Si la sonda no-auth no confirmo con evidencia dura, intentar SSRF→file-write→RCE
                 # (el plugin fetcha una URL del atacante y escribe el contenido al filesystem).
