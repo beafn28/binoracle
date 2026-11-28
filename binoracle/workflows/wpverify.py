@@ -3188,6 +3188,28 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
                         else:
                             step(f"hook de activacion no pudo ejecutarse para '{slug}' "
                                  f"(el plugin puede fallar si requiere tablas propias)")
+                        # Health-check: verify WordPress still responds after force-activation.
+                        # Some plugins have fatal PHP errors at load time — when force-activated
+                        # via DB they break all requests (login returns 500). Detect and revert.
+                        _hc = lab.wp_cli("eval", "echo 'wp_ok';",
+                                         "--skip-plugins", "--skip-themes", timeout=15)
+                        if "wp_ok" not in (_hc.stdout or ""):
+                            step(f"WARN: WordPress retorna 500 con '{slug}' activo (PHP fatal al "
+                                 f"cargar) — desactivando para recuperar acceso admin...")
+                            _r_deact = lab.wp_cli(
+                                "eval",
+                                f"$c = (array)get_option('active_plugins'); "
+                                f"$s = '{_main_file}'; "
+                                f"$c = array_filter($c, function($p) use ($s) {{ return $p !== $s; }}); "
+                                f"$c = array_values($c); "
+                                f"update_option('active_plugins', $c); "
+                                f"echo 'deactivated';",
+                                "--skip-plugins", "--skip-themes", timeout=15)
+                            if "deactivated" in (_r_deact.stdout or ""):
+                                step(f"plugin '{slug}' desactivado; reactivando solo para el ataque...")
+                                _activate_ok = False  # signal to outer code that plugin is not active
+                            else:
+                                step("desactivacion fallida; el lab puede estar inoperable")
                     else:
                         step(f"no se pudo forzar activacion via DB: {(_r_force.stdout or '')[:100]}")
             # MySQL DNS race: WP-CLI ran before Docker's internal DNS resolved the DB hostname.
