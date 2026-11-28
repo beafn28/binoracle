@@ -462,6 +462,7 @@ def _start_job(cve_id: str, config) -> _Job:
                 config=config,
                 on_step=on_step,
                 budget_s=600,
+                use_cache=False,  # web UI always runs fresh (user clicked Run)
             )
             job.inv = inv
             job.status = "done"
