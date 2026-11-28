@@ -236,9 +236,9 @@ def _auto_set_confidence(res: "WpVerifyResult") -> None:
     """Sets res.confidence if still 'none', based on verified status and technique.
     Also stamps finished_at and hashes key evidence fields (idempotent)."""
     _stamp_result(res)
-    if res.confidence != "none":
+    if getattr(res, "confidence", "none") != "none":
         return
-    if not res.available:
+    if not getattr(res, "available", True):
         res.confidence = "not_reproducible"
         return
     if not res.verified:
@@ -275,12 +275,18 @@ def _hash_evidence(data: str) -> str:
 
 def _stamp_result(res: "WpVerifyResult") -> None:
     """Record finished_at and hash key evidence fields."""
-    res.finished_at = time.time()
+    try:
+        res.finished_at = time.time()
+    except AttributeError:
+        pass
+    _hashes = getattr(res, "evidence_hashes", None)
+    if _hashes is None:
+        return
     for key in ("respuesta_cuerpo_recorte", "respuesta_control_recorte", "canary_secret",
                 "payload_ganador", "mysql_version_extraida"):
-        val = res.evidence.get(key)
+        val = (res.evidence or {}).get(key) if hasattr(res, "evidence") else None
         if val:
-            res.evidence_hashes[key] = _hash_evidence(str(val))
+            _hashes[key] = _hash_evidence(str(val))
 
 
 def _run(cmd: List[str], timeout: float = 60.0, input_text: str = None) -> subprocess.CompletedProcess:
