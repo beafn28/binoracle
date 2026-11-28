@@ -6060,6 +6060,15 @@ def _apply_wpverify_result(inv, wr, es: bool, llm=None) -> None:
         )
         _thin_bool = (_bool_diff > 0 and _bool_diff < 20)
         if not _has_hard_proof and (_body_len < 30 or _thin_bool):
+            # Mismo fix que los dos guardias de arriba (inject-not-exploit, SanityGuy):
+            # esta gate existe explicitamente "para prevenir falsos positivos" --
+            # dejar wr.verified=True tras marcar la evidencia como demasiado delgada
+            # para confiar en ella no cumple ese proposito, porque
+            # _apply_wpverify_result vuelca wr.verified directo a inv.verified sin
+            # volver a mirar confidence. Si no hay prueba dura y la señal es tan
+            # debil que ni siquiera "probable" se sostiene, no cuenta como
+            # verificado -- consistente con el resto de esta funcion.
+            wr.verified = False
             if _wr_conf == "probable":
                 wr.confidence = "possible"
             elif _wr_conf == "possible":
