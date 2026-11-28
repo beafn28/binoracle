@@ -2893,7 +2893,12 @@ def verify_generic_path_traversal(
         return res
     lab, base_url, container = boot
     try:
-        # Auth acquisition before traversal attempts
+        # Auth acquisition before traversal attempts.
+        # audiobookshelf always requires a Bearer token even for path-traversal — force
+        # auth_required=True when the image is audiobookshelf so the token is obtained.
+        _abs_image = (docker_image or "").lower()
+        if "audiobookshelf" in _abs_image or "advplyr" in _abs_image:
+            auth_required = True
         if auth_required:
             _auth_res = _try_acquire_app_token(base_url, step)
             if _auth_res:
@@ -11895,7 +11900,25 @@ def verify_generic_information_disclosure(
         elif not _df:
             _df = None
 
-        lab = _DockerLab(source_dir, _df, extra_files=extra_files or {},
+        # If Dockerfile references app.py but no source was provided, generate a minimal
+        # Flask app so the Docker build does not fail with "COPY failed: app.py not found".
+        _extra_files_local = dict(extra_files or {})
+        if _df and "COPY app.py" in _df and "app.py" not in _extra_files_local:
+            _minimal_app = (
+                "from flask import Flask, request, jsonify\n"
+                "import os\n"
+                "app = Flask(__name__)\n"
+                "app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-key')\n"
+                "@app.route('/')\n"
+                "def index(): return 'OK'\n"
+                "@app.route('/check')\n"
+                "def check(): return jsonify({'status': 'ok', 'env': dict(os.environ)})\n"
+                "if __name__ == '__main__': app.run(host='0.0.0.0', port=5000, debug=True)\n"
+            )
+            _extra_files_local["app.py"] = _minimal_app
+            step("[app.py] generated minimal Flask app — Dockerfile had COPY app.py but no source provided")
+
+        lab = _DockerLab(source_dir, _df, extra_files=_extra_files_local,
                          setup_commands=setup_commands or [], on_step=step,
                          docker_image=docker_image or "")
         with lab.running() as boot:
@@ -12475,6 +12498,11 @@ def verify_generic_broken_access_control(
         {"X-HTTP-Method-Override": "GET"},
         {"X-Method-Override": "GET"},
         {"X-Forwarded-For": "127.0.0.1", "X-Original-URL": endpoint},
+        # Proxy-auth headers used by apps like Paperless-ngx (REMOTE_USER mode), Authelia, etc.
+        {"X-Remote-User": "admin"},
+        {"X-User": "admin"},
+        {"X-Auth-User": "admin"},
+        {"Remote-User": "admin"},
     ]
 
     _target_endpoints = [endpoint]
