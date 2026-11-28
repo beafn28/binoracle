@@ -100,30 +100,54 @@ def _auth_ghost(base: str, envs: dict, step: Callable) -> dict[str, str] | None:
 
 
 def _auth_pgadmin(base: str, envs: dict, step: Callable) -> dict[str, str] | None:
-    """POST /login → pgAdmin session cookie."""
-    import urllib.request as _ur
-    import urllib.parse as _up
+    """POST /login → pgAdmin session cookie (handles CSRF token extraction)."""
+    import re as _re_pg
+    try:
+        import requests as _req_pg
+    except ImportError:
+        import urllib.request as _ur
+        import urllib.parse as _up
+        email = envs.get("PGADMIN_DEFAULT_EMAIL", "admin@example.com")
+        pwd = envs.get("PGADMIN_DEFAULT_PASSWORD", "BinOracle123!")
+        payload = _up.urlencode({"email": email, "password": pwd}).encode()
+        try:
+            import http.cookiejar as _cj
+            jar = _cj.CookieJar()
+            opener = _ur.build_opener(_ur.HTTPCookieProcessor(jar))
+            with opener.open(_ur.Request(f"{base}/login", data=payload,
+                                          headers={"Content-Type": "application/x-www-form-urlencoded"},
+                                          method="POST"), timeout=10):
+                for ck in jar:
+                    if "session" in ck.name.lower():
+                        return {"Cookie": f"{ck.name}={ck.value}"}
+        except Exception as e:
+            step(f"pgadmin-auth: error (urllib) — {e}")
+        return None
+
     email = envs.get("PGADMIN_DEFAULT_EMAIL", "admin@example.com")
     pwd = envs.get("PGADMIN_DEFAULT_PASSWORD", "BinOracle123!")
-    # pgAdmin uses form-encoded POST to /login
-    payload = _up.urlencode({"email": email, "password": pwd}).encode()
     try:
-        req = _ur.Request(
-            f"{base}/login",
-            data=payload,
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-            method="POST",
-        )
-        # Don't follow redirects — we want the Set-Cookie header
-        import http.cookiejar as _cj
-        jar = _cj.CookieJar()
-        opener = _ur.build_opener(_ur.HTTPCookieProcessor(jar))
-        with opener.open(req, timeout=10):
-            # Extract session cookie from jar
-            for ck in jar:
-                if "session" in ck.name.lower():
-                    step(f"pgadmin-auth: session cookie obtained ({ck.name})")
-                    return {"Cookie": f"{ck.name}={ck.value}"}
+        sess = _req_pg.Session()
+        sess.headers["User-Agent"] = "binoracle/1.0"
+        # GET /login to obtain CSRF token (pgAdmin 8.x requires it)
+        get_r = sess.get(f"{base}/login", timeout=10, allow_redirects=True)
+        csrf = ""
+        _m = _re_pg.search(
+            r'<input[^>]*name=["\'](?:csrf_token|csrfmiddlewaretoken|_token)["\'][^>]*value=["\']([^"\']+)["\']',
+            get_r.text or "", _re_pg.IGNORECASE)
+        if _m:
+            csrf = _m.group(1)
+        form: dict = {"email": email, "password": pwd}
+        if csrf:
+            form["csrf_token"] = csrf
+        post_r = sess.post(f"{base}/login", data=form, timeout=15, allow_redirects=True)
+        cookies = dict(sess.cookies)
+        # Success: got a session cookie AND redirect away from /login
+        if cookies and "login" not in (post_r.url or "").lower().split("?")[0].rstrip("/"):
+            cookie_str = "; ".join(f"{k}={v}" for k, v in cookies.items())
+            step(f"pgadmin-auth: session cookie obtained (csrf={bool(csrf)}, {len(cookies)} cookies)")
+            return {"Cookie": cookie_str}
+        step(f"pgadmin-auth: login did not redirect away (url={post_r.url!r})")
     except Exception as e:
         step(f"pgadmin-auth: error — {e}")
     return None

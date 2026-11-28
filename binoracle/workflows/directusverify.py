@@ -255,8 +255,23 @@ def verify_directus_web_cve(
 
         # Multi-step request chain takes priority over single request
         if request_chain:
+            # Normalize any /auth/login step in the chain to use the actual container
+            # credentials — LLM-generated chains often use placeholder credentials that
+            # don't match the env vars injected into the Docker container.
+            _normalized_chain = []
+            for _cs in request_chain:
+                _cs = dict(_cs)
+                if _cs.get("endpoint", "").rstrip("/").endswith("/auth/login"):
+                    try:
+                        _body_obj = json.loads(_cs.get("body") or "{}")
+                        _body_obj["email"] = _DIRECTUS_ADMIN_EMAIL
+                        _body_obj["password"] = _DIRECTUS_ADMIN_PASSWORD
+                        _cs["body"] = json.dumps(_body_obj)
+                    except Exception:
+                        pass
+                _normalized_chain.append(_cs)
             verified, detail, evidence = _run_request_chain(
-                base_url, request_chain, bearer, step)
+                base_url, _normalized_chain, bearer, step)
             res.verified = verified
             res.ok = verified
             res.confidence = "confirmed" if verified else "failed"
