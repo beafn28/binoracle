@@ -14587,6 +14587,44 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                 _os_sym.symlink(".", _sym_target)
                             except Exception:
                                 pass
+            # GitHub fallback for a closed/unlisted WP.org plugin: the source_url was a bare
+            # WP slug but WP.org returned 404 and the engine used a GitHub mirror instead.
+            # The GitHub repo is NOT a common-repository/* URL, so the block above didn't
+            # recognize it. Detect by checking for "Plugin Name:" in any top-level PHP file.
+            if not plugin_dir and fr.kind == "git" and fr.ok and fr.local_path and notes:
+                _orig_src = notes.get("source_url") or ""
+                _is_bare_wp_slug = (
+                    _orig_src
+                    and "/" not in _orig_src
+                    and not _orig_src.startswith("http")
+                    and bool(re.match(r'^[a-z0-9][a-z0-9-]{1,80}$', _orig_src, re.IGNORECASE))
+                )
+                if _is_bare_wp_slug:
+                    _lp_git = str(fr.local_path)
+                    _has_wp_hdr = False
+                    try:
+                        for _fn in os.listdir(_lp_git):
+                            if _fn.endswith(".php") and os.path.isfile(os.path.join(_lp_git, _fn)):
+                                try:
+                                    _h = open(os.path.join(_lp_git, _fn), "rb").read(8192).decode("utf-8", errors="replace")
+                                    if "Plugin Name:" in _h:
+                                        _has_wp_hdr = True
+                                        break
+                                except Exception:
+                                    pass
+                    except Exception:
+                        pass
+                    if _has_wp_hdr:
+                        _slug_gh = _orig_src.lower()
+                        plugin_dir = _slug_gh
+                        fr.kind = "wordpress-plugin"
+                        fr.plugin_dir = _slug_gh
+                        _sym_t = os.path.join(_lp_git, _slug_gh)
+                        if not os.path.exists(_sym_t):
+                            try:
+                                os.symlink(".", _sym_t)
+                            except Exception:
+                                pass
             inv.source_fetch["plugin_dir"] = plugin_dir
             is_drupal = fr.kind == "drupal-module" or (
                 fr.kind in ("local-zip", "zip-url") and _looks_like_drupal_module(fr.local_path, plugin_dir))

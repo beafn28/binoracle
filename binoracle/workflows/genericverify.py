@@ -2580,6 +2580,21 @@ def verify_generic_command_injection(
             candidate_params = [_pick_param(parameters, _CI_HINTS) or "input"]
 
         tried = []
+        # Pre-compute the "clean base" for each parameter: strip any pre-injected cmd payload
+        # (e.g. 'smtpServer': '127.0.0.1;id' → '127.0.0.1') so separator-only forms like
+        # '; echo ...' become '127.0.0.1; echo ...' when appended, which is syntactically valid.
+        _CMD_SEPS = (";", "&&", "||", "|", "\n", "`", "$(", "&")
+        _param_base_vals: dict = {}
+        if isinstance(parameters, dict):
+            for _pn, _pv in parameters.items():
+                _pvs = str(_pv) if _pv is not None else ""
+                _base = _pvs
+                for _sep in _CMD_SEPS:
+                    if _sep in _pvs:
+                        _base = _pvs.split(_sep)[0].strip()
+                        break
+                _param_base_vals[_pn] = _base
+
         found = False
         first_resp_captured = False
         for pname in candidate_params:
@@ -2587,7 +2602,13 @@ def verify_generic_command_injection(
                 break
             for form in payload_forms:
                 payload = dict(parameters) if isinstance(parameters, dict) else {}
-                payload[pname] = form
+                # When form starts with a separator, prepend the clean base value so the
+                # server receives a valid prefix before the injection (e.g. '127.0.0.1; echo ...')
+                _base = _param_base_vals.get(pname, "")
+                if _base and any(form.lstrip().startswith(s) for s in _CMD_SEPS):
+                    payload[pname] = _base + form
+                else:
+                    payload[pname] = form
                 try:
                     resp = _http_request(m, base_url + endpoint, timeout=15,
                                      data=payload if m != "GET" else None,
@@ -12139,7 +12160,7 @@ def verify_generic_information_disclosure(
                         "confirm_string_found": confirm_string,
                         "respuesta_cuerpo_recorte": body[:400],
                     })
-                    step(f"VERIFICADO — confirm_string '{confirm_string[:30]}' en {_ep}")
+                    step(f"VERIFICADO — confirm_string '{confirm_string[:30]}' en body de {_ep}")
                     return res
                 # High-confidence secret pattern → verify immediately
                 _hc_match = None

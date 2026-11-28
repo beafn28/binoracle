@@ -2923,11 +2923,16 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
         r = lab.wp_cli("plugin", "activate", slug, timeout=90)
         _activate_combined = (r.stderr or "") + (r.stdout or "")
     # wp-cli "not a WordPress installation" — WP not yet ready at /var/www/html/ (slow container
-    # init). Retry once with --path to be explicit, after a brief wait.
+    # init, e.g. volume not yet populated by Docker entrypoint on emulated amd64).
+    # Retry up to 3 times with exponential back-off (8s, 16s, 24s).
     if r.returncode != 0 and "not seem to be a WordPress" in _activate_combined:
         import time as _t
-        _t.sleep(8)
-        r = lab.wp_cli("plugin", "activate", slug, "--path=/var/www/html", timeout=90)
+        for _wp_wait in (8, 16, 24):
+            _t.sleep(_wp_wait)
+            r = lab.wp_cli("plugin", "activate", slug, timeout=90)
+            _activate_combined = (r.stderr or "") + (r.stdout or "")
+            if r.returncode == 0 or "not seem to be a WordPress" not in _activate_combined:
+                break
     # Slug file mismatch: plugin files use underscores but slug uses dashes (or vice-versa).
     # WP-CLI looks for <slug>/<slug>.php — if the main file has underscores instead of dashes,
     # rename the directory copy in the volume so WP-CLI can find it.
