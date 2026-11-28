@@ -11208,7 +11208,7 @@ def _gen_gem_app(pkg: str, vuln_class: str, version: str) -> str:
             "run lambda { |env| [200, {'content-type' => 'text/plain'}, ['rack lab ok']] }\n"
         )
     if vuln_class in ("information-disclosure", "sensitive-data-exposure", "data-exposure"):
-        if "flask" in pkg_lower:
+        if "flask" in pkg.lower():
             # Flask CVE-2023-30861: vulnerable Flask (<2.3.2) omits Vary:Cookie when setting
             # session cookies. The lab sets a session so the verifier can check the header.
             return (

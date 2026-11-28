@@ -9784,7 +9784,7 @@ def _try_mattermost_auth(base_url: str, on_step=None) -> dict:
             headers={"Content-Type": "application/json"},
             timeout=10)
         if _create_r.status_code in (200, 201):
-            step(f"  mattermost-auth: admin user created → trying login...")
+            step("  mattermost-auth: admin user created → trying login...")
             # Now login
             _r2 = _http_request(
                 "POST", _base + "/api/v4/users/login",
@@ -9800,7 +9800,7 @@ def _try_mattermost_auth(base_url: str, on_step=None) -> dict:
                             "headers": {"Authorization": f"Bearer {_tok}"}}
         elif _create_r.status_code == 400:
             # 400 may mean "user already exists" — login may succeed with correct pw
-            step(f"  mattermost-auth: create returned 400 — user may already exist")
+            step("  mattermost-auth: create returned 400 — user may already exist")
     except Exception as _e:
         step(f"  mattermost-auth: create attempt failed: {_e}")
 
