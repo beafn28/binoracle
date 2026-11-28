@@ -132,23 +132,34 @@ _DOCKER_IMAGE_PROFILES: dict[str, dict] = {
         "health_path": "/",
     },
     # --- Paperless-ngx (Django-based DMS) ---
+    # Needs Redis for celery; this profile bundles redis-server in the container.
     "ghcr.io/paperless-ngx/paperless-ngx:": {
         "port": 8000,
-        "envs": {
-            "PAPERLESS_SECRET_KEY": "binoracle-secret-key-for-paperless",
-            "PAPERLESS_URL": "http://localhost:8000",
-            "PAPERLESS_CSRF_TRUSTED_ORIGINS": "http://localhost:8000",
-            "PAPERLESS_ADMIN_USER": "admin",
-            "PAPERLESS_ADMIN_PASSWORD": "BinOracle123!",
-            "PAPERLESS_REDIS": "",
-            "PAPERLESS_DBENGINE": "sqlite",
-            "PAPERLESS_DBNAME": "/tmp/paperless.db",
-            "PAPERLESS_ENABLE_HTTP_REMOTE_USER": "True",
-            "PAPERLESS_HTTP_REMOTE_USER_HEADER_NAME": "HTTP_REMOTE_USER",
-        },
+        "envs": {},
         "cmd": None,
-        "startup_wait": 120,
+        "startup_wait": 150,
         "health_path": "/api/",
+        "dockerfile": (
+            "FROM ghcr.io/paperless-ngx/paperless-ngx:{VERSION}\n"
+            "USER root\n"
+            # Install redis-server so the entrypoint finds it at localhost:6379
+            "RUN apt-get update -qq && apt-get install -y -qq redis-server 2>/dev/null || true\n"
+            "ENV PAPERLESS_SECRET_KEY=binoracle-secret-key-for-paperless\n"
+            "ENV PAPERLESS_URL=http://localhost:8000\n"
+            "ENV PAPERLESS_CSRF_TRUSTED_ORIGINS=http://localhost:8000\n"
+            "ENV PAPERLESS_ADMIN_USER=admin\n"
+            "ENV PAPERLESS_ADMIN_PASSWORD=BinOracle123!\n"
+            "ENV PAPERLESS_REDIS=redis://localhost:6379\n"
+            "ENV PAPERLESS_DBENGINE=sqlite\n"
+            "ENV PAPERLESS_DBNAME=/tmp/paperless.db\n"
+            "ENV PAPERLESS_ENABLE_HTTP_REMOTE_USER=True\n"
+            "ENV PAPERLESS_HTTP_REMOTE_USER_HEADER_NAME=HTTP_REMOTE_USER\n"
+            "EXPOSE 8000\n"
+            # Wrapper that starts Redis before Paperless entrypoint
+            "RUN printf '#!/bin/bash\\nredis-server --daemonize yes\\nsleep 2\\nexec /docker-entrypoint.sh \"$@\"\\n' "
+            "> /start-lab.sh && chmod +x /start-lab.sh\n"
+            'ENTRYPOINT ["/start-lab.sh"]\n'
+        ),
     },
     # --- Etherpad collaborative editor ---
     "etherpad/etherpad:": {
