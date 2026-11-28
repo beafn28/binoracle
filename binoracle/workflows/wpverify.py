@@ -3175,6 +3175,19 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
                     if (_r_force.stdout or "").strip().endswith("OK"):
                         _activate_ok = True
                         step(f"plugin '{slug}' forzado activo en BD via eval (archivo: {_main_file})")
+                        # Run the plugin's activation hook so table setup etc. happens.
+                        # Suppress errors — if the hook fails, we still try verification.
+                        _r_hook = lab.wp_cli(
+                            "eval",
+                            f"@include_once WP_PLUGIN_DIR . '/{_main_file}'; "
+                            f"@do_action('activate_{_main_file}'); "
+                            f"echo 'hook_done';",
+                            timeout=30)
+                        if "hook_done" in (_r_hook.stdout or ""):
+                            step(f"hook de activacion ejecutado para '{slug}' (tablas/opciones creadas)")
+                        else:
+                            step(f"hook de activacion no pudo ejecutarse para '{slug}' "
+                                 f"(el plugin puede fallar si requiere tablas propias)")
                     else:
                         step(f"no se pudo forzar activacion via DB: {(_r_force.stdout or '')[:100]}")
             # MySQL DNS race: WP-CLI ran before Docker's internal DNS resolved the DB hostname.
