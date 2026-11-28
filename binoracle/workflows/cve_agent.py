@@ -5401,7 +5401,8 @@ def _run_evidence_retry_loop(llm, step, es: bool, system_prompt: str, evidence_k
     # ── Gap #3: Summarization-on-maxiter ─────────────────────────────────────
     # When all attempts are exhausted without success, ask the LLM for a comprehensive
     # synthesis of everything tried: root cause, final hypothesis, blockers.
-    if not wr.verified and llm is not None and inv is not None:
+    # inv=None is handled safely (getattr with defaults) so this runs even without inv.
+    if not wr.verified and llm is not None:
         _ft_all = getattr(wr, "failure_trace", []) or []
         if len(_ft_all) >= 2:  # only worth summarizing when multiple attempts tried
             try:
@@ -5734,8 +5735,9 @@ def _build_reproduce_sh(cve_id: str, poc: dict, confidence: str = "confirmed") -
 # Detects when verification code *creates* the vulnerability instead of exploiting
 # a pre-existing one (CVE-Genie's inject-not-exploit check, extended).
 _INJECT_NOT_EXPLOIT_PATTERNS = [
+    # ── PHP / WordPress ───────────────────────────────────────────────────────
     # Writing PHP code to plugin/WP dirs during verification
-    r"(?:echo|tee|printf)\s+.*?\.php",
+    r"(?:echo|tee|printf)\s+['\"].*?['\"].*?\.php",
     r"file_put_contents\s*\(.*?\.php",
     # wp eval adding hooks or routes — sentinel only uses option add/update/delete
     r"wp\s+eval.*add_action\s*\(",
@@ -5744,13 +5746,35 @@ _INJECT_NOT_EXPLOIT_PATTERNS = [
     r"wp\s+eval.*add_filter.*authenticate",
     # Deactivating security / firewall plugins mid-run
     r"wp\s+plugin\s+deactivate\s+(?:wordfence|ithemes|better-wp-security|anti-malware|bulletproof)",
-    # Writing PHP eval() logic to wp_options (not the controlled sentinel key)
+    # Writing eval() / exec logic to wp_options (not the controlled sentinel key)
     r"wp\s+option\s+(?:add|update)\s+(?!binoracle_infodiscl_sentinel)\S+.*(?:eval|base64_decode|system|exec|passthru)\(",
     # sed/awk patching plugin files at runtime
     r"sed\s+-i.*\.php",
     r"awk\s+.*>.*\.php",
-    # chmod 777 on plugin files
+    # chmod 777 on plugin or app files
     r"chmod\s+777.*\.php",
+    # ── Python / Django / Flask ───────────────────────────────────────────────
+    # Writing Python views / routes during verification
+    r"(?:echo|tee|printf)\s+['\"].*?['\"].*?\.py",
+    r"open\s*\(.*?\.py.*['\"]w['\"]",
+    # Monkey-patching Django settings or Flask app config
+    r"python.*-c.*settings\.(INSTALLED_APPS|MIDDLEWARE|AUTHENTICATION_BACKENDS)\s*=",
+    r"app\.config\[.*?\]\s*=\s*True",
+    # ── Node.js / Express / Strapi ────────────────────────────────────────────
+    # Writing route files or middleware
+    r"(?:echo|tee|printf)\s+['\"].*?['\"].*?\.(?:js|ts|mjs)",
+    r"fs\.write.*\.(?:js|ts)",
+    # Installing backdoor packages mid-run
+    r"npm\s+install.*(?:exec|shell|backdoor)",
+    # ── Generic (all stacks) ──────────────────────────────────────────────────
+    # Overwriting config files to disable auth checks
+    r"(?:echo|tee)\s+.*?(?:auth|authentication|authorization|security)\s*=\s*(?:false|disabled|off)",
+    # Docker exec writing directly into the container's app code
+    r"docker\s+exec\s+.*?(?:tee|echo|sed)\s+.*?(?:\.php|\.py|\.js|\.rb|\.java)",
+    # Creating new DB users with admin rights mid-verification
+    r"mysql.*-e.*CREATE\s+USER.*GRANT\s+ALL",
+    r"psql.*-c.*CREATE\s+ROLE.*SUPERUSER",
+    r"mongo.*db\.addUser.*roles.*root",
 ]
 
 
@@ -5988,12 +6012,31 @@ def _apply_wpverify_result(inv, wr, es: bool, llm=None) -> None:
     # Validates that the proof is genuine and not a lab artefact.
     if wr.verified and getattr(wr, "confidence", "") == "confirmed" and llm is not None:
         _ev_sg = getattr(wr, "evidence", {}) or {}
+        # Hard proof signals across ALL vuln classes and stacks:
         _has_hard = any([
+            # WP / info-disclosure hard proof
             _ev_sg.get("sentinel_uuid"),
             _ev_sg.get("canary"), _ev_sg.get("canario_encontrado"),
+            # SQLi database version / data extraction
             _ev_sg.get("mysql_version_extraida"), _ev_sg.get("postgres_version"),
-            _ev_sg.get("db_version"), _ev_sg.get("command_output"),
-            _ev_sg.get("file_read_success"), _ev_sg.get("loot"),
+            _ev_sg.get("db_version"), _ev_sg.get("user_hashes"),
+            _ev_sg.get("account_takeover_proven"),
+            # LFI / path traversal
+            _ev_sg.get("file_read_success"), _ev_sg.get("lfi_canary_found"),
+            _ev_sg.get("canary_in_response"),
+            # RCE / command execution
+            _ev_sg.get("command_output"), _ev_sg.get("rce_command_output"),
+            _ev_sg.get("loot"),
+            # SSRF / OOB
+            _ev_sg.get("oob_callback_received"), _ev_sg.get("ssrf_dns_hit"),
+            _ev_sg.get("callback_url_hit"),
+            # XSS / stored
+            _ev_sg.get("xss_payload_in_response"),
+            # Generic: confirm_string hard proof
+            _ev_sg.get("confirm_string") and _ev_sg.get("confirm_string_found"),
+            # Weaponization proof
+            (_ev_sg.get("weaponization") or {}).get("technique") not in (
+                "not_applicable", "error", None, ""),
         ])
         if _has_hard:
             _sg = _sanity_guy_check(wr, llm, cve_id=getattr(inv, "cve_id", ""), es=es)
@@ -15575,7 +15618,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             llm, step, es, _WP_GENERIC_RETRY_SYS, _WP_GENERIC_RETRY_EVIDENCE_KEYS,
                             _attempt_ato, wr, notes.get("endpoint"), id_p,
                             technique_label="account-takeover WordPress",
-                            on_suggestion=_on_ato_suggestion))
+                            on_suggestion=_on_ato_suggestion, inv=inv))
                 elif id_p:
                     step(("intentando verificacion DINAMICA -- patron de login-as directo "
                          "(WordPress+MySQL efimero en Docker)..." if es else
@@ -15605,7 +15648,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             llm, step, es, _WP_GENERIC_RETRY_SYS, _WP_GENERIC_RETRY_EVIDENCE_KEYS,
                             _attempt_lia, wr, notes.get("endpoint"), id_p,
                             technique_label="direct login-as WordPress",
-                            on_suggestion=_on_lia_suggestion))
+                            on_suggestion=_on_lia_suggestion, inv=inv))
                 # CUARTA forma: header-based auth bypass (p.ej. CVE-2023-28121 WooCommerce
                 # Payments: cabecera X-Wcpay-Platform-Checkout-User: 1 autentica como admin
                 # sin credenciales). Se dispara cuando el LLM identifica custom_headers en
@@ -15770,7 +15813,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 wr = _run_evidence_retry_loop(
                     llm, step, es, _GENERIC_PATH_TRAVERSAL_RETRY_SYS,
                     _GENERIC_PATH_TRAVERSAL_RETRY_EVIDENCE_KEYS, _attempt_pt_drupal, wr,
-                    notes.get("endpoint"), path_p, technique_label="path-traversal Drupal")
+                    notes.get("endpoint"), path_p, technique_label="path-traversal Drupal", inv=inv)
                 _apply_wpverify_result(inv, wr, es, llm)
             # mismo mecanismo de laboratorio efimero, para path-traversal/LFI: en vez de deducir el
             # account-takeover por un segundo login, se planta un fichero canario con un secreto
@@ -15848,7 +15891,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         notes.get("endpoint"), path_p, technique_label="path-traversal WordPress",
                         on_suggestion=_on_wppt_suggestion,
                         lock_endpoint=_pt_ep_lock,
-                        lock_param=_pt_param_lock)
+                        lock_param=_pt_param_lock, inv=inv)
                 wr = _retry_or_keep_lab_alive(keep_lab_on_failure, step, es, wr, _do_wppt_retry)
                 inv.dynamic_verify = {"attempted": True, "available": wr.available,
                                       "ok": wr.ok, "verified": wr.verified, "detail": wr.detail,
@@ -16102,7 +16145,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     llm, step, es, _GENERIC_PATH_TRAVERSAL_RETRY_SYS,
                     _GENERIC_PATH_TRAVERSAL_RETRY_EVIDENCE_KEYS, _attempt_pt, wr,
                     _pt_ep, path_p, technique_label="path-traversal generico",
-                    lock_endpoint=_pt_ep_lock)
+                    lock_endpoint=_pt_ep_lock, inv=inv)
                 # Si no se verifico todavia, probar los endpoints adicionales (p.ej. /cgi-bin/
                 # cuando el endpoint del PoC era /icons/ -- CVE-2021-41773 / Apache httpd).
                 for _ep_extra in _extra_pt_eps:
@@ -16262,7 +16305,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     _attempt_lfi, wr, notes.get("endpoint"), path_p,
                     technique_label="LFI WordPress",
                     lock_endpoint=_lfi_ep_lock,
-                    lock_param=_lfi_param_lock)
+                    lock_param=_lfi_param_lock, inv=inv)
                 _apply_wpverify_result(inv, wr, es, llm)
             # "cualquier entorno": fallback generico de IDOR (ver genericverify.py) para cuando
             # el codigo descargado no es un CMS reconocido pero trae su propio Dockerfile/
@@ -16515,7 +16558,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 wr = _run_evidence_retry_loop(
                     llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_MUESTRA_EVIDENCE_KEYS,
                     _attempt_cmdi_drupal, wr, notes.get("endpoint"), cmd_p,
-                    technique_label="command injection Drupal")
+                    technique_label="command injection Drupal", inv=inv)
                 _apply_wpverify_result(inv, wr, es, llm)
             # mismo laboratorio efimero, para command injection: en vez de leer un fichero, el
             # payload hace que el shell remoto CALCULE una suma (ver verify_wordpress_command_injection)
@@ -16549,7 +16592,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     keep_lab_on_failure, step, es, wr, lambda: _run_evidence_retry_loop(
                         llm, step, es, _WP_GENERIC_RETRY_SYS, _WP_GENERIC_RETRY_EVIDENCE_KEYS,
                         _attempt_php_code, wr, notes.get("endpoint"), code_p,
-                        technique_label="PHP code injection WordPress"))
+                        technique_label="PHP code injection WordPress", inv=inv))
                 inv.dynamic_verify = {"attempted": True, "available": wr.available,
                                       "ok": wr.ok, "verified": wr.verified, "detail": wr.detail,
                                       "logs": wr.logs}
@@ -16599,7 +16642,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         llm, step, es, _WP_GENERIC_RETRY_SYS, _WP_GENERIC_RETRY_EVIDENCE_KEYS,
                         _attempt_cmdi, wr, notes.get("endpoint"), cmd_p,
                         technique_label="command injection WordPress",
-                        on_suggestion=_on_cmdi_suggestion))
+                        on_suggestion=_on_cmdi_suggestion, inv=inv))
                 inv.dynamic_verify = {"attempted": True, "available": wr.available,
                                       "ok": wr.ok, "verified": wr.verified, "detail": wr.detail,
                                       "logs": wr.logs}
@@ -16729,7 +16772,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     wr = _run_evidence_retry_loop(
                         llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
                         _attempt_cmdi_generic, wr, _cmdi_ep, cmd_p,
-                        technique_label="command injection generico")
+                        technique_label="command injection generico", inv=inv)
                 if _scf_cmdi and wr.verified:
                     _scaffold_cache[(_detect_lab_tech_stack(_cmdi_local_path_str, notes), "command-injection")] = {
                         "dockerfile_body": _cmdi_dockerfile, "extra_files": _cmdi_extra_files,
@@ -18060,7 +18103,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 wr = _run_evidence_retry_loop(
                     llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_MUESTRA_EVIDENCE_KEYS,
                     _attempt_ssrf_drupal, wr, notes.get("endpoint"), url_p,
-                    technique_label="SSRF Drupal")
+                    technique_label="SSRF Drupal", inv=inv)
                 _apply_wpverify_result(inv, wr, es, llm)
             elif (not is_drupal and not is_joomla and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class == "ssrf" and notes.get("endpoint")):
@@ -18120,7 +18163,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     keep_lab_on_failure, step, es, wr, lambda: _run_evidence_retry_loop(
                         llm, step, es, _WP_GENERIC_RETRY_SYS, _WP_GENERIC_RETRY_EVIDENCE_KEYS,
                         _attempt_ssrf_wp, wr, notes.get("endpoint"), url_p,
-                        technique_label="SSRF WordPress", on_suggestion=_on_ssrf_wp_suggestion))
+                        technique_label="SSRF WordPress", on_suggestion=_on_ssrf_wp_suggestion, inv=inv))
                 inv.dynamic_verify = {"attempted": True, "available": wr.available,
                                       "ok": wr.ok, "verified": wr.verified, "detail": wr.detail,
                                       "logs": wr.logs}
@@ -18235,7 +18278,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 wr = _run_evidence_retry_loop(
                     llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
                     _attempt_ssrf_generic, wr, _ssrf_ep, url_p,
-                    technique_label="SSRF generico")
+                    technique_label="SSRF generico", inv=inv)
                 if _scf_ssrf and wr.verified:
                     _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path), notes), "ssrf")] = {
                         "dockerfile_body": _ssrf_dockerfile, "extra_files": _ssrf_extra_files,
@@ -18345,7 +18388,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 wr = _run_evidence_retry_loop(
                     llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
                     _attempt_xss_drupal, wr, notes.get("endpoint"), xss_p,
-                    technique_label="XSS Drupal")
+                    technique_label="XSS Drupal", inv=inv)
                 _apply_wpverify_result(inv, wr, es, llm)
             elif (not is_drupal and not is_joomla and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class in ("xss", "stored-xss")
@@ -18498,7 +18541,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     keep_lab_on_failure, step, es, wr, lambda: _run_evidence_retry_loop(
                         llm, step, es, _WP_GENERIC_RETRY_SYS, _WP_GENERIC_RETRY_EVIDENCE_KEYS,
                         _attempt_xss_wp, wr, notes.get("endpoint"), xss_p,
-                        technique_label="XSS WordPress", on_suggestion=_on_xss_wp_suggestion))
+                        technique_label="XSS WordPress", on_suggestion=_on_xss_wp_suggestion, inv=inv))
                 _apply_wpverify_result(inv, wr, es, llm)
             # "cualquier entorno": fallback generico de XSS (ver genericverify.py).
             elif (not plugin_dir and
@@ -18576,7 +18619,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 wr = _run_evidence_retry_loop(
                     llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
                     _attempt_xss_generic, wr, _xss_ep, xss_p,
-                    technique_label="XSS generico")
+                    technique_label="XSS generico", inv=inv)
                 if _scf_xss and wr.verified:
                     _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path), notes), "xss")] = {
                         "dockerfile_body": _xss_dockerfile, "extra_files": _xss_extra_files,
@@ -18604,7 +18647,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 wr = _run_evidence_retry_loop(
                     llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_MUESTRA_EVIDENCE_KEYS,
                     _attempt_ssti_drupal, wr, notes.get("endpoint"), ssti_p,
-                    technique_label="SSTI Drupal")
+                    technique_label="SSTI Drupal", inv=inv)
                 _apply_wpverify_result(inv, wr, es, llm)
             elif (not is_drupal and not is_joomla and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class in ("ssti", "code-injection", "format-string") and notes.get("endpoint")):
@@ -18640,7 +18683,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     keep_lab_on_failure, step, es, wr, lambda: _run_evidence_retry_loop(
                         llm, step, es, _WP_GENERIC_RETRY_SYS, _WP_GENERIC_RETRY_EVIDENCE_KEYS,
                         _attempt_ssti_wp, wr, notes.get("endpoint"), ssti_p,
-                        technique_label="SSTI WordPress", on_suggestion=_on_ssti_wp_suggestion))
+                        technique_label="SSTI WordPress", on_suggestion=_on_ssti_wp_suggestion, inv=inv))
                 _apply_wpverify_result(inv, wr, es, llm)
             # "cualquier entorno": fallback generico de SSTI (ver genericverify.py).
             # La condicion acepta source_dir aunque el LLM no haya dado endpoint: el verificador
@@ -18764,7 +18807,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 wr = _run_evidence_retry_loop(
                     llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
                     _attempt_ssti_generic, wr, _ssti_ep, ssti_p,
-                    technique_label="SSTI generico")
+                    technique_label="SSTI generico", inv=inv)
                 if _scf_ssti and wr.verified:
                     _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path), notes), "ssti")] = {
                         "dockerfile_body": _ssti_dockerfile, "extra_files": _ssti_extra_files,
@@ -18852,7 +18895,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 wr = _run_evidence_retry_loop(
                     llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_MUESTRA_EVIDENCE_KEYS,
                     _attempt_xxe_drupal, wr, notes.get("endpoint"), xml_p,
-                    technique_label="XXE Drupal")
+                    technique_label="XXE Drupal", inv=inv)
                 _apply_wpverify_result(inv, wr, es, llm)
             elif (not is_drupal and not is_joomla and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class == "xxe" and notes.get("endpoint")):
@@ -18885,7 +18928,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     keep_lab_on_failure, step, es, wr, lambda: _run_evidence_retry_loop(
                         llm, step, es, _WP_GENERIC_RETRY_SYS, _WP_GENERIC_RETRY_EVIDENCE_KEYS,
                         _attempt_xxe_wp, wr, notes.get("endpoint"), xml_p,
-                        technique_label="XXE WordPress", on_suggestion=_on_xxe_wp_suggestion))
+                        technique_label="XXE WordPress", on_suggestion=_on_xxe_wp_suggestion, inv=inv))
                 _apply_wpverify_result(inv, wr, es, llm)
             # "cualquier entorno": fallback generico de XXE (ver genericverify.py) para cuando el
             # codigo descargado no es un CMS reconocido pero trae su propio Dockerfile/compose.
@@ -18956,7 +18999,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 wr = _run_evidence_retry_loop(
                     llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
                     _attempt_xxe_generic, wr, _xxe_ep, xml_p,
-                    technique_label="XXE generico")
+                    technique_label="XXE generico", inv=inv)
                 if _scf_xxe and wr.verified:
                     _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path), notes), "xxe")] = {
                         "dockerfile_body": _xxe_dockerfile, "extra_files": _xxe_extra_files,
@@ -18984,7 +19027,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 wr = _run_evidence_retry_loop(
                     llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
                     _attempt_or_drupal, wr, notes.get("endpoint"), redir_p,
-                    technique_label="open redirect Drupal")
+                    technique_label="open redirect Drupal", inv=inv)
                 _apply_wpverify_result(inv, wr, es, llm)
             elif (not is_drupal and not is_joomla and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class == "open-redirect" and notes.get("endpoint")):
@@ -19017,7 +19060,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     keep_lab_on_failure, step, es, wr, lambda: _run_evidence_retry_loop(
                         llm, step, es, _WP_GENERIC_RETRY_SYS, _WP_GENERIC_RETRY_EVIDENCE_KEYS,
                         _attempt_or_wp, wr, notes.get("endpoint"), redir_p,
-                        technique_label="open redirect WordPress", on_suggestion=_on_or_wp_suggestion))
+                        technique_label="open redirect WordPress", on_suggestion=_on_or_wp_suggestion, inv=inv))
                 _apply_wpverify_result(inv, wr, es, llm)
             # "cualquier entorno": fallback generico de open-redirect (ver genericverify.py).
             elif (not plugin_dir and
@@ -19100,7 +19143,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 wr = _run_evidence_retry_loop(
                     llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
                     _attempt_or_generic, wr, _or_ep, redir_p,
-                    technique_label="open redirect generico")
+                    technique_label="open redirect generico", inv=inv)
                 if _scf_or and wr.verified:
                     _scaffold_cache[(_detect_lab_tech_stack(_or_local_path_str, notes), "open-redirect")] = {
                         "dockerfile_body": _or_dockerfile, "extra_files": _or_extra_files,
@@ -19128,7 +19171,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 wr = _run_evidence_retry_loop(
                     llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_MUESTRA_EVIDENCE_KEYS,
                     _attempt_file_upload_drupal, wr, notes.get("endpoint"), file_p,
-                    technique_label="file upload Drupal")
+                    technique_label="file upload Drupal", inv=inv)
                 _apply_wpverify_result(inv, wr, es, llm)
             # Auto-detect endpoint para file-upload cuando notes esta vacio.
             # Busca acciones AJAX con $_FILES / wp_handle_upload en el plugin.
@@ -19269,7 +19312,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     keep_lab_on_failure, step, es, wr, lambda: _run_evidence_retry_loop(
                         llm, step, es, _WP_GENERIC_RETRY_SYS, _WP_GENERIC_RETRY_EVIDENCE_KEYS,
                         _attempt_file_upload_wp, wr, notes.get("endpoint"), file_p,
-                        technique_label="file upload WordPress", on_suggestion=_on_fu_wp_suggestion))
+                        technique_label="file upload WordPress", on_suggestion=_on_fu_wp_suggestion, inv=inv))
                 # Fallback SSRF: si el verificador de file-upload no confirmo Y los parametros
                 # incluyen una pista de URL (el LLM puede haber clasificado mal un SSRF como
                 # file-upload cuando la funcion vulnerable fetcha una URL aportada por el atacante).
@@ -19557,7 +19600,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         llm, step, es, _WP_GENERIC_RETRY_SYS, _WP_GENERIC_RETRY_EVIDENCE_KEYS,
                         _attempt_dct, wr, notes.get("endpoint"), serial_p,
                         technique_label="deserialization (tabla propia) WordPress",
-                        on_suggestion=_on_dct_suggestion))
+                        on_suggestion=_on_dct_suggestion, inv=inv))
                 _apply_wpverify_result(inv, wr, es, llm)
             elif (not is_drupal and not is_joomla and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class == "deserialization" and notes.get("endpoint")):
@@ -19592,7 +19635,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         llm, step, es, _WP_GENERIC_RETRY_SYS, _WP_GENERIC_RETRY_EVIDENCE_KEYS,
                         _attempt_des, wr, notes.get("endpoint"), serial_p,
                         technique_label="deserialization WordPress",
-                        on_suggestion=_on_des_suggestion))
+                        on_suggestion=_on_des_suggestion, inv=inv))
                 _apply_wpverify_result(inv, wr, es, llm)
             # GraphQL auth-bypass: endpoint GraphQL expuesto sin autenticacion (Craft CMS, Ghost, etc.)
             elif (not plugin_dir and
