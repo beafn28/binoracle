@@ -2941,21 +2941,25 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
         import pathlib as _pl_slug
         _alt_slug = slug.replace("-", "_") if "-" in slug else slug.replace("_", "-")
         if _alt_slug != slug:
-            # Try renaming the plugin directory to match what WP-CLI expects
+            # Try renaming the plugin directory to match what WP-CLI expects.
+            # Use `echo rename(...)` to verify success: @rename() silently returns
+            # false on failure but exits 0 from wp-cli, so we check the echo.
             _vol_plugin = _pl_slug.Path("/var/www/html/wp-content/plugins")
             _rename_ok = False
             try:
                 _rc_rename = lab.wp_cli(
                     "eval",
-                    f"@rename('{_vol_plugin}/{_alt_slug}', '{_vol_plugin}/{slug}');",
+                    f"echo rename('{_vol_plugin}/{_alt_slug}', '{_vol_plugin}/{slug}') ? 'OK' : 'FAIL';",
                     timeout=15)
-                _rename_ok = _rc_rename.returncode == 0
+                _rename_ok = "OK" in (_rc_rename.stdout or "")
             except Exception:
                 pass
             if _rename_ok:
                 step(f"slug mismatch — renombrando directorio '{_alt_slug}' → '{slug}' en volumen")
                 r = lab.wp_cli("plugin", "activate", slug, "--path=/var/www/html", timeout=90)
                 _activate_combined = (r.stderr or "") + (r.stdout or "")
+            else:
+                step(f"slug mismatch — rename de '{_alt_slug}' → '{slug}' fallo (dir no existe?)")
     # WP-CLI puede morir durante el hook de activacion sin escribir en active_plugins --
     # confirmado en vivo con KiviCare 4.1.2: WP_CLI::add_command() con KCScaffold (clase
     # inexistente en el modo CLI de esta version) llama exit(1) ANTES de que WordPress
