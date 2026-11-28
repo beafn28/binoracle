@@ -1651,14 +1651,20 @@ class _GenericLab:
         import urllib.error
         import urllib.request
         # CMSs con arranque largo (bootstrap DB incluido): 90 tries × 3s = 4.5 min máximo
-        heavy_cms = {"ghost", "strapi", "directus", "payload", "drupal", "joomla", "craft",
+        heavy_cms = {"ghost", "directus", "payload", "drupal", "joomla", "craft",
                      "typo3", "contao", "prestashop",
                      # Ruby/Python heavy-boot: Rails runs db:migrate at startup; Django
                      # may run migrations; Gradio downloads model weights on first run
                      "rails", "django", "gradio",
                      # Slow-boot apps that take 90-120s before HTTP is ready
-                     "pgadmin", "mattermost", "nextcloud", "paperless", "audiobookshelf"}
-        if cms and cms.lower() in heavy_cms and tries < 90:
+                     "pgadmin", "mattermost", "nextcloud", "paperless", "audiobookshelf",
+                     # Zitadel: initialises SQLite/Postgres on start-from-init; needs 60s+
+                     "zitadel"}
+        # Strapi 5.x compiles TypeScript + migrates SQLite before serving; needs up to 6min
+        very_heavy_cms = {"strapi"}
+        if cms and cms.lower() in very_heavy_cms and tries < 120:
+            tries = 120
+        elif cms and cms.lower() in heavy_cms and tries < 90:
             tries = 90
         ready_signals = self._CMS_READY_SIGNALS.get((cms or "").lower(), [])
         host = _lab_host()
