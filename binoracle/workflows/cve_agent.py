@@ -13771,6 +13771,16 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             (("craft cms", "craftcms", "craft"), "craftcms/craft:5.4.6"),
             # Gradio ML UI
             (("gradio",),                    "python:3.11-slim"),
+            # Django (Python web framework)
+            (("django",),                    "python:3.11-slim"),
+            # Flask (Python micro-framework)
+            (("flask",),                     "python:3.11-slim"),
+            # Next.js (React SSR framework)
+            (("next.js",),                   "node:20-slim"),
+            # Rack (Ruby web server interface)
+            (("rack",),                      "ruby:3.2-alpine"),
+            # Paperless-ngx (also matches "paperless-ng")
+            (("paperless-ng",),              "ghcr.io/paperless-ngx/paperless-ngx:2.8.5"),
         ]
         for _keywords, _img in _KNOWN_IMAGE_HINTS:
             if any(kw in _full_low for kw in _keywords):
