@@ -270,7 +270,7 @@ def verify_directus_web_cve(
         # (no custom Docker network), the listener binds to the host port and Directus
         # reaches it via the Docker bridge gateway (172.17.0.1 or host.docker.internal).
         if vuln_class == "ssrf":
-            import secrets as _ssrf_sec, socket as _ssrf_sock, threading as _ssrf_thr
+            import secrets as _ssrf_sec, threading as _ssrf_thr
             _ssrf_token = _ssrf_sec.token_hex(10)
             _ssrf_port = 19876
             _ssrf_received: list = []
@@ -323,7 +323,7 @@ def verify_directus_web_cve(
             _url_p = _dir_pick(parameters or [], _DIR_URL_HINTS) or "url"
             _ssrf_params = dict(parameters) if isinstance(parameters, dict) else {}
             if isinstance(parameters, list):
-                _ssrf_params = {k: "" for k in parameters}
+                _ssrf_params = dict.fromkeys(parameters, "")
             _ssrf_params[_url_p] = callback_url
             _ssrf_body = __import__("json").dumps(_ssrf_params)
             _ssrf_hdrs = {"Content-Type": "application/json"}
