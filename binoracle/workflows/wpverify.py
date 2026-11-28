@@ -3188,12 +3188,21 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
                         else:
                             step(f"hook de activacion no pudo ejecutarse para '{slug}' "
                                  f"(el plugin puede fallar si requiere tablas propias)")
-                        # Health-check: verify WordPress still responds after force-activation.
-                        # Some plugins have fatal PHP errors at load time — when force-activated
-                        # via DB they break all requests (login returns 500). Detect and revert.
-                        _hc = lab.wp_cli("eval", "echo 'wp_ok';",
-                                         "--skip-plugins", "--skip-themes", timeout=15)
-                        if "wp_ok" not in (_hc.stdout or ""):
+                        # Health-check: verify WordPress still responds via HTTP after
+                        # force-activation. Some plugins have fatal PHP errors at load
+                        # time — when force-activated via DB, Apache crashes on every
+                        # request so login returns 500 or Connection Refused. Detect and
+                        # revert before even trying to login.
+                        import time as _time_hc
+                        _time_hc.sleep(2)  # give Apache a moment to (re)start
+                        _wp_http_ok = False
+                        try:
+                            _hc_resp = _http_request("GET", f"{base_url}/wp-login.php",
+                                                      timeout=10)
+                            _wp_http_ok = _hc_resp.status_code < 500
+                        except Exception:
+                            _wp_http_ok = False
+                        if not _wp_http_ok:
                             step(f"WARN: WordPress retorna 500 con '{slug}' activo (PHP fatal al "
                                  f"cargar) — desactivando para recuperar acceso admin...")
                             _r_deact = lab.wp_cli(
