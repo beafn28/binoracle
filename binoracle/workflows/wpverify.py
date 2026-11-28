@@ -13223,14 +13223,40 @@ def verify_wordpress_missing_auth_probe(
             "-1",  # WordPress AJAX responde -1 cuando el nonce es invalido
         )
         body_low = body.lower()
+        _AUTH_REJECT_JSON = ('"code":"rest_forbidden"', '"code": "rest_forbidden"',
+                             '"code":"rest_not_logged_in"', '"code": "rest_not_logged_in"',
+                             '"status":401', '"status": 401', '"status":403', '"status": 403')
         _rejected = (status in (401, 403) or
                      any(s in body_low for s in _AUTH_REJECT_SIGNALS) or
+                     any(s in body for s in _AUTH_REJECT_JSON) or
                      (status == 200 and body.strip() in ("", "0", "-1", "null")))
 
         res.evidence["status_anonimo"] = status
         res.evidence["body_recorte"] = body[:300]
         res.evidence["endpoint"] = endpoint
         res.evidence["metodo"] = m
+
+        # HTTP 500 analysis: PHP fatal/error/warning often reveals the code path and
+        # required params. Treat 500 as "not rejected" (endpoint processed the request)
+        # and extract PHP error signals for the LLM to use in the next retry.
+        if status == 500 and body.strip():
+            _php_err_signals = []
+            import re as _re500
+            # Extract PHP error class / function name from fatal messages
+            for _ep500 in [
+                r"(Fatal error|Parse error|Warning|Notice)[^<\n]{5,120}",
+                r"class '([A-Za-z_\\\\]+)' not found",
+                r"Call to undefined (?:function|method) ([A-Za-z_:]+)",
+                r"Undefined (?:variable|property)[^<\n]{0,80}",
+            ]:
+                _m500 = _re500.search(body, _re500.IGNORECASE)
+                if _m500:
+                    _php_err_signals.append(_m500.group(0)[:120])
+            if _php_err_signals:
+                res.evidence["php_error_signals"] = _php_err_signals[:5]
+                step(f"[500-analysis] PHP error signals: {_php_err_signals[0][:80]}")
+            # 500 is not a rejection — endpoint processed the anon request (auth check passed)
+            _rejected = False
 
         boot.capture(anon_sess, endpoint,
                      f"Sonda no-auth: {m} {endpoint} → HTTP {status}",

