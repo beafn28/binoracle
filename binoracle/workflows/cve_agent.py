@@ -11180,16 +11180,18 @@ def _gen_gem_app(pkg: str, vuln_class: str, version: str) -> str:
 
 def _scaffold_gem_lab(target: str, version: str, vuln_class: str,
                       notes: dict, on_step) -> Optional[str]:
-    """Crea /tmp/{pkg}_autonomous_lab con Gemfile + config.ru minimal para gemas Ruby.
+    """Crea un tmpdir con Gemfile + config.ru minimal para gemas Ruby.
     Devuelve la ruta del directorio o None si el paquete no es una gema reconocida."""
     import os as _os
+    import tempfile as _tmpfile
     pkg = (target or "").strip().lower()
     if not pkg or not re.match(r'^[a-z][a-z0-9._-]*$', pkg):
         return None
     if not _RUBY_GEM_RE.search(pkg):
         return None
 
-    lab_dir = f"/tmp/{pkg}_autonomous_lab"
+    # Use tempfile to avoid path conflicts between parallel runs and stale state.
+    lab_dir = _tmpfile.mkdtemp(prefix=f"{pkg}_autonomous_lab_")
     _os.makedirs(lab_dir, exist_ok=True)
 
     ver_pin = f", '= {version}'" if version else ""
@@ -11218,10 +11220,11 @@ def _scaffold_gem_lab(target: str, version: str, vuln_class: str,
 
 def _scaffold_pip_lab(target: str, version: str, vuln_class: str,
                       notes: dict, on_step) -> Optional[str]:
-    """Crea /tmp/{pkg}_autonomous_lab con requirements.txt + app.py minimal para que
+    """Crea un tmpdir con requirements.txt + app.py minimal para que
     genericverify pueda levantar un contenedor Docker y confirmar la vulnerabilidad.
     Devuelve la ruta del directorio o None si el paquete no es reconocible como pip."""
     import os as _os
+    import tempfile as _tmpfile
     pkg = (target or "").strip().lower()
     # solo para nombres razonables de paquete pip: letras, dígitos, guión, punto, barra baja
     if not pkg or not re.match(r'^[a-z][a-z0-9._-]*$', pkg):
@@ -11237,7 +11240,7 @@ def _scaffold_pip_lab(target: str, version: str, vuln_class: str,
             or pkg.startswith("woocommerce-") or "wordpress" in pkg):
         return None
 
-    lab_dir = f"/tmp/{pkg}_autonomous_lab"
+    lab_dir = _tmpfile.mkdtemp(prefix=f"{pkg}_autonomous_lab_")
     _os.makedirs(lab_dir, exist_ok=True)
 
     # PyPI usa nombres canonicos distintos al nombre corto/alias que el LLM suele devolver:
