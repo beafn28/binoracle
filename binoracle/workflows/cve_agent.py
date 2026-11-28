@@ -3540,7 +3540,8 @@ def _cheerleader_analysis(llm, inv, wr, es: bool) -> dict:
                 _diff_analysis[_sink_sig] = _patch_diff.get(_sink_sig)
         # New diff signals: AJAX actions, nonce actions, SQL structure
         for _new_sig in ("ajax_action_names", "nonce_action_names",
-                         "sql_query_structure", "sql_column_count", "sql_column_names"):
+                         "sql_query_structure", "sql_column_count", "sql_column_names",
+                         "sql_tables", "nonce_fields", "wp_option_names", "lfi_controlled_vars"):
             if _inv_diff.get(_new_sig) and not _diff_analysis.get(_new_sig):
                 _diff_analysis[_new_sig] = _inv_diff[_new_sig]
             elif _patch_diff.get(_new_sig) and not _diff_analysis.get(_new_sig):
@@ -14420,6 +14421,22 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         _sql_col_names = _pd_struct.get("sql_column_names") or []
                         if _sql_col_names:
                             inv.llm_notes["patch_diff_analysis"]["sql_column_names"] = _sql_col_names
+                        # Propagate sql_tables → sqli_tables hint for UNION SELECT targeting
+                        _sql_tabs = _pd_struct.get("sql_tables") or []
+                        if _sql_tabs:
+                            inv.llm_notes["patch_diff_analysis"]["sql_tables"] = _sql_tabs
+                            if not notes.get("sqli_tables"):
+                                notes["sqli_tables"] = _sql_tabs[:3]
+                                step(f"patch_diff: sqli_tables={_sql_tabs[:3]} auto-seeded from diff")
+                        # Propagate nonce_fields → nonce_action + nonce_field_name hints
+                        _nonce_flds = _pd_struct.get("nonce_fields") or []
+                        if _nonce_flds:
+                            inv.llm_notes["patch_diff_analysis"]["nonce_fields"] = _nonce_flds
+                            _first_nf = _nonce_flds[0]
+                            if not notes.get("nonce_action") and _first_nf.get("action"):
+                                notes["nonce_action"] = _first_nf["action"]
+                                notes.setdefault("nonce_field_name", _first_nf.get("field", "_wpnonce"))
+                                step(f"patch_diff: nonce_action={_first_nf['action']!r} field={_first_nf.get('field')!r}")
                         step((f"patch_diff_structured del store de intel: "
                               f"fix_type={_pd_struct.get('fix_type')!r}, "
                               f"bypass_hints={_pd_struct.get('bypass_hints', [])}") if es else
