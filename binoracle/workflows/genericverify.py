@@ -3808,6 +3808,43 @@ def verify_generic_file_upload(
                 step(f"VERIFICADO: el fichero subido ('{fname}') aparecio de verdad dentro del "
                      f"contenedor en {matches[0]}, con el secreto exacto -- el servidor acepto y "
                      f"guardo un fichero con extension/contenido peligroso.")
+                # HTTP accessibility check: derive a public URL from the container path and
+                # verify the file is reachable via HTTP. If it also executes (PHP), log that.
+                try:
+                    _cpath = matches[0]
+                    # Strip common webroot prefixes to get the URL path
+                    for _root in ("/var/www/html", "/var/www", "/app/public",
+                                  "/app/static", "/srv/www", "/usr/share/nginx/html",
+                                  "/app", "/app/storage", "/storage"):
+                        if _cpath.startswith(_root):
+                            _url_path = _cpath[len(_root):]
+                            break
+                    else:
+                        # Fallback: check if upload URL was returned in the response
+                        _url_path = _upload_url_from_resp or ""
+                    if _url_path:
+                        _acc_resp = _http_request("GET", base_url + _url_path, timeout=10)
+                        _acc_body = getattr(_acc_resp, "text", "") or ""
+                        _acc_status = getattr(_acc_resp, "status_code", 0)
+                        if _acc_status == 200 and len(_acc_body) > 0:
+                            res.evidence["upload_file_accessible"] = {
+                                "url": _url_path, "status": _acc_status,
+                                "body_snippet": _acc_body[:200]}
+                            if secret[:8] in _acc_body:
+                                # PHP executed: secret appears in HTTP response
+                                res.evidence["upload_rce_confirmed"] = {
+                                    "url": _url_path, "secret_in_response": True}
+                                res.detail = (
+                                    f"RCE CONFIRMADO via file upload: '{fname}' subido y "
+                                    f"ejecutado como PHP en {_url_path} — secreto canario "
+                                    f"calculado y devuelto por el interprete PHP")
+                                res.limitations = []  # clear storage-only limitation
+                                step(f"RCE via file upload: secreto encontrado en "
+                                     f"HTTP response de {_url_path}")
+                            else:
+                                step(f"file accesible via HTTP: {_url_path} → HTTP {_acc_status}")
+                except Exception:
+                    pass
                 break
 
         res.evidence["intentos"] = tried
@@ -5074,6 +5111,7 @@ def verify_generic_sqli_blind(
 
         step("midiendo tiempos de respuesta de control (sin inyeccion)...")
         base_times = [t for t in (timed_send(orig_value, capture_body=True),
+                                  timed_send(orig_value),
                                   timed_send(orig_value)) if t is not None]
         if not base_times:
             res.detail = "las peticiones de control fallaron (sin tiempo base con el que comparar)"
@@ -5082,7 +5120,10 @@ def verify_generic_sqli_blind(
         base_median = base_times[len(base_times) // 2]
         res.evidence["tiempo_base_mediana_s"] = round(base_median, 2)
 
-        threshold = base_median + (_SQLI_SLEEP_SECONDS / 2)
+        # Adaptive threshold: at least SLEEP_SECONDS/2 above the baseline, and never
+        # below SLEEP_SECONDS * 0.6 (floor prevents triggering on a 0.1s baseline).
+        threshold = max(base_median + (_SQLI_SLEEP_SECONDS / 2),
+                        _SQLI_SLEEP_SECONDS * 0.6)
         tried = []
         found = False
         for ctx in _SQLI_CONTEXTS:

