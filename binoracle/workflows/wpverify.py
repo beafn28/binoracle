@@ -2677,11 +2677,48 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
         res.evidence["screenshots"] = shots
         return None
     if not lab.http_ready(port):
-        step(f"ERROR: WordPress no respondio a tiempo en {port} -- HTTP no disponible dentro del limite")
-        res.detail = "WordPress no respondio a tiempo"
-        res.logs.append("docker logs (wordpress):\n" + lab.logs_tail(lab.wp))
-        res.evidence["screenshots"] = shots
-        return None
+        # Before failing, inspect WP container logs for PHP fatal errors.
+        # Some plugins (create_function usage, deprecated APIs) crash on php8.2.
+        # When a PHP fatal is detected, retry with php7.4-apache automatically.
+        _wp_logs_fail = lab.logs_tail(lab.wp)
+        _php_fatal_sigs = ("cannot use string offset", "create_function", "must be compatible",
+                           "fatal error", "php fatal", "deprecated", "call to undefined")
+        _has_php_fatal = any(s in _wp_logs_fail.lower() for s in _php_fatal_sigs)
+        if _has_php_fatal:
+            _wp74 = "wordpress:php7.4-apache"
+            step(f"WP PHP fatal detectado en logs — reintentando con {_wp74}...")
+            # Tear down the failed WP container and retry with php7.4
+            try:
+                lab.sh("stop", lab.wp, timeout=10)
+                lab.sh("rm", "-f", lab.wp, timeout=10)
+                lab._created = [(k, v) for (k, v) in getattr(lab, "_created", [])
+                                if not (k == "container" and v == lab.wp)]
+            except Exception:
+                pass
+            _prev_img = _get_active_wp_image()
+            try:
+                _wp_image_ctx.image = _wp74
+                port = lab.start_wordpress(db_pw)
+                if port and lab.http_ready(port):
+                    step(f"WP {_wp74} listo; continuando...")
+                else:
+                    res.detail = (f"WordPress no respondio ({_wp74} retry) — PHP fatal: "
+                                  f"{_wp_logs_fail[-300:].strip()}")
+                    res.logs.append("docker logs (wordpress):\n" + _wp_logs_fail)
+                    res.evidence["screenshots"] = shots
+                    return None
+            except Exception:
+                _wp_image_ctx.image = _prev_img
+                res.detail = "WordPress no respondio a tiempo (PHP fatal, retry fallido)"
+                res.logs.append("docker logs (wordpress):\n" + _wp_logs_fail)
+                res.evidence["screenshots"] = shots
+                return None
+        else:
+            step(f"ERROR: WordPress no respondio a tiempo en {port} -- HTTP no disponible dentro del limite")
+            res.detail = "WordPress no respondio a tiempo"
+            res.logs.append("docker logs (wordpress):\n" + _wp_logs_fail)
+            res.evidence["screenshots"] = shots
+            return None
     base_url = f"http://{_lab_host()}:{port}"
     ctx["base_url"] = base_url
     step(f"WordPress listo en {base_url}; instalando core via wp-cli...")
