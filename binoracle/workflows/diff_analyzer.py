@@ -215,6 +215,8 @@ def analyze_patch_diff(raw_diff: str) -> dict:
         "auth_checks_added": [],
         "nonce_checks_added": False,
         "capability_added": None,
+        "missing_auth_confirmed_in_diff": False,
+        "sanitize_param": None,
         "fix_type": "other",
         "bypass_hints": [],
         "vulnerable_lines": [],
@@ -374,6 +376,46 @@ def analyze_patch_diff(raw_diff: str) -> dict:
         if _SINK_RE.search(line):
             result["bypass_hints"].append(
                 f"Sink reached directly: {line.strip()[:100]}"
+            )
+
+    # __return_true as confirmed missing-auth signal:
+    # If the diff removes 'permission_callback' => '__return_true' (open endpoint)
+    # AND adds an actual permission callback, the vulnerable version had no auth.
+    # Set missing_auth_confirmed_in_diff so the verifier can skip auth-based guessing.
+    _removed_has_return_true = any(
+        "__return_true" in ln or ("permission_callback" in ln and "__return_true" in ln)
+        for ln in result["removed_code"]
+    )
+    _added_has_real_perm = any(
+        "permission_callback" in ln and "__return_true" not in ln
+        for ln in result["auth_checks_added"]
+    )
+    if _removed_has_return_true:
+        result["missing_auth_confirmed_in_diff"] = True
+        result["bypass_hints"].append(
+            "Diff removes '__return_true' permission_callback — vulnerable version had no "
+            "authentication check; endpoint was fully public (unauthenticated access confirmed)"
+        )
+    elif _added_has_real_perm and not result.get("capability_added"):
+        # permission_callback changed from missing/null to a real function — also missing-auth
+        result["missing_auth_confirmed_in_diff"] = True
+
+    # sanitize_callback / validate_callback extraction:
+    # When the patch adds sanitize_callback or validate_callback to a register_rest_route()
+    # parameter schema, the named parameter lacked sanitization in the vulnerable version.
+    # Extract it to auto-populate sqli_param / xss_param for the verifier.
+    _SANITIZE_PARAM_RE = re.compile(
+        r"['\"]([a-zA-Z0-9_\-]{2,40})['\"]\s*=>\s*\[[^\]]*"
+        r"(?:sanitize_callback|validate_callback)\s*=>\s*['\"]?[\w\\]+['\"]?",
+        re.DOTALL
+    )
+    for _al in added_lines:
+        _sm = _SANITIZE_PARAM_RE.search(_al)
+        if _sm and not result["sanitize_param"]:
+            result["sanitize_param"] = _sm.group(1)
+            result["bypass_hints"].append(
+                f"Patch adds sanitize_callback for param '{_sm.group(1)}' — this was the "
+                f"unsanitized parameter in the vulnerable version; use it as sqli_param/xss_param"
             )
 
     # Deeper bypass hints from the fix pattern itself

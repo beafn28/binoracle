@@ -13122,19 +13122,31 @@ def verify_wordpress_missing_auth_probe(
                                 f"{len(_sub_body)}B): el endpoint no diferencia usuarios")
                             res.evidence["privilege_comparison"] = "anon==subscriber (no auth check)"
                             # Identical response for anon and subscriber with non-trivial body
-                            # = strong evidence the endpoint skips auth entirely.
-                            # Verified even on 5xx — the app processes both requests identically.
+                            # = evidencia fuerte de que el endpoint no diferencia privilegios,
+                            # pero es una comparacion de UN SOLO disparo entre dos peticiones
+                            # distintas (no una manipulacion causal repetida y controlada, a
+                            # diferencia del boolean-blind SQLi de este mismo fichero que exige
+                            # consistent_diffs >= 2 antes de marcar verified). Dos respuestas
+                            # pueden coincidir en tamano por una pagina de error generica
+                            # compartida, cache, o que el endpoint sea publico por diseño --
+                            # no se marca verified=True por una sola comparacion; se deja como
+                            # "probable" sin confirmar para que el caller siga buscando una
+                            # confirmacion mas dura (el oraculo real: canario/comando/secreto).
                             _body_non_trivial = len(body.strip()) > 30
                             _body_not_error = not any(s in body.lower() for s in (
                                 "you need to log in", "unauthorized", "forbidden",
                                 "403 forbidden", "401 unauthorized"))
                             if _body_non_trivial and _body_not_error:
-                                res.verified = True
+                                res.ok = True
                                 res.confidence = "probable"
+                                res.evidence["not_verified_reason"] = (
+                                    "comparacion de longitud de una sola peticion anon vs "
+                                    "subscriber -- requiere confirmacion adicional (repetir, o "
+                                    "canario real) antes de contar como verificado")
                                 res.detail = (
-                                    f"MISSING-AUTH CONFIRMADA: respuesta identica para anonimo "
-                                    f"({status}/{len(body)}B) y subscriber ({_sub_st}/{len(_sub_body)}B)"
-                                    f" en endpoint {endpoint} — comprobacion de autenticacion ausente")
+                                    f"MISSING-AUTH (lead, no confirmado): respuesta identica para "
+                                    f"anonimo ({status}/{len(body)}B) y subscriber "
+                                    f"({_sub_st}/{len(_sub_body)}B) en endpoint {endpoint}")
                                 return res
                         else:
                             _cmp_detail = (

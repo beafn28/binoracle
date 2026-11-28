@@ -3417,6 +3417,10 @@ _CHEERLEADER_SYS = (
     "el docker_image y la configuracion de la DB.\n"
     "   - 'port_conflict': puerto ya en uso — infra issue, reintentar puede funcionar.\n"
     "   El campo 'container_logs_snippet' tiene los ultimos logs del contenedor para mas contexto.\n"
+    "14. PREVIOUS RUN KNOWLEDGE — si 'previous_maxiter_summary' tiene datos (de un intento anterior "
+    "que agoto todos los reintentos), razona sobre el: 'root_cause' y 'blockers' te dicen lo que "
+    "ya se probo y fallo. NUNCA repitas un vector que 'blockers' ya descarto. Usa 'final_hypothesis' "
+    "como punto de partida si es coherente con la evidencia actual, mejorando — no repitiendo.\n"
     "REGLA CRITICA: Razona SOLO en el contexto del framework/CMS real indicado en 'target_framework' "
     "del contexto. NUNCA sugieras endpoints de WordPress (admin-ajax.php, wp-json/, post_type, "
     "wp_ajax_) salvo que target_framework contenga 'wordpress'. "
@@ -3513,6 +3517,10 @@ def _cheerleader_analysis(llm, inv, wr, es: bool) -> dict:
             _diff_analysis["rest_routes"] = _inv_diff["rest_routes"][:4]
         # Include pre-attempt validation failure reason if available
         _pre_validate = getattr(inv, "pre_validate_result", None) or {}
+        # Include maxiter_summary from a previous exhausted run so the cheerleader
+        # can build on what was already learned instead of starting blind.
+        _prev_maxiter = (_notes.get("maxiter_summary") or
+                         getattr(inv, "llm_notes", {}).get("maxiter_summary") or {})
         context = {
             "cve_id": getattr(inv, "cve_id", ""),
             "vuln_class": getattr(inv, "vuln_class", ""),
@@ -3532,6 +3540,12 @@ def _cheerleader_analysis(llm, inv, wr, es: bool) -> dict:
             "source_grounding_summary": (_grounding.get("summary", "") or "")[:400],
             "diff_analysis": _diff_analysis,
             "pre_validate_issues": (_pre_validate.get("issues") or [])[:3],
+            "previous_maxiter_summary": {
+                "root_cause": (_prev_maxiter.get("root_cause") or "")[:300],
+                "final_hypothesis": (_prev_maxiter.get("final_hypothesis") or "")[:300],
+                "blockers": (_prev_maxiter.get("blockers") or [])[:3],
+                "true_confidence": _prev_maxiter.get("true_confidence", ""),
+            } if _prev_maxiter else {},
         }
         import json
         prompt = f"Evidencia real del intento fallido:\n{json.dumps(context, ensure_ascii=False)[:4000]}"
@@ -7457,6 +7471,10 @@ def _synthesize_exploit_from_intel(
                     patch_diff["fix_completeness"] = _da["fix_completeness"]
                 if _da.get("rest_routes"):
                     patch_diff["rest_routes"] = _da["rest_routes"]
+                if _da.get("missing_auth_confirmed_in_diff"):
+                    patch_diff["missing_auth_confirmed_in_diff"] = True
+                if _da.get("sanitize_param") and not patch_diff.get("sanitize_param"):
+                    patch_diff["sanitize_param"] = _da["sanitize_param"]
                 # Extract input path for the first sink candidate
                 _sinks = _da.get("sink_candidates", [])
                 if _sinks:
@@ -14215,6 +14233,22 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                 inv.diff_analysis = {}
                             if "companion_plugins_detected" not in inv.diff_analysis:
                                 inv.diff_analysis["companion_plugins_detected"] = _comp_pd
+                        # Propagate missing_auth_confirmed_in_diff — skips auth guessing
+                        if _pd_struct.get("missing_auth_confirmed_in_diff"):
+                            inv.llm_notes["patch_diff_analysis"]["missing_auth_confirmed_in_diff"] = True
+                            step("patch_diff: __return_true removed — missing-auth confirmed in diff")
+                        # Propagate sanitize_param — auto-populates vulnerable parameter
+                        _sp = _pd_struct.get("sanitize_param") or ""
+                        if _sp:
+                            inv.llm_notes["patch_diff_analysis"]["sanitize_param"] = _sp
+                            # Auto-seed sqli_param / xss_param from diff if not already set
+                            _vc_pd = getattr(inv, "vuln_class", "") or ""
+                            if _vc_pd in ("sqli", "sql-injection") and not inv.llm_notes.get("sqli_param"):
+                                inv.llm_notes["sqli_param"] = _sp
+                                step(f"patch_diff: sanitize_param '{_sp}' → sqli_param (auto-seeded from diff)")
+                            elif _vc_pd in ("xss", "cross-site-scripting", "stored-xss") and not inv.llm_notes.get("xss_param"):
+                                inv.llm_notes["xss_param"] = _sp
+                                step(f"patch_diff: sanitize_param '{_sp}' → xss_param (auto-seeded from diff)")
                         step((f"patch_diff_structured del store de intel: "
                               f"fix_type={_pd_struct.get('fix_type')!r}, "
                               f"bypass_hints={_pd_struct.get('bypass_hints', [])}") if es else
@@ -15756,19 +15790,12 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                          "refine 'parameters' or 'custom_headers' in the LLM "
                                          "hypothesis or pass them by hand"))
                 else:
-                    inv.dynamic_verify = {"attempted": True, "available": wr.available,
-                                          "ok": wr.ok, "verified": wr.verified, "detail": wr.detail,
-                                          "logs": wr.logs}
-                    inv.attempt_evidence = wr.evidence
-                    if wr.verified:
-                        inv.verified = True
-                        inv.verified_detail = wr.detail
-                        inv.verified_evidence = wr.evidence
-                    elif not wr.available:
+                    _apply_wpverify_result(inv, wr, es, llm)
+                    if not wr.available:
                         inv.blockers.append(("verificacion dinamica no intentada: " + wr.limitations[0]
                                              if wr.limitations else
                                              "verificacion dinamica no disponible (sin Docker)"))
-                    else:
+                    elif not wr.verified:
                         inv.blockers.append((f"verificacion dinamica intentada pero no confirmada: "
                                              f"{wr.detail}" if es else
                                              f"dynamic verification attempted but not confirmed: "
@@ -15893,19 +15920,12 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         lock_endpoint=_pt_ep_lock,
                         lock_param=_pt_param_lock, inv=inv)
                 wr = _retry_or_keep_lab_alive(keep_lab_on_failure, step, es, wr, _do_wppt_retry)
-                inv.dynamic_verify = {"attempted": True, "available": wr.available,
-                                      "ok": wr.ok, "verified": wr.verified, "detail": wr.detail,
-                                      "logs": wr.logs}
-                inv.attempt_evidence = wr.evidence
-                if wr.verified:
-                    inv.verified = True
-                    inv.verified_detail = wr.detail
-                    inv.verified_evidence = wr.evidence
-                elif not wr.available:
+                _apply_wpverify_result(inv, wr, es, llm)
+                if not wr.available:
                     inv.blockers.append(("verificacion dinamica no intentada: " + wr.limitations[0]
                                          if wr.limitations else
                                          "verificacion dinamica no disponible (sin Docker)"))
-                else:
+                elif not wr.verified:
                     inv.blockers.append((f"verificacion dinamica intentada pero no confirmada: "
                                          f"{wr.detail}" if es else
                                          f"dynamic verification attempted but not confirmed: "
@@ -16593,20 +16613,12 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         llm, step, es, _WP_GENERIC_RETRY_SYS, _WP_GENERIC_RETRY_EVIDENCE_KEYS,
                         _attempt_php_code, wr, notes.get("endpoint"), code_p,
                         technique_label="PHP code injection WordPress", inv=inv))
-                inv.dynamic_verify = {"attempted": True, "available": wr.available,
-                                      "ok": wr.ok, "verified": wr.verified, "detail": wr.detail,
-                                      "logs": wr.logs}
-                inv.attempt_evidence = wr.evidence
-                if wr.verified:
-                    inv.verified = True
-                    inv.verified_detail = wr.detail
-                    inv.verified_evidence = wr.evidence
-                elif not wr.available:
+                _apply_wpverify_result(inv, wr, es, llm)
+                if not wr.available:
                     inv.blockers.append(("verificacion dinamica no intentada: " + wr.limitations[0]
                                          if wr.limitations else "Docker no disponible") if es else
                                         ("dynamic verification not attempted: " + wr.limitations[0]
                                          if wr.limitations else "Docker not available"))
-                _apply_wpverify_result(inv, wr, es, llm)
 
             elif (not is_drupal and not is_joomla and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class in ("command-injection", "os-command-injection", "rce")
@@ -16643,19 +16655,12 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         _attempt_cmdi, wr, notes.get("endpoint"), cmd_p,
                         technique_label="command injection WordPress",
                         on_suggestion=_on_cmdi_suggestion, inv=inv))
-                inv.dynamic_verify = {"attempted": True, "available": wr.available,
-                                      "ok": wr.ok, "verified": wr.verified, "detail": wr.detail,
-                                      "logs": wr.logs}
-                inv.attempt_evidence = wr.evidence
-                if wr.verified:
-                    inv.verified = True
-                    inv.verified_detail = wr.detail
-                    inv.verified_evidence = wr.evidence
-                elif not wr.available:
+                _apply_wpverify_result(inv, wr, es, llm)
+                if not wr.available:
                     inv.blockers.append(("verificacion dinamica no intentada: " + wr.limitations[0]
                                          if wr.limitations else
                                          "verificacion dinamica no disponible (sin Docker)"))
-                else:
+                elif not wr.verified:
                     inv.blockers.append((f"verificacion dinamica intentada pero no confirmada: "
                                          f"{wr.detail}" if es else
                                          f"dynamic verification attempted but not confirmed: "
@@ -17928,19 +17933,12 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                      wr, step, keep_lab_on_failure)
                     except Exception:
                         pass
-                inv.dynamic_verify = {"attempted": True, "available": wr.available,
-                                      "ok": wr.ok, "verified": wr.verified, "detail": wr.detail,
-                                      "logs": wr.logs}
-                inv.attempt_evidence = wr.evidence
-                if wr.verified:
-                    inv.verified = True
-                    inv.verified_detail = wr.detail
-                    inv.verified_evidence = wr.evidence
-                elif not wr.available:
+                _apply_wpverify_result(inv, wr, es, llm)
+                if not wr.available:
                     inv.blockers.append(("verificacion dinamica no intentada: " + wr.limitations[0]
                                          if wr.limitations else
                                          "verificacion dinamica no disponible (sin Docker)"))
-                else:
+                elif not wr.verified:
                     inv.blockers.append((f"verificacion dinamica intentada pero no confirmada: "
                                          f"{wr.detail}" if es else
                                          f"dynamic verification attempted but not confirmed: "
@@ -18164,19 +18162,12 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         llm, step, es, _WP_GENERIC_RETRY_SYS, _WP_GENERIC_RETRY_EVIDENCE_KEYS,
                         _attempt_ssrf_wp, wr, notes.get("endpoint"), url_p,
                         technique_label="SSRF WordPress", on_suggestion=_on_ssrf_wp_suggestion, inv=inv))
-                inv.dynamic_verify = {"attempted": True, "available": wr.available,
-                                      "ok": wr.ok, "verified": wr.verified, "detail": wr.detail,
-                                      "logs": wr.logs}
-                inv.attempt_evidence = wr.evidence
-                if wr.verified:
-                    inv.verified = True
-                    inv.verified_detail = wr.detail
-                    inv.verified_evidence = wr.evidence
-                elif not wr.available:
+                _apply_wpverify_result(inv, wr, es, llm)
+                if not wr.available:
                     inv.blockers.append(("verificacion dinamica no intentada: " + wr.limitations[0]
                                          if wr.limitations else
                                          "verificacion dinamica no disponible (sin Docker)"))
-                else:
+                elif not wr.verified:
                     inv.blockers.append((f"verificacion dinamica intentada pero no confirmada: "
                                          f"{wr.detail}" if es else
                                          f"dynamic verification attempted but not confirmed: "

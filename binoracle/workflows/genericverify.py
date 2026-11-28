@@ -11388,11 +11388,23 @@ def verify_generic_information_disclosure(
                     step(f"header check: Vary='{_vary_val or '(absent)'}' — "
                          f"'{missing_response_header}' {'ABSENT (vuln)' if _header_absent else 'present (patched)'}")
                     if _header_absent and _mh_resp.status_code < 500:
-                        res.verified = True
+                        # NO es prueba canario -- es la ausencia de UNA cabecera en UNA
+                        # respuesta, que puede darse igual en configuraciones parcheadas
+                        # que simplemente no usan cache (sin Vary en absoluto, con o sin
+                        # el bug). No se marca verified=True (eso es solo para el oraculo
+                        # real: canario encontrado, comando ejecutado, etc.) -- se deja
+                        # como lead de alta prioridad para que el caller siga buscando
+                        # una confirmacion mas dura, igual que el resto del proyecto trata
+                        # toda evidencia no-canario.
                         res.ok = True
-                        res.confidence = "confirmed"
-                        res.detail = (f"VERIFICADO: '{missing_response_header}' ausente en "
-                                      f"cabecera Vary de {endpoint} (HTTP {_mh_resp.status_code})")
+                        res.confidence = "possible"
+                        res.evidence["not_verified_reason"] = (
+                            "ausencia de cabecera es una senal, no una prueba dinamica dura "
+                            "-- requiere confirmacion adicional (p.ej. diferencial con "
+                            "version parcheada, o explotacion real del cache-poisoning)")
+                        res.detail = (f"LEAD (no confirmado): '{missing_response_header}' ausente en "
+                                      f"cabecera Vary de {endpoint} (HTTP {_mh_resp.status_code}) -- "
+                                      f"senal de patch faltante, no una prueba dinamica dura")
                         return res
                     else:
                         res.detail = (f"header '{missing_response_header}' presente en Vary — "
@@ -11512,8 +11524,14 @@ def verify_generic_information_disclosure(
                         if (_auth_st < 400 and _anon_st < 400
                                 and len(_anon_body.strip()) > 20
                                 and abs(len(_auth_body) - len(_anon_body)) < max(50, len(_auth_body) * 0.15)):
-                            # Anon gets same data as authenticated — missing auth check
-                            res.verified = True
+                            # Anon gets same data as authenticated — missing auth check.
+                            # Similitud de longitud de respuesta es un indicio fuerte, NO una
+                            # prueba canario -- dos endpoints pueden coincidir en tamaño por
+                            # casualidad (p.ej. ambos devuelven la misma pagina de error
+                            # generica). No se marca verified=True: se deja como "probable"
+                            # sin confirmar, igual que el resto del proyecto trata evidencia
+                            # de este tipo (diff booleano, SSRF callback, etc.) -- el oraculo
+                            # (canario/comando/secreto real) es el unico que marca verified.
                             res.ok = True
                             res.confidence = "probable"
                             res.evidence.update({
