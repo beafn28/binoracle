@@ -9544,6 +9544,34 @@ def verify_wordpress_sqli(
                         pass
                 if res.verified:
                     break
+        # Container log inspection when all SQLi techniques fail.
+        # Capture the last 50 lines of the WP container logs to give the LLM
+        # context about why probes failed (PHP fatal, MySQL error, missing table, etc.)
+        if not res.verified and boot is not None:
+            try:
+                import subprocess as _sp2
+                _ct_wp = getattr(lab, "wp", None) or getattr(lab, "container", None) or ""
+                if _ct_wp:
+                    _lr = _sp2.run(["docker", "logs", "--tail", "50", str(_ct_wp)],
+                                   capture_output=True, text=True, timeout=8)
+                    _last50 = ((_lr.stdout or "") + (_lr.stderr or ""))[-2000:]
+                    if _last50.strip():
+                        res.evidence["container_logs_on_failure"] = _last50[-800:]
+                        # Annotate common root causes
+                        _log_lower = _last50.lower()
+                        if "fatal error" in _log_lower or "php fatal" in _log_lower:
+                            res.evidence["failure_root_cause"] = "php_fatal"
+                            step(f"[log-inspect] PHP fatal detectado en logs del contenedor")
+                        elif "table" in _log_lower and ("doesn't exist" in _log_lower
+                                                         or "not found" in _log_lower):
+                            res.evidence["failure_root_cause"] = "missing_table"
+                            step(f"[log-inspect] tabla MySQL no encontrada — setup_wp_options / "
+                                 f"companion_plugin probablemente necesario")
+                        elif "access denied" in _log_lower:
+                            res.evidence["failure_root_cause"] = "db_access_denied"
+            except Exception:
+                pass
+
         # Post-exploit escalation for SQLi: extract version, user(), hashes
         if res.verified and boot is not None:
             try:
@@ -12946,6 +12974,21 @@ def verify_wordpress_missing_auth_probe(
                                 f" — mismo contenido para anonimo y subscriber ({len(body)}B ≈ "
                                 f"{len(_sub_body)}B): el endpoint no diferencia usuarios")
                             res.evidence["privilege_comparison"] = "anon==subscriber (no auth check)"
+                            # Identical response for anon and subscriber with non-trivial body
+                            # = strong evidence the endpoint skips auth entirely.
+                            # Verified even on 5xx — the app processes both requests identically.
+                            _body_non_trivial = len(body.strip()) > 30
+                            _body_not_error = not any(s in body.lower() for s in (
+                                "you need to log in", "unauthorized", "forbidden",
+                                "403 forbidden", "401 unauthorized"))
+                            if _body_non_trivial and _body_not_error:
+                                res.verified = True
+                                res.confidence = "probable"
+                                res.detail = (
+                                    f"MISSING-AUTH CONFIRMADA: respuesta identica para anonimo "
+                                    f"({status}/{len(body)}B) y subscriber ({_sub_st}/{len(_sub_body)}B)"
+                                    f" en endpoint {endpoint} — comprobacion de autenticacion ausente")
+                                return res
                         else:
                             _cmp_detail = (
                                 f" — respuesta anonima ({len(body)}B) difiere de subscriber "
@@ -12953,6 +12996,31 @@ def verify_wordpress_missing_auth_probe(
                             res.evidence["privilege_comparison"] = f"anon={len(body)}B sub={len(_sub_body)}B"
                 except Exception:
                     pass
+
+                # HTTP method rotation: if the probe returned 4xx/5xx, try alternative HTTP
+                # methods. Many REST endpoints use POST/PUT/PATCH but the LLM may guess GET.
+                if not res.verified and status in (400, 404, 405) and m != "POST":
+                    _alt_methods = [_am for _am in ("POST", "GET", "PUT", "PATCH", "DELETE")
+                                    if _am != m]
+                    for _am in _alt_methods:
+                        try:
+                            _r_am = anon_sess.request(
+                                _am, boot.base_url + endpoint,
+                                json=params_dict if _am not in ("GET", "HEAD") else None,
+                                params=params_dict if _am == "GET" else None,
+                                timeout=15, allow_redirects=True)
+                            _s_am = _r_am.status_code
+                            _b_am = (_r_am.text or "")[:2000]
+                            if _s_am not in (400, 404, 405) and len(_b_am.strip()) > 10:
+                                step(f"probe: metodo {m} → {status}, {_am} → {_s_am} "
+                                     f"({len(_b_am)}B) — endpoint responde con {_am}")
+                                status, body, m = _s_am, _b_am, _am
+                                res.evidence["method_rotated_to"] = _am
+                                res.evidence["status_anonimo"] = status
+                                break
+                        except Exception:
+                            continue
+
                 res.detail = (f"sonda no-auth: el endpoint responde HTTP {status} con contenido "
                               f"no trivial ({len(body)} bytes) sin autenticacion{_cmp_detail} — "
                               f"evidencia de que la comprobacion de autenticacion falta")

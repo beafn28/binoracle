@@ -2072,6 +2072,37 @@ def _diagnose_infra_error(e: Exception, source_dir: str = "", base_url: str = ""
     return f"error inesperado: {e}"
 
 
+def _capture_container_logs_on_failure(container: str, res: "WpVerifyResult",
+                                       step, tail: int = 50) -> None:
+    """Capture the last `tail` lines of Docker container logs into res.evidence.
+    Annotates common root causes so the LLM can reason about why the lab failed."""
+    if not container or container == "prebuilt":
+        return
+    try:
+        import subprocess as _splog
+        _lr = _splog.run(["docker", "logs", "--tail", str(tail), container],
+                         capture_output=True, text=True, timeout=8)
+        _last = ((_lr.stdout or "") + (_lr.stderr or ""))[-2000:]
+        if not _last.strip():
+            return
+        res.evidence["container_logs_on_failure"] = _last[-800:]
+        _lower = _last.lower()
+        if "fatal error" in _lower or "php fatal" in _lower:
+            res.evidence["failure_root_cause"] = "php_fatal"
+            step("[log] PHP fatal en logs del contenedor — plugin incompatible con PHP version")
+        elif ("table" in _lower and ("doesn't exist" in _lower or "not found" in _lower)):
+            res.evidence["failure_root_cause"] = "missing_table"
+            step("[log] tabla no encontrada — plugin necesita setup adicional")
+        elif "eaddrinuse" in _lower or "address already in use" in _lower:
+            res.evidence["failure_root_cause"] = "port_conflict"
+            step("[log] puerto ya en uso — conflicto de puertos del lab")
+        elif "error establishing a database connection" in _lower:
+            res.evidence["failure_root_cause"] = "db_connection_failed"
+            step("[log] conexion a DB fallida en el laboratorio")
+    except Exception:
+        pass
+
+
 def _discover_routes_from_openapi(base_url: str, step) -> List[str]:
     """Try common OpenAPI/Swagger spec endpoints and parse paths from the spec.
 
@@ -2691,6 +2722,8 @@ def verify_generic_command_injection(
                             pass
         if not res.verified and res.confidence == "none":
             res.confidence = "inconclusive"
+        if not res.verified:
+            _capture_container_logs_on_failure(container, res, step)
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = _diagnose_infra_error(e, source_dir)
@@ -3264,6 +3297,8 @@ def verify_generic_path_traversal(
                     return _gen_rot
         if not res.verified and res.confidence == "none":
             res.confidence = "inconclusive"
+        if not res.verified:
+            _capture_container_logs_on_failure(container, res, step)
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = _diagnose_infra_error(e, source_dir)
@@ -3695,16 +3730,54 @@ def verify_generic_file_upload(
                 _resp = _http_request("POST", base_url + endpoint, timeout=15,
                                       data=payload, files=files)
                 _status = getattr(_resp, "status_code", 0)
+                _resp_body = getattr(_resp, "text", "") or ""
             except Exception as e:
                 tried.append({"fichero": fname, "error": str(e)})
                 continue
+
+            # Parse upload response JSON for the uploaded file URL.
+            # Many apps return {"url": "...", "path": "...", "file_url": "...",
+            # "data": {"url": ...}, "result": {"path": ...}, etc.}
+            # Extracting this URL lets us attempt direct HTTP execution instead of guessing.
+            _upload_url_from_resp: str = ""
+            try:
+                import json as _jmod
+                _rj = _jmod.loads(_resp_body)
+                def _find_url_key(obj, depth=0):
+                    if depth > 4:
+                        return ""
+                    if isinstance(obj, dict):
+                        for _k in ("url", "file_url", "fileUrl", "path", "file_path",
+                                   "filePath", "location", "src", "uri", "download_url",
+                                   "downloadUrl", "public_url", "publicUrl"):
+                            _v = obj.get(_k, "")
+                            if isinstance(_v, str) and _v.startswith("/"):
+                                return _v
+                            if isinstance(_v, str) and _v.startswith("http"):
+                                return _v
+                        for _v2 in obj.values():
+                            _found = _find_url_key(_v2, depth + 1)
+                            if _found:
+                                return _found
+                    elif isinstance(obj, list):
+                        for _item in obj[:3]:
+                            _found = _find_url_key(_item, depth + 1)
+                            if _found:
+                                return _found
+                    return ""
+                _upload_url_from_resp = _find_url_key(_rj)
+            except Exception:
+                pass
+
             time.sleep(1)
             r = lab.sh("exec", container, "sh", "-c",
                       f"grep -rl {secret[:8]} / 2>/dev/null | grep -v '^/proc' | head -3",
                       timeout=20)
             matches = [p for p in (r.stdout or "").splitlines() if p.strip()]
             tried.append({"fichero": fname, "content_type": ctype,
-                          "status_subida": _status, "rutas_encontradas": matches})
+                          "status_subida": _status, "rutas_encontradas": matches,
+                          **({"upload_url_from_response": _upload_url_from_resp}
+                             if _upload_url_from_resp else {})})
             if matches:
                 found = True
                 res.evidence["fichero_ganador"] = fname
@@ -3748,10 +3821,21 @@ def verify_generic_file_upload(
             # Try common WordPress upload paths where shell may be accessible
             _shell_name = res.evidence.get("fichero_ganador", "")
             _shell_path_in_container = res.evidence.get("ruta_real_en_el_contenedor", "")
+            # Collect the upload URL from response if available
+            _upload_url_found = ""
+            for _t in (tried or []):
+                if isinstance(_t, dict) and _t.get("upload_url_from_response"):
+                    _upload_url_found = _t["upload_url_from_response"]
+                    break
+            if _upload_url_found:
+                res.evidence["upload_url_from_response"] = _upload_url_found
+                step(f"upload: URL extraida de la respuesta JSON: {_upload_url_found}")
+
             if _shell_name and ".php" in _shell_name.lower():
                 _shell_wep = _try_execute_uploaded_shell(
                     base_url=base_url, shell_name=_shell_name,
-                    container_path=_shell_path_in_container, step=step)
+                    container_path=_shell_path_in_container, step=step,
+                    upload_url_hint=_upload_url_found or None)
                 if _shell_wep.get("impact"):
                     res.evidence["weaponization"] = _shell_wep
         else:
@@ -4171,6 +4255,7 @@ def verify_generic_ssrf(
                           f"el token llegara al listener interno -- el SSRF no se confirmo (puede "
                           f"que el endpoint/parametro no sean los reales, o que el servidor "
                           f"filtre de verdad las URLs internas antes de seguirlas)")
+            _capture_container_logs_on_failure(container, res, step)
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = _diagnose_infra_error(e, source_dir)
@@ -5470,6 +5555,8 @@ def verify_generic_sqli_blind(
                         pass
                 if res.verified:
                     break
+        if not res.verified:
+            _capture_container_logs_on_failure(container, res, step)
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = _diagnose_infra_error(e, source_dir)
@@ -8185,7 +8272,7 @@ def verify_generic_cors_misconfig(
 # ---------------------------------------------------------------------------
 
 def _try_execute_uploaded_shell(base_url: str, shell_name: str, container_path: str,
-                                 step) -> dict:
+                                 step, upload_url_hint: str = "") -> dict:
     """After file upload is confirmed (shell saved on disk), try to execute it via HTTP.
 
     Probes common WordPress/generic upload URL paths to find where the server
@@ -8208,6 +8295,13 @@ def _try_execute_uploaded_shell(base_url: str, shell_name: str, container_path: 
             f"/media/{shell_name}",
             f"/{shell_name}",
         ]
+        # Prioritise URL extracted from upload response JSON — most accurate
+        if upload_url_hint:
+            _hint_path = upload_url_hint if upload_url_hint.startswith("/") else (
+                "/" + upload_url_hint.split("/", 3)[-1]
+                if upload_url_hint.startswith("http") else upload_url_hint)
+            if _hint_path not in _upload_paths:
+                _upload_paths.insert(0, _hint_path)
         # Also derive path from container_path if available
         if container_path:
             # e.g. /var/www/html/wp-content/uploads/shell.php → /wp-content/uploads/shell.php
