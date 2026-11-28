@@ -17639,7 +17639,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             elif (not plugin_dir and fr.local_path and
                   (any(w in (getattr(inv, "cms", "") or "").lower() for w in ("strapi",))
                    or any(w in (notes.get("cms") or "").lower() for w in ("strapi",)))
-                  and inv.vuln_class in ("xss", "sqli", "sql-injection", "ssrf", "idor",
+                  and (inv.vuln_class or notes.get("vuln_class", "")).lower() in (
+                                         "xss", "sqli", "sql-injection", "ssrf", "idor",
                                          "missing-authorization", "auth-bypass",
                                          "broken-access-control", "ssti", "rce",
                                          "command-injection", "os-command-injection")
@@ -17764,7 +17765,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                    or any(w in (notes.get("cms") or "").lower() for w in ("directus",))
                    or "directus" in (notes.get("docker_image") or "").lower()
                    or "directus" in (notes.get("target_binary") or "").lower())
-                  and inv.vuln_class in ("xss", "sqli", "sql-injection", "ssrf", "idor",
+                  and (inv.vuln_class or notes.get("vuln_class", "")).lower() in (
+                                         "xss", "sqli", "sql-injection", "ssrf", "idor",
                                          "missing-authorization", "auth-bypass",
                                          "broken-access-control", "ssti", "rce",
                                          "path-traversal", "file-upload",
@@ -17800,7 +17802,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                    or "ghost" in (notes.get("target_binary") or "").lower()
                    or any(w in (getattr(inv, "cms", "") or "").lower() for w in ("ghost",))
                    or any(w in (notes.get("cms") or "").lower() for w in ("ghost",))) and
-                  inv.vuln_class in ("xss", "sqli", "sql-injection", "ssrf", "idor",
+                  (inv.vuln_class or notes.get("vuln_class", "")).lower() in (
+                                     "xss", "sqli", "sql-injection", "ssrf", "idor",
                                      "missing-authorization", "auth-bypass",
                                      "broken-access-control", "ssti", "rce",
                                      "path-traversal", "information-disclosure") and
