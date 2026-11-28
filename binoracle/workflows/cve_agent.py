@@ -3538,6 +3538,13 @@ def _cheerleader_analysis(llm, inv, wr, es: bool) -> dict:
                 _diff_analysis[_sink_sig] = _inv_diff[_sink_sig]
             elif _patch_diff.get(_sink_sig) and not _diff_analysis.get(_sink_sig):
                 _diff_analysis[_sink_sig] = _patch_diff.get(_sink_sig)
+        # New diff signals: AJAX actions, nonce actions, SQL structure
+        for _new_sig in ("ajax_action_names", "nonce_action_names",
+                         "sql_query_structure", "sql_column_count", "sql_column_names"):
+            if _inv_diff.get(_new_sig) and not _diff_analysis.get(_new_sig):
+                _diff_analysis[_new_sig] = _inv_diff[_new_sig]
+            elif _patch_diff.get(_new_sig) and not _diff_analysis.get(_new_sig):
+                _diff_analysis[_new_sig] = _patch_diff.get(_new_sig)
         # Extracted parameter names from diff — auto-fill notes["parameters"] when empty
         _epn = (_inv_diff.get("extracted_param_names") or
                 (isinstance(_patch_diff, dict) and _patch_diff.get("extracted_param_names")) or [])
@@ -7551,6 +7558,12 @@ def _synthesize_exploit_from_intel(
                     patch_diff["missing_auth_confirmed_in_diff"] = True
                 if _da.get("sanitize_param") and not patch_diff.get("sanitize_param"):
                     patch_diff["sanitize_param"] = _da["sanitize_param"]
+                # New signals from diff_analyzer
+                for _da_key in ("ajax_action_names", "nonce_action_names",
+                                "sql_query_structure", "sql_column_count",
+                                "sql_column_names"):
+                    if _da.get(_da_key) and not patch_diff.get(_da_key):
+                        patch_diff[_da_key] = _da[_da_key]
                 if _da.get("extracted_param_names") and not patch_diff.get("extracted_param_names"):
                     patch_diff["extracted_param_names"] = _da["extracted_param_names"]
                 if _da.get("dangerous_sinks_removed") and not patch_diff.get("dangerous_sinks_removed"):
@@ -14355,6 +14368,47 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                     inv.diff_analysis = {}
                                 if _sink_key not in inv.diff_analysis:
                                     inv.diff_analysis[_sink_key] = _sk_val
+                        # Propagate AJAX action names → auto-fill action parameter for admin-ajax.php
+                        _ajax_acts = _pd_struct.get("ajax_action_names") or []
+                        if _ajax_acts:
+                            inv.llm_notes["patch_diff_analysis"]["ajax_action_names"] = _ajax_acts
+                            if not getattr(inv, "diff_analysis", None):
+                                inv.diff_analysis = {}
+                            if "ajax_action_names" not in inv.diff_analysis:
+                                inv.diff_analysis["ajax_action_names"] = _ajax_acts
+                            # Auto-seed ajax_action in notes if endpoint is admin-ajax.php or unset
+                            _ep_pd = inv.llm_notes.get("endpoint", "")
+                            if not inv.llm_notes.get("ajax_action") and (
+                                "admin-ajax" in _ep_pd or not _ep_pd
+                            ):
+                                inv.llm_notes["ajax_action"] = _ajax_acts[0]
+                                notes["ajax_action"] = _ajax_acts[0]
+                                step(f"patch_diff: ajax_action auto-seeded from wp_ajax hook: {_ajax_acts[0]!r}")
+                            # Also seed parameters.action if not set
+                            if not (inv.llm_notes.get("parameters") or {}).get("action") and (
+                                "admin-ajax" in _ep_pd or not _ep_pd
+                            ):
+                                inv.llm_notes.setdefault("parameters", {})["action"] = _ajax_acts[0]
+                                notes.setdefault("parameters", {})["action"] = _ajax_acts[0]
+                                step(f"patch_diff: parameters.action auto-seeded: {_ajax_acts[0]!r}")
+                        # Propagate nonce action names
+                        _nonce_acts = _pd_struct.get("nonce_action_names") or []
+                        if _nonce_acts:
+                            inv.llm_notes["patch_diff_analysis"]["nonce_action_names"] = _nonce_acts
+                            if not getattr(inv, "diff_analysis", None):
+                                inv.diff_analysis = {}
+                            inv.diff_analysis["nonce_action_names"] = _nonce_acts
+                        # Propagate SQL column count → sqli_union_cols for UNION-based probes
+                        _sql_col_cnt = _pd_struct.get("sql_column_count")
+                        if _sql_col_cnt:
+                            inv.llm_notes["patch_diff_analysis"]["sql_column_count"] = _sql_col_cnt
+                            if not inv.llm_notes.get("sqli_union_cols"):
+                                inv.llm_notes["sqli_union_cols"] = _sql_col_cnt
+                                notes["sqli_union_cols"] = _sql_col_cnt
+                                step(f"patch_diff: sqli_union_cols={_sql_col_cnt} auto-seeded from SELECT column count")
+                        _sql_col_names = _pd_struct.get("sql_column_names") or []
+                        if _sql_col_names:
+                            inv.llm_notes["patch_diff_analysis"]["sql_column_names"] = _sql_col_names
                         step((f"patch_diff_structured del store de intel: "
                               f"fix_type={_pd_struct.get('fix_type')!r}, "
                               f"bypass_hints={_pd_struct.get('bypass_hints', [])}") if es else

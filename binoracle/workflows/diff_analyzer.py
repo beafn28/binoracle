@@ -700,6 +700,90 @@ def analyze_patch_diff(raw_diff: str) -> dict:
     if companion_plugins:
         result["companion_plugins_detected"] = companion_plugins
 
+    # --- Mejora 1: Extract AJAX action names from wp_ajax_nopriv_ / wp_ajax_ hooks ---
+    # Critical for admin-ajax.php endpoints: without the action name, every probe 404s.
+    _AJAX_HOOK_PAT = re.compile(
+        r"""add_action\s*\(\s*['"]wp_ajax(?:_nopriv)?_([a-zA-Z0-9_]{2,80})['"]""",
+        re.IGNORECASE,
+    )
+    _ajax_actions: list = []
+    for _rl in removed_lines:
+        for _am in _AJAX_HOOK_PAT.finditer(_rl):
+            _act = _am.group(1)
+            if _act not in _ajax_actions:
+                _ajax_actions.append(_act)
+    if _ajax_actions:
+        result["ajax_action_names"] = _ajax_actions[:5]
+        result["bypass_hints"].append(
+            f"AJAX actions registered in vulnerable code: {_ajax_actions[:3]} — "
+            "probe wp-admin/admin-ajax.php with ?action=<name> (anon: nopriv hooks; "
+            "auth: wp_ajax_ hooks)"
+        )
+
+    # --- Mejora 2: Extract nonce action strings from wp_verify_nonce() calls ---
+    # Gives verifiers the exact nonce action to use when forging or bypassing nonces.
+    _NONCE_VERIFY_PAT = re.compile(
+        r"""wp_verify_nonce\s*\([^,]+,\s*['"]([a-zA-Z0-9_\-]{2,80})['"]""",
+        re.IGNORECASE,
+    )
+    _nonce_actions: list = []
+    for _rl in removed_lines:
+        for _nm in _NONCE_VERIFY_PAT.finditer(_rl):
+            _na = _nm.group(1)
+            if _na not in _nonce_actions:
+                _nonce_actions.append(_na)
+    if _nonce_actions:
+        result["nonce_action_names"] = _nonce_actions[:5]
+
+    # --- Mejora 3: Extract exact capability names from current_user_can() ---
+    # Extends removed_capability_checks with the precise capability slug.
+    _CAP_CAN_PAT = re.compile(
+        r"""current_user_can\s*\(\s*['"]([a-zA-Z0-9_\-]{2,60})['"]""",
+        re.IGNORECASE,
+    )
+    for _rl in removed_lines:
+        for _cm in _CAP_CAN_PAT.finditer(_rl):
+            _cap = _cm.group(1)
+            if _cap not in result["removed_capability_checks"]:
+                result["removed_capability_checks"].append(_cap)
+
+    # --- Mejora 4: Extract SQL query structure from removed lines ---
+    # Identifies the SQL clause context for more targeted injection payloads.
+    _SQL_STRUCT_PAT = re.compile(
+        r"""\b(SELECT\s+.{0,120}?\bFROM\b|INSERT\s+INTO\b|UPDATE\s+\S+\s+SET\b|DELETE\s+FROM\b)""",
+        re.IGNORECASE | re.DOTALL,
+    )
+    _sql_structures: list = []
+    for _rl in removed_lines:
+        for _sm in _SQL_STRUCT_PAT.finditer(_rl):
+            _frag = _sm.group(0).strip()[:120]
+            if _frag and _frag not in _sql_structures:
+                _sql_structures.append(_frag)
+    if _sql_structures:
+        result["sql_query_structure"] = _sql_structures[:3]
+
+    # --- Mejora 5: Detect SELECT column count from explicit column lists ---
+    # UNION-based SQLi needs the exact number of columns in the original SELECT.
+    _SELECT_COLS_PAT = re.compile(
+        r"""\bSELECT\s+((?:[^()]*?))\s+FROM\b""",
+        re.IGNORECASE,
+    )
+    _sql_col_names: list = []
+    _sql_col_count = 0
+    for _rl in removed_lines:
+        _scm = _SELECT_COLS_PAT.search(_rl)
+        if _scm:
+            _cols_raw = _scm.group(1).strip()
+            if _cols_raw and _cols_raw != "*":
+                _split = [c.strip().split(".")[-1].strip("`'\"") for c in _cols_raw.split(",")]
+                _split = [c for c in _split if c and len(c) <= 60 and " " not in c]
+                if _split and len(_split) > _sql_col_count:
+                    _sql_col_count = len(_split)
+                    _sql_col_names = _split[:15]
+    if _sql_col_count > 0:
+        result["sql_column_count"] = _sql_col_count
+        result["sql_column_names"] = _sql_col_names
+
     return result
 
 
