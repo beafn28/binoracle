@@ -13875,6 +13875,25 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                     and not inv.llm_notes.get("sqli_via_orderby")):
                                 inv.llm_notes["sqli_via_orderby"] = True
                                 step("patch_diff sqli_intel: ORDER BY injection detected → sqli_via_orderby=True")
+                        # Include REST routes extracted from register_rest_route() calls
+                        _rest_routes_pd = _pd_struct.get("rest_routes") or []
+                        if _rest_routes_pd:
+                            inv.llm_notes["patch_diff_analysis"]["rest_routes"] = _rest_routes_pd
+                            # Also set inv.diff_analysis so the verifier can use it
+                            if not getattr(inv, "diff_analysis", None):
+                                inv.diff_analysis = {}
+                            if "rest_routes" not in inv.diff_analysis:
+                                inv.diff_analysis["rest_routes"] = _rest_routes_pd
+                                step(f"patch_diff: {len(_rest_routes_pd)} REST route(s) extraidas del diff: "
+                                     f"{_rest_routes_pd[:3]}")
+                        # Include companion plugins from diff analysis
+                        _comp_pd = _pd_struct.get("companion_plugins_detected") or []
+                        if _comp_pd:
+                            inv.llm_notes["patch_diff_analysis"]["companion_plugins_detected"] = _comp_pd
+                            if not getattr(inv, "diff_analysis", None):
+                                inv.diff_analysis = {}
+                            if "companion_plugins_detected" not in inv.diff_analysis:
+                                inv.diff_analysis["companion_plugins_detected"] = _comp_pd
                         step((f"patch_diff_structured del store de intel: "
                               f"fix_type={_pd_struct.get('fix_type')!r}, "
                               f"bypass_hints={_pd_struct.get('bypass_hints', [])}") if es else
