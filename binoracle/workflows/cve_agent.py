@@ -17689,6 +17689,23 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             _raw_sqli = str(_pp)
                             break
                 sqli_p = _raw_sqli or _pick_param(params, _SQLI_HINTS)
+                # Sanitize: if sqli_param looks like a SQL payload (contains spaces, semicolons,
+                # SQL keywords), the LLM put the payload value instead of the param name.
+                # Fall back to picking the param from the parameters dict.
+                _SQL_PAYLOAD_SIGNALS = (" ", ";", "'", '"', "--", "SELECT", "INSERT",
+                                        "UPDATE", "DELETE", "UNION", "SLEEP(", "CAST(")
+                if sqli_p and any(s in sqli_p for s in _SQL_PAYLOAD_SIGNALS):
+                    _fallback_p = _pick_param(params, _SQLI_HINTS)
+                    if _fallback_p:
+                        step(f"[sqli-param sanitize] '{sqli_p[:30]}' looks like a payload, "
+                             f"using '{_fallback_p}' from parameters instead")
+                        sqli_p = _fallback_p
+                    elif isinstance(params, dict) and params:
+                        sqli_p = next(iter(params))
+                        step(f"[sqli-param sanitize] using first param key '{sqli_p}'")
+                    elif isinstance(params, list) and params:
+                        sqli_p = str(params[0]).split("[")[0]
+                        step(f"[sqli-param sanitize] using first param '{sqli_p}'")
                 # si el endpoint es la raiz ('/'), atacarla directamente no puede reflejar
                 # ninguna diferencia (es la portada vacia por defecto, sin contenido del plugin)
                 # -- confirmado en vivo, CVE-2024-3552: con el shortcode real del plugin,
