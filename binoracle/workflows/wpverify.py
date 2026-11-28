@@ -13097,6 +13097,44 @@ def verify_wordpress_missing_auth_probe(
             _nonce_in_body = ("nonce" in body_low or "rest_cookie" in body_low
                               or "rest_forbidden" in body_low)
             if _nonce_in_body and status in (401, 403) and boot is not None:
+                # Path A: extract wp_rest nonce from page HTML (as a real attacker would).
+                # WordPress embeds nonces in inline scripts on most pages.
+                try:
+                    import re as _re_nonce
+                    _home_r = anon_sess.get(boot.base_url + "/", timeout=10, allow_redirects=True)
+                    _home_body = _home_r.text or ""
+                    _nonce_from_html = ""
+                    for _npat in [
+                        r'"nonce"\s*:\s*"([a-f0-9]{10})"',
+                        r'nonce["\']?\s*[:=]\s*["\']([a-f0-9]{10})["\']',
+                        r'restNonce["\']?\s*[:=]\s*["\']([a-f0-9]{10})["\']',
+                        r'wp_rest["\'].*?["\']([a-f0-9]{10})["\']',
+                    ]:
+                        _mn = _re_nonce.search(_home_body, _re_nonce.IGNORECASE)
+                        if _mn:
+                            _nonce_from_html = _mn.group(1)
+                            break
+                    if _nonce_from_html:
+                        res.evidence["nonce_from_html"] = _nonce_from_html
+                        _html_nonce_sess = _make_session()
+                        _html_nonce_sess.headers["X-WP-Nonce"] = _nonce_from_html
+                        _html_nr = _html_nonce_sess.request(
+                            m, boot.base_url + endpoint,
+                            json=params_dict if (m not in ("GET", "HEAD") and json_body) else None,
+                            data=params_dict if (m not in ("GET", "HEAD") and not json_body) else None,
+                            params=params_dict if m == "GET" else None,
+                            timeout=20, allow_redirects=True)
+                        if _html_nr.status_code < 400 and len((_html_nr.text or "").strip()) > 20:
+                            step(f"NONCE HTML: nonce extraido del HTML ({_nonce_from_html[:6]}...) "
+                                 f"permite acceso → HTTP {_html_nr.status_code}")
+                            status, body, body_low = (_html_nr.status_code,
+                                                      (_html_nr.text or "")[:2000],
+                                                      (_html_nr.text or "").lower())
+                            res.evidence["nonce_html_bypass_proven"] = True
+                            _rejected = False
+                except Exception:
+                    pass
+                # Path B: generate nonce via wp-cli with subscriber credentials
                 try:
                     _sub_ok2 = _wp_login(
                         boot.base_url, boot.sub_user, boot.sub_pass, on_step=step)
@@ -13476,6 +13514,44 @@ def verify_wordpress_missing_auth_probe(
                     step(f"ADMIN LEAK: {_admin_markers} en respuesta anonima → confirmed")
             except Exception:
                 pass
+
+        # BOLA detection: iterate resource IDs if any param looks like an ID.
+        # If the same endpoint returns different data for different IDs without auth,
+        # it proves any user's data is accessible (Broken Object Level Authorization).
+        if not res.verified and not _rejected and status == 200 and params_dict and boot is not None:
+            _id_params_bola = [k for k in params_dict if any(
+                s in k.lower() for s in ("id", "user", "author", "post", "member", "account"))]
+            if _id_params_bola:
+                _id_param_bola = _id_params_bola[0]
+                for _test_id in range(1, 6):
+                    if str(_test_id) == str(params_dict.get(_id_param_bola, "")):
+                        continue
+                    try:
+                        _bola_params = dict(params_dict)
+                        _bola_params[_id_param_bola] = str(_test_id)
+                        _br = anon_sess.request(
+                            m, boot.base_url + endpoint,
+                            params=_bola_params if m == "GET" else None,
+                            data=_bola_params if m not in ("GET", "HEAD") and not json_body else None,
+                            json=_bola_params if m not in ("GET", "HEAD") and json_body else None,
+                            timeout=15, allow_redirects=True)
+                        _bs = _br.status_code
+                        _bb = (_br.text or "")[:500]
+                        if (_bs == 200 and len(_bb.strip()) > 20
+                                and _bb.strip() != body.strip()[:500]):
+                            res.evidence["bola_id_enumeration"] = {
+                                "param": _id_param_bola, "id_tested": _test_id,
+                                "original_id": params_dict.get(_id_param_bola),
+                                "different_data": True, "body_snippet": _bb[:200]}
+                            res.verified = True
+                            res.confidence = "confirmed"
+                            res.detail = (
+                                f"BOLA: endpoint HTTP 200 con {_id_param_bola}={_test_id} "
+                                f"devuelve datos diferentes (otro recurso accesible sin auth)")
+                            step(f"BOLA: {_id_param_bola}={_test_id} → data diff → confirmed")
+                            break
+                    except Exception:
+                        pass
 
         # Write access escalation: if GET succeeds without auth, try mutating methods.
         # Proves the endpoint also allows writes without auth, which is higher impact.

