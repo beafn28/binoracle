@@ -913,27 +913,53 @@ def verify_drupal_command_injection(
             sleep_n = 6
             sleep_attempts = [f"; sleep {sleep_n}", f"| sleep {sleep_n}", f"`sleep {sleep_n}`",
                               f"$(sleep {sleep_n})", f"&& sleep {sleep_n}"]
+            # Fix: antes esto disparaba found=True con UNA sola medicion de tiempo (una
+            # peticion base + una peticion con sleep), pero el detail generado decia
+            # literalmente "retraso de forma CONSISTENTE" sin haber medido consistencia
+            # alguna -- un solo dato de timing es ruido de red/servidor, no prueba. La
+            # tecnica hermana de timing-blind para SQLi en este mismo fichero (mas abajo,
+            # "time-based-blind") SI exige 2 repeticiones independientes del mismo payload
+            # por encima del umbral antes de contar como encontrado. Replicado aqui para
+            # que ambas tecnicas de timing sigan el mismo estandar de rigor.
             for sp in sleep_attempts:
                 payload = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
                 payload[cmd_param] = sp
-                step(f"probando {m} {endpoint} con {cmd_param}={sp!r} (temporizacion)...")
+                step(f"probando {m} {endpoint} con {cmd_param}={sp!r} (temporizacion, repeticion 1/2)...")
                 try:
-                    t0_s = time.time()
+                    t0_s1 = time.time()
                     boot.sub_sess.request(m, boot.base_url + endpoint,
                                           data=payload if m != "GET" else None,
                                           params=payload if m == "GET" else None,
                                           timeout=sleep_n + 15)
-                    elapsed = time.time() - t0_s
+                    elapsed_1 = time.time() - t0_s1
                 except Exception:
                     continue
-                delayed = (baseline_s is not None and elapsed - baseline_s >= sleep_n - 1.5)
+                delayed_1 = (baseline_s is not None and elapsed_1 - baseline_s >= sleep_n - 1.5)
+                if not delayed_1:
+                    sleep_evidence = {"payload": sp, "baseline_s": round(baseline_s, 2) if baseline_s else None,
+                                      "elapsed_1_s": round(elapsed_1, 2), "retraso_consistente_2_repeticiones": False}
+                    continue
+                step(f"probando {m} {endpoint} con {cmd_param}={sp!r} (temporizacion, repeticion 2/2 "
+                     f"para descartar ruido)...")
+                try:
+                    t0_s2 = time.time()
+                    boot.sub_sess.request(m, boot.base_url + endpoint,
+                                          data=payload if m != "GET" else None,
+                                          params=payload if m == "GET" else None,
+                                          timeout=sleep_n + 15)
+                    elapsed_2 = time.time() - t0_s2
+                except Exception:
+                    continue
+                delayed_2 = (baseline_s is not None and elapsed_2 - baseline_s >= sleep_n - 1.5)
                 sleep_evidence = {"payload": sp, "baseline_s": round(baseline_s, 2) if baseline_s else None,
-                                  "elapsed_s": round(elapsed, 2), "retraso_consistente": delayed}
-                if delayed:
+                                  "elapsed_1_s": round(elapsed_1, 2), "elapsed_2_s": round(elapsed_2, 2),
+                                  "retraso_consistente_2_repeticiones": delayed_2}
+                if delayed_2:
                     found = True
                     res.evidence["payload_ganador"] = sp
                     res.evidence["tecnica"] = "blind-timing"
-                    step(f"VERIFICADO (blind/timing): la peticion con {sp!r} tardo {elapsed:.1f}s "
+                    step(f"VERIFICADO (blind/timing): la peticion con {sp!r} tardo "
+                         f"{elapsed_1:.1f}s y {elapsed_2:.1f}s en 2 repeticiones independientes "
                          f"frente a {baseline_s:.1f}s de control.")
                     break
             res.evidence["blind_timing_intento"] = sleep_evidence
