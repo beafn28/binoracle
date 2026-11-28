@@ -3810,6 +3810,21 @@ _LAB_SCAFFOLD_CMDI_SYS = (
     "\"cmd_param\": \"host\", \"server_port\": 3000, \"parameters\": {\"host\": \"localhost\"}}"
 )
 
+_LAB_SCAFFOLD_WERKZEUG_DEBUG_SYS = (
+    "Eres un experto en seguridad. Genera un servidor Flask minimal en modo DEBUG para un lab "
+    "de Werkzeug debugger RCE. El servidor expone la consola interactiva de Werkzeug sin PIN. "
+    "REGLAS:\n"
+    "1. Usa Flask con app.run(debug=True, use_reloader=False, host='0.0.0.0', port=5000)\n"
+    "2. Establece la variable de entorno WERKZEUG_DEBUG_PIN=off ANTES de importar Flask, "
+    "   o en el Dockerfile como ENV WERKZEUG_DEBUG_PIN=off\n"
+    "3. El servidor tiene al menos una ruta que puede provocar una excepcion (para activar el debugger)\n"
+    "4. El Dockerfile instala Flask y werkzeug en versiones VULNERABLES (no latest)\n"
+    "5. Usa ENV WERKZEUG_DEBUG_PIN=off en el Dockerfile\n"
+    "Responde SOLO con JSON sin markdown: "
+    "{\"server_code\": \"...\", \"dockerfile\": \"...\", \"endpoint\": \"/__debugger__\", "
+    "\"server_port\": 5000}"
+)
+
 _LAB_SCAFFOLD_SSTI_SYS = (
     "Eres un experto en seguridad. Genera un servidor para un lab de SSTI. "
     "El servidor renderiza un parametro del usuario como plantilla de template. REGLAS:\n"
@@ -10945,6 +10960,23 @@ axum = "0.7"
 def _gen_pip_app(pkg: str, vuln_class: str, endpoint: str, param: str, pkg_version: str) -> str:
     """Genera un servidor Python minimal que expone el camino vulnerable del paquete."""
     pkg_lower = pkg.lower()
+    if vuln_class in ("werkzeug-debug", "flask-debug", "debug-console-rce", "debugger-rce"):
+        # Flask app running in debug mode — Werkzeug debugger exposed, PIN disabled via env.
+        # The route intentionally raises an exception so the interactive debugger console appears.
+        return (
+            "import os\n"
+            "os.environ['WERKZEUG_DEBUG_PIN'] = 'off'\n"
+            "from flask import Flask, request\n\n"
+            "app = Flask(__name__)\n\n"
+            "@app.route('/')\n"
+            "def index():\n"
+            "    return 'debug lab'\n\n"
+            "@app.route('/crash')\n"
+            "def crash():\n"
+            "    raise RuntimeError('intentional crash for debugger')\n\n"
+            "if __name__ == '__main__':\n"
+            "    app.run(debug=True, use_reloader=False, host='0.0.0.0', port=5000)\n"
+        )
     if vuln_class == "path-traversal":
         if "aiohttp" in pkg_lower:
             return (
@@ -11275,6 +11307,8 @@ def _scaffold_pip_lab(target: str, version: str, vuln_class: str,
     elif vuln_class in ("command-injection", "os-command-injection"):
         _needs_flask = True
     elif vuln_class in ("sqli", "sql-injection", "xss", "path-traversal", "ssrf"):
+        _needs_flask = True
+    elif vuln_class in ("werkzeug-debug", "flask-debug", "debug-console-rce", "debugger-rce"):
         _needs_flask = True
     if _needs_flask and pin_name.lower() != "flask":
         req_lines.append("flask>=2.0")
@@ -12898,11 +12932,11 @@ _SCAFFOLD_SYS_FOR_CLASS = {
     "algorithmic-complexity":            "_LAB_SCAFFOLD_REDOS_SYS",
     "regular-expression-denial-of-service": "_LAB_SCAFFOLD_REDOS_SYS",
     "catastrophic-backtracking":         "_LAB_SCAFFOLD_REDOS_SYS",
-    # Werkzeug/Flask debug console RCE — use CMDI scaffold to generate a Flask app in debug mode
-    "werkzeug-debug":                    "_LAB_SCAFFOLD_CMDI_SYS",
-    "flask-debug":                       "_LAB_SCAFFOLD_CMDI_SYS",
-    "debug-console-rce":                 "_LAB_SCAFFOLD_CMDI_SYS",
-    "debugger-rce":                      "_LAB_SCAFFOLD_CMDI_SYS",
+    # Werkzeug/Flask debug console RCE — dedicated scaffold that generates a Flask app in debug mode
+    "werkzeug-debug":                    "_LAB_SCAFFOLD_WERKZEUG_DEBUG_SYS",
+    "flask-debug":                       "_LAB_SCAFFOLD_WERKZEUG_DEBUG_SYS",
+    "debug-console-rce":                 "_LAB_SCAFFOLD_WERKZEUG_DEBUG_SYS",
+    "debugger-rce":                      "_LAB_SCAFFOLD_WERKZEUG_DEBUG_SYS",
 }
 
 # Cache de scaffolds verificados: (tech, vuln_class) → lab_config dict.
