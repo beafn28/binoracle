@@ -625,6 +625,68 @@ def analyze_patch_diff(raw_diff: str) -> dict:
                 "integer: e.g. '1 AND extractvalue(1,concat(0x7e,version()))'"
             )
 
+    # Extract parameter names used in the vulnerable endpoint from removed lines.
+    # Covers WP register_rest_route() array keys, get_param() calls, and
+    # Express/Flask/Django request accessors — gives verifiers a concrete param list.
+    _param_names: list = []
+    _param_arr_pat = re.compile(
+        r"""['"]([ a-z_][a-z0-9_]{1,39})['"]\s*=>\s*(?:array\(|\[|{)""",
+        re.IGNORECASE,
+    )
+    _get_param_pat = re.compile(
+        r"""(?:get_param|get\(|getParam\()\s*\(\s*['"]([a-z_][a-z0-9_]{1,39})['"]""",
+        re.IGNORECASE,
+    )
+    # Express: req.body.foo / req.query.foo / req.params.foo
+    _express_pat = re.compile(
+        r"""req\.(?:body|query|params)\.([a-zA-Z_][a-zA-Z0-9_]{1,39})""",
+    )
+    # Flask/Django: request.args.get('foo'), request.POST['foo'], request.data.get('foo')
+    _py_pat = re.compile(
+        r"""request\.(?:args|GET|POST|data|json|form)\.get\(\s*['"]([a-z_][a-z0-9_]{1,39})['"]""",
+        re.IGNORECASE,
+    )
+    _NON_PARAM_KEYS = frozenset({
+        "default", "required", "type", "sanitize_callback", "validate_callback",
+        "permission_callback", "methods", "callback", "args", "schema", "enum",
+        "description", "context", "readonly", "items", "properties",
+    })
+    for _rl in removed_lines:
+        for _m in _param_arr_pat.finditer(_rl):
+            _p = _m.group(1).strip()
+            if _p not in _NON_PARAM_KEYS and _p not in _param_names:
+                _param_names.append(_p)
+        for _m in _get_param_pat.finditer(_rl):
+            _p = _m.group(1)
+            if _p not in _NON_PARAM_KEYS and _p not in _param_names:
+                _param_names.append(_p)
+        for _m in _express_pat.finditer(_rl):
+            _p = _m.group(1)
+            if _p not in _param_names:
+                _param_names.append(_p)
+        for _m in _py_pat.finditer(_rl):
+            _p = _m.group(1)
+            if _p not in _param_names:
+                _param_names.append(_p)
+    if _param_names:
+        result["extracted_param_names"] = _param_names[:10]
+
+    # Extract version numbers mentioned in diff context (changelog comments, @since, etc.)
+    _VERSION_PAT = re.compile(
+        r'(?:version|ver|v)\s*[=:]\s*["\']?([\d]+\.[\d]+\.[\d]+)["\']?'
+        r'|(?:fixed|patched|since|changed)\s+in\s+v?([\d]+\.[\d]+\.[\d]+)'
+        r'|@since\s+([\d]+\.[\d]+\.[\d]+)',
+        re.IGNORECASE,
+    )
+    _versions_found: list = []
+    for _dline in raw_diff.splitlines():
+        for _vm in _VERSION_PAT.finditer(_dline):
+            _v = next((g for g in _vm.groups() if g), None)
+            if _v and _v not in _versions_found:
+                _versions_found.append(_v)
+    if _versions_found:
+        result["versions_in_diff"] = _versions_found[:5]
+
     # Extract REST endpoint paths registered in removed (vulnerable) lines.
     # These are the actual endpoints the vulnerable code registered — the most
     # reliable source for probe_endpoints rather than generic convention guesses.

