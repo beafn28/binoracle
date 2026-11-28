@@ -15827,10 +15827,10 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             "must be of type", " static method "))
                         and not _gwi_lfi().endswith("php7.4-apache")
                         and not notes.get("docker_image", "").endswith("php7.4-apache")):
-                    step((f"LFI: activacion fallo por PHP 8.x incompatibilidad — "
-                          f"reintentando con wordpress:php7.4-apache") if es else
-                         (f"LFI: activation failed due to PHP 8.x strict compat — "
-                          f"retrying with wordpress:php7.4-apache"))
+                    step(("LFI: activacion fallo por PHP 8.x incompatibilidad — "
+                          "reintentando con wordpress:php7.4-apache") if es else
+                         ("LFI: activation failed due to PHP 8.x strict compat — "
+                          "retrying with wordpress:php7.4-apache"))
                     set_wp_image_override("wordpress:php7.4-apache")
                     wr = verify_wordpress_lfi(
                         fr.local_path, plugin_dir, notes.get("endpoint"),
@@ -17262,10 +17262,10 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         and any(_p in _dv_detail_low for _p in _PHP8_STRICT_PATTERNS)
                         and not _gwi().endswith("php7.4-apache")
                         and not notes.get("docker_image", "").endswith("php7.4-apache")):
-                    step((f"activacion fallo por PHP 8.x incompatibilidad — "
-                          f"reintentando con wordpress:php7.4-apache") if es else
-                         (f"activation failed due to PHP 8.x strict compat — "
-                          f"retrying with wordpress:php7.4-apache"))
+                    step(("activacion fallo por PHP 8.x incompatibilidad — "
+                          "reintentando con wordpress:php7.4-apache") if es else
+                         ("activation failed due to PHP 8.x strict compat — "
+                          "retrying with wordpress:php7.4-apache"))
                     set_wp_image_override("wordpress:php7.4-apache")
                     _sqli_boot_ref.clear()
                     _sqli_lab_ref.clear()
