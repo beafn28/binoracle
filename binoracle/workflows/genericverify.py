@@ -3072,7 +3072,18 @@ def verify_generic_path_traversal(
                         # query_suffix (opcional, e.g. 'import&' en CVE-2025-30208 Vite)
                         # se añade como query string: /@fs/{path}?import&
                         _qs = ("?" + query_suffix) if query_suffix and not query_suffix.startswith("?") else query_suffix
-                        target_url = base_url + cand_ep + payload_value + url_suffix + _qs
+                        # Inject a "/" separator when cand_ep doesn't end with "/" and
+                        # payload_value doesn't start with "/" or "%2F" — without it,
+                        # "/hls" + "../../tmp/canary" = "/hls../../tmp/canary" (single
+                        # path segment, no traversal) instead of "/hls/../../tmp/canary"
+                        # (confirmed bug: scan v8 log showed /hlstmp/... for audiobookshelf).
+                        _sep = ""
+                        if (not cand_ep.endswith("/")
+                                and payload_value
+                                and not payload_value.startswith("/")
+                                and not payload_value.lower().startswith("%2f")):
+                            _sep = "/"
+                        target_url = base_url + cand_ep + _sep + payload_value + url_suffix + _qs
                         # requests.request() normaliza %2e a '.' ANTES de enviar -- exactamente
                         # lo que rompe bypasses como '.%2e/' (CVE-2021-41773).
                         # También check cand_ep: si el analista bloqueó el endpoint con %2F/%2e
