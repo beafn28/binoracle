@@ -3538,6 +3538,13 @@ def _cheerleader_analysis(llm, inv, wr, es: bool) -> dict:
                 _diff_analysis[_sink_sig] = _inv_diff[_sink_sig]
             elif _patch_diff.get(_sink_sig) and not _diff_analysis.get(_sink_sig):
                 _diff_analysis[_sink_sig] = _patch_diff.get(_sink_sig)
+        # Extracted parameter names from diff — auto-fill notes["parameters"] when empty
+        _epn = (_inv_diff.get("extracted_param_names") or
+                (isinstance(_patch_diff, dict) and _patch_diff.get("extracted_param_names")) or [])
+        if _epn:
+            _diff_analysis["extracted_param_names"] = _epn[:6]
+            if not _notes.get("parameters") and _epn:
+                _notes["parameters"] = list(_epn[:3])
         # Enrich with lab evidence: tested_version, write_access_proven, patch_smoke_test
         _ev_cheer = getattr(wr, "evidence", {}) or {}
         _tested_ver = (_ev_cheer.get("tested_plugin_version") or
@@ -7544,6 +7551,10 @@ def _synthesize_exploit_from_intel(
                     patch_diff["missing_auth_confirmed_in_diff"] = True
                 if _da.get("sanitize_param") and not patch_diff.get("sanitize_param"):
                     patch_diff["sanitize_param"] = _da["sanitize_param"]
+                if _da.get("extracted_param_names") and not patch_diff.get("extracted_param_names"):
+                    patch_diff["extracted_param_names"] = _da["extracted_param_names"]
+                if _da.get("dangerous_sinks_removed") and not patch_diff.get("dangerous_sinks_removed"):
+                    patch_diff["dangerous_sinks_removed"] = _da["dangerous_sinks_removed"]
                 # Extract input path for the first sink candidate
                 _sinks = _da.get("sink_candidates", [])
                 if _sinks:
@@ -7570,6 +7581,21 @@ def _synthesize_exploit_from_intel(
             _rest_routes_str = (f"\n- REST endpoints registered in vulnerable code "
                                 f"(from register_rest_route/Express/Flask in diff): "
                                 f"{_rest_routes_list}")
+        _param_names_str = ""
+        _param_names_list = patch_diff.get("extracted_param_names") or []
+        if _param_names_list:
+            _param_names_str = (f"\n- Extracted parameter names from diff "
+                                f"(exact names used in vulnerable code): {_param_names_list}")
+        _sinks_str = ""
+        _sinks_dict = patch_diff.get("dangerous_sinks_removed") or {}
+        if _sinks_dict:
+            _sinks_flat = []
+            for _sk, _sv in _sinks_dict.items():
+                if _sv:
+                    _sinks_flat.extend(f"{_sk}:{f}" for f in (_sv if isinstance(_sv, list) else [str(_sv)]))
+            if _sinks_flat:
+                _sinks_str = (f"\n- Dangerous sinks removed by patch "
+                              f"(confirms sink category): {_sinks_flat[:6]}")
         patch_summary = (
             f"Patch diff (what changed to fix it):\n"
             f"- Files: {patch_diff.get('changed_files', [])}\n"
@@ -7580,7 +7606,9 @@ def _synthesize_exploit_from_intel(
             f"- Input path to sink: {patch_diff.get('input_path', '')}\n"
             f"- Bypass hints: {patch_diff.get('bypass_hints', [])}"
             f"{_sqli_ctx_str}"
-            f"{_rest_routes_str}\n"
+            f"{_rest_routes_str}"
+            f"{_param_names_str}"
+            f"{_sinks_str}\n"
             f"- Diff snippet:\n{patch_diff.get('raw_diff_snippet', '')[:800]}")
     _poc_code = (schema_hints or {}).get("public_poc_code", "")
     schema_str = ""

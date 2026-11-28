@@ -6112,6 +6112,34 @@ def verify_generic_xss(
         m = (http_method or "GET").upper().split("/")[0].split("|")[0].strip() or "GET"
         found = False
         tried = []
+
+        # Reflected-XSS parameter scan: probe all parameters for raw reflection before
+        # launching the heavyweight Playwright session. If a parameter reflects the probe
+        # token verbatim in the HTML body it becomes the confirmed xss_param (overrides hint).
+        # This is a fast HTTP-only pre-check — confirmation still requires JS execution below.
+        _reflect_token = f"binoracle-reflect-{token}"
+        _all_param_keys = list((parameters if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")).keys())
+        _reflected_params: list[str] = []
+        for _rp in _all_param_keys:
+            try:
+                _rparams = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(_all_param_keys, "")
+                _rparams[_rp] = _reflect_token
+                _rr = _http_request(m, base_url + endpoint,
+                                    data=_rparams if m != "GET" else None,
+                                    params=_rparams if m == "GET" else None, timeout=10)
+                if _reflect_token in (getattr(_rr, "text", "") or ""):
+                    _reflected_params.append(_rp)
+                    step(f"[reflect-scan] param '{_rp}' refleja input en la respuesta")
+            except Exception:
+                pass
+        if _reflected_params:
+            res.evidence["reflected_params"] = _reflected_params
+            if xss_param not in _reflected_params:
+                xss_param = _reflected_params[0]
+                step(f"[reflect-scan] usando param reflejado '{xss_param}' (el hint no reflejaba input)")
+        elif _all_param_keys:
+            step(f"[reflect-scan] ninguno de {len(_all_param_keys)} params reflejo el token (puede ser JSON o contexto DOM)")
+
         # UN SOLO navegador para los ~500+ intentos (ver _XssBrowserSession): arrancar un
         # Chromium por payload, confirmado en vivo, tarda minutos -- el coste real es el
         # arranque del propio navegador, no la navegacion entre paginas.
