@@ -15876,8 +15876,13 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     _traversal2 = _ep_pt[_trav_m2.start() :]
                     notes["endpoint"] = _base_ep2
                     inv.llm_notes["endpoint"] = _base_ep2
-                    notes.setdefault("lfi_path", _traversal2)
-                    notes.setdefault("path_traversal_payload", _traversal2)
+                    # Use assignment, not setdefault — setdefault keeps None if key exists
+                    if not notes.get("lfi_path"):
+                        notes["lfi_path"] = _traversal2
+                        inv.llm_notes["lfi_path"] = _traversal2
+                    if not notes.get("path_traversal_payload"):
+                        notes["path_traversal_payload"] = _traversal2
+                        inv.llm_notes["path_traversal_payload"] = _traversal2
                     step(f"[ep-fix] traversal in endpoint split: base={_base_ep2!r} traversal={_traversal2[:40]!r}")
             # Template placeholder replacement — LLM sometimes uses {{file_id}}, {post_attack_path},
             # <uid>, [resource_id] as literal segments. Replace with "1" so the verifier gets a
@@ -15922,7 +15927,15 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 and " " not in _src_raw            # WP slugs have no spaces
             )
             if _is_wp_slug_candidate:
-                _slug_url = f"https://downloads.wordpress.org/plugin/{_src_raw}.zip"
+                # Include affected_version in the URL so the lab downloads the VULNERABLE
+                # version, not the latest (patched) one.
+                _slug_av = (notes.get("affected_version") or notes.get("vuln_version") or "").strip()
+                _slug_av_clean = re.search(r'(\d+[\.\d]+)', _slug_av)
+                _slug_av_clean = _slug_av_clean.group(1) if _slug_av_clean else ""
+                if _slug_av_clean:
+                    _slug_url = f"https://downloads.wordpress.org/plugin/{_src_raw}.{_slug_av_clean}.zip"
+                else:
+                    _slug_url = f"https://downloads.wordpress.org/plugin/{_src_raw}.zip"
                 notes["source_url"] = _slug_url
                 inv.llm_notes["source_url"] = _slug_url
                 step(f"[src-fix] bare slug → WP URL: {_slug_url!r}")
