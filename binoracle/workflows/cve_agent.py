@@ -15734,6 +15734,20 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 if _cleaned_params != notes["parameters"]:
                     notes["parameters"] = _cleaned_params
                     inv.llm_notes["parameters"] = _cleaned_params
+            # Path traversal payload embedded in endpoint — split out the base path.
+            # e.g. "/hls/../../../../../../etc/passwd" → endpoint="/hls/" + lfi_path="../../../..."
+            _ep_pt = notes.get("endpoint") or ""
+            if "../" in _ep_pt or "..%2F" in _ep_pt.upper() or "..%252F" in _ep_pt.upper():
+                import re as _re_pt2
+                _trav_m2 = _re_pt2.search(r'(\.\.[\\/]|\.\.%2[Ff])', _ep_pt)
+                if _trav_m2:
+                    _base_ep2 = _ep_pt[: _trav_m2.start()].rstrip("/") or "/"
+                    _traversal2 = _ep_pt[_trav_m2.start() :]
+                    notes["endpoint"] = _base_ep2
+                    inv.llm_notes["endpoint"] = _base_ep2
+                    notes.setdefault("lfi_path", _traversal2)
+                    notes.setdefault("path_traversal_payload", _traversal2)
+                    step(f"[ep-fix] traversal in endpoint split: base={_base_ep2!r} traversal={_traversal2[:40]!r}")
             # Auto-fill docker_image when missing — without it the Docker lab cannot start.
             # Infer from inv.cms, source_url, or bare plugin slug heuristics.
             if not (notes.get("docker_image") or "").strip():
