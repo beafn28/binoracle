@@ -12613,7 +12613,7 @@ def verify_wordpress_missing_auth_probe(
         boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
                               companion_plugins=companion_plugins)
         if boot is None:
-            res.detail = "fallo al arrancar el laboratorio WordPress"
+            res.detail = res.detail or "fallo al arrancar el laboratorio WordPress"
             return res
 
         # Pre-attack WP option setup (e.g., registrar clave UDRPC antes del ataque)
@@ -13063,7 +13063,7 @@ def verify_wordpress_idor(
         boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
                               companion_plugins=companion_plugins)
         if boot is None:
-            res.detail = "fallo al arrancar el laboratorio WordPress"
+            res.detail = res.detail or "fallo al arrancar el laboratorio WordPress"
             return res
 
         m = (http_method or "GET").upper()
@@ -14081,7 +14081,7 @@ def verify_wordpress_request_chain(
         boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
                               companion_plugins=companion_plugins)
         if boot is None:
-            res.detail = "fallo al arrancar el laboratorio WordPress"
+            res.detail = res.detail or "fallo al arrancar el laboratorio WordPress"
             return res
 
         if setup_wp_options:

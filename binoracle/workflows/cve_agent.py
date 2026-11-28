@@ -21399,10 +21399,17 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None, fast_l
     # Confidence fixup: verifiers that set inv.dynamic_verify directly (SQLi, LFI, path-traversal)
     # never call _auto_set_confidence, so confidence stays "none" even when verified=True.
     if inv.verified and inv.dynamic_verify.get("confidence", "none") in ("none", None, ""):
-        inv.dynamic_verify["confidence"] = "confirmed"
-    # Also propagate to inv.confidence if not set
-    if inv.verified and not getattr(inv, "confidence", None):
-        inv.confidence = "confirmed"
+        _PROBABLE_TECHS = {
+            "boolean-blind-differential", "boolean-blind-content-diff", "time-based-blind",
+            "order-by-context-time-based", "boolean-oracle", "ssrf-callback",
+            "open-redirect", "jwt-bypass", "prototype-pollution", "race-condition", "idor",
+        }
+        _tecnica = (inv.attempt_evidence or {}).get("tecnica", "")
+        _conf_level = "probable" if any(t in _tecnica for t in _PROBABLE_TECHS) else "confirmed"
+        inv.dynamic_verify["confidence"] = _conf_level
+    # Also propagate to inv.confidence if not set (check "none" string explicitly — it is truthy)
+    if inv.verified and getattr(inv, "confidence", "none") in ("none", None, ""):
+        inv.confidence = inv.dynamic_verify.get("confidence", "confirmed")
 
     # POST-FAILURE CLASS REDIAGNOSIS — Qwen diagnoses if the wrong verifier was used.
     # Runs only on web CVEs that the Docker lab attempted but did NOT confirm.
