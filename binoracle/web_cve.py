@@ -439,6 +439,8 @@ class _Job:
 
 _jobs: dict[str, _Job] = {}
 _jobs_lock = threading.Lock()
+# Limit concurrent Docker labs to avoid MySQL/container resource contention
+_lab_semaphore = threading.Semaphore(2)
 
 
 def _start_job(cve_id: str, config) -> _Job:
@@ -457,13 +459,16 @@ def _start_job(cve_id: str, config) -> _Job:
             job._q.put(("step", entry))
 
         try:
-            inv = investigate_cve(
-                job.cve_id,
-                config=config,
-                on_step=on_step,
-                budget_s=600,
-                use_cache=False,  # web UI always runs fresh (user clicked Run)
-            )
+            on_step("[queue] esperando slot de lab (máx 2 simultáneos)...")
+            with _lab_semaphore:
+                on_step("[queue] slot adquirido — arrancando lab")
+                inv = investigate_cve(
+                    job.cve_id,
+                    config=config,
+                    on_step=on_step,
+                    budget_s=600,
+                    use_cache=False,  # web UI always runs fresh (user clicked Run)
+                )
             job.inv = inv
             job.status = "done"
             # Collect evidence for the UI
