@@ -13696,12 +13696,8 @@ def verify_generic_missing_authorization(
                 k: (v if not isinstance(v, dict) else str(v))
                 for k, v in (admin_credentials or {}).items()
             } if admin_credentials else {}
-            if not _json_post_params:
-                _json_post_params = {}
             try:
-                _rj = _probe.__func__ if hasattr(_probe, "__func__") else None
-                import requests as _rq2
-                _r_json = _rq2.post(
+                _r_json = _rq.post(
                     boot.base_url + endpoint,
                     json=_json_post_params or {},
                     headers={"Content-Type": "application/json",
