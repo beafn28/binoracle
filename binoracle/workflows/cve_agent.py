@@ -3389,6 +3389,8 @@ _CHEERLEADER_SYS = (
     "   - 'fix_completeness': si es 'partial', el parche no cubrio todos los codepaths — "
     "sugerir un vector alternativo que el parche no cubrio.\n"
     "   - 'input_path': la traza de entradas que llega al sumidero — usarla para afinar el parametro.\n"
+    "   - 'rest_routes': si no vacio, contiene las rutas REST registradas en el codigo vulnerable. "
+    "Si el endpoint_tried dio 404 o no responde, sugerir una de estas rutas como suggested_fix.endpoint.\n"
     "11. STATIC ANALYSIS — si 'static_analysis_candidates' tiene datos, el primer candidato es "
     "probablemente el sumidero real. Usar 'file', 'line', 'param' del candidato en suggested_fix.\n"
     "12. VULN-CLASS-SPECIFIC PATTERNS:\n"
@@ -3503,7 +3505,12 @@ def _cheerleader_analysis(llm, inv, wr, es: bool) -> dict:
                 "bypass_hints": _patch_diff.get("bypass_hints", [])[:3],
                 "input_path": (_patch_diff.get("input_path") or "")[:200],
                 "fix_completeness": _patch_diff.get("fix_completeness", ""),
+                "rest_routes": _patch_diff.get("rest_routes", [])[:4],
             }
+        # Enrich diff_analysis with rest_routes from inv.diff_analysis when available
+        _inv_diff = getattr(inv, "diff_analysis", None) or {}
+        if _inv_diff.get("rest_routes") and not _diff_analysis.get("rest_routes"):
+            _diff_analysis["rest_routes"] = _inv_diff["rest_routes"][:4]
         # Include pre-attempt validation failure reason if available
         _pre_validate = getattr(inv, "pre_validate_result", None) or {}
         context = {
