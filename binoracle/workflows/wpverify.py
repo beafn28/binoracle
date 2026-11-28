@@ -7598,6 +7598,11 @@ def verify_wordpress_sqli(
                 return False
 
             _ctrl_has_empty_data = _has_empty_collection(_ctrl_parsed)
+            # Also treat {"error": true/1} as empty-data: the query ran but found nothing,
+            # seeding the referenced resource may fix it.
+            if (not _ctrl_has_empty_data and isinstance(_ctrl_parsed, dict)
+                    and _ctrl_parsed.get("error") in (True, 1, "true", "1")):
+                _ctrl_has_empty_data = True
         except Exception:
             pass
         _plugin_tables = _detect_plugin_tables(plugin_source_dir)
