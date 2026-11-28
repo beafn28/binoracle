@@ -13247,13 +13247,21 @@ def verify_wordpress_missing_auth_probe(
                                     if (_adm_st < 400
                                             and abs(len(_adm_body) - len(body)) < max(50, len(body) * 0.15)
                                             and len(_adm_body.strip()) > 30):
-                                        res.verified = True
+                                        # Mismo criterio que la comparacion anon-vs-subscriber de
+                                        # arriba: similitud de longitud en UN SOLO par de peticiones
+                                        # no es prueba de oraculo (sin repeticion, sin variable
+                                        # causal controlada) -- lead fuerte, no verificado.
+                                        res.ok = True
                                         res.confidence = "probable"
                                         res.evidence["privilege_comparison"] = "anon==admin (admin-data exposed)"
+                                        res.evidence["not_verified_reason"] = (
+                                            "comparacion de longitud de una sola peticion anon vs "
+                                            "admin -- requiere confirmacion adicional antes de "
+                                            "contar como verificado")
                                         res.detail = (
-                                            f"MISSING-AUTH CONFIRMADA (nivel admin): respuesta "
+                                            f"MISSING-AUTH nivel admin (lead, no confirmado): respuesta "
                                             f"anonima ({status}/{len(body)}B) ≈ admin "
-                                            f"({_adm_st}/{len(_adm_body)}B) — endpoint expone "
+                                            f"({_adm_st}/{len(_adm_body)}B) — endpoint parece exponer "
                                             f"datos de admin sin autenticacion")
                                         return res
                                 except Exception:
