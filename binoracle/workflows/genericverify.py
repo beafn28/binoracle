@@ -7183,12 +7183,23 @@ def run_request_chain(
 
             ep = _substitute(step_def.get("endpoint", "/"))
             method = (step_def.get("method") or "GET").upper()
-            body_raw = _substitute(step_def.get("body") or "")
+            body_raw = step_def.get("body") or ""
+            # Substitute body: JSON dict stays as dict (for json= kwarg), string is substituted
+            if isinstance(body_raw, dict):
+                import json as _jbody
+                body_raw = _jbody.dumps({k: _substitute(str(v)) if isinstance(v, str) else v
+                                         for k, v in body_raw.items()})
+            else:
+                body_raw = _substitute(str(body_raw)) if body_raw else ""
             hdrs = {k: _substitute(str(v))
                     for k, v in (step_def.get("headers") or {}).items()}
             confirm = step_def.get("confirm_string") or ""
             expect_status = step_def.get("confirm_status")  # None = any 2xx
             extract_rules: dict = step_def.get("extract") or {}
+            # URL query params (substituted): appended to the URL
+            _qparams = {k: _substitute(str(v))
+                        for k, v in (step_def.get("params") or
+                                     step_def.get("query_params") or {}).items()}
 
             url = base_url.rstrip("/") + ep
             _step(f"  request-chain[{i+1}/{len(steps)}]: {method} {ep}")
@@ -7203,6 +7214,7 @@ def run_request_chain(
             try:
                 r = _http_request(method, url, headers=hdrs,
                                   data=body_raw or None,
+                                  params=_qparams or None,
                                   timeout=15, allow_redirects=False)
                 status = r.status_code
                 body = getattr(r, "text", "") or ""
@@ -7224,7 +7236,15 @@ def run_request_chain(
                             import json as _jmod_chain
                             _jobj = _jmod_chain.loads(body)
                             for _jkey in _jpath:
-                                if isinstance(_jobj, dict):
+                                if isinstance(_jobj, list):
+                                    # Support array index: "[0]" or bare integer string
+                                    _idx_str = _jkey.strip("[]")
+                                    try:
+                                        _jobj = _jobj[int(_idx_str)]
+                                    except (ValueError, IndexError):
+                                        _jobj = None
+                                        break
+                                elif isinstance(_jobj, dict):
                                     _jobj = _jobj.get(_jkey)
                                 else:
                                     _jobj = None
