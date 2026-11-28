@@ -3885,6 +3885,7 @@ def _try_acquire_app_token(base_url: str, step) -> Optional[str]:
     _login_endpoints = [
         "/auth/login",             # Directus
         "/ghost/api/admin/session", # Ghost CMS admin session
+        "/api/auth/local",         # Strapi v4 (identifier+password)
         "/api/auth/login",
         "/api/v1/auth/login",
         "/api/v4/users/login",     # Mattermost
@@ -3893,10 +3894,16 @@ def _try_acquire_app_token(base_url: str, step) -> Optional[str]:
         "/api/login",
         "/login",
     ]
+    # Strapi v4: uses "identifier" (email or username) + "password"
+    _creds_strapi = [{"identifier": c["email"], "password": c["password"]} for c in _creds]
     # Also try with login_id key for Mattermost-style APIs
     _creds_mm = [{"login_id": c["email"], "password": c["password"]} for c in _creds]
     for ep in _login_endpoints:
-        _ep_creds = list(_creds) + (_creds_mm if "v4" in ep else [])
+        _ep_creds = list(_creds)
+        if "auth/local" in ep:          # Strapi
+            _ep_creds = _creds_strapi + _ep_creds
+        elif "v4" in ep:                # Mattermost
+            _ep_creds = list(_creds) + _creds_mm
         # For /api/login include username-based credentials (audiobookshelf, etc.)
         if "login" in ep.split("/")[-1]:
             _ep_creds = _ep_creds + _creds_user
@@ -3916,6 +3923,9 @@ def _try_acquire_app_token(base_url: str, step) -> Optional[str]:
                         _tok = (body.get("data", {}) or {}).get("access_token")
                         if not _tok:
                             _tok = body.get("access_token") or body.get("token") or body.get("jwt")
+                        # Strapi v4: {"jwt": "...", "user": {...}}
+                        if not _tok:
+                            _tok = body.get("jwt")
                         # audiobookshelf: {"user": {"token": "..."}}
                         if not _tok:
                             _tok = (body.get("user") or {}).get("token")

