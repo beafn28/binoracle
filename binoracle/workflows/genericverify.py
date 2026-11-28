@@ -9709,19 +9709,22 @@ def _try_mattermost_auth(base_url: str, on_step=None) -> dict:
     """Authenticate against Mattermost and return a token dict.
 
     Mattermost REST API v4: POST /api/v4/users/login with JSON credentials.
-    Dev user: admin / BinOracle123! or mm_admin / Admin12345! (created in setup_cmds).
+    If no admin exists yet (fresh lab), creates one first via /api/v4/users.
     Returns {"bearer": "Bearer <tok>", "headers": {...}} or empty dict.
     """
     import json as _j
     step = on_step or (lambda _m: None)
-    # Try standard binoracle credentials first (admin/BinOracle123! created by setup_cmds),
-    # then legacy mm_admin/Admin12345! for older setups, then admin@example.com as email
-    _creds = [
-        ("admin", "BinOracle123!"),
-        ("mm_admin", "Admin12345!"),
-        ("admin@example.com", "BinOracle123!"),
-    ]
     _base = base_url.rstrip("/")
+    _admin_user = "admin"
+    _admin_email = "admin@binoracle.local"
+    _admin_pwd = "BinOracle123!"
+
+    # Attempt login first with known credentials
+    _creds = [
+        (_admin_user, _admin_pwd),
+        ("mm_admin", "Admin12345!"),
+        (_admin_email, _admin_pwd),
+    ]
     for _user, _pwd in _creds:
         try:
             _r = _http_request(
@@ -9730,11 +9733,9 @@ def _try_mattermost_auth(base_url: str, on_step=None) -> dict:
                 headers={"Content-Type": "application/json"},
                 timeout=8)
             if _r.status_code == 200:
-                # Token is in Token response header, not body
                 _tok = (_r.headers or {}).get("Token", "") or \
                        (_r.headers or {}).get("token", "")
                 if not _tok:
-                    # Some versions include it in the body
                     _d = _j.loads(_r.text or "{}")
                     _tok = _d.get("token") or ""
                 if _tok:
@@ -9743,6 +9744,42 @@ def _try_mattermost_auth(base_url: str, on_step=None) -> dict:
                             "headers": {"Authorization": f"Bearer {_tok}"}}
         except Exception:
             pass
+
+    # Fresh lab — create the first admin user via /api/v4/users (no auth needed
+    # when MM_SERVICESETTINGS_ALLOWEDUNTRUSTEDINTERNAL... is not restricted).
+    try:
+        step("  mattermost-auth: no existing admin — attempting to create one...")
+        _create_r = _http_request(
+            "POST", _base + "/api/v4/users",
+            data=_j.dumps({
+                "email": _admin_email,
+                "username": _admin_user,
+                "password": _admin_pwd,
+                "auth_service": "",
+            }),
+            headers={"Content-Type": "application/json"},
+            timeout=10)
+        if _create_r.status_code in (200, 201):
+            step(f"  mattermost-auth: admin user created → trying login...")
+            # Now login
+            _r2 = _http_request(
+                "POST", _base + "/api/v4/users/login",
+                data=_j.dumps({"login_id": _admin_user, "password": _admin_pwd}),
+                headers={"Content-Type": "application/json"},
+                timeout=8)
+            if _r2.status_code == 200:
+                _tok = (_r2.headers or {}).get("Token", "") or \
+                       (_r2.headers or {}).get("token", "")
+                if _tok:
+                    step(f"  mattermost-auth: token after user create → {_tok[:8]}...")
+                    return {"bearer": f"Bearer {_tok}",
+                            "headers": {"Authorization": f"Bearer {_tok}"}}
+        elif _create_r.status_code == 400:
+            # 400 may mean "user already exists" — login may succeed with correct pw
+            step(f"  mattermost-auth: create returned 400 — user may already exist")
+    except Exception as _e:
+        step(f"  mattermost-auth: create attempt failed: {_e}")
+
     return {}
 
 
