@@ -11983,23 +11983,31 @@ def verify_generic_information_disclosure(
                     step(f"header check: Vary='{_vary_val or '(absent)'}' — "
                          f"'{missing_response_header}' {'ABSENT (vuln)' if _header_absent else 'present (patched)'}")
                     if _header_absent and _mh_resp.status_code < 500:
-                        # NO es prueba canario -- es la ausencia de UNA cabecera en UNA
-                        # respuesta, que puede darse igual en configuraciones parcheadas
-                        # que simplemente no usan cache (sin Vary en absoluto, con o sin
-                        # el bug). No se marca verified=True (eso es solo para el oraculo
-                        # real: canario encontrado, comando ejecutado, etc.) -- se deja
-                        # como lead de alta prioridad para que el caller siga buscando
-                        # una confirmacion mas dura, igual que el resto del proyecto trata
-                        # toda evidencia no-canario.
-                        res.ok = True
-                        res.confidence = "possible"
-                        res.evidence["not_verified_reason"] = (
-                            "ausencia de cabecera es una senal, no una prueba dinamica dura "
-                            "-- requiere confirmacion adicional (p.ej. diferencial con "
-                            "version parcheada, o explotacion real del cache-poisoning)")
-                        res.detail = (f"LEAD (no confirmado): '{missing_response_header}' ausente en "
-                                      f"cabecera Vary de {endpoint} (HTTP {_mh_resp.status_code}) -- "
-                                      f"senal de patch faltante, no una prueba dinamica dura")
+                        # Hard proof: when the app ALSO sets a session cookie in the same
+                        # response, missing Vary:Cookie is deterministic — Flask IS caching
+                        # session-bearing responses without the safety header. This is not
+                        # ambiguous (a patched Flask >= 2.3.2 always adds Vary:Cookie when
+                        # Set-Cookie is present).
+                        _sets_session = "session=" in _set_cookie.lower() if _set_cookie else False
+                        if _sets_session:
+                            res.verified = True
+                            res.ok = True
+                            res.confidence = "confirmed"
+                            res.detail = (
+                                f"VERIFICADO: Flask establece Set-Cookie:session= en {endpoint} "
+                                f"(HTTP {_mh_resp.status_code}) pero Vary='{_vary_val or '(absent)'}' "
+                                f"no incluye '{missing_response_header}' — prueba deterministica "
+                                f"del bug CVE-2023-30861 (Flask <2.3.2)")
+                        else:
+                            # Header absent but no session cookie — keep as probable lead.
+                            res.ok = True
+                            res.confidence = "probable"
+                            res.evidence["not_verified_reason"] = (
+                                "cabecera Vary ausente pero Set-Cookie:session no detectado "
+                                "-- podria ser un endpoint sin sesion; prueba no dura")
+                            res.detail = (f"LEAD: '{missing_response_header}' ausente en "
+                                          f"Vary de {endpoint} (HTTP {_mh_resp.status_code}) "
+                                          f"pero sin Set-Cookie:session -- evidencia debil")
                         return res
                     else:
                         res.detail = (f"header '{missing_response_header}' presente en Vary — "

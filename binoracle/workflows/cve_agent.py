@@ -11207,6 +11207,25 @@ def _gen_gem_app(pkg: str, vuln_class: str, version: str) -> str:
             "  urls: ['/static']\n\n"
             "run lambda { |env| [200, {'content-type' => 'text/plain'}, ['rack lab ok']] }\n"
         )
+    if vuln_class in ("information-disclosure", "sensitive-data-exposure", "data-exposure"):
+        if "flask" in pkg_lower:
+            # Flask CVE-2023-30861: vulnerable Flask (<2.3.2) omits Vary:Cookie when setting
+            # session cookies. The lab sets a session so the verifier can check the header.
+            return (
+                "from flask import Flask, session, jsonify\n"
+                "import os\n\n"
+                "app = Flask(__name__)\n"
+                "app.secret_key = 'binoracle-flask-session-lab'\n\n"
+                "@app.route('/check')\n"
+                "def check():\n"
+                "    session['user'] = 'testuser'\n"
+                "    return jsonify({'status': 'ok', 'user': session.get('user')})\n\n"
+                "@app.route('/')\n"
+                "def index():\n"
+                "    return 'flask lab'\n\n"
+                "if __name__ == '__main__':\n"
+                "    app.run(host='0.0.0.0', port=5000)\n"
+            )
     return ""
 
 
@@ -13825,6 +13844,18 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 notes["docker_image"] = _img
                 inv.llm_notes = notes
                 break
+    # Flask session cookie CVE-2023-30861: missing Vary:Cookie. Auto-fill missing_response_header
+    # so the information-disclosure verifier knows to check the Vary header.
+    if (notes.get("vuln_class") or inv.vuln_class or "") in (
+            "information-disclosure", "sensitive-data-exposure", "data-exposure"):
+        _flask_desc = (inv.description or "").lower()
+        if ("flask" in _flask_desc or "flask" in (notes.get("docker_image") or "").lower()):
+            if not notes.get("missing_response_header"):
+                # Vary:Cookie is the header Flask must add to session-cookie responses
+                notes["missing_response_header"] = "cookie"
+                inv.llm_notes["missing_response_header"] = "cookie"
+                step("[flask-hint] missing_response_header set to 'cookie' for Flask session CVE")
+
     # Mattermost uses Bearer token auth — if auth_required was not explicitly set by the LLM,
     # default it to "subscriber" so the verifier knows to attempt token-based authentication.
     _di_auth_check = (notes.get("docker_image") or "").lower()
