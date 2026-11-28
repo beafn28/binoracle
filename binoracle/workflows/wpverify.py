@@ -3166,6 +3166,22 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
                         step(f"plugin '{slug}' forzado activo en BD via eval (archivo: {_main_file})")
                     else:
                         step(f"no se pudo forzar activacion via DB: {(_r_force.stdout or '')[:100]}")
+            # MySQL DNS race: WP-CLI ran before Docker's internal DNS resolved the DB hostname.
+            # Retry activation once after a 15-second wait.
+            _mysql_dns_error = (
+                r.returncode == 1
+                and "php_network_getaddresses" in activation_output
+                and "failed: name does not resolve" in activation_output.lower()
+            )
+            if not _activate_ok and _mysql_dns_error:
+                import time as _time2
+                step("MySQL DNS aún no resuelto — esperando 15s y reintentando activacion...")
+                _time2.sleep(15)
+                r = lab.wp_cli("plugin", "activate", slug, timeout=90)
+                activation_output = (r.stdout or "") + (r.stderr or "")
+                _activate_ok = r.returncode == 0 and "success" in activation_output.lower()
+                if _activate_ok:
+                    step(f"plugin '{slug}' activado tras espera por MySQL DNS")
             if not _activate_ok:
                 res.detail = f"activacion del plugin fallo: {activation_output[:300]}"
                 res.limitations.append("si el slug/version descargados no coinciden con el afectado, "
