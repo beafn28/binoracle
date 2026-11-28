@@ -792,6 +792,80 @@ def analyze_patch_diff(raw_diff: str) -> dict:
         result["sql_column_count"] = _sql_col_count
         result["sql_column_names"] = _sql_col_names
 
+    # --- Mejora 6: Extract WordPress option names from get/update/delete_option() ---
+    _OPTION_PAT = re.compile(
+        r"""(?:get|update|delete)_option\s*\(\s*['"]([a-zA-Z0-9_]{2,80})['"]""",
+        re.IGNORECASE,
+    )
+    _wp_options: list = []
+    for _rl in removed_lines:
+        for _om in _OPTION_PAT.finditer(_rl):
+            _opt = _om.group(1)
+            if _opt not in _wp_options:
+                _wp_options.append(_opt)
+    for _al in added_lines:
+        for _om in _OPTION_PAT.finditer(_al):
+            _opt = _om.group(1)
+            if _opt not in _wp_options:
+                _wp_options.append(_opt)
+    if _wp_options:
+        result["wp_option_names"] = _wp_options[:8]
+
+    # --- Mejora 7: Extract SQL table names from query structure ---
+    _TABLE_EXTRACT_PAT = re.compile(
+        r"""\b(?:FROM|INTO|UPDATE|JOIN)\s+[`'"]*([a-zA-Z0-9_]{2,60})[`'"]*[\s,]""",
+        re.IGNORECASE,
+    )
+    _SQL_KW = frozenset({"WHERE", "AND", "OR", "SET", "VALUES", "SELECT", "NULL",
+                         "AS", "ON", "INNER", "LEFT", "RIGHT", "OUTER", "CROSS"})
+    _sql_tables: list = []
+    for _rl in removed_lines:
+        for _tm in _TABLE_EXTRACT_PAT.finditer(_rl):
+            _tbl = _tm.group(1)
+            if _tbl.upper() not in _SQL_KW and _tbl not in _sql_tables:
+                _sql_tables.append(_tbl)
+    if _sql_tables:
+        result["sql_tables"] = _sql_tables[:5]
+
+    # --- Mejora 8: Extract nonce field names from wp_nonce_field / check_admin_referer ---
+    _NONCE_FIELD_PAT = re.compile(
+        r"""wp_nonce_field\s*\(\s*['"]([a-zA-Z0-9_\-]{2,80})['"](?:\s*,\s*['"]([a-zA-Z0-9_]{2,80})['"])?""",
+        re.IGNORECASE,
+    )
+    _ADMIN_REFERER_PAT = re.compile(
+        r"""check_admin_referer\s*\(\s*['"]([a-zA-Z0-9_\-]{2,80})['"]""",
+        re.IGNORECASE,
+    )
+    _nonce_field_map: dict = {}
+    for _dline in raw_diff.splitlines():
+        for _nfm in _NONCE_FIELD_PAT.finditer(_dline):
+            _action = _nfm.group(1)
+            _field = _nfm.group(2) or "_wpnonce"
+            _nonce_field_map[_action] = {"action": _action, "field": _field}
+        for _arm in _ADMIN_REFERER_PAT.finditer(_dline):
+            _action = _arm.group(1)
+            if _action not in _nonce_field_map:
+                _nonce_field_map[_action] = {"action": _action, "field": "_wpnonce"}
+    if _nonce_field_map:
+        result["nonce_fields"] = list(_nonce_field_map.values())[:4]
+
+    # --- Mejora 9: Extract LFI-controlled variables from include/require calls ---
+    _INCLUDE_VAR_PAT = re.compile(
+        r"""(?:include|require)(?:_once)?\s*[\(\s]\s*\$([a-zA-Z0-9_]{1,40})""",
+        re.IGNORECASE,
+    )
+    _USER_INPUT_SOURCES = ("$_GET", "$_POST", "$_REQUEST", "$_COOKIE",
+                            "get_param(", "sanitize", "esc_")
+    _lfi_controlled: list = []
+    for _rl in removed_lines:
+        for _im in _INCLUDE_VAR_PAT.finditer(_rl):
+            _var = _im.group(1)
+            if any(src in _rl for src in _USER_INPUT_SOURCES) and _var not in _lfi_controlled:
+                _lfi_controlled.append(_var)
+    if _lfi_controlled:
+        result["lfi_controlled_vars"] = _lfi_controlled[:4]
+        result["dangerous_sinks_removed"].setdefault("lfi", [])
+
     return result
 
 
