@@ -35,7 +35,7 @@ _DOCKER_IMAGE_PROFILES: dict[str, dict] = {
             "ZITADEL_EXTERNALSECURE": "false",
         },
         "cmd": ["start-from-init", "--tlsMode", "disabled"],
-        "startup_wait": 20,
+        "startup_wait": 60,
         "health_path": "/debug/healthz",
     },
     "directus/directus:": {
@@ -116,6 +116,7 @@ _DOCKER_IMAGE_PROFILES: dict[str, dict] = {
         "note": "needs mysql sidecar; use docker-compose",
     },
     # --- Strapi (Node.js headless CMS) ---
+    # Strapi 5.x compiles TypeScript + initialises SQLite on first run; 120s is not enough.
     "strapi/strapi:": {
         "port": 1337,
         "envs": {
@@ -128,7 +129,7 @@ _DOCKER_IMAGE_PROFILES: dict[str, dict] = {
             "STRAPI_DISABLE_STARTUP_MESSAGE": "true",
         },
         "cmd": None,
-        "startup_wait": 120,
+        "startup_wait": 180,
         "health_path": "/",
     },
     # --- Paperless-ngx (Django-based DMS) ---

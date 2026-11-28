@@ -523,8 +523,9 @@ def verify_ghost_cve(
             except Exception as _ssrf_e:
                 res.evidence["ssrf_error"] = str(_ssrf_e)[:100]
             # Wait for Ghost to fetch the callback URL (async processing)
+            # Ghost processes webmentions asynchronously; 20s is insufficient for 5.x.
             _got_callback = False
-            for _w in range(20):
+            for _w in range(45):
                 time.sleep(1)
                 try:
                     _logs = subprocess.run(
@@ -547,9 +548,9 @@ def verify_ghost_cve(
                 step("  ghost/ssrf: VERIFICADO — callback recibido")
             else:
                 res.ok = True
-                res.detail = (f"SSRF no confirmado: Ghost no fetched callback en 20s "
+                res.detail = (f"SSRF no confirmado: Ghost no fetched callback en 45s "
                               f"(HTTP {res.evidence.get('ssrf_status','?')})")
-                step("  ghost/ssrf: no callback recibido en 20s")
+                step("  ghost/ssrf: no callback recibido en 45s")
             return res
 
         # Single-request PoC
