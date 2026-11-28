@@ -14867,12 +14867,20 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                          if isinstance(notes.get("parameters"), dict)
                          and notes.get("parameters") else "") or ""
                     )
+                    # Use the first REST route from patch diff as endpoint hint when
+                    # the LLM hasn't guessed one yet — it's the actual registered route
+                    _ep_synth = notes.get("endpoint", "")
+                    if not _ep_synth:
+                        _pd_routes = (inv.llm_notes.get("patch_diff_analysis") or {}).get(
+                            "rest_routes") or []
+                        if _pd_routes:
+                            _ep_synth = _pd_routes[0]
                     _synth = _synthesize_exploit_from_intel(
                         llm=llm,
                         cve_intel=_cve_intel_synth,
                         vuln_class=inv.vuln_class,
                         vulnerable_code=_vuln_code_synth,
-                        endpoint=notes.get("endpoint", ""),
+                        endpoint=_ep_synth,
                         param=_param_synth,
                         patch_diff=inv.llm_notes.get("patch_diff_analysis"),
                         schema_hints=_schema_hints_synth,
@@ -14966,6 +14974,12 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             notes["synth_response_indicator"] = _synth["expected_response_indicator"]
                         if _synth.get("payload"):
                             notes["synthesized_payload"] = _synth["payload"]
+                        # WP REST route from synthesis — use as endpoint if LLM identified
+                        # a concrete route and no better endpoint is set yet
+                        _synth_rest_route = _synth.get("rest_route", "")
+                        if (_synth_rest_route and _synth_rest_route not in ("", "unknown")
+                                and not notes.get("endpoint")):
+                            notes["endpoint"] = _synth_rest_route
                         # No-PoC reasoning steps (is_gap CVEs)
                         if _synth.get("reasoning_steps"):
                             inv.llm_notes["gap_reasoning_steps"] = _synth["reasoning_steps"]

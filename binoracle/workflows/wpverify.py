@@ -13036,7 +13036,10 @@ def verify_wordpress_missing_auth_probe(
                 try:
                     import secrets as _scsent
                     _sentinel_uuid = _scsent.token_hex(12)  # 24-char unique string
-                    lab.wp_cli("option", "add", _sentinel_key, _sentinel_uuid, timeout=20)
+                    _r_add = lab.wp_cli("option", "add", _sentinel_key, _sentinel_uuid, timeout=20)
+                    # If key already exists from a previous aborted run, update it
+                    if _r_add.returncode != 0:
+                        lab.wp_cli("option", "update", _sentinel_key, _sentinel_uuid, timeout=20)
                     # Try the anonymous probe again with the sentinel now present
                     _sentinel_resp = anon_sess.request(
                         m, boot.base_url + endpoint,
