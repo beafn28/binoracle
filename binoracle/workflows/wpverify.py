@@ -9609,6 +9609,21 @@ def verify_wordpress_sqli(
             except Exception:
                 pass
 
+        # Summarise which techniques were tried (from failure_trace) so the cheerleader
+        # LLM can say "don't repeat error-based, try blind instead" without re-reading logs.
+        if not res.verified and getattr(res, "failure_trace", None):
+            _ft_techs = [
+                ft.get("technique", "")
+                for ft in res.failure_trace
+                if ft.get("technique")
+            ]
+            _seen: list[str] = []
+            for _t in _ft_techs:
+                if _t not in _seen:
+                    _seen.append(_t)
+            if _seen:
+                res.evidence["sqli_techniques_tried"] = _seen
+
         # Post-exploit escalation for SQLi: extract version, user(), hashes
         if res.verified and boot is not None:
             try:
