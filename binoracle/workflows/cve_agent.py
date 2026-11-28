@@ -13788,6 +13788,16 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 notes["docker_image"] = _img
                 inv.llm_notes = notes
                 break
+    # Mattermost uses Bearer token auth — if auth_required was not explicitly set by the LLM,
+    # default it to "subscriber" so the verifier knows to attempt token-based authentication.
+    _di_auth_check = (notes.get("docker_image") or "").lower()
+    if "mattermost" in _di_auth_check:
+        _ar_now = notes.get("auth_required")
+        if _ar_now in (None, "", "none", False, "false", 0):
+            notes["auth_required"] = "subscriber"
+            inv.llm_notes["auth_required"] = "subscriber"
+            step("[auth-hint] mattermost: auth_required defaulted to 'subscriber'")
+
     # CVE sobre una herramienta CLI LOCAL (sin servicio escuchando, sin endpoint HTTP) -- ver
     # cliverify.py, confirmado en vivo con CVE-2025-64756 (glob npm CLI). Reusa la clase
     # command-injection/os-command-injection de siempre (asi la clasifica classify_cve() sobre
@@ -15796,6 +15806,33 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     notes.setdefault("lfi_path", _traversal2)
                     notes.setdefault("path_traversal_payload", _traversal2)
                     step(f"[ep-fix] traversal in endpoint split: base={_base_ep2!r} traversal={_traversal2[:40]!r}")
+            # Template placeholder replacement — LLM sometimes uses {{file_id}}, {post_attack_path},
+            # <uid>, [resource_id] as literal segments. Replace with "1" so the verifier gets a
+            # valid URL/param instead of a 404.
+            import re as _re_tph
+            _PLACEHOLDER_PAT = _re_tph.compile(
+                r'\{\{[^}]+\}\}|\{[a-zA-Z_][a-zA-Z0-9_]*\}|<[a-zA-Z_][a-zA-Z0-9_]*>|\[[a-zA-Z_][a-zA-Z0-9_]*\]'
+            )
+            _ep_tph = notes.get("endpoint") or ""
+            if _PLACEHOLDER_PAT.search(_ep_tph):
+                _ep_fixed = _PLACEHOLDER_PAT.sub("1", _ep_tph)
+                notes["endpoint"] = _ep_fixed
+                inv.llm_notes["endpoint"] = _ep_fixed
+                step(f"[ep-fix] template placeholder in endpoint: {_ep_tph!r} → {_ep_fixed!r}")
+            if isinstance(notes.get("parameters"), dict):
+                _params_tph: dict = {}
+                _tph_changed = False
+                for _pk, _pv in notes["parameters"].items():
+                    _pvs = str(_pv) if _pv is not None else ""
+                    if _PLACEHOLDER_PAT.search(_pvs):
+                        _params_tph[_pk] = "1"
+                        step(f"[param-fix] template placeholder in param {_pk!r} → '1'")
+                        _tph_changed = True
+                    else:
+                        _params_tph[_pk] = _pv
+                if _tph_changed:
+                    notes["parameters"] = _params_tph
+                    inv.llm_notes["parameters"] = _params_tph
             # Fix source_url when LLM set a bare WordPress plugin slug instead of a full URL.
             # e.g. "serbian-transliteration" → "https://downloads.wordpress.org/plugin/serbian-transliteration.zip"
             _src_raw = (notes.get("source_url") or "").strip()
