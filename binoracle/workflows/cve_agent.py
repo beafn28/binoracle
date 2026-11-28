@@ -17240,6 +17240,16 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     or "%2527" in (notes.get("poc_notes") or "").lower()
                 )
                 _via_orderby = bool(notes.get("sqli_via_orderby"))
+                # Auto-detect ORDER BY injection from patch diff sqli_intel
+                # (set earlier when patch_diff_structured contains sqli_intel.injection_context==order_by)
+                if not _via_orderby:
+                    _pd_sqli = ((inv.llm_notes.get("patch_diff_analysis") or {})
+                                .get("sqli_intel") or {})
+                    if _pd_sqli.get("injection_context") == "order_by":
+                        _via_orderby = True
+                        step("patch_diff sqli_intel → ORDER BY injection confirmed → sqli_via_orderby=True"
+                             if not es else
+                             "patch_diff sqli_intel → inyección ORDER BY confirmada → sqli_via_orderby=True")
                 extra_nonce_pages: List[str] = list(notes.get("nonce_pages") or [])
                 extra_setup_trigger_paths: List[str] = list(notes.get("setup_trigger_paths") or [])
                 wr = verify_wordpress_sqli(

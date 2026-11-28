@@ -488,11 +488,11 @@ def extract_sqli_intel(removed_lines: list) -> dict:
         return result
 
     # Process the best matching line (prefer one with ORDER BY, then WHERE)
-    order_by_lines = [(l, m) for l, m in sql_lines
+    order_by_lines = [(ln, m) for ln, m in sql_lines
                       if m and "ORDER" in m.group(1).upper()]
     best_lines = order_by_lines or sql_lines
 
-    for ls, ctx_m in best_lines[:3]:
+    for ls, ctx_m in best_lines[:3]:  # noqa: E741
         ctx_keyword = (ctx_m.group(1).upper().replace(" ", "_")
                        if ctx_m else "")
 
