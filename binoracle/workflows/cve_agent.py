@@ -15817,6 +15817,28 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     companion_plugins=companion_plugins,
                     shortcode_name=shortcode_name_generic,
                     keep_lab_on_failure=keep_lab_on_failure)
+                # PHP 8.x compat fallback for LFI: same logic as SQLi path
+                _lfi_detail_low = (wr.detail or "").lower()
+                from .wpverify import _get_active_wp_image as _gwi_lfi
+                if (not wr.verified
+                        and "activacion del plugin fallo:" in _lfi_detail_low
+                        and any(_p in _lfi_detail_low for _p in (
+                            "cannot make non static method", "must be compatible with",
+                            "must be of type", " static method "))
+                        and not _gwi_lfi().endswith("php7.4-apache")
+                        and not notes.get("docker_image", "").endswith("php7.4-apache")):
+                    step((f"LFI: activacion fallo por PHP 8.x incompatibilidad — "
+                          f"reintentando con wordpress:php7.4-apache") if es else
+                         (f"LFI: activation failed due to PHP 8.x strict compat — "
+                          f"retrying with wordpress:php7.4-apache"))
+                    set_wp_image_override("wordpress:php7.4-apache")
+                    wr = verify_wordpress_lfi(
+                        fr.local_path, plugin_dir, notes.get("endpoint"),
+                        notes.get("http_method") or "GET", params,
+                        path_param_hint=path_p or "", on_step=step, budget_s=budget_s,
+                        companion_plugins=companion_plugins,
+                        shortcode_name=shortcode_name_generic,
+                        keep_lab_on_failure=keep_lab_on_failure)
                 def _attempt_lfi(ep, pr):
                     return verify_wordpress_lfi(
                         fr.local_path, plugin_dir, ep,
@@ -17223,6 +17245,55 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     nonce_action=notes.get("nonce_action") or "",
                     extra_nonce_pages=list(extra_nonce_pages),
                     extra_setup_trigger_paths=list(extra_setup_trigger_paths))
+                # PHP 8.x strict compat fallback: if the plugin activation failed with a
+                # non-static method / method signature incompatibility (PHP 8.0+ strict),
+                # retry ONCE with wordpress:php7.4-apache before the LLM retry loop.
+                # Detection: "activacion del plugin fallo:" + PHP 8.x strict error pattern.
+                _PHP8_STRICT_PATTERNS = (
+                    "cannot make non static method",
+                    "must be compatible with",
+                    "must be of type",
+                    " static method ",
+                )
+                _dv_detail_low = (wr.detail or "").lower()
+                from .wpverify import _get_active_wp_image as _gwi
+                if (not wr.verified
+                        and "activacion del plugin fallo:" in _dv_detail_low
+                        and any(_p in _dv_detail_low for _p in _PHP8_STRICT_PATTERNS)
+                        and not _gwi().endswith("php7.4-apache")
+                        and not notes.get("docker_image", "").endswith("php7.4-apache")):
+                    step((f"activacion fallo por PHP 8.x incompatibilidad — "
+                          f"reintentando con wordpress:php7.4-apache") if es else
+                         (f"activation failed due to PHP 8.x strict compat — "
+                          f"retrying with wordpress:php7.4-apache"))
+                    set_wp_image_override("wordpress:php7.4-apache")
+                    _sqli_boot_ref.clear()
+                    _sqli_lab_ref.clear()
+                    wr = verify_wordpress_sqli(
+                        fr.local_path, plugin_dir, _sqli_ep,
+                        _sqli_http_method, params,
+                        sqli_param_hint=sqli_p or "", on_step=step, budget_s=budget_s,
+                        setup_wp_options=notes.get("setup_options") or [],
+                        companion_plugins=companion_plugins, shortcode_name=shortcode_name,
+                        relationship_table=relationship_table,
+                        keep_lab_on_failure=keep_lab_on_failure,
+                        _boot_ref=_sqli_boot_ref,
+                        _lab_ref=_sqli_lab_ref,
+                        json_body=bool(notes.get("json_body")),
+                        sqli_via_request_uri=_via_uri,
+                        sqli_via_rawurldecode=_via_rawurldecode,
+                        sqli_via_orderby=_via_orderby,
+                        required_role=notes.get("required_role") or (
+                            "administrator"
+                            if (notes.get("auth_required") and
+                                any(w in (inv.description or "").lower()
+                                    for w in ("administrator", "admin", "admin user")))
+                            else "subscriber"
+                        ),
+                        seed_sql=notes.get("seed_sql") or [],
+                        nonce_action=notes.get("nonce_action") or "",
+                        extra_nonce_pages=list(extra_nonce_pages),
+                        extra_setup_trigger_paths=list(extra_setup_trigger_paths))
                 # Inject full params list into evidence so the LLM knows all available
                 # parameters to suggest as alternatives during retries.
                 if not wr.verified and params and not wr.evidence.get("parametros_disponibles"):

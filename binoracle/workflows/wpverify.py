@@ -7356,6 +7356,39 @@ def verify_wordpress_sqli(
         try:
             base_resp = send(orig_value)
         except Exception as e:
+            # Connection error after bootstrap: container may have exited due to plugin crash.
+            # Check Docker container state and extract last logs for diagnostics.
+            _ctrl_err_msg = str(e)
+            if ("Connection" in _ctrl_err_msg or "ConnectTimeout" in _ctrl_err_msg or
+                    "RemoteDisconnected" in _ctrl_err_msg):
+                try:
+                    _ct_name = getattr(lab, "wp", None)  # _Lab.wp = WP container name
+                    if _ct_name:
+                        import subprocess as _sp
+                        _r_inspect = _sp.run(
+                            ["docker", "inspect", "--format", "{{.State.Status}}", _ct_name],
+                            capture_output=True, text=True, timeout=5)
+                        _ct_status = (_r_inspect.stdout or "").strip()
+                        if _ct_status in ("exited", "dead", ""):
+                            _r_logs = _sp.run(
+                                ["docker", "logs", "--tail", "30", _ct_name],
+                                capture_output=True, text=True, timeout=5)
+                            _last_logs = ((_r_logs.stdout or "") + (_r_logs.stderr or ""))[-500:]
+                            _php_patterns = (
+                                "cannot make non static method",
+                                "must be compatible with",
+                                "fatal error",
+                                "php fatal",
+                            )
+                            if any(p in _last_logs.lower() for p in _php_patterns):
+                                res.detail = (f"activacion del plugin fallo: "
+                                              f"{_last_logs[-300:].strip()}")
+                            else:
+                                res.detail = (f"la peticion de control fallo (contenedor exito, "
+                                              f"logs: {_last_logs[-200:].strip()})")
+                            return res
+                except Exception:
+                    pass
             res.detail = f"la peticion de control fallo: {e}"
             return res
         # HTTP method rotation: if control returned 405 (Method Not Allowed), flip GET↔POST
