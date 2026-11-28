@@ -135,11 +135,23 @@ def _meaningful_diff(vuln_status: int, patched_status: int,
         # Unexpected: patched is MORE permissive. Not a confirmed CVE.
         return False, "parchado más permisivo que vulnerable (inesperado)"
 
-    # Body size divergence
+    # Body size divergence -- NO es prueba dura por si sola. Fix: esta rama devolvia
+    # True (CVE "confirmado con la maxima confianza posible" segun el docstring del
+    # modulo) solo porque dos cuerpos de respuesta difieren en >50 caracteres,
+    # absoluto, sin escalar por el tamaño del cuerpo. Es el mismo patron de
+    # comparacion-de-longitud-de-respuesta de un solo disparo ya encontrado y
+    # arreglado esta sesion en genericverify.py y wpverify.py (alli bajado de
+    # verified=True a un simple lead) -- aqui ademas el container "patchado" puede
+    # no llevar ningun parche real si no se detecto un pkg_name instalable (Go/
+    # Python/JS); un timestamp, un id de sesion o un warm-up distinto entre dos
+    # contenedores Docker arrancados por separado puede producir ese diff facilmente,
+    # sin que la vulnerabilidad tenga nada que ver. Se deja como señal NO concluyente
+    # en vez de confirmar.
     if abs(len(vuln_body) - len(patched_body)) > 50:
-        # Meaningful size difference
-        return True, (f"cuerpos difieren en {abs(len(vuln_body)-len(patched_body))} chars — "
-                      f"vulnerable={len(vuln_body)}b patched={len(patched_body)}b")
+        return False, (f"cuerpos difieren en {abs(len(vuln_body)-len(patched_body))} chars "
+                       f"(vulnerable={len(vuln_body)}b patched={len(patched_body)}b) -- "
+                       f"no concluyente por si solo, sin confirm_string ni divergencia de "
+                       f"status code")
 
     return False, "sin diferencia significativa entre versiones"
 

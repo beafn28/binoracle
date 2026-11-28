@@ -4202,6 +4202,21 @@ def run_full_chain(
                 except Exception:
                     pass
             _fr_path = getattr(result.inv, "source_path", "") if result.inv else ""
+            # BUG real encontrado en vivo: este bloque nunca pasaba pkg_name a
+            # differential_test(). Dentro de esa funcion, el container "parchado" SOLO
+            # se construye cuando "pkg_name and patched_version" son ambos verdaderos
+            # (patched_source_dir=None aqui) -- sin pkg_name, _patched_dir se queda en
+            # None y la funcion siempre retorna pronto con
+            # error="Sin fuente parchada disponible", confirmed=False por defecto. O
+            # sea: todo el "Stage 5.5: Differential test" era, de facto, codigo muerto
+            # -- nunca llegaba a construir ni comparar nada, pase lo que pase con
+            # _patched_ver (incluido el fetch de GHSA de arriba). Falla en el lado
+            # seguro (nunca confirma de mas), pero significa que esta tecnica de
+            # confirmacion "irrefutable" nunca se ejecutaba de verdad. Derivado igual
+            # que en _attempt_binary_auto_lab (linea ~1100) para que el container
+            # parchado se construya de verdad y el diff se ejecute.
+            _pkg_name = (llm_notes.get("package_name") or llm_notes.get("component") or
+                        llm_notes.get("affected_component") or "")
             if not _fr_path:
                 step("  difftest: sin ruta de fuente disponible — omitido")
             else:
@@ -4212,6 +4227,7 @@ def run_full_chain(
                     http_method=llm_notes.get("http_method", "GET"),
                     payload=llm_notes.get("payload", ""),
                     confirm_string=llm_notes.get("confirm_string", ""),
+                    pkg_name=_pkg_name,
                     patched_version=_patched_ver,
                     on_step=step,
                     budget_s=min(120.0, budget_s * 0.4),

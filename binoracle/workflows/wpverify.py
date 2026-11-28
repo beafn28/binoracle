@@ -3049,6 +3049,20 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
             if _real_file and _real_file != _main_file and _force_active_via_db(_real_file):
                 _activate_ok = True
                 step(f"plugin '{slug}' forzado activo via archivo real '{_real_file}'.")
+            elif not _activate_ok:
+                # Last resort: no Plugin Name header found — try first .php file in directory.
+                # Handles plugins downloaded from GitHub mirrors that lack proper WP headers.
+                _r_any = lab.wp_cli(
+                    "eval",
+                    f"$fs=glob(WP_PLUGIN_DIR.'/{slug}/*.php');"
+                    f"if($fs){{echo basename(dirname($fs[0])).'/'.basename($fs[0]);}}",
+                    "--skip-plugins", "--skip-themes",
+                    timeout=20)
+                _any_file = ((_r_any.stdout or "").strip().splitlines()[-1].strip()
+                             if (_r_any.stdout or "").strip() else "")
+                if _any_file and _any_file != _main_file and _force_active_via_db(_any_file):
+                    _activate_ok = True
+                    step(f"plugin '{slug}' forzado activo via primer .php encontrado '{_any_file}'.")
 
     _scaffold_error = ("does not exist" in _activate_out and "cannot be registered" in _activate_out)
     if not _activate_ok and _scaffold_error:
