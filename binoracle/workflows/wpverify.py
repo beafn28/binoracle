@@ -13257,6 +13257,41 @@ def verify_wordpress_missing_auth_probe(
                               f"no trivial ({len(body)} bytes) sin autenticacion{_cmp_detail} — "
                               f"evidencia de que la comprobacion de autenticacion falta")
 
+        # Auth-delta proof: compare anon response vs admin response.
+        # If they differ → the endpoint exposes privileged data to anon users.
+        if not res.verified and status == 200 and len(body.strip()) > 20 and boot is not None:
+            try:
+                _admin_resp = boot.admin_sess.request(
+                    m, boot.base_url + endpoint,
+                    json=params_dict if (m not in ("GET", "HEAD") and json_body) else None,
+                    data=params_dict if (m not in ("GET", "HEAD") and not json_body) else None,
+                    params=params_dict if m == "GET" else None,
+                    timeout=20, allow_redirects=True)
+                _admin_body = (_admin_resp.text or "")[:2000]
+                _admin_st = _admin_resp.status_code
+                _anon_len = len(body.strip())
+                _admin_len = len(_admin_body.strip())
+                _bodies_differ = (_anon_len > 50 and _admin_len > 50 and
+                                  body.strip()[:200] != _admin_body.strip()[:200])
+                _anon_has_data = (_anon_len > 100 and
+                                  _admin_st == 200 and _admin_len > 50)
+                if _bodies_differ and _anon_has_data:
+                    res.verified = True
+                    res.confidence = "confirmed"
+                    res.evidence["auth_delta"] = {
+                        "anon_status": status, "admin_status": _admin_st,
+                        "anon_body_len": _anon_len, "admin_body_len": _admin_len,
+                        "anon_snippet": body.strip()[:200],
+                        "admin_snippet": _admin_body.strip()[:200],
+                        "bodies_differ": True,
+                    }
+                    res.detail = (f"sonda no-auth: endpoint HTTP {status} con {_anon_len}B anon "
+                                  f"vs {_admin_len}B admin — respuestas difieren, datos privilegiados "
+                                  f"expuestos sin autenticacion (prueba por delta auth/anon)")
+                    step(f"AUTH DELTA: anon={_anon_len}B vs admin={_admin_len}B — bodies differ → confirmed")
+            except Exception:
+                pass
+
         # Write access escalation: if GET succeeds without auth, try mutating methods.
         # Proves the endpoint also allows writes without auth, which is higher impact.
         if not _rejected and status == 200 and m == "GET" and len(body.strip()) > 10:

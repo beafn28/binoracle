@@ -3421,6 +3421,17 @@ _CHEERLEADER_SYS = (
     "que agoto todos los reintentos), razona sobre el: 'root_cause' y 'blockers' te dicen lo que "
     "ya se probo y fallo. NUNCA repitas un vector que 'blockers' ya descarto. Usa 'final_hypothesis' "
     "como punto de partida si es coherente con la evidencia actual, mejorando — no repitiendo.\n"
+    "15. LAB EVIDENCE — si 'diff_analysis' contiene estos campos, razona sobre ellos:\n"
+    "   - 'removed_capability_checks': lista de capabilities que el diff ELIMINO — confirma "
+    "missing-auth; el endpoint era accesible sin esas capabilities en la version vulnerable.\n"
+    "   - 'removed_auth_checks'/'removed_nonce_checks': True → el patch añadio auth que antes no habia; "
+    "confirma que el endpoint era publico. Usar auth_required=false en suggested_fix.\n"
+    "   - 'tested_version': version exacta del plugin en el lab. Si es diferente a la version "
+    "afectada del CVE, puede ser que el lab ya tenga la version parchada — flag como bloqueador.\n"
+    "   - 'write_access_proven': el endpoint acepta escrituras sin auth. Escalar sugerencia: "
+    "sugerir POST/PUT con payload de modificacion de datos.\n"
+    "   - 'patch_smoke_test.probe_blocked=false': el patch no bloquea el probe — fix incompleto o "
+    "el vector correcto no es el que se probo. Escalar confidence y cambiar vector.\n"
     "REGLA CRITICA: Razona SOLO en el contexto del framework/CMS real indicado en 'target_framework' "
     "del contexto. NUNCA sugieras endpoints de WordPress (admin-ajax.php, wp-json/, post_type, "
     "wp_ajax_) salvo que target_framework contenga 'wordpress'. "
@@ -3510,11 +3521,30 @@ def _cheerleader_analysis(llm, inv, wr, es: bool) -> dict:
                 "input_path": (_patch_diff.get("input_path") or "")[:200],
                 "fix_completeness": _patch_diff.get("fix_completeness", ""),
                 "rest_routes": _patch_diff.get("rest_routes", [])[:4],
+                "removed_capability_checks": _patch_diff.get("removed_capability_checks", [])[:5],
+                "removed_auth_checks": _patch_diff.get("removed_auth_checks", False),
+                "removed_nonce_checks": _patch_diff.get("removed_nonce_checks", False),
             }
-        # Enrich diff_analysis with rest_routes from inv.diff_analysis when available
+        # Enrich diff_analysis with rest_routes and access-control signals from inv.diff_analysis
         _inv_diff = getattr(inv, "diff_analysis", None) or {}
         if _inv_diff.get("rest_routes") and not _diff_analysis.get("rest_routes"):
             _diff_analysis["rest_routes"] = _inv_diff["rest_routes"][:4]
+        for _acc_sig in ("removed_capability_checks", "removed_auth_checks", "removed_nonce_checks"):
+            if _inv_diff.get(_acc_sig) and not _diff_analysis.get(_acc_sig):
+                _diff_analysis[_acc_sig] = _inv_diff[_acc_sig]
+        # Enrich with lab evidence: tested_version, write_access_proven, patch_smoke_test
+        _ev_cheer = getattr(wr, "evidence", {}) or {}
+        _tested_ver = (_ev_cheer.get("tested_plugin_version") or
+                       _ev_cheer.get("tested_pkg_version") or "")
+        if _tested_ver:
+            _diff_analysis["tested_version"] = _tested_ver
+        if _ev_cheer.get("write_access_proven"):
+            _diff_analysis["write_access_proven"] = _ev_cheer["write_access_proven"]
+        _pst = _ev_cheer.get("patch_smoke_test") or {}
+        if _pst and not _pst.get("skipped") and not _pst.get("error"):
+            _diff_analysis["patch_smoke_test"] = {
+                "probe_blocked": _pst.get("probe_blocked"),
+                "plugin_updated": _pst.get("plugin_updated")}
         # Include pre-attempt validation failure reason if available
         _pre_validate = getattr(inv, "pre_validate_result", None) or {}
         # Include maxiter_summary from a previous exhausted run so the cheerleader
@@ -5818,7 +5848,7 @@ _SANITY_GUY_SYS = (
     "Eres un revisor de seguridad de segunda opinion (SanityGuy). "
     "Se te da la evidencia de un exploit CONFIRMADO. Tu mision: validar que la verificacion "
     "sea GENUINA y no un artefacto de lab.\n\n"
-    "Evalua estos 5 criterios:\n"
+    "Evalua estos 6 criterios:\n"
     "1. TOKEN_UNICO: ¿el sentinel/canary/confirm_string es suficientemente unico para descartar "
     "coincidencia? (hex 12+ chars = ok; palabra comun sola = sospechoso)\n"
     "2. NO_DEFAULT_WP: ¿podria una instalacion WP por defecto (sin el plugin vulnerable) "
@@ -5828,7 +5858,11 @@ _SANITY_GUY_SYS = (
     "4. CUERPO_CLARO: ¿el token aparece textualmente exacto en el body, o solo como substring "
     "ambiguo (ej. '1234' dentro de '12345678')?\n"
     "5. NO_INJECT: ¿hay evidencia de que el verificador modifico el plugin/WP para CREAR la "
-    "vulnerabilidad en vez de explotarla? (inject_not_exploit_warning en evidencia)\n\n"
+    "vulnerabilidad en vez de explotarla? (inject_not_exploit_warning en evidencia)\n"
+    "6. PARCHE_BLOQUEADO: si patch_smoke_test.probe_blocked=true, el fix cierra la vuln — señal "
+    "MUY POSITIVA (eleva confidence). Si probe_blocked=false, el fix no bloqueó el probe — puede "
+    "indicar vector incorrecto o fix incompleto (añadir concern). Si no hay patch_smoke_test, "
+    "no penalizar (equivalente a PARCHE_NO_PROBADO del criterio 3).\n\n"
     "Responde SOLO con JSON valido:\n"
     "{\"genuine\": true, \"confidence\": \"confirmed|probable|possible\", "
     "\"concerns\": [\"concern1\", ...], \"verdict\": \"frase breve\"}.\n"
@@ -5850,6 +5884,7 @@ def _sanity_guy_check(wr, llm, cve_id: str = "", es: bool = True) -> dict:
         import json as _json
         ev = getattr(wr, "evidence", {}) or {}
         # Build a sanitised summary of the evidence for the second LLM
+        _pst_sg = ev.get("patch_smoke_test") or {}
         _ev_summary = {
             "cve_id": cve_id,
             "confidence": getattr(wr, "confidence", ""),
@@ -5864,6 +5899,10 @@ def _sanity_guy_check(wr, llm, cve_id: str = "", es: bool = True) -> dict:
             "sensitive_field": ev.get("sensitive_field", ""),
             "auth_vs_anon_check": ev.get("auth_vs_anon_check", ""),
             "detail": (getattr(wr, "detail", "") or "")[:300],
+            "patch_smoke_test": {
+                "probe_blocked": _pst_sg.get("probe_blocked"),
+                "plugin_updated": _pst_sg.get("plugin_updated"),
+            } if (_pst_sg and not _pst_sg.get("skipped") and not _pst_sg.get("error")) else None,
         }
         prompt = (f"Evidencia a revisar:\n{_json.dumps(_ev_summary, ensure_ascii=False)}")
         raw = llm.chat(

@@ -221,6 +221,9 @@ def analyze_patch_diff(raw_diff: str) -> dict:
         "bypass_hints": [],
         "vulnerable_lines": [],
         "fix_completeness": "unknown",
+        "removed_capability_checks": [],
+        "removed_auth_checks": False,
+        "removed_nonce_checks": False,
     }
     if not raw_diff or not raw_diff.strip():
         return result
@@ -367,7 +370,47 @@ def analyze_patch_diff(raw_diff: str) -> dict:
              for l in added_lines):
         result["fix_type"] = "schema_validation"
 
-    # Bypass hints from removed code
+    # Analyze removed lines for deleted access control checks (signals missing-auth)
+    for line in removed_lines:
+        ls = line.strip()
+        if not ls:
+            continue
+        # Removed nonce/CSRF checks
+        if "wp_verify_nonce" in ls or "check_ajax_referer" in ls:
+            result["removed_nonce_checks"] = True
+            result["bypass_hints"].append(
+                f"Diff removes nonce/CSRF check: {ls[:100]}"
+            )
+        # Removed capability checks — extract capability name
+        if "current_user_can(" in ls:
+            result["removed_auth_checks"] = True
+            _cap_m = _CAPABILITY_RE.search(ls)
+            if _cap_m:
+                cap = _cap_m.group(1)
+                if cap not in result["removed_capability_checks"]:
+                    result["removed_capability_checks"].append(cap)
+                    result["bypass_hints"].append(
+                        f"Diff removes capability check '{cap}' — vulnerable version had no "
+                        f"authorization check at this point; endpoint was accessible without '{cap}'"
+                    )
+            else:
+                result["removed_auth_checks"] = True
+        # Removed is_user_logged_in
+        if "is_user_logged_in(" in ls:
+            result["removed_auth_checks"] = True
+            result["bypass_hints"].append(
+                "Diff removes is_user_logged_in() — vulnerable version did not verify login state"
+            )
+        # Framework-specific removed auth checks
+        if any(kw in ls for kw in ("@login_required", "authenticate_user!",
+                                    "req.isAuthenticated()", "jwt.verify(",
+                                    "request.user.is_authenticated")):
+            result["removed_auth_checks"] = True
+            result["bypass_hints"].append(
+                f"Diff removes auth middleware/decorator: {ls[:100]}"
+            )
+
+    # Bypass hints from removed code (sinks / direct user input)
     for line in result["removed_code"]:
         if _USER_INPUT_RE.search(line):
             result["bypass_hints"].append(
