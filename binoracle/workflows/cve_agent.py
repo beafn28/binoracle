@@ -14470,9 +14470,17 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 # Needed when the dependency uses function_exists('WC') instead of
                 # is_plugin_active() — the auto-scanner only catches the latter.
                 _analyst_companions = notes.get("companion_plugins") or []
+                # Guard: never add the main vulnerable plugin itself as a companion —
+                # doing so installs the patched version from WP.org BEFORE the vulnerable
+                # copy, causing activation conflict (rc=255) or wrong version.
+                _main_slug = plugin_dir.rstrip("/").split("/")[-1] if plugin_dir else ""
                 for _ac in _analyst_companions:
-                    if _ac and _ac not in companion_plugins:
+                    if (_ac and _ac not in companion_plugins
+                            and _ac.lower() != _main_slug.lower()):
                         companion_plugins.append(_ac)
+                    elif _ac and _ac.lower() == _main_slug.lower():
+                        step(f"companion_plugins: ignorando '{_ac}' — es el plugin principal "
+                             f"siendo verificado (evitando conflicto de version)")
                 # Auto-derive companion from source_url/plugin_dir when empty.
                 # Many CVEs have companion_plugins=[] but source_url=<plugin-slug>.
                 # If the source_url is a simple slug (no http), add it automatically.
@@ -14480,7 +14488,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     _auto_slug = notes.get("source_url", "") or plugin_dir or ""
                     if (_auto_slug and not _auto_slug.startswith("http")
                             and "/" not in _auto_slug and " " not in _auto_slug
-                            and len(_auto_slug) < 100):
+                            and len(_auto_slug) < 100
+                            and _auto_slug.lower() != _main_slug.lower()):
                         companion_plugins.append(_auto_slug)
                         step(f"companion_plugins vacío — auto-derivado del source_url: {_auto_slug!r}")
                 # Merge companion plugins detected from patch diff analysis.
@@ -17839,6 +17848,16 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                              "patch_diff sqli_intel → inyección ORDER BY confirmada → sqli_via_orderby=True")
                 extra_nonce_pages: List[str] = list(notes.get("nonce_pages") or [])
                 extra_setup_trigger_paths: List[str] = list(notes.get("setup_trigger_paths") or [])
+                _desc_low = (inv.description or "").lower()
+                _derived_role = (
+                    "administrator" if (notes.get("auth_required") and
+                                        any(w in _desc_low for w in
+                                            ("administrator", "admin user")))
+                    else "editor" if any(w in _desc_low for w in ("editor",))
+                    else "author" if any(w in _desc_low for w in ("author",))
+                    else "contributor" if any(w in _desc_low for w in ("contributor",))
+                    else "subscriber"
+                )
                 wr = verify_wordpress_sqli(
                     fr.local_path, plugin_dir, _sqli_ep,
                     _sqli_http_method, params,
@@ -17853,13 +17872,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     sqli_via_request_uri=_via_uri,
                     sqli_via_rawurldecode=_via_rawurldecode,
                     sqli_via_orderby=_via_orderby,
-                    required_role=notes.get("required_role") or (
-                        "administrator"
-                        if (notes.get("auth_required") and
-                            any(w in (inv.description or "").lower()
-                                for w in ("administrator", "admin", "admin user")))
-                        else "subscriber"
-                    ),
+                    required_role=notes.get("required_role") or _derived_role,
                     seed_sql=notes.get("seed_sql") or [],
                     nonce_action=notes.get("nonce_action") or "",
                     extra_nonce_pages=list(extra_nonce_pages),
@@ -17902,13 +17915,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         sqli_via_request_uri=_via_uri,
                         sqli_via_rawurldecode=_via_rawurldecode,
                         sqli_via_orderby=_via_orderby,
-                        required_role=notes.get("required_role") or (
-                            "administrator"
-                            if (notes.get("auth_required") and
-                                any(w in (inv.description or "").lower()
-                                    for w in ("administrator", "admin", "admin user")))
-                            else "subscriber"
-                        ),
+                        required_role=notes.get("required_role") or _derived_role,
                         seed_sql=notes.get("seed_sql") or [],
                         nonce_action=notes.get("nonce_action") or "",
                         extra_nonce_pages=list(extra_nonce_pages),
@@ -17983,13 +17990,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         sqli_via_request_uri=_via_uri,
                         sqli_via_rawurldecode=_via_rawurldecode,
                         sqli_via_orderby=_via_orderby,
-                        required_role=notes.get("required_role") or (
-                            "administrator"
-                            if (notes.get("auth_required") and
-                                any(w in (inv.description or "").lower()
-                                    for w in ("administrator", "admin", "admin user")))
-                            else "subscriber"
-                        ),
+                        required_role=notes.get("required_role") or _derived_role,
                         seed_sql=notes.get("seed_sql") or [],
                         nonce_action=notes.get("nonce_action") or "")
                 _ep_lock_active = bool(notes.get("analyst_endpoint_lock")
