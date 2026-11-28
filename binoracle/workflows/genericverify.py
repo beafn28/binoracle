@@ -6445,6 +6445,7 @@ def verify_generic_header_bypass(
         if blocked_normally and bypassed and string_ok:
             res.verified = True
             res.ok = True
+            res.confidence = "confirmed"
             res.detail = (
                 f"BYPASS confirmado: sin {_bypass_desc} el servidor responde "
                 f"{status_normal}; con {_bypass_desc} responde "
@@ -6519,6 +6520,7 @@ def verify_generic_header_bypass(
                         f"bypass no dio 2xx (status {status_bypass}) -- el servidor sigue "
                         f"bloqueando incluso con el header; prueba variantes del valor del bypass"
                     )
+            res.confidence = "inconclusive"
             res.detail = (
                 f"header bypass no confirmado: status_sin_bypass={status_normal}, "
                 f"status_con_bypass={status_bypass}" +
@@ -6527,9 +6529,11 @@ def verify_generic_header_bypass(
             )
         return res
     except subprocess.TimeoutExpired as e:
+        res.confidence = "not_reproducible"
         res.detail = _diagnose_infra_error(e, source_dir)
         return res
     except Exception as e:
+        res.confidence = "not_reproducible"
         res.detail = _diagnose_infra_error(e, source_dir)
         return res
     finally:

