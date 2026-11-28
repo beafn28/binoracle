@@ -748,7 +748,7 @@ def _reverse_hashed_resource_id(hash_value: str, max_n: int = 100) -> Optional[i
 
 
 def _finalize_lab(lab: "_Lab", boot: Optional["_LabSession"], res: WpVerifyResult, step,
-                  keep_lab_on_failure: bool) -> None:
+                  keep_lab_on_failure: bool, slug: str = "") -> None:
     """Desmonta el laboratorio al terminar CUALQUIER verificador dinamico de WordPress -- salvo
     que se pida dejarlo vivo (`keep_lab_on_failure`) y la tecnica NO se confirmara: en ese caso
     ninguna tecnica automatica pudo ver la causa real (confirmado en vivo, CVE-2024-1071: el
@@ -783,6 +783,42 @@ def _finalize_lab(lab: "_Lab", boot: Optional["_LabSession"], res: WpVerifyResul
                     res.evidence["weaponization"] = _wep
             except Exception:
                 pass
+        # Patch smoke test: install latest version and re-probe while lab is still alive.
+        # Proves the fix closes the vulnerability (probe blocked) or flags incomplete fix.
+        if res.verified and boot is not None and slug and not res.evidence.get("patch_smoke_test"):
+            try:
+                _ep = (res.evidence.get("endpoint") or res.evidence.get("url") or
+                       res.evidence.get("endpoint_used") or "")
+                _mth = (res.evidence.get("metodo") or res.evidence.get("method") or "GET").upper()
+                if _ep:
+                    step(f"patch smoke test: actualizando {slug!r} a ultima version...")
+                    _upd = lab.wp_cli("plugin", "update", slug, timeout=120)
+                    _upd_out = (_upd.stdout or "").strip() if _upd else ""
+                    _already_latest = "already up to date" in _upd_out.lower()
+                    if _already_latest:
+                        res.evidence["patch_smoke_test"] = {
+                            "skipped": "plugin ya en ultima version en el lab (no se puede probar diferencia)"}
+                    else:
+                        _psess = _make_session()
+                        _pr = _psess.request(_mth, boot.base_url + _ep,
+                                             timeout=20, allow_redirects=True)
+                        _ps = _pr.status_code
+                        _pb = (_pr.text or "")[:500]
+                        _blocked = _ps in (401, 403, 404) or any(
+                            s in _pb.lower() for s in (
+                                "forbidden", "unauthorized", "you do not have permission",
+                                "you need to log in", "login_required",
+                                "nonce verification failed", "invalid nonce"))
+                        res.evidence["patch_smoke_test"] = {
+                            "plugin_updated": bool(_upd and _upd.returncode == 0),
+                            "update_output": _upd_out[:200],
+                            "patched_status": _ps,
+                            "probe_blocked": _blocked,
+                        }
+                        step(f"patch smoke test: {_mth} {_ep} → HTTP {_ps} "
+                             f"→ {'BLOQUEADO (fix OK)' if _blocked else 'AUN ACCESIBLE (fix incompleto?)'}")
+            except Exception as _pst_e:
+                res.evidence["patch_smoke_test"] = {"error": str(_pst_e)[:200]}
         step("desmontando el laboratorio (contenedores/red/volumen)...")
         lab.teardown()
 
@@ -3579,6 +3615,16 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
            f"Step 4: real session as '{sub_user}' (subscriber, low-privilege) -- this is the "
            f"only account the attacker controls BEFORE the attack.")
 
+    # Log exact plugin version being tested — stored in evidence for all verifiers via res.evidence
+    try:
+        _vr = lab.wp_cli("plugin", "get", slug, "--field=version", timeout=10)
+        _vstr = (_vr.stdout or "").strip().split("\n")[-1].strip() if _vr else ""
+        if _vstr and not _vstr.startswith("Error") and not _vstr.startswith("Warning"):
+            res.evidence["tested_plugin_version"] = _vstr
+            step(f"version del plugin en lab: {slug}=={_vstr}")
+    except Exception:
+        pass
+
     return _LabSession(lab=lab, base_url=base_url, admin_id=admin_id, admin_user=admin_user,
                        admin_pass=admin_pass, sub_user=sub_user, sub_pass=sub_pass,
                        sub_sess=sess, admin_sess=admin_sess, shots=shots, capture=capture,
@@ -3752,7 +3798,7 @@ def verify_wordpress_account_takeover(
         res.detail = f"error inesperado: {e}"
         return res
     finally:
-        _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
+        _finalize_lab(lab, boot, res, step, keep_lab_on_failure, slug=slug)
 
 
 def verify_wordpress_direct_login_as(
@@ -3921,7 +3967,7 @@ def verify_wordpress_direct_login_as(
         res.detail = f"error inesperado: {e}"
         return res
     finally:
-        _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
+        _finalize_lab(lab, boot, res, step, keep_lab_on_failure, slug=slug)
 
 
 _sci = _SCI()
@@ -4185,7 +4231,7 @@ def verify_wordpress_unauthenticated_login_bypass(
         res.detail = f"error inesperado: {e}"
         return res
     finally:
-        _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
+        _finalize_lab(lab, boot, res, step, keep_lab_on_failure, slug=slug)
 
 
 _HTML_FOLLOWABLE_RE = re.compile(r'(?:src|href)\s*=\s*["\']([^"\']+)["\']', re.IGNORECASE)
@@ -5134,7 +5180,7 @@ def verify_wordpress_path_traversal(
         return res
     finally:
         if _owns_boot:
-            _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
+            _finalize_lab(lab, boot, res, step, keep_lab_on_failure, slug=slug)
 
 
 def verify_wordpress_lfi(
@@ -5677,7 +5723,7 @@ def verify_wordpress_lfi(
         return res
     finally:
         if _owns_boot:
-            _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
+            _finalize_lab(lab, boot, res, step, keep_lab_on_failure, slug=slug)
 
 
 def verify_wordpress_php_code_injection(
@@ -5822,7 +5868,7 @@ def verify_wordpress_php_code_injection(
         res.detail = f"error inesperado: {e}"
         return res
     finally:
-        _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
+        _finalize_lab(lab, boot, res, step, keep_lab_on_failure, slug=slug)
 
 
 def verify_wordpress_command_injection(
@@ -6040,7 +6086,7 @@ def verify_wordpress_command_injection(
         res.detail = f"error inesperado: {e}"
         return res
     finally:
-        _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
+        _finalize_lab(lab, boot, res, step, keep_lab_on_failure, slug=slug)
 
 
 def _detect_plugin_tables(plugin_source_dir: str) -> list:
@@ -9655,7 +9701,7 @@ def verify_wordpress_sqli(
         # _live_boot: we borrowed the lab, caller owns teardown — don't touch it.
         # _lab_ref is not None: caller requested deferred teardown — skip for now.
         if _live_boot is None and _lab_ref is None:
-            _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
+            _finalize_lab(lab, boot, res, step, keep_lab_on_failure, slug=slug)
 
 
 def _ssrf_url_variants(listener_host: str, listener_ip: str, port: int, path: str) -> list:
@@ -10084,7 +10130,7 @@ def verify_wordpress_ssrf(
         res.detail = f"error inesperado: {e}"
         return res
     finally:
-        _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
+        _finalize_lab(lab, boot, res, step, keep_lab_on_failure, slug=slug)
 
 
 _DEST_PATH_HINTS = (
@@ -10523,7 +10569,7 @@ def verify_wordpress_xss_elementor(
         res.detail = f"error inesperado en Elementor XSS verifier: {e}"
         return res
     finally:
-        _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
+        _finalize_lab(lab, boot, res, step, keep_lab_on_failure, slug=slug)
 
 
 def verify_wordpress_xss(
@@ -11227,7 +11273,7 @@ def verify_wordpress_xss(
         res.detail = f"error inesperado: {e}"
         return res
     finally:
-        _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
+        _finalize_lab(lab, boot, res, step, keep_lab_on_failure, slug=slug)
 
 
 def verify_wordpress_ssti(
@@ -11515,7 +11561,7 @@ def verify_wordpress_ssti(
         res.detail = f"error inesperado: {e}"
         return res
     finally:
-        _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
+        _finalize_lab(lab, boot, res, step, keep_lab_on_failure, slug=slug)
 
 
 def verify_wordpress_xxe(
@@ -11775,7 +11821,7 @@ def verify_wordpress_xxe(
         res.detail = f"error inesperado: {e}"
         return res
     finally:
-        _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
+        _finalize_lab(lab, boot, res, step, keep_lab_on_failure, slug=slug)
 
 
 def verify_wordpress_open_redirect(
@@ -11920,7 +11966,7 @@ def verify_wordpress_open_redirect(
         res.detail = f"error inesperado: {e}"
         return res
     finally:
-        _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
+        _finalize_lab(lab, boot, res, step, keep_lab_on_failure, slug=slug)
 
 
 def _resolve_form_id_for_upload(boot, lab, slug: str, step) -> str:
@@ -12610,7 +12656,7 @@ def verify_wordpress_file_upload(
         res.detail = f"error inesperado: {e}"
         return res
     finally:
-        _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
+        _finalize_lab(lab, boot, res, step, keep_lab_on_failure, slug=slug)
 
 
 def _build_minimal_plugin_zip(token: str, expected_sum_a: int, expected_sum_b: int) -> bytes:
@@ -12792,7 +12838,7 @@ def verify_wordpress_plugin_install_rce(
         res.detail = f"error inesperado: {e}"
         return res
     finally:
-        _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
+        _finalize_lab(lab, boot, res, step, keep_lab_on_failure, slug=slug)
 
 
 def verify_wordpress_missing_auth_probe(
@@ -13211,16 +13257,40 @@ def verify_wordpress_missing_auth_probe(
                               f"no trivial ({len(body)} bytes) sin autenticacion{_cmp_detail} — "
                               f"evidencia de que la comprobacion de autenticacion falta")
 
+        # Write access escalation: if GET succeeds without auth, try mutating methods.
+        # Proves the endpoint also allows writes without auth, which is higher impact.
+        if not _rejected and status == 200 and m == "GET" and len(body.strip()) > 10:
+            for _wm in ("POST", "PUT", "PATCH", "DELETE"):
+                try:
+                    _wr = anon_sess.request(
+                        _wm, boot.base_url + endpoint,
+                        json={}, timeout=20, allow_redirects=True)
+                    _ws = _wr.status_code
+                    _wb = (_wr.text or "")[:300]
+                    _write_blocked = _ws in (401, 403, 405) or any(
+                        s in _wb.lower() for s in (
+                            "forbidden", "unauthorized", "not allowed", "you do not have permission"))
+                    if not _write_blocked and _ws not in (404,):
+                        res.evidence["write_access_proven"] = {
+                            "method": _wm, "status": _ws, "body_snippet": _wb[:200]}
+                        step(f"write escalation: {_wm} {endpoint} → HTTP {_ws} sin auth (escritura sin autenticacion)")
+                        break
+                except Exception:
+                    pass
+
         # WP REST route discovery: when the endpoint returns 404, probe /wp-json/ to list
-        # Diff-route fallback: if the initial endpoint returned 404, try each REST route
-        # extracted by the diff analyzer (register_rest_route calls in removed lines).
-        # These are the actual routes the vulnerable code registered — more reliable than
-        # the LLM's convention-based guess.
-        if status == 404 and not res.verified and diff_rest_routes:
+        # Diff-route fallback: if the initial endpoint returned 404 OR was rejected (401/403),
+        # try each REST route extracted by the diff analyzer (register_rest_route calls in
+        # removed lines). These are the actual routes the vulnerable code registered — more
+        # reliable than the LLM's convention-based guess for both not-found and rejected cases.
+        if (status == 404 or _rejected) and not res.verified and diff_rest_routes:
             for _diff_ep in diff_rest_routes:
                 if _diff_ep == endpoint:
                     continue  # already tried
-                step(f"probe: endpoint LLM={endpoint!r} → 404; reintentando con ruta del diff: {_diff_ep!r}")
+                _was_rejected = _rejected
+                step(f"probe: endpoint LLM={endpoint!r} → "
+                     f"{'rechazado' if _was_rejected else '404'}; "
+                     f"reintentando con ruta del diff: {_diff_ep!r}")
                 try:
                     _rdr = anon_sess.request(
                         m, boot.base_url + _diff_ep,
@@ -13230,12 +13300,20 @@ def verify_wordpress_missing_auth_probe(
                         timeout=20, allow_redirects=True)
                     _drs = _rdr.status_code
                     _drb = (_rdr.text or "")[:2000]
-                    if _drs != 404:
-                        step(f"probe: ruta diff {_diff_ep!r} → HTTP {_drs} ({len(_drb)}B)")
+                    _drb_low = _drb.lower()
+                    _dr_rejected = (_drs in (401, 403) or
+                                    any(s in _drb_low for s in _AUTH_REJECT_SIGNALS) or
+                                    (_drs == 200 and _drb.strip() in ("", "0", "-1", "null")))
+                    if _drs != 404 and not _dr_rejected:
+                        step(f"probe: ruta diff {_diff_ep!r} → HTTP {_drs} ({len(_drb)}B) — accesible")
                         # Re-run the main probe logic with the corrected endpoint
-                        status, body, endpoint = _drs, _drb, _diff_ep
+                        status, body, body_low, endpoint = _drs, _drb, _drb_low, _diff_ep
+                        _rejected = False
                         res.evidence["diff_route_used"] = _diff_ep
-                        res.evidence["original_endpoint_404"] = True
+                        if _was_rejected:
+                            res.evidence["original_endpoint_rejected"] = True
+                        else:
+                            res.evidence["original_endpoint_404"] = True
                         break
                 except Exception:
                     pass
@@ -13272,7 +13350,7 @@ def verify_wordpress_missing_auth_probe(
         res.detail = f"error inesperado: {e}"
         return res
     finally:
-        _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
+        _finalize_lab(lab, boot, res, step, keep_lab_on_failure, slug=slug)
 
 
 def verify_wordpress_csrf(
@@ -13503,7 +13581,7 @@ def verify_wordpress_csrf(
         res.detail = f"error inesperado: {e}"
         return res
     finally:
-        _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
+        _finalize_lab(lab, boot, res, step, keep_lab_on_failure, slug=slug)
 
 
 def verify_wordpress_idor(
@@ -13722,7 +13800,7 @@ def verify_wordpress_idor(
         res.detail = f"error inesperado: {e}"
         return res
     finally:
-        _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
+        _finalize_lab(lab, boot, res, step, keep_lab_on_failure, slug=slug)
 
 
 def verify_wordpress_deserialization(
@@ -13930,7 +14008,7 @@ def verify_wordpress_deserialization(
         res.detail = f"error inesperado: {e}"
         return res
     finally:
-        _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
+        _finalize_lab(lab, boot, res, step, keep_lab_on_failure, slug=slug)
 
 
 def verify_wordpress_deserialization_custom_table(
@@ -14136,7 +14214,7 @@ def verify_wordpress_deserialization_custom_table(
         res.detail = f"error inesperado: {e}"
         return res
     finally:
-        _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
+        _finalize_lab(lab, boot, res, step, keep_lab_on_failure, slug=slug)
 
 
 # ---------------------------------------------------------------------------
@@ -14627,7 +14705,7 @@ def verify_wordpress_request_chain(
         res.detail = f"error inesperado en request_chain: {e}"
         return res
     finally:
-        _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
+        _finalize_lab(lab, boot, res, step, keep_lab_on_failure, slug=slug)
 
 
 def escalate_post_lfi(

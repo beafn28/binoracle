@@ -2449,6 +2449,27 @@ def _bootstrap_generic_lab(source_dir: str, step, res: WpVerifyResult,
                     return None
 
         _lab_ok = True
+        # Log tested version/image for all generic verifiers via res.evidence
+        try:
+            if pkg_version:
+                res.evidence["tested_pkg_version"] = pkg_version
+            if docker_image:
+                res.evidence["tested_docker_image"] = docker_image
+            if not pkg_version and not docker_image:
+                # Try common version endpoints as fallback
+                import requests as _rq_v
+                for _vpath in ("/version", "/api/version", "/api/v1/version",
+                               "/_version", "/status", "/health"):
+                    try:
+                        _vr = _rq_v.get(base_url + _vpath, timeout=5, allow_redirects=False)
+                        if _vr.status_code == 200 and len(_vr.text or "") < 500:
+                            res.evidence["tested_app_version_response"] = {
+                                "path": _vpath, "body": _vr.text[:200]}
+                            break
+                    except Exception:
+                        continue
+        except Exception:
+            pass
         return (lab, base_url, container)
     except Exception as _e_boot:
         step(f"[error inesperado] fallo en bootstrap post-build: {str(_e_boot)[:150]}")
