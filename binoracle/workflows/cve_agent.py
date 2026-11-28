@@ -16498,7 +16498,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         and "activacion del plugin fallo:" in _lfi_detail_low
                         and any(_p in _lfi_detail_low for _p in (
                             "cannot make non static method", "must be compatible with",
-                            "must be of type", " static method "))
+                            "must be of type", " static method ",
+                            "critical error on this website", "has been a critical error"))
                         and not _gwi_lfi().endswith("php7.4-apache")
                         and not notes.get("docker_image", "").endswith("php7.4-apache")):
                     step(("LFI: activacion fallo por PHP 8.x incompatibilidad — "
@@ -17931,6 +17932,9 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     "must be compatible with",
                     "must be of type",
                     " static method ",
+                    # Generic PHP fatal error from modern WordPress (php 8.x compat)
+                    "critical error on this website",
+                    "has been a critical error",
                 )
                 _dv_detail_low = (wr.detail or "").lower()
                 from .wpverify import _get_active_wp_image as _gwi
@@ -19447,6 +19451,32 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     confirm_string=_url_cs, json_body=bool(notes.get("json_body")),
                     diff_rest_routes=_diff_rest_routes2 or None,
                     required_role=_url_role)
+                # PHP 8.x compat fallback for missing-auth probe
+                _map_detail_low = (wr.detail or "").lower()
+                from .wpverify import _get_active_wp_image as _gwi_map
+                _PHP8_MAP_PATTERNS = (
+                    "cannot make non static method", "must be compatible with",
+                    "must be of type", " static method ",
+                    "critical error on this website", "has been a critical error",
+                )
+                if (not wr.verified
+                        and "activacion del plugin fallo:" in _map_detail_low
+                        and any(_p in _map_detail_low for _p in _PHP8_MAP_PATTERNS)
+                        and not _gwi_map().endswith("php7.4-apache")
+                        and not notes.get("docker_image", "").endswith("php7.4-apache")):
+                    step(("missing-auth: activacion fallo por PHP 8.x — "
+                          "reintentando con wordpress:php7.4-apache") if es else
+                         ("missing-auth: activation failed due to PHP 8.x — "
+                          "retrying with wordpress:php7.4-apache"))
+                    set_wp_image_override("wordpress:php7.4-apache")
+                    wr = verify_wordpress_missing_auth_probe(
+                        fr.local_path, plugin_dir, notes.get("endpoint"),
+                        notes.get("http_method") or "POST", _params_dict,
+                        on_step=step, budget_s=budget_s, companion_plugins=companion_plugins,
+                        keep_lab_on_failure=keep_lab_on_failure,
+                        confirm_string=_url_cs, json_body=bool(notes.get("json_body")),
+                        diff_rest_routes=_diff_rest_routes2 or None,
+                        required_role=_url_role)
                 _apply_wpverify_result(inv, wr, es, llm)
                 # Si la sonda no-auth no confirmo con evidencia dura, intentar SSRF→file-write→RCE
                 # (el plugin fetcha una URL del atacante y escribe el contenido al filesystem).
@@ -19497,6 +19527,32 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                                   keep_lab_on_failure=keep_lab_on_failure,
                                                   file_field_tpl=_fu_file_field_tpl,
                                                   extra_upload_data=_fu_extra_upload)
+                # PHP 8.x compat fallback for file-upload
+                _fu_detail_low = (wr.detail or "").lower()
+                from .wpverify import _get_active_wp_image as _gwi_fu
+                _PHP8_FU_PATTERNS = (
+                    "cannot make non static method", "must be compatible with",
+                    "must be of type", " static method ",
+                    "critical error on this website", "has been a critical error",
+                )
+                if (not wr.verified
+                        and "activacion del plugin fallo:" in _fu_detail_low
+                        and any(_p in _fu_detail_low for _p in _PHP8_FU_PATTERNS)
+                        and not _gwi_fu().endswith("php7.4-apache")
+                        and not notes.get("docker_image", "").endswith("php7.4-apache")):
+                    step(("file-upload: activacion fallo por PHP 8.x — "
+                          "reintentando con wordpress:php7.4-apache") if es else
+                         ("file-upload: activation failed due to PHP 8.x — "
+                          "retrying with wordpress:php7.4-apache"))
+                    set_wp_image_override("wordpress:php7.4-apache")
+                    wr = verify_wordpress_file_upload(
+                        fr.local_path, plugin_dir, notes.get("endpoint"),
+                        notes.get("http_method") or "POST", params,
+                        file_param_hint=file_p or "", on_step=step, budget_s=budget_s,
+                        companion_plugins=companion_plugins, shortcode_name=_fu_shortcode,
+                        keep_lab_on_failure=keep_lab_on_failure,
+                        file_field_tpl=_fu_file_field_tpl,
+                        extra_upload_data=_fu_extra_upload)
                 fu_wp_extra_nonce_pages: List[str] = []
                 fu_wp_extra_setup_trigger_paths: List[str] = []
                 def _on_fu_wp_suggestion(sug):
