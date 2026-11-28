@@ -13690,6 +13690,94 @@ def verify_generic_missing_authorization(
                              f"baseline={_base_status} → bypass={_status}")
                         return res
 
+            # --- Phase 1e: JSON POST injection — many REST APIs only accept application/json ---
+            import json as _json_mod
+            _json_post_params = {
+                k: (v if not isinstance(v, dict) else str(v))
+                for k, v in (admin_credentials or {}).items()
+            } if admin_credentials else {}
+            if not _json_post_params:
+                _json_post_params = {}
+            try:
+                _rj = _probe.__func__ if hasattr(_probe, "__func__") else None
+                import requests as _rq2
+                _r_json = _rq2.post(
+                    boot.base_url + endpoint,
+                    json=_json_post_params or {},
+                    headers={"Content-Type": "application/json",
+                             "Accept": "application/json"},
+                    timeout=10, allow_redirects=False)
+                _jstatus, _jbody = _r_json.status_code, _r_json.text or ""
+                if confirm_string and confirm_string in _jbody and _jstatus in range(200, 400):
+                    res.verified = True
+                    res.ok = True
+                    res.evidence.update({
+                        "bypass_type": "json-post-no-auth",
+                        "method": "POST",
+                        "content_type": "application/json",
+                        "endpoint": endpoint,
+                        "status_code": _jstatus,
+                        "respuesta_cuerpo_recorte": _jbody[:400],
+                    })
+                    step("VERIFICADO — missing auth via JSON POST (no auth): confirm_string presente")
+                    return res
+                if _jstatus in (200, 201) and not confirm_string and len(_jbody.strip()) > 20:
+                    _jbody_low = _jbody.lower()
+                    if "unauthorized" not in _jbody_low and "forbidden" not in _jbody_low:
+                        res.evidence.setdefault("json_post_200", {}).update({
+                            "status": _jstatus, "snippet": _jbody[:200]})
+                        step(f"[json-post] endpoint {endpoint} acepta POST sin auth (HTTP {_jstatus})")
+            except Exception:
+                pass
+
+            # --- Phase 1f: pagination enumeration — proves mass-data access ---
+            # Try per_page/limit params to demonstrate all records are accessible unauthed.
+            if not res.verified:
+                _PAGINATION_PROBE = [
+                    {"per_page": "100", "page": "0"},
+                    {"per_page": "100", "page": "1"},
+                    {"limit": "100", "offset": "0"},
+                    {"pageSize": "100", "pageIndex": "0"},
+                    {"size": "100", "page": "0"},
+                ]
+                for _pp in _PAGINATION_PROBE:
+                    _pp_result = _probe(
+                        boot.base_url + endpoint + "?" + "&".join(f"{k}={v}" for k, v in _pp.items()),
+                        "GET", {})
+                    if _pp_result is None:
+                        continue
+                    _pp_status, _pp_body = _pp_result
+                    if _pp_status in (200, 201) and len(_pp_body.strip()) > 100:
+                        _item_count = None
+                        try:
+                            _parsed = _json_mod.loads(_pp_body)
+                            if isinstance(_parsed, list):
+                                _item_count = len(_parsed)
+                            elif isinstance(_parsed, dict):
+                                _item_count = (_parsed.get("total") or _parsed.get("count")
+                                               or len(_parsed.get("data", [])) or
+                                               len(_parsed.get("items", [])))
+                        except Exception:
+                            pass
+                        if _item_count is not None and _item_count > 0:
+                            res.evidence["pagination_enumeration"] = {
+                                "params": _pp, "total_items": _item_count,
+                                "body_snippet": _pp_body[:200]}
+                            step(f"[pagination] {_item_count} registros accesibles con {_pp}")
+                            if not confirm_string:
+                                res.verified = True
+                                res.ok = True
+                                res.evidence.update({
+                                    "bypass_type": "pagination-mass-access",
+                                    "endpoint": endpoint,
+                                    "status_code": _pp_status,
+                                    "pagination_params": _pp,
+                                    "total_records": _item_count,
+                                })
+                                step(f"VERIFICADO — missing auth pagination: {_item_count} registros sin auth")
+                                return res
+                            break
+
             # --- Phase 2: JWT bypass ---
             for _tok in _JWT_BYPASSES:
                 _hdrs: dict = {"Authorization": _tok} if _tok else {}

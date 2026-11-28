@@ -1491,13 +1491,16 @@ def fetch_source(target: str, version: str = "", on_step: Optional[Callable[[str
     if not target:
         return SourceFetchResult(note="sin source_url/slug para resolver")
 
-    # Si target es una ruta local ya existente (p.ej. un lab scaffolded en /tmp/...),
-    # devolverla directamente sin intentar resolverla como gem/pypi/npm.
+    # Si target es una ruta local (empieza por /), no intentar resolverla como paquete remoto.
+    # Si el directorio existe, devolverlo directamente; si no existe, retornar error claro.
     import os as _os
-    if target.startswith("/") and _os.path.isdir(target):
+    if target.startswith("/"):
         step = on_step or (lambda _m: None)
-        step(f"fetch_source: ruta local detectada '{target}' — usándola directamente")
-        return SourceFetchResult(ok=True, local_path=target, kind="local", note="ruta local scaffolded")
+        if _os.path.isdir(target):
+            step(f"fetch_source: ruta local detectada '{target}' — usándola directamente")
+            return SourceFetchResult(ok=True, local_path=target, kind="local", note="ruta local scaffolded")
+        step(f"fetch_source: ruta local '{target}' no existe — lab scaffolded ya eliminado")
+        return SourceFetchResult(note=f"ruta local '{target}' no existe (lab ya eliminado)")
 
     # Optimización: para cualquier repo GitHub con versión conocida, intentar el tarball
     # del tag exacto (/archive/refs/tags/v<ver>.tar.gz) antes de git clone — mucho más
