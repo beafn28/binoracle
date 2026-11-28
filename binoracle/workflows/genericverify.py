@@ -11997,6 +11997,36 @@ def verify_generic_information_disclosure(
                          setup_commands=setup_commands or [], on_step=step,
                          docker_image=docker_image or "")
         with lab.running() as boot:
+            # Fast-path: if confirm_string is set and endpoint is known, check the response
+            # body first. Handles self-testing apps (e.g. CVE-2023-30861) that return a
+            # marker string when the vulnerability is confirmed internally.
+            if confirm_string and endpoint:
+                try:
+                    import requests as _rq_cs
+                    _cs_resp = _rq_cs.request(
+                        http_method.upper() if http_method else "GET",
+                        boot.base_url + endpoint, timeout=10, allow_redirects=False)
+                    _cs_body = _cs_resp.text or ""
+                    if _cs_resp.status_code < 500 and confirm_string.lower() in _cs_body.lower():
+                        res.verified = True
+                        res.ok = True
+                        res.confidence = "confirmed"
+                        res.detail = (
+                            f"VERIFICADO: confirm_string '{confirm_string}' presente en "
+                            f"respuesta de {endpoint} (HTTP {_cs_resp.status_code})")
+                        res.evidence.update({
+                            "endpoint": endpoint,
+                            "status_code": _cs_resp.status_code,
+                            "confirm_string": confirm_string,
+                            "body_snippet": _cs_body[:200],
+                        })
+                        step(f"VERIFICADO — confirm_string '{confirm_string}' en body de {endpoint}")
+                        return res
+                    step(f"confirm_string '{confirm_string}' no encontrado en {endpoint} "
+                         f"(HTTP {_cs_resp.status_code}) — continuando con otras verificaciones")
+                except Exception as _cs_e:
+                    step(f"confirm_string check error: {_cs_e}")
+
             # Header-absence check (e.g. Flask CVE-2023-30861: missing Vary: Cookie).
             # When missing_response_header is set, verify that the named header value is
             # NOT present in the response to `endpoint`. Confirmed when the header is absent.
