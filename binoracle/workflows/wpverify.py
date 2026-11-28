@@ -2972,18 +2972,34 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
                     _activate_ok = True
                     step(f"plugin '{slug}' ya estaba activo en BD (PHP crasheo DESPUES de escribirlo) — continuando")
                 else:
-                    # Force-activate by writing directly to active_plugins in the DB
+                    # Force-activate by writing directly to active_plugins in the DB.
+                    # First, try to find the real main plugin file from the filesystem
+                    # (the standard assumption slug/slug.php fails when the main file has
+                    # a different name, e.g. sms-alert/sms-alert-main.php).
+                    _r_find_main = lab.wp_cli("eval",
+                        f"$dir = WP_PLUGIN_DIR . '/{slug}'; "
+                        f"$found = ''; "
+                        f"if (is_dir($dir)) {{ "
+                        f"  foreach (glob($dir . '/*.php') as $f) {{ "
+                        f"    $h = @file_get_contents($f, false, null, 0, 8192); "
+                        f"    if ($h && preg_match('/Plugin Name\\s*:/i', $h)) {{ "
+                        f"      $found = basename(dirname($f)) . '/' . basename($f); break; "
+                        f"    }} "
+                        f"  }} "
+                        f"}} "
+                        f"echo $found ?: '{slug}/{slug}.php';",
+                        "--skip-plugins", "--skip-themes", timeout=15)
+                    _main_file = ((_r_find_main.stdout or "").strip() or f"{slug}/{slug}.php")
                     _r_force = lab.wp_cli("eval",
                         f"$c = (array)get_option('active_plugins'); "
-                        f"$s = '{slug}/{slug}.php'; "
+                        f"$s = '{_main_file}'; "
                         f"if (!in_array($s, $c)) {{ $c[] = $s; sort($c); "
                         f"update_option('active_plugins', $c); }} "
                         f"echo in_array($s, (array)get_option('active_plugins')) ? 'OK' : 'FAIL';",
                         "--skip-plugins", "--skip-themes", timeout=20)
                     if (_r_force.stdout or "").strip().endswith("OK"):
                         _activate_ok = True
-                        step(f"plugin '{slug}' forzado activo en BD (PHP crasheo durante hook, "
-                             f"forzando via eval --skip-plugins)")
+                        step(f"plugin '{slug}' forzado activo en BD via eval (archivo: {_main_file})")
                     else:
                         step(f"no se pudo forzar activacion via DB: {(_r_force.stdout or '')[:100]}")
             if not _activate_ok:
