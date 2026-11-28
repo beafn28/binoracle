@@ -646,6 +646,10 @@ def analyze_patch_diff(raw_diff: str) -> dict:
         r"""request\.(?:args|GET|POST|data|json|form)\.get\(\s*['"]([a-z_][a-z0-9_]{1,39})['"]""",
         re.IGNORECASE,
     )
+    # PHP array notation: $_POST['selects'][0]['term'] or $_REQUEST['filters'][]
+    _php_bracket_pat = re.compile(
+        r"""\$_(?:POST|GET|REQUEST|FILES)\s*\[\s*['"]([a-zA-Z_][a-zA-Z0-9_]{1,39})['"]""",
+    )
     _NON_PARAM_KEYS = frozenset({
         "default", "required", "type", "sanitize_callback", "validate_callback",
         "permission_callback", "methods", "callback", "args", "schema", "enum",
@@ -667,6 +671,10 @@ def analyze_patch_diff(raw_diff: str) -> dict:
         for _m in _py_pat.finditer(_rl):
             _p = _m.group(1)
             if _p not in _param_names:
+                _param_names.append(_p)
+        for _m in _php_bracket_pat.finditer(_rl):
+            _p = _m.group(1)
+            if _p not in _NON_PARAM_KEYS and _p not in _param_names:
                 _param_names.append(_p)
     if _param_names:
         result["extracted_param_names"] = _param_names[:10]
