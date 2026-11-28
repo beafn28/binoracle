@@ -7143,6 +7143,8 @@ def _synthesize_exploit_from_intel(
                     patch_diff["bypass_hints"] = _da["bypass_hints"]
                 if _da.get("fix_completeness"):
                     patch_diff["fix_completeness"] = _da["fix_completeness"]
+                if _da.get("rest_routes"):
+                    patch_diff["rest_routes"] = _da["rest_routes"]
                 # Extract input path for the first sink candidate
                 _sinks = _da.get("sink_candidates", [])
                 if _sinks:
@@ -7163,6 +7165,12 @@ def _synthesize_exploit_from_intel(
                 + (f"\n  Vulnerable SQL template: {_sqli_ctx['sql_template']!r}"
                    if _sqli_ctx.get("sql_template") else "")
             )
+        _rest_routes_str = ""
+        _rest_routes_list = patch_diff.get("rest_routes") or []
+        if _rest_routes_list:
+            _rest_routes_str = (f"\n- REST endpoints registered in vulnerable code "
+                                f"(from register_rest_route/Express/Flask in diff): "
+                                f"{_rest_routes_list}")
         patch_summary = (
             f"Patch diff (what changed to fix it):\n"
             f"- Files: {patch_diff.get('changed_files', [])}\n"
@@ -7172,7 +7180,8 @@ def _synthesize_exploit_from_intel(
             f"- Fix completeness: {patch_diff.get('fix_completeness', 'unknown')}\n"
             f"- Input path to sink: {patch_diff.get('input_path', '')}\n"
             f"- Bypass hints: {patch_diff.get('bypass_hints', [])}"
-            f"{_sqli_ctx_str}\n"
+            f"{_sqli_ctx_str}"
+            f"{_rest_routes_str}\n"
             f"- Diff snippet:\n{patch_diff.get('raw_diff_snippet', '')[:800]}")
     _poc_code = (schema_hints or {}).get("public_poc_code", "")
     schema_str = ""
