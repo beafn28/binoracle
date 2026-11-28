@@ -15753,7 +15753,9 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                        "WAITFOR DELAY", "OR 1=1", "' OR '",
                                        '"OR"', "--", "/**/",
                                        "EXTRACTVALUE(", "UPDATEXML(", "CONCAT(0x",
-                                       "CHAR(", "0X7E", "LOAD_FILE(", "INTO OUTFILE")
+                                       "CHAR(", "0X7E", "LOAD_FILE(", "INTO OUTFILE",
+                                       "CAST(", "AS INTEGER)", "AS INT)", "PG_SLEEP(",
+                                       "1=1--", "1 OR 1", "' AND '", "AND 1=")
             if inv.vuln_class in ("sqli", "sql-injection") and isinstance(notes.get("parameters"), dict):
                 _cleaned_params = {}
                 for _k, _v in notes["parameters"].items():

