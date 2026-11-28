@@ -16815,6 +16815,13 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         "url_suffix": _pt_url_suffix, "query_suffix": _pt_query_suffix,
                     }
                 _apply_wpverify_result(inv, wr, es, llm)
+                # evitar envenenar la cache de scaffolds: _apply_wpverify_result() puede volver a poner
+                # wr.verified=False (SanityGuy/inject-not-exploit/sanity-gate detectaron una prueba no
+                # genuina DESPUES de que esta rama ya cacheara el scaffold con el wr.verified de ANTES
+                # de esos guardias) -- si eso pasa, sacar de la cache el scaffold que se acaba de meter.
+                if not wr.verified:
+                    _scaffold_cache.pop((_detect_lab_tech_stack(_pt_local_path_str, notes),
+                                          "path-traversal"), None)
                 # escalada LFI-a-RCE: solo aplica a PHP (log poisoning requiere include() o
                 # require() de PHP + un servidor Apache/nginx que loguee el User-Agent SIN
                 # sanitizar). Para Node.js, Python, Ruby, Go u otros runtimes este intento
@@ -17161,6 +17168,12 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         "parameters": params if isinstance(params, dict) else {},
                     }
                 _apply_wpverify_result(inv, wr, es, llm)
+                # evitar envenenar la cache de scaffolds: _apply_wpverify_result() puede volver a poner
+                # wr.verified=False (SanityGuy/inject-not-exploit/sanity-gate detectaron una prueba no
+                # genuina DESPUES de que esta rama ya cacheara el scaffold con el wr.verified de ANTES
+                # de esos guardias) -- si eso pasa, sacar de la cache el scaffold que se acaba de meter.
+                if not wr.verified:
+                    _scaffold_cache.pop((_detect_lab_tech_stack(_auth_local_path_str, notes), inv.vuln_class or "missing-authorization"), None)
             # Drupal exposure CVEs: installer/setup pages accessible on installed instances.
             # Uses HTTP confirm verifier instead of command injection (no cmd param exists).
             # Works for both module CVEs (is_drupal=True) and core CVEs (target_binary=drupal).
@@ -17409,6 +17422,12 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         "parameters": params if isinstance(params, dict) else {},
                     }
                 _apply_wpverify_result(inv, wr, es, llm)
+                # evitar envenenar la cache de scaffolds: _apply_wpverify_result() puede volver a poner
+                # wr.verified=False (SanityGuy/inject-not-exploit/sanity-gate detectaron una prueba no
+                # genuina DESPUES de que esta rama ya cacheara el scaffold con el wr.verified de ANTES
+                # de esos guardias) -- si eso pasa, sacar de la cache el scaffold que se acaba de meter.
+                if not wr.verified:
+                    _scaffold_cache.pop((_detect_lab_tech_stack(_cmdi_local_path_str, notes), "command-injection"), None)
             # Node.js web frameworks (Express/Fastify/NestJS/Koa): verificacion especializada
             # con auto-deteccion via package.json, JWT auto-auth y dispatcher principal
             # verify_node_web_cve() -- ver jsverify.py.
@@ -17588,7 +17607,9 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             auth_required=_gen_auth,
                             docker_image=_gen_di)
                         _apply_wpverify_result(inv, wr, es, llm)
-                    elif notes.get("confirm_string"):
+                    elif (notes.get("confirm_string") and
+                          inv.vuln_class not in ("cors", "cors-misconfiguration",
+                                                 "cors-misconfig", "cors-reflection")):
                         from .genericverify import verify_generic_http_confirm
                         _hc_confirm_gen = notes.get("confirm_string") or ""
                         _hc_praw_gen = _gen_params if isinstance(_gen_params, dict) else None
@@ -18009,7 +18030,9 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             auth_required=_go_gen_auth,
                             docker_image=_go_gen_di)
                         _apply_wpverify_result(inv, wr, es, llm)
-                    elif notes.get("confirm_string"):
+                    elif (notes.get("confirm_string") and
+                          inv.vuln_class not in ("cors", "cors-misconfiguration",
+                                                 "cors-misconfig", "cors-reflection")):
                         from .genericverify import verify_generic_http_confirm
                         _hc_confirm_go = notes.get("confirm_string") or ""
                         _hc_praw_go = _go_gen_params if isinstance(_go_gen_params, dict) else None
@@ -18923,6 +18946,12 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         "parameters": params if isinstance(params, dict) else {},
                     }
                 _apply_wpverify_result(inv, wr, es, llm)
+                # evitar envenenar la cache de scaffolds: _apply_wpverify_result() puede volver a poner
+                # wr.verified=False (SanityGuy/inject-not-exploit/sanity-gate detectaron una prueba no
+                # genuina DESPUES de que esta rama ya cacheara el scaffold con el wr.verified de ANTES
+                # de esos guardias) -- si eso pasa, sacar de la cache el scaffold que se acaba de meter.
+                if not wr.verified:
+                    _scaffold_cache.pop((_detect_lab_tech_stack(str(fr.local_path), notes), "ssrf"), None)
             # Fallback generico: cualquier clase web con confirm_string + (docker_image o
             # dockerfile_body) + endpoint -- envia la peticion HTTP y busca confirm_string.
             # Cubre CVEs como Drupal install.php RCE (confirm_string='Choose language'),
@@ -19264,6 +19293,12 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         "parameters": params if isinstance(params, dict) else {},
                     }
                 _apply_wpverify_result(inv, wr, es, llm)
+                # evitar envenenar la cache de scaffolds: _apply_wpverify_result() puede volver a poner
+                # wr.verified=False (SanityGuy/inject-not-exploit/sanity-gate detectaron una prueba no
+                # genuina DESPUES de que esta rama ya cacheara el scaffold con el wr.verified de ANTES
+                # de esos guardias) -- si eso pasa, sacar de la cache el scaffold que se acaba de meter.
+                if not wr.verified:
+                    _scaffold_cache.pop((_detect_lab_tech_stack(str(fr.local_path), notes), "xss"), None)
             elif (is_drupal and fr.kind in ("drupal-module", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class in ("ssti", "code-injection", "format-string") and notes.get("endpoint")):
                 from .drupalverify import verify_drupal_ssti, _pick_param
@@ -19452,6 +19487,12 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         "parameters": params if isinstance(params, dict) else {},
                     }
                 _apply_wpverify_result(inv, wr, es, llm)
+                # evitar envenenar la cache de scaffolds: _apply_wpverify_result() puede volver a poner
+                # wr.verified=False (SanityGuy/inject-not-exploit/sanity-gate detectaron una prueba no
+                # genuina DESPUES de que esta rama ya cacheara el scaffold con el wr.verified de ANTES
+                # de esos guardias) -- si eso pasa, sacar de la cache el scaffold que se acaba de meter.
+                if not wr.verified:
+                    _scaffold_cache.pop((_detect_lab_tech_stack(str(fr.local_path), notes), "ssti"), None)
             # PHP Object Injection (unserialize() of user-controlled input)
             elif (not plugin_dir and
                   (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
@@ -19512,6 +19553,12 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     else:
                         _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path), notes), "php-object-injection")] = _lab_cfg_poi
                 _apply_wpverify_result(inv, wr, es, llm)
+                # evitar envenenar la cache de scaffolds: _apply_wpverify_result() puede volver a poner
+                # wr.verified=False (SanityGuy/inject-not-exploit/sanity-gate detectaron una prueba no
+                # genuina DESPUES de que esta rama ya cacheara el scaffold con el wr.verified de ANTES
+                # de esos guardias) -- si eso pasa, sacar de la cache el scaffold que se acaba de meter.
+                if not wr.verified:
+                    _scaffold_cache.pop((_detect_lab_tech_stack(str(fr.local_path), notes), "php-object-injection"), None)
             elif (is_drupal and fr.kind in ("drupal-module", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class == "xxe" and notes.get("endpoint")):
                 from .drupalverify import verify_drupal_xxe, _pick_param
@@ -19644,6 +19691,12 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         "parameters": params if isinstance(params, dict) else {},
                     }
                 _apply_wpverify_result(inv, wr, es, llm)
+                # evitar envenenar la cache de scaffolds: _apply_wpverify_result() puede volver a poner
+                # wr.verified=False (SanityGuy/inject-not-exploit/sanity-gate detectaron una prueba no
+                # genuina DESPUES de que esta rama ya cacheara el scaffold con el wr.verified de ANTES
+                # de esos guardias) -- si eso pasa, sacar de la cache el scaffold que se acaba de meter.
+                if not wr.verified:
+                    _scaffold_cache.pop((_detect_lab_tech_stack(str(fr.local_path), notes), "xxe"), None)
             elif (is_drupal and fr.kind in ("drupal-module", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class == "open-redirect" and notes.get("endpoint")):
                 from .drupalverify import verify_drupal_open_redirect, _pick_param
@@ -19788,6 +19841,12 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         "parameters": params if isinstance(params, dict) else {},
                     }
                 _apply_wpverify_result(inv, wr, es, llm)
+                # evitar envenenar la cache de scaffolds: _apply_wpverify_result() puede volver a poner
+                # wr.verified=False (SanityGuy/inject-not-exploit/sanity-gate detectaron una prueba no
+                # genuina DESPUES de que esta rama ya cacheara el scaffold con el wr.verified de ANTES
+                # de esos guardias) -- si eso pasa, sacar de la cache el scaffold que se acaba de meter.
+                if not wr.verified:
+                    _scaffold_cache.pop((_detect_lab_tech_stack(_or_local_path_str, notes), "open-redirect"), None)
             elif (is_drupal and fr.kind in ("drupal-module", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class == "file-upload" and notes.get("endpoint")):
                 from .drupalverify import verify_drupal_file_upload, _pick_param
@@ -20136,6 +20195,12 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         "parameters": params if isinstance(params, dict) else {},
                     }
                 _apply_wpverify_result(inv, wr, es, llm)
+                # evitar envenenar la cache de scaffolds: _apply_wpverify_result() puede volver a poner
+                # wr.verified=False (SanityGuy/inject-not-exploit/sanity-gate detectaron una prueba no
+                # genuina DESPUES de que esta rama ya cacheara el scaffold con el wr.verified de ANTES
+                # de esos guardias) -- si eso pasa, sacar de la cache el scaffold que se acaba de meter.
+                if not wr.verified:
+                    _scaffold_cache.pop((_detect_lab_tech_stack(str(fr.local_path), notes), "file-upload"), None)
             elif ((fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
                   inv.vuln_class in ("zip-slip", "zip_slip", "path-traversal-zip",
                                      "archive-extraction") and notes.get("endpoint")):
@@ -20419,6 +20484,12 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         "parameters": params if isinstance(params, dict) else {},
                     }
                 _apply_wpverify_result(inv, wr, es, llm)
+                # evitar envenenar la cache de scaffolds: _apply_wpverify_result() puede volver a poner
+                # wr.verified=False (SanityGuy/inject-not-exploit/sanity-gate detectaron una prueba no
+                # genuina DESPUES de que esta rama ya cacheara el scaffold con el wr.verified de ANTES
+                # de esos guardias) -- si eso pasa, sacar de la cache el scaffold que se acaba de meter.
+                if not wr.verified:
+                    _scaffold_cache.pop((_detect_lab_tech_stack(str(fr.local_path), notes), "graphql"), None)
             # Prototype pollution (Node.js deepMerge vulnerable → contaminacion de Object.prototype)
             elif (not plugin_dir and
                   (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
@@ -20486,6 +20557,12 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         "parameters": params if isinstance(params, dict) else {},
                     }
                 _apply_wpverify_result(inv, wr, es, llm)
+                # evitar envenenar la cache de scaffolds: _apply_wpverify_result() puede volver a poner
+                # wr.verified=False (SanityGuy/inject-not-exploit/sanity-gate detectaron una prueba no
+                # genuina DESPUES de que esta rama ya cacheara el scaffold con el wr.verified de ANTES
+                # de esos guardias) -- si eso pasa, sacar de la cache el scaffold que se acaba de meter.
+                if not wr.verified:
+                    _scaffold_cache.pop((_detect_lab_tech_stack(str(fr.local_path), notes), "prototype-pollution"), None)
             # Boolean oracle / data-leak: diferencia TRUE/FALSE en respuesta filtra datos privados
             elif (wr is None and
                   not plugin_dir and
@@ -20580,6 +20657,12 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         "parameters": params if isinstance(params, dict) else {},
                     }
                 _apply_wpverify_result(inv, wr, es, llm)
+                # evitar envenenar la cache de scaffolds: _apply_wpverify_result() puede volver a poner
+                # wr.verified=False (SanityGuy/inject-not-exploit/sanity-gate detectaron una prueba no
+                # genuina DESPUES de que esta rama ya cacheara el scaffold con el wr.verified de ANTES
+                # de esos guardias) -- si eso pasa, sacar de la cache el scaffold que se acaba de meter.
+                if not wr.verified:
+                    _scaffold_cache.pop((_detect_lab_tech_stack(str(fr.local_path), notes), "boolean-oracle"), None)
             # CORS misconfiguration: reflexion del Origin en ACAO + ACAC: true
             # fr.local_path puede ser None si la descarga del repo fallo — OK mientras
             # tengamos dockerfile_body en el JSON (verify_generic_cors_misconfig crea
@@ -20652,6 +20735,12 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         "parameters": params if isinstance(params, dict) else {},
                     }
                 _apply_wpverify_result(inv, wr, es, llm)
+                # evitar envenenar la cache de scaffolds: _apply_wpverify_result() puede volver a poner
+                # wr.verified=False (SanityGuy/inject-not-exploit/sanity-gate detectaron una prueba no
+                # genuina DESPUES de que esta rama ya cacheara el scaffold con el wr.verified de ANTES
+                # de esos guardias) -- si eso pasa, sacar de la cache el scaffold que se acaba de meter.
+                if not wr.verified:
+                    _scaffold_cache.pop((_detect_lab_tech_stack(str(fr.local_path), notes), "cors"), None)
             # JWT bypass: alg:none + weak secret
             # Mismo patron que CORS: fr.local_path puede ser None si el repo no se descargo,
             # pero con dockerfile_body en el JSON podemos arrancar el lab sin el source dir.
@@ -20711,6 +20800,12 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     else:
                         _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path), notes), "jwt-bypass")] = _lab_cfg_jwt
                 _apply_wpverify_result(inv, wr, es, llm)
+                # evitar envenenar la cache de scaffolds: _apply_wpverify_result() puede volver a poner
+                # wr.verified=False (SanityGuy/inject-not-exploit/sanity-gate detectaron una prueba no
+                # genuina DESPUES de que esta rama ya cacheara el scaffold con el wr.verified de ANTES
+                # de esos guardias) -- si eso pasa, sacar de la cache el scaffold que se acaba de meter.
+                if not wr.verified:
+                    _scaffold_cache.pop((_detect_lab_tech_stack(str(fr.local_path), notes), "jwt-bypass"), None)
             # NoSQL injection (MongoDB $ne/$gt operator)
             elif (not plugin_dir and
                   (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
@@ -20767,6 +20862,12 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     else:
                         _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path), notes), "nosql-injection")] = _lab_cfg_nosql
                 _apply_wpverify_result(inv, wr, es, llm)
+                # evitar envenenar la cache de scaffolds: _apply_wpverify_result() puede volver a poner
+                # wr.verified=False (SanityGuy/inject-not-exploit/sanity-gate detectaron una prueba no
+                # genuina DESPUES de que esta rama ya cacheara el scaffold con el wr.verified de ANTES
+                # de esos guardias) -- si eso pasa, sacar de la cache el scaffold que se acaba de meter.
+                if not wr.verified:
+                    _scaffold_cache.pop((_detect_lab_tech_stack(str(fr.local_path), notes), "nosql-injection"), None)
             # ReDoS / algorithmic complexity — timing-based verification
             elif (not plugin_dir and
                   (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
@@ -20859,6 +20960,12 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         else:
                             _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path), notes), "oauth-bypass")] = _lab_cfg_oauth
                     _apply_wpverify_result(inv, wr, es, llm)
+                    # evitar envenenar la cache de scaffolds: _apply_wpverify_result() puede volver a poner
+                    # wr.verified=False (SanityGuy/inject-not-exploit/sanity-gate detectaron una prueba no
+                    # genuina DESPUES de que esta rama ya cacheara el scaffold con el wr.verified de ANTES
+                    # de esos guardias) -- si eso pasa, sacar de la cache el scaffold que se acaba de meter.
+                    if not wr.verified:
+                        _scaffold_cache.pop((_detect_lab_tech_stack(str(fr.local_path), notes), "oauth-bypass"), None)
                 else:
                     inv.blockers.append(("oauth-bypass: se necesita confirm_string del "
                                          "estado autenticado para verificar" if es else
@@ -20918,6 +21025,12 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         else:
                             _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path), notes), "deserialization")] = _lab_cfg_dser
                     _apply_wpverify_result(inv, wr, es, llm)
+                    # evitar envenenar la cache de scaffolds: _apply_wpverify_result() puede volver a poner
+                    # wr.verified=False (SanityGuy/inject-not-exploit/sanity-gate detectaron una prueba no
+                    # genuina DESPUES de que esta rama ya cacheara el scaffold con el wr.verified de ANTES
+                    # de esos guardias) -- si eso pasa, sacar de la cache el scaffold que se acaba de meter.
+                    if not wr.verified:
+                        _scaffold_cache.pop((_detect_lab_tech_stack(str(fr.local_path), notes), "deserialization"), None)
                 else:
                     inv.blockers.append(("deserialization: se necesita confirm_string o "
                                          "endpoint de RCE para verificar — pasa en JSON" if es else
@@ -20976,6 +21089,12 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         else:
                             _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path), notes), "race-condition")] = _lab_cfg_race
                     _apply_wpverify_result(inv, wr, es, llm)
+                    # evitar envenenar la cache de scaffolds: _apply_wpverify_result() puede volver a poner
+                    # wr.verified=False (SanityGuy/inject-not-exploit/sanity-gate detectaron una prueba no
+                    # genuina DESPUES de que esta rama ya cacheara el scaffold con el wr.verified de ANTES
+                    # de esos guardias) -- si eso pasa, sacar de la cache el scaffold que se acaba de meter.
+                    if not wr.verified:
+                        _scaffold_cache.pop((_detect_lab_tech_stack(str(fr.local_path), notes), "race-condition"), None)
                 else:
                     inv.blockers.append(("race-condition: se necesita confirm_string del "
                                          "estado explotado para verificar" if es else
@@ -21043,6 +21162,12 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     else:
                         _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path), notes), "path-confusion")] = _lab_cfg_pconf
                 _apply_wpverify_result(inv, wr, es, llm)
+                # evitar envenenar la cache de scaffolds: _apply_wpverify_result() puede volver a poner
+                # wr.verified=False (SanityGuy/inject-not-exploit/sanity-gate detectaron una prueba no
+                # genuina DESPUES de que esta rama ya cacheara el scaffold con el wr.verified de ANTES
+                # de esos guardias) -- si eso pasa, sacar de la cache el scaffold que se acaba de meter.
+                if not wr.verified:
+                    _scaffold_cache.pop((_detect_lab_tech_stack(str(fr.local_path), notes), "path-confusion"), None)
             # Business logic (invariant violations, negative transfer, coupon abuse)
             elif (not plugin_dir and
                   (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
@@ -21134,6 +21259,12 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     else:
                         _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path), notes), "business-logic")] = _lab_cfg_biz
                 _apply_wpverify_result(inv, wr, es, llm)
+                # evitar envenenar la cache de scaffolds: _apply_wpverify_result() puede volver a poner
+                # wr.verified=False (SanityGuy/inject-not-exploit/sanity-gate detectaron una prueba no
+                # genuina DESPUES de que esta rama ya cacheara el scaffold con el wr.verified de ANTES
+                # de esos guardias) -- si eso pasa, sacar de la cache el scaffold que se acaba de meter.
+                if not wr.verified:
+                    _scaffold_cache.pop((_detect_lab_tech_stack(str(fr.local_path), notes), "business-logic"), None)
             # CSRF: peticion cross-origin sin token
             elif (not plugin_dir and
                   (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
@@ -21190,6 +21321,12 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     else:
                         _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path), notes), "csrf")] = _lab_cfg_csrf
                 _apply_wpverify_result(inv, wr, es, llm)
+                # evitar envenenar la cache de scaffolds: _apply_wpverify_result() puede volver a poner
+                # wr.verified=False (SanityGuy/inject-not-exploit/sanity-gate detectaron una prueba no
+                # genuina DESPUES de que esta rama ya cacheara el scaffold con el wr.verified de ANTES
+                # de esos guardias) -- si eso pasa, sacar de la cache el scaffold que se acaba de meter.
+                if not wr.verified:
+                    _scaffold_cache.pop((_detect_lab_tech_stack(str(fr.local_path), notes), "csrf"), None)
             # CRLF injection / HTTP response splitting
             elif (not plugin_dir and
                   (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
@@ -21243,6 +21380,12 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     else:
                         _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path), notes), "crlf-injection")] = _lab_cfg_crlf
                 _apply_wpverify_result(inv, wr, es, llm)
+                # evitar envenenar la cache de scaffolds: _apply_wpverify_result() puede volver a poner
+                # wr.verified=False (SanityGuy/inject-not-exploit/sanity-gate detectaron una prueba no
+                # genuina DESPUES de que esta rama ya cacheara el scaffold con el wr.verified de ANTES
+                # de esos guardias) -- si eso pasa, sacar de la cache el scaffold que se acaba de meter.
+                if not wr.verified:
+                    _scaffold_cache.pop((_detect_lab_tech_stack(str(fr.local_path), notes), "crlf-injection"), None)
             # Multi-step chain (2FA bypass, token-based flows, session fixation, ATO)
             # Guard with wr is None: bypass_url/header path in an earlier chain may have
             # already set wr for auth-bypass CVEs — don't overwrite with a multistep result.
@@ -21316,6 +21459,12 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     else:
                         _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path), notes), "2fa-bypass")] = _lab_cfg_ms
                 _apply_wpverify_result(inv, wr, es, llm)
+                # evitar envenenar la cache de scaffolds: _apply_wpverify_result() puede volver a poner
+                # wr.verified=False (SanityGuy/inject-not-exploit/sanity-gate detectaron una prueba no
+                # genuina DESPUES de que esta rama ya cacheara el scaffold con el wr.verified de ANTES
+                # de esos guardias) -- si eso pasa, sacar de la cache el scaffold que se acaba de meter.
+                if not wr.verified:
+                    _scaffold_cache.pop((_detect_lab_tech_stack(str(fr.local_path), notes), "2fa-bypass"), None)
             # Mass assignment (privileged field injection in registration / profile update)
             elif (not plugin_dir and
                   (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
@@ -21376,6 +21525,12 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     else:
                         _scaffold_cache[(_detect_lab_tech_stack(str(fr.local_path), notes), "mass-assignment")] = _lab_cfg_ma
                 _apply_wpverify_result(inv, wr, es, llm)
+                # evitar envenenar la cache de scaffolds: _apply_wpverify_result() puede volver a poner
+                # wr.verified=False (SanityGuy/inject-not-exploit/sanity-gate detectaron una prueba no
+                # genuina DESPUES de que esta rama ya cacheara el scaffold con el wr.verified de ANTES
+                # de esos guardias) -- si eso pasa, sacar de la cache el scaffold que se acaba de meter.
+                if not wr.verified:
+                    _scaffold_cache.pop((_detect_lab_tech_stack(str(fr.local_path), notes), "mass-assignment"), None)
             # --- Information disclosure (exposed config, .env, debug endpoints) ---
             elif (not plugin_dir and
                   (fr.local_path or notes.get("dockerfile_body") or notes.get("docker_image")) and
