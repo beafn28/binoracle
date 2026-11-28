@@ -15751,7 +15751,9 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             # verifier can inject its own payload cleanly.
             _SQL_PAYLOAD_INDICATORS = ("UNION SELECT", "SLEEP(", "BENCHMARK(",
                                        "WAITFOR DELAY", "OR 1=1", "' OR '",
-                                       '"OR"', "--", "/**/")
+                                       '"OR"', "--", "/**/",
+                                       "EXTRACTVALUE(", "UPDATEXML(", "CONCAT(0x",
+                                       "CHAR(", "0X7E", "LOAD_FILE(", "INTO OUTFILE")
             if inv.vuln_class in ("sqli", "sql-injection") and isinstance(notes.get("parameters"), dict):
                 _cleaned_params = {}
                 for _k, _v in notes["parameters"].items():

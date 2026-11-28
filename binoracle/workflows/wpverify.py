@@ -3111,15 +3111,23 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
             step(f"ERROR: activacion del plugin fallo (rc={r.returncode}): "
                  f"{activation_output[:200]}")
             # rc=255 with empty output = PHP crashed (OOM, fatal error) during activation hook.
+            # rc=255 with PHP error in output = fatal error during activation hook.
             # rc=1 with WordPress "critical error" message = PHP fatal in activation hook (PHP 8.x).
-            # In both cases, the plugin file is on disk and the activation hook is the ONLY part
-            # that crashed — the REST API and plugin code load fine on HTTP requests.
+            # In all these cases, the plugin file is on disk and the activation hook is the ONLY
+            # part that crashed — the REST API and plugin code load fine on HTTP requests.
             # Force-activate via DB so the lab can attempt the exploit.
             _wp_critical_error = (
                 r.returncode == 1
                 and "critical error on this website" in activation_output.lower()
             )
-            if (r.returncode == 255 and not activation_output.strip()) or _wp_critical_error:
+            _php_fatal_on_activate = (
+                r.returncode == 255
+                and any(pat in activation_output.lower() for pat in (
+                    "fatal error", "cannot make non static", "undefined function",
+                    "class not found", "cannot redeclare", "parse error",
+                ))
+            )
+            if (r.returncode == 255 and not activation_output.strip()) or _wp_critical_error or _php_fatal_on_activate:
                 _r_ap_chk = lab.wp_cli("eval",
                     "echo implode('|', (array)get_option('active_plugins'));",
                     "--skip-plugins", "--skip-themes", timeout=15)
