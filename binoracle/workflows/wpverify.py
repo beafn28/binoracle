@@ -13454,7 +13454,12 @@ def verify_wordpress_missing_auth_probe(
         _rejected = (status in (401, 403) or
                      any(s in body_low for s in _AUTH_REJECT_SIGNALS) or
                      any(s in body for s in _AUTH_REJECT_JSON) or
-                     (status == 200 and body.strip() in ("", "0", "-1", "null")))
+                     (status == 200 and body.strip() in ("", "0", "-1", "null")) or
+                     # HTTP 400 + trivial body (single char or WP empty-fail sentinel)
+                     # is a rejection signal — WP admin-ajax returns 400+0 when the
+                     # action fires but the nonce/capability check blocked it.
+                     (status == 400 and len(body.strip()) <= 2 and
+                      body.strip() in ("", "0", "-1", "{}", "[]")))
 
         res.evidence["status_anonimo"] = status
         res.evidence["body_recorte"] = body[:300]
@@ -13882,9 +13887,15 @@ def verify_wordpress_missing_auth_probe(
                         except Exception:
                             continue
 
-                res.detail = (f"sonda no-auth: el endpoint responde HTTP {status} con contenido "
-                              f"no trivial ({len(body)} bytes) sin autenticacion{_cmp_detail} — "
-                              f"evidencia de que la comprobacion de autenticacion falta")
+                # Only claim non-trivial if body is actually non-empty (> 2 bytes).
+                # 1-byte "0" or empty bodies after non-200 responses are not evidence.
+                if len(body.strip()) > 2:
+                    res.detail = (f"sonda no-auth: el endpoint responde HTTP {status} con contenido "
+                                  f"no trivial ({len(body)} bytes) sin autenticacion{_cmp_detail} — "
+                                  f"evidencia de que la comprobacion de autenticacion falta")
+                else:
+                    res.detail = (f"sonda no-auth: HTTP {status} con cuerpo minimo ({len(body)} bytes) "
+                                  f"sin autenticacion — no hay evidencia suficiente de missing-auth")
 
         # Auth-delta proof: compare anon response vs admin response.
         # If they differ → the endpoint exposes privileged data to anon users.
