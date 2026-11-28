@@ -13082,6 +13082,22 @@ def verify_wordpress_missing_auth_probe(
                 step(f"probe: ejecutando comando pre-ataque: {_cmd_args[:3]}...")
                 lab.wp_cli(*_cmd_args, timeout=60)
 
+        # Create a contributor-role user for capability-bypass tests (some CVEs require
+        # contributor+ not just subscriber; contributor can publish posts and has more caps).
+        import secrets as _sec
+        _contrib_user = "binoracle_contributor"
+        _contrib_pass = _sec.token_urlsafe(10)
+        _contrib_sess = None
+        try:
+            _cr2 = lab.wp_cli("user", "create", _contrib_user,
+                              "contributor@binoracle-lab.invalid",
+                              "--role=contributor", f"--user_pass={_contrib_pass}", timeout=20)
+            if _cr2 and _cr2.returncode == 0:
+                _contrib_sess = _wp_login(boot.base_url, _contrib_user, _contrib_pass, on_step=step)
+                step(f"contributor user created: '{_contrib_user}'")
+        except Exception:
+            pass
+
         m = (http_method or "POST").upper()
         params_dict = (parameters if isinstance(parameters, dict)
                        else dict.fromkeys(parameters or [], ""))
@@ -13619,6 +13635,68 @@ def verify_wordpress_missing_auth_probe(
                     except Exception:
                         pass
 
+        # 400-with-diff-params retry: when anon gets 400 with a tiny body and we have
+        # extracted_param_names from the patch diff, retry with those as valid parameter keys
+        # (filled with plausible test values). If we get 200 or a larger body, the original 400
+        # was a param-validation error (not an auth block) — the endpoint processes anon requests.
+        if status == 400 and not res.verified and boot is not None:
+            _epn_400 = (res.evidence.get("extracted_param_names") or
+                        (getattr(boot, "diff_param_names", None)) or [])
+            if not _epn_400 and diff_rest_routes:
+                pass  # no param names available
+            if _epn_400:
+                _diff_params = {k: ("1" if any(x in k.lower() for x in ("id", "num", "count"))
+                                    else "test") for k in _epn_400[:5]}
+                _diff_params.update(params_dict)
+                try:
+                    _r400d = anon_sess.request(
+                        m, boot.base_url + endpoint,
+                        json=_diff_params if json_body else None,
+                        data=_diff_params if not json_body and m not in ("GET","HEAD") else None,
+                        params=_diff_params if m == "GET" else None,
+                        timeout=20, allow_redirects=True)
+                    _s400d = _r400d.status_code
+                    _b400d = (_r400d.text or "")[:2000]
+                    if _s400d != 400 and _s400d not in (401, 403):
+                        step(f"[400-diff-retry] con params del diff → HTTP {_s400d} ({len(_b400d)}B)")
+                        status, body, body_low = _s400d, _b400d, _b400d.lower()
+                        res.evidence["diff_params_retry"] = {"status": _s400d, "params_used": list(_diff_params.keys())}
+                    elif len(_b400d.strip()) > len(body.strip()) + 20:
+                        step(f"[400-diff-retry] aún 400 pero body más grande ({len(_b400d)}B > {len(body)}B)")
+                        body, body_low = _b400d, _b400d.lower()
+                        res.evidence["diff_params_retry_larger_body"] = {"body_len": len(_b400d), "params_used": list(_diff_params.keys())}
+                except Exception:
+                    pass
+
+        # Subscriber-role escalation on 400: when anon gets 400 and subscriber gets 200,
+        # it confirms the endpoint requires authentication (capability check missing for sub).
+        if not res.verified and status == 400 and boot is not None:
+            try:
+                _sub400 = boot.sub_sess.request(
+                    m, boot.base_url + endpoint,
+                    json=params_dict if (m not in ("GET", "HEAD") and json_body) else None,
+                    data=params_dict if (m not in ("GET", "HEAD") and not json_body) else None,
+                    params=params_dict if m == "GET" else None,
+                    timeout=20, allow_redirects=True)
+                _sub400_st = _sub400.status_code
+                _sub400_body = (_sub400.text or "")[:2000]
+                _not_rejected_sub = (_sub400_st not in (401, 403) and
+                                     not any(s in _sub400_body.lower() for s in _AUTH_REJECT_SIGNALS))
+                if _not_rejected_sub and _sub400_st != 400 and len(_sub400_body.strip()) > 10:
+                    res.verified = True
+                    res.confidence = "confirmed"
+                    res.evidence["subscriber_on_400"] = {
+                        "anon_status": status, "sub_status": _sub400_st,
+                        "sub_body_len": len(_sub400_body.strip()),
+                        "sub_snippet": _sub400_body.strip()[:200],
+                    }
+                    res.detail = (f"capability bypass: anon→HTTP {status}, subscriber→HTTP {_sub400_st} "
+                                  f"({len(_sub400_body.strip())}B) — el endpoint procesa requests de "
+                                  f"subscriber sin verificar capability (missing capability check)")
+                    step(f"SUB-ON-400: anon=400, sub={_sub400_st} → confirmed capability bypass")
+            except Exception:
+                pass
+
         # Subscriber-role escalation: compare subscriber vs anon response.
         # Subscriber getting MORE data than anon proves capability bypass (not just missing-auth).
         if not res.verified and status == 200 and len(body.strip()) > 20 and boot is not None:
@@ -13649,6 +13727,38 @@ def verify_wordpress_missing_auth_probe(
                     res.detail = (f"subscriber-role privilege escalation: subscriber ({_sub_st}) "
                                   f"accede a datos que difieren del anon → capability bypass")
                     step("SUBSCRIBER ESCALATION: sub differs from anon → confirmed")
+            except Exception:
+                pass
+
+        # Contributor-role escalation: some CVEs require contributor+ level (can publish posts).
+        # Compare contributor vs anon to confirm capability bypass beyond subscriber.
+        if not res.verified and _contrib_sess is not None and status in (200, 400):
+            try:
+                _contr = _contrib_sess.request(
+                    m, boot.base_url + endpoint,
+                    json=params_dict if (m not in ("GET", "HEAD") and json_body) else None,
+                    data=params_dict if (m not in ("GET", "HEAD") and not json_body) else None,
+                    params=params_dict if m == "GET" else None,
+                    timeout=20, allow_redirects=True)
+                _contr_st = _contr.status_code
+                _contr_body = (_contr.text or "")[:2000]
+                _contr_ok = (_contr_st not in (401, 403) and
+                             not any(s in _contr_body.lower() for s in _AUTH_REJECT_SIGNALS) and
+                             _contr_st not in (400,) and len(_contr_body.strip()) > 10)
+                _contr_better = (status == 400 and _contr_st == 200) or (
+                    status == 200 and len(_contr_body.strip()) > len(body.strip()) + 50)
+                if _contr_ok and _contr_better:
+                    res.verified = True
+                    res.confidence = "confirmed"
+                    res.evidence["contributor_escalation"] = {
+                        "anon_status": status, "contributor_status": _contr_st,
+                        "contributor_body_len": len(_contr_body.strip()),
+                        "contributor_snippet": _contr_body.strip()[:200],
+                    }
+                    res.detail = (f"contributor-role capability bypass: anon→HTTP {status}, "
+                                  f"contributor→HTTP {_contr_st} ({len(_contr_body.strip())}B) "
+                                  f"— missing capability check confirmado para rol contributor")
+                    step(f"CONTRIBUTOR ESCALATION: anon={status}, contrib={_contr_st} → confirmed")
             except Exception:
                 pass
 

