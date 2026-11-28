@@ -3215,8 +3215,72 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
                                 f"echo 'deactivated';",
                                 "--skip-plugins", "--skip-themes", timeout=15)
                             if "deactivated" in (_r_deact.stdout or ""):
-                                step(f"plugin '{slug}' desactivado; reactivando solo para el ataque...")
-                                _activate_ok = False  # signal to outer code that plugin is not active
+                                # Read WP logs to check for PHP 8.x compatibility issues.
+                                # Plugins using create_function/typed props/nullsafe ops crash on
+                                # php8.x but work on php7.4. Restart with php7.4 and retry.
+                                _wp_logs_act = lab.logs_tail(lab.wp)
+                                _php_fatal_sigs_act = (
+                                    "cannot use string offset", "create_function",
+                                    "must be compatible", "fatal error", "php fatal",
+                                    "deprecated", "call to undefined", "typed property",
+                                    "cannot declare", "nullsafe operator",
+                                    "syntax error", "parse error",
+                                )
+                                _has_php_fatal_act = any(
+                                    s in _wp_logs_act.lower() for s in _php_fatal_sigs_act
+                                )
+                                _cur_img_act = _get_active_wp_image()
+                                _is_php8_act = "php8" in _cur_img_act.lower()
+                                if _has_php_fatal_act and _is_php8_act:
+                                    _wp74 = "wordpress:php7.4-apache"
+                                    step(f"PHP 8 fatal en '{slug}' — reiniciando con {_wp74}...")
+                                    _php74_ok = False
+                                    try:
+                                        lab.sh("stop", lab.wp, timeout=10)
+                                        lab.sh("rm", "-f", lab.wp, timeout=10)
+                                        lab._created = [
+                                            (k, v) for (k, v) in getattr(lab, "_created", [])
+                                            if not (k == "container" and v == lab.wp)
+                                        ]
+                                        _prev_img_act = _cur_img_act
+                                        _wp_image_ctx.image = _wp74
+                                        _port74 = lab.start_wordpress(db_pw)
+                                        if _port74 and lab.http_ready(_port74):
+                                            if _port74 != port:
+                                                base_url = f"http://{_lab_host()}:{_port74}"
+                                                ctx["base_url"] = base_url
+                                            step(f"WordPress {_wp74} listo; "
+                                                 f"reintentando activacion de '{slug}'...")
+                                            _r74 = lab.wp_cli("plugin", "activate", slug,
+                                                               timeout=90)
+                                            if _r74.returncode == 0:
+                                                _activate_ok = True
+                                                _php74_ok = True
+                                                step(f"plugin '{slug}' activado con {_wp74}")
+                                            else:
+                                                _r_fa74 = lab.wp_cli(
+                                                    "eval",
+                                                    f"$c = (array)get_option('active_plugins'); "
+                                                    f"$s = '{_main_file}'; "
+                                                    f"if (!in_array($s,$c)) {{ $c[]=$s; "
+                                                    f"sort($c); update_option('active_plugins',$c); }} "
+                                                    f"echo in_array($s,(array)get_option("
+                                                    f"'active_plugins')) ? 'OK' : 'FAIL';",
+                                                    "--skip-plugins", "--skip-themes", timeout=20)
+                                                if (_r_fa74.stdout or "").strip().endswith("OK"):
+                                                    _activate_ok = True
+                                                    _php74_ok = True
+                                                    step(f"plugin '{slug}' forzado activo "
+                                                         f"en {_wp74}")
+                                        else:
+                                            _wp_image_ctx.image = _prev_img_act
+                                    except Exception as _e74:
+                                        step(f"error al reintentar con {_wp74}: {_e74}")
+                                    if not _php74_ok:
+                                        _activate_ok = False
+                                else:
+                                    step(f"plugin '{slug}' desactivado; lab inoperable")
+                                    _activate_ok = False
                             else:
                                 step("desactivacion fallida; el lab puede estar inoperable")
                     else:
