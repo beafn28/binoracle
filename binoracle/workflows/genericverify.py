@@ -4245,6 +4245,16 @@ def verify_generic_ssrf(
         return res
 
     url_param = url_param_hint or _pick_param(parameters, _URL_HINTS)
+    # OIDC/OAuth identity providers (Zitadel, Keycloak, etc.) carry the SSRF vector in
+    # redirect_uri / iss rather than a generic "url" parameter.  When the LLM left parameters
+    # empty and no url_param was detected, check the docker image and inject OIDC params.
+    _OIDC_SSRF_PROVIDERS = ("zitadel", "keycloak", "authentik", "dex", "ory/hydra", "glauth")
+    if not url_param and any(p in (docker_image or "").lower() for p in _OIDC_SSRF_PROVIDERS):
+        url_param = "redirect_uri"
+        # Seed parameters with the main OIDC SSRF params so the loop can try them all
+        if not parameters:
+            parameters = {"redirect_uri": "", "iss": "", "post_logout_redirect_uri": ""}
+        step("[ssrf] OIDC provider — using redirect_uri/iss as SSRF vector")
     if not url_param:
         res.detail = "no se identifico el parametro que lleva la URL/recurso remoto"
         res.limitations.append("la verificacion de SSRF necesita saber que parametro lleva la "
@@ -4392,6 +4402,34 @@ def verify_generic_ssrf(
                 res.evidence["token_ganador"] = token
                 res.evidence["listener_log_recorte"] = log[:1000]
                 break
+
+        # Secondary OIDC probe: when standard url_param loop failed for identity providers,
+        # try each OIDC redirect parameter with the callback URL injected as a JSON body.
+        if not found and any(p in (docker_image or "").lower() for p in _OIDC_SSRF_PROVIDERS):
+            _oidc_tok = _token()
+            _oidc_cb = f"http://{lab.listener}:8080/binoracle-ssrf-{_oidc_tok}"
+            if listener_ip:
+                _oidc_cb = f"http://{listener_ip}:8080/binoracle-ssrf-{_oidc_tok}"
+            for _op in ("redirect_uri", "iss", "post_logout_redirect_uri"):
+                try:
+                    _r1 = _http_request("POST", base_url + endpoint, timeout=10,
+                                        json={_op: _oidc_cb},
+                                        headers=dict(custom_headers or {}))
+                    _r2 = _http_request("GET", base_url + endpoint, timeout=10,
+                                        params={_op: _oidc_cb},
+                                        headers=dict(custom_headers or {}))
+                    time.sleep(2)
+                    _oidc_log = lab.listener_log()
+                    if _oidc_tok in _oidc_log:
+                        found = True
+                        res.evidence["callback_url_ganadora"] = _oidc_cb
+                        res.evidence["token_ganador"] = _oidc_tok
+                        res.evidence["listener_log_recorte"] = _oidc_log[:1000]
+                        res.evidence["oidc_ssrf_param"] = _op
+                        step(f"[ssrf-oidc] VERIFICADO via {_op!r}")
+                        break
+                except Exception:
+                    pass
 
         res.evidence.update({"base_url": base_url, "contenedor": container, "endpoint": endpoint,
                              "url_param": url_param, "listener_ip": listener_ip,
