@@ -7127,6 +7127,18 @@ def run_request_chain(
                 text = text.replace("{{" + var + "}}", str(val))
             return text
 
+        # Persistent session for cookie jar — login→authenticate→attack chains
+        import requests as _rq_chain_sess
+        _chain_session = _rq_chain_sess.Session()
+        _chain_session.verify = False
+
+        def _chain_request(method: str, url: str, **kwargs):
+            """Session-aware request; falls back to _http_request on error."""
+            try:
+                return _chain_session.request(method, url, **kwargs)
+            except Exception:
+                return _http_request(method, url, **kwargs)
+
         # SSRF callback listener — start if any step uses ssrf_url_param
         _chain_ssrf_listener = None
         _chain_ssrf_token: str = ""
@@ -7217,11 +7229,14 @@ def run_request_chain(
                 "url": url,
             }
 
+            # allow_redirects: True by default to follow login redirects (session cookie is set
+            # on the final destination); steps can override with allow_redirects: false
+            _follow_redirects = step_def.get("allow_redirects", True)
             try:
-                r = _http_request(method, url, headers=hdrs,
-                                  data=body_raw or None,
-                                  params=_qparams or None,
-                                  timeout=15, allow_redirects=False)
+                r = _chain_request(method, url, headers=hdrs,
+                                   data=body_raw or None,
+                                   params=_qparams or None,
+                                   timeout=15, allow_redirects=_follow_redirects)
                 status = r.status_code
                 body = getattr(r, "text", "") or ""
                 step_ev["status"] = status
@@ -7267,6 +7282,11 @@ def run_request_chain(
                                 body)
                             if _m_fb:
                                 _extracted = _m_fb.group(1).strip()
+                    elif pattern.startswith("cookie:"):
+                        # Extract a named cookie from the session's cookie jar
+                        _cname = pattern[7:].strip()
+                        _extracted = (_chain_session.cookies.get(_cname) or
+                                      r.cookies.get(_cname))
                     elif pattern.startswith("header:"):
                         _hname = pattern[7:].strip()
                         _extracted = r.headers.get(_hname) or r.headers.get(_hname.lower())
