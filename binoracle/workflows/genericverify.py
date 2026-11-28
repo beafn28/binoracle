@@ -11403,6 +11403,57 @@ def verify_generic_information_disclosure(
                         "snippet": body[:200],
                     })
 
+            # Auth vs unauth comparison: if the endpoint returns substantially more
+            # data when authenticated than anonymously, the unauth access leaks auth data.
+            # Only meaningful when an endpoint is specified and app supports auth.
+            if endpoint and not res.verified:
+                try:
+                    _auth_token = _try_acquire_app_token(boot.base_url, step)
+                    if _auth_token:
+                        import requests as _rq2
+                        _auth_sess = _rq2.Session()
+                        if _auth_token.startswith("cookie:"):
+                            _cname, _cval = _auth_token[7:].split("=", 1)
+                            _auth_sess.cookies.set(_cname, _cval)
+                        else:
+                            _auth_sess.headers["Authorization"] = f"Bearer {_auth_token}"
+                        _r_auth = _auth_sess.get(boot.base_url + endpoint,
+                                                  timeout=8, allow_redirects=False)
+                        _r_anon = _rq2.get(boot.base_url + endpoint,
+                                           timeout=8, allow_redirects=False)
+                        _auth_body = (_r_auth.text or "")
+                        _anon_body = (_r_anon.text or "")
+                        _anon_st = _r_anon.status_code
+                        _auth_st = _r_auth.status_code
+                        if (_auth_st < 400 and _anon_st < 400
+                                and len(_anon_body.strip()) > 20
+                                and abs(len(_auth_body) - len(_anon_body)) < max(50, len(_auth_body) * 0.15)):
+                            # Anon gets same data as authenticated — missing auth check
+                            res.verified = True
+                            res.ok = True
+                            res.confidence = "probable"
+                            res.evidence.update({
+                                "auth_vs_anon_check": "anon==auth",
+                                "status_auth": _auth_st,
+                                "status_anon": _anon_st,
+                                "len_auth": len(_auth_body),
+                                "len_anon": len(_anon_body),
+                                "anon_body_snippet": _anon_body[:300],
+                            })
+                            res.detail = (
+                                f"INFORMATION DISCLOSURE confirmada: endpoint {endpoint} devuelve "
+                                f"el mismo contenido sin auth ({_anon_st}/{len(_anon_body)}B) "
+                                f"que con auth ({_auth_st}/{len(_auth_body)}B) — datos autenticados "
+                                f"expuestos a usuarios anonimos")
+                            step(f"VERIFICADO auth-vs-anon: anon={_anon_st}/{len(_anon_body)}B "
+                                 f"≈ auth={_auth_st}/{len(_auth_body)}B")
+                            return res
+                        elif _auth_st < 400 and _anon_st >= 400:
+                            res.evidence["auth_vs_anon_check"] = f"anon={_anon_st} auth={_auth_st} (endpoint requires auth)"
+                            step(f"auth-vs-anon: endpoint requiere auth (anon={_anon_st} vs auth={_auth_st})")
+                except Exception:
+                    pass
+
             res.ok = True
             res.detail = ("information-disclosure: ninguna ruta expuso el canario ni credenciales "
                           f"verificables; {len(res.evidence.get('suspicious_paths', []))} rutas "

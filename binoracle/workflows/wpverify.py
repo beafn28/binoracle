@@ -12959,6 +12959,46 @@ def verify_wordpress_missing_auth_probe(
                                   f"pero opcion '{post_verify_wp_option}'='{_opt_actual}' "
                                   f"(esperado: '{post_verify_expected}') — impacto no confirmado")
             else:
+                # CTF sentinel injection: plant a unique UUID as a wp_option or user meta BEFORE
+                # the anonymous probe, then verify the UUID appears in the anonymous response.
+                # This is the same "pre-setup → exploit → post-check" pattern CVE-Genie uses
+                # to get a hard proof without relying on field-name heuristics.
+                # Only meaningful when the endpoint is known and returns JSON/text.
+                _sentinel_uuid = ""
+                _sentinel_key = "binoracle_infodiscl_sentinel"
+                try:
+                    import secrets as _scsent
+                    _sentinel_uuid = _scsent.token_hex(12)  # 24-char unique string
+                    lab.wp_cli("option", "add", _sentinel_key, _sentinel_uuid, timeout=20)
+                    # Try the anonymous probe again with the sentinel now present
+                    _sentinel_resp = anon_sess.request(
+                        m, boot.base_url + endpoint,
+                        json=params_dict if (m not in ("GET","HEAD") and json_body) else None,
+                        data=params_dict if (m not in ("GET","HEAD") and not json_body) else None,
+                        params=params_dict if m == "GET" else None,
+                        timeout=15, allow_redirects=True)
+                    _sentinel_body = (_sentinel_resp.text or "")
+                    if _sentinel_uuid in _sentinel_body:
+                        res.verified = True
+                        res.confidence = "confirmed"
+                        res.detail = (
+                            f"MISSING-AUTH CONFIRMADA (sentinel): UUID secreto plantado como opcion WP "
+                            f"('{_sentinel_key}') aparece en la respuesta anonima del endpoint "
+                            f"{endpoint} — prueba dura que el endpoint expone datos internos sin auth")
+                        res.evidence["sentinel_uuid"] = _sentinel_uuid
+                        res.evidence["sentinel_found_in_response"] = True
+                        step(f"VERIFICADO sentinel: UUID plantado encontrado en respuesta anonima")
+                        return res
+                    else:
+                        step(f"sentinel: UUID no en respuesta anon — endpoint no es un info-disclosure directa")
+                except Exception:
+                    pass
+                finally:
+                    try:
+                        lab.wp_cli("option", "delete", _sentinel_key, timeout=10)
+                    except Exception:
+                        pass
+
                 # Sensitive-data heuristic: if body contains private field names, verify
                 _SENSITIVE_WP = (
                     "user_email", "user_pass", "user_login", "admin_email",
