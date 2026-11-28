@@ -5273,6 +5273,22 @@ def _run_evidence_retry_loop(llm, step, es: bool, system_prompt: str, evidence_k
             suggestion = _llm_suggest_retry_from_evidence(
                 llm, system_prompt, wr, evidence_keys,
                 technique_label=technique_label, inv=inv)
+        # Cross-CMS hallucination guard: reject WP endpoints for non-WP CVEs.
+        # Applies to both LLM suggestion and cheerleader. Computed once here.
+        if suggestion and inv is not None:
+            _sug_ep = (suggestion.get("endpoint_alternativo") or "").lower()
+            _wp_pats = ("admin-ajax.php", "wp-json/", "wp-admin/", "wp-login")
+            if any(p in _sug_ep for p in _wp_pats):
+                _inv_n = getattr(inv, "llm_notes", {}) or {}
+                _is_wp = (
+                    "wordpress" in (_inv_n.get("cms") or "").lower()
+                    or "wordpress" in (_inv_n.get("docker_image") or "").lower()
+                    or "wordpress" in (_inv_n.get("source_url") or "").lower()
+                )
+                if not _is_wp:
+                    step(("LLM sugerencia bloqueada — endpoint WP para CVE no-WordPress") if es
+                         else "LLM suggestion blocked — WP endpoint for non-WordPress CVE")
+                    suggestion = None
         # Cheerleader fallback: when narrow LLM finds no suggestion, run the deeper
         # post-failure analysis (binchomp-style "between retries" cheerleader).
         # Only on attempt 2+ — first failure may just need a corrected endpoint.
