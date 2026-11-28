@@ -15748,6 +15748,36 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     notes.setdefault("lfi_path", _traversal2)
                     notes.setdefault("path_traversal_payload", _traversal2)
                     step(f"[ep-fix] traversal in endpoint split: base={_base_ep2!r} traversal={_traversal2[:40]!r}")
+            # Fix source_url when LLM set a bare WordPress plugin slug instead of a full URL.
+            # e.g. "serbian-transliteration" → "https://downloads.wordpress.org/plugin/serbian-transliteration.zip"
+            _src_raw = (notes.get("source_url") or "").strip()
+            if _src_raw and not _src_raw.startswith("http") and "/" not in _src_raw and len(_src_raw) > 2:
+                _slug_url = f"https://downloads.wordpress.org/plugin/{_src_raw}.zip"
+                notes["source_url"] = _slug_url
+                inv.llm_notes["source_url"] = _slug_url
+                step(f"[src-fix] bare slug → WP URL: {_slug_url!r}")
+
+            # Auto-infer source_url for well-known GitHub-hosted frameworks when LLM left it empty.
+            if not (notes.get("source_url") or "").startswith("http"):
+                _desc_lc = (inv.description or "").lower()
+                _KNOWN_GITHUB_URLS: list[tuple[tuple[str, ...], str]] = [
+                    (("paperless-ngx",),    "https://github.com/paperless-ngx/paperless-ngx"),
+                    (("audiobookshelf",),   "https://github.com/advplyr/audiobookshelf"),
+                    (("craftcms", "craft cms", "craft-cms"), "https://github.com/craftcms/cms"),
+                    (("strapi",),           "https://github.com/strapi/strapi"),
+                    (("directus",),         "https://github.com/directus/directus"),
+                    (("ghost cms", "ghost blogging", "ghost is an open"), "https://github.com/TryGhost/Ghost"),
+                    (("next.js",),          "https://github.com/vercel/next.js"),
+                    (("django",),           "https://github.com/django/django"),
+                    (("flask",),            "https://github.com/pallets/flask"),
+                ]
+                for _kws, _gh_url in _KNOWN_GITHUB_URLS:
+                    if any(kw in _desc_lc for kw in _kws):
+                        notes["source_url"] = _gh_url
+                        inv.llm_notes["source_url"] = _gh_url
+                        step(f"[src-fix] inferred source_url from description: {_gh_url!r}")
+                        break
+
             # Auto-fill docker_image when missing — without it the Docker lab cannot start.
             # Infer from inv.cms, source_url, or bare plugin slug heuristics.
             _di_raw = (notes.get("docker_image") or "").strip().lower()
