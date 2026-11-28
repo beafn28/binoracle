@@ -27,7 +27,7 @@ from .wpverify import (  # wpverify parchea sys.path para requests si hace falta
                        _UPLOAD_BINARY_SUFFIXES, _HEADER_INJECTION_HINTS,
                        _REDIRECT_HINTS, _SQLI_HINTS, _URL_HINTS, _XML_HINTS, _XSS_HINTS,
                        _XssBrowserSession, _docker_daemon_ok, _http_request,
-                       _http_request_raw_path, _lab_host,
+                       _http_request_raw_path, _http_request_retrying, _lab_host,
                        _pick_param, _redirect_location_is_external, _run, _screenshot_response,
                        _screenshot_terminal_step,
                        _token, configure_burp_mcp)  # noqa: F401 -- reexportado a proposito, ver abajo
@@ -7322,6 +7322,13 @@ def run_request_chain(
                 _status_ok = (_2xx if expect_status is None
                               else status == expect_status)
                 _confirm_ok = (not confirm) or (confirm in body)
+                # When confirm_string is set and found in the body, treat the step as
+                # status-ok even on HTTP 5xx — a template/app error can still produce
+                # the injected string (e.g. SSTI RCE on CraftCMS returns 500 but executes).
+                if not _status_ok and _confirm_ok and confirm and status in range(500, 600):
+                    _status_ok = True
+                    step_ev["status_ok_via_confirm_in_5xx"] = True
+                    _step(f"    HTTP {status} but confirm_string '{confirm[:40]}' found → treating as ok")
                 step_ev["status_ok"] = _status_ok
                 step_ev["confirm_ok"] = _confirm_ok
                 _step(f"    → HTTP {status}, confirm_ok={_confirm_ok}")

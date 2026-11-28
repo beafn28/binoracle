@@ -2394,6 +2394,34 @@ def _http_request(method: str, url: str, **kwargs):
     return requests.request(method, url, **kwargs)
 
 
+def _http_request_retrying(method: str, url: str, *,
+                            _retries: int = 3, _delay: float = 3.0, **kwargs):
+    """Like _http_request but retries on transient TCP-layer connection errors.
+
+    WP lab containers occasionally crash or restart mid-verification, producing
+    ConnectionResetError, MaxRetryError or ConnectionRefused on what would otherwise
+    be a successful probe.  Retrying with a short pause recovers the lab without
+    requiring analyst intervention.
+    """
+    import time as _time_retry
+    _TRANSIENT = ("connection reset", "max retries", "new connection",
+                  "connectionrefused", "connection refused", "connection aborted",
+                  "remotedisconnected", "broken pipe", "econnreset", "econnrefused")
+    last_exc: Exception = RuntimeError("no attempts made")
+    for _attempt in range(_retries):
+        try:
+            return _http_request(method, url, **kwargs)
+        except Exception as _exc:
+            _es = str(_exc).lower()
+            if any(_s in _es for _s in _TRANSIENT):
+                last_exc = _exc
+                if _attempt < _retries - 1:
+                    _time_retry.sleep(_delay)
+                continue
+            raise
+    raise last_exc
+
+
 def _http_request_raw_path(method: str, url: str, timeout: float = 15):
     """Como _http_request pero SIN normalizar los secuencias percent-encoded en el path de la URL.
     requests.request() llama a PreparedRequest.prepare_url() que decodifica %2e a '.' antes de
@@ -6974,6 +7002,45 @@ def verify_wordpress_sqli(
                                 continue
                     else:
                         step("no se hallaron rutas REST ni hooks AJAX en el source del plugin")
+                # Live WP REST API route discovery: probe /wp-json/ to get all registered
+                # namespaces and routes from the running WordPress instance. This complements
+                # static source analysis and works even when PHP files are minified or not
+                # available. Routes that contain the plugin slug are probed as candidates.
+                if not res.evidence.get("endpoint_autodiscovered"):
+                    try:
+                        _rj = _probe_sess.get(boot.base_url + "/wp-json/",
+                                              timeout=8, allow_redirects=True)
+                        if _rj.status_code == 200:
+                            import json as _json_disc
+                            _api = _json_disc.loads(_rj.text or "{}")
+                            _live_routes = list((_api.get("routes") or {}).keys())
+                            # Filter: routes that might be related to this plugin (not WP core)
+                            _core_ns = {"/wp/v2", "/_/", "/oembed/"}
+                            _plugin_routes = [
+                                r for r in _live_routes
+                                if not any(r.startswith(c) for c in _core_ns)
+                                and not "<" in r  # skip parameterized route templates
+                                and r != "/"
+                            ][:30]
+                            if _plugin_routes:
+                                res.evidence["wp_rest_live_routes"] = _plugin_routes
+                                step(f"live WP REST discovery: {len(_plugin_routes)} rutas de plugins")
+                                for _lr in _plugin_routes:
+                                    try:
+                                        _lr_params = {sqli_param: "1"}
+                                        _lrr = _probe_sess.get(
+                                            boot.base_url + _lr, params=_lr_params,
+                                            timeout=5, allow_redirects=False)
+                                        if _lrr.status_code in (200, 400) and len(_lrr.content) > 5:
+                                            step(f"live route '{_lr}' → HTTP {_lrr.status_code} "
+                                                 f"({len(_lrr.content)}B) — usando como endpoint")
+                                            endpoint = _lr
+                                            res.evidence["endpoint_autodiscovered_live"] = _lr
+                                            break
+                                    except Exception:
+                                        continue
+                    except Exception:
+                        pass
             elif _probe_status in (301, 302) and "wp-login" in _probe_loc.lower():
                 step(f"pre-check endpoint: redireccion a login ({_probe_loc}) — "
                      f"el endpoint requiere autenticación que el lab no ha resuelto")
@@ -7370,7 +7437,23 @@ def verify_wordpress_sqli(
 
         step("peticion de control (sin inyeccion)...")
         try:
-            base_resp = send(orig_value)
+            _CONN_ERR = ("connection reset", "max retries", "connection refused",
+                         "connection aborted", "new connection", "remotedisconnected",
+                         "broken pipe", "econnreset", "econnrefused")
+            _ctrl_ok = False
+            for _ctrl_attempt in range(3):
+                try:
+                    base_resp = send(orig_value)
+                    _ctrl_ok = True
+                    break
+                except Exception as _e_ctrl:
+                    if _ctrl_attempt < 2 and any(s in str(_e_ctrl).lower() for s in _CONN_ERR):
+                        step(f"control: error TCP en intento {_ctrl_attempt+1}/3, reintentando en 3s...")
+                        time.sleep(3)
+                        continue
+                    raise
+            if not _ctrl_ok:
+                raise RuntimeError("control: agotados reintentos")
         except Exception as e:
             # Connection error after bootstrap: container may have exited due to plugin crash.
             # Check Docker container state and extract last logs for diagnostics.
@@ -12696,17 +12779,48 @@ def verify_wordpress_missing_auth_probe(
         # Probamos como sesion ANONIMA (sin cookies de autenticacion)
         anon_sess = _make_session()
         try:
-            r = anon_sess.request(
-                m, boot.base_url + endpoint,
-                json=params_dict if (m not in ("GET", "HEAD") and json_body) else None,
-                data=params_dict if (m not in ("GET", "HEAD") and not json_body) else None,
-                params=params_dict if m == "GET" else None,
-                timeout=20, allow_redirects=True)
+            _PROBE_CONN_ERR = ("connection reset", "max retries", "connection refused",
+                               "connection aborted", "new connection", "remotedisconnected")
+            for _probe_attempt in range(3):
+                try:
+                    r = anon_sess.request(
+                        m, boot.base_url + endpoint,
+                        json=params_dict if (m not in ("GET", "HEAD") and json_body) else None,
+                        data=params_dict if (m not in ("GET", "HEAD") and not json_body) else None,
+                        params=params_dict if m == "GET" else None,
+                        timeout=20, allow_redirects=True)
+                    break
+                except Exception as _ep_e:
+                    if (_probe_attempt < 2 and
+                            any(s in str(_ep_e).lower() for s in _PROBE_CONN_ERR)):
+                        step(f"probe: error TCP en intento {_probe_attempt+1}/3, reintentando en 3s...")
+                        time.sleep(3)
+                        continue
+                    raise
             status = r.status_code
             body = (r.text or "")[:2000]
         except Exception as _e:
             res.detail = f"error de red al probar endpoint: {_e}"
             return res
+
+        # HTTP 400 with tiny body often means the endpoint needs a JSON body for input
+        # validation (not an auth check). Retry with Content-Type: application/json and
+        # an empty object — if the status changes or body grows substantially, the endpoint
+        # is processing requests and the original 400 was a validation error, not a block.
+        if status == 400 and len(body.strip()) <= 5 and m not in ("GET", "HEAD"):
+            try:
+                _r400j = anon_sess.request(
+                    m, boot.base_url + endpoint,
+                    json=params_dict if params_dict else {},
+                    timeout=20, allow_redirects=True)
+                _s400j = _r400j.status_code
+                _b400j = (_r400j.text or "")[:2000]
+                if _s400j != 400 or len(_b400j.strip()) > 5:
+                    step(f"probe: HTTP 400→{_s400j} con JSON body — endpoint acepta JSON")
+                    status, body = _s400j, _b400j
+                    res.evidence["json_retry"] = {"status": _s400j, "body_snippet": _b400j[:200]}
+            except Exception:
+                pass
 
         # Señales de que el endpoint SÍ comprueba autenticacion
         _AUTH_REJECT_SIGNALS = (
@@ -12842,6 +12956,32 @@ def verify_wordpress_missing_auth_probe(
                 res.detail = (f"sonda no-auth: el endpoint responde HTTP {status} con contenido "
                               f"no trivial ({len(body)} bytes) sin autenticacion{_cmp_detail} — "
                               f"evidencia de que la comprobacion de autenticacion falta")
+
+        # WP REST route discovery: when the endpoint returns 404, probe /wp-json/ to list
+        # the actual registered namespaces and routes — stored in evidence for the LLM to
+        # use on the next retry attempt, reducing the need for analyst_endpoint_lock.
+        if status == 404 and not res.verified:
+            try:
+                _rj = _http_request_retrying("GET", boot.base_url + "/wp-json/",
+                                             timeout=10, allow_redirects=True)
+                if _rj.status_code == 200:
+                    import json as _json
+                    _wp_api = _json.loads(_rj.text or "{}")
+                    _ns = list((_wp_api.get("namespaces") or []))
+                    _routes_raw = list((_wp_api.get("routes") or {}).keys())
+                    # Only keep non-trivial routes (not /?p=... query-string routes)
+                    _routes = [r for r in _routes_raw if r.startswith("/wp-json/") and
+                               "<" not in r][:40]
+                    if _ns or _routes:
+                        res.evidence["wp_rest_discovery"] = {
+                            "namespaces": _ns[:20],
+                            "routes_sample": _routes[:30],
+                        }
+                        step(f"WP REST discovery: {len(_ns)} namespaces, {len(_routes)} rutas "
+                             f"encontradas — disponibles para siguiente intento")
+            except Exception:
+                pass
+
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = f"timeout de infraestructura: {e}"
