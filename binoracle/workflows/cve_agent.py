@@ -15764,6 +15764,20 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 if _cleaned_params != notes["parameters"]:
                     notes["parameters"] = _cleaned_params
                     inv.llm_notes["parameters"] = _cleaned_params
+            # sqli_param cleanup: LLM sometimes puts a SQL payload AS the parameter name instead
+            # of the actual parameter name. When sqli_param itself looks like a payload, infer
+            # the real param name from the parameters dict or leave it empty.
+            _sqli_p = (notes.get("sqli_param") or "").strip()
+            if _sqli_p and any(_ind in _sqli_p.upper() for _ind in _SQL_PAYLOAD_INDICATORS):
+                # Prefer the first param from the parameters dict (excluding static boolean params)
+                _param_candidates = [
+                    k for k, v in (notes.get("parameters") or {}).items()
+                    if k not in ("is_or_search", "allow_marketing") and not isinstance(v, bool)
+                ]
+                _real_sqli_p = _param_candidates[0] if _param_candidates else ""
+                step(f"[param-clean] sqli_param {_sqli_p!r} looks like a payload → corrected to {_real_sqli_p!r}")
+                notes["sqli_param"] = _real_sqli_p
+                inv.llm_notes["sqli_param"] = _real_sqli_p
             # Path traversal payload embedded in endpoint — split out the base path.
             # e.g. "/hls/../../../../../../etc/passwd" → endpoint="/hls/" + lfi_path="../../../..."
             _ep_pt = notes.get("endpoint") or ""
