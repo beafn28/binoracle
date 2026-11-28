@@ -13023,6 +13023,22 @@ class _ScaffoldCache:
         self._ensure_loaded()
         return key in self._mem
 
+    def pop(self, key: tuple, *args):
+        self._ensure_loaded()
+        val = self._mem.pop(key, *args)
+        if key in self._mem or args:
+            # Remove from DB too, best-effort
+            try:
+                import sqlite3 as _sqlite3
+                conn = _sqlite3.connect(str(self._DB_PATH))
+                conn.execute("DELETE FROM scaffold WHERE tech=? AND vuln_class=?",
+                             (key[0], key[1]))
+                conn.commit()
+                conn.close()
+            except Exception:
+                pass
+        return val
+
 
 _scaffold_cache: _ScaffoldCache = _ScaffoldCache()
 
