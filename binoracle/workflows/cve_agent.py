@@ -5704,6 +5704,19 @@ def _notes_param(key: str, notes: dict, params, pick_fn, hints) -> "Optional[str
     return (llm_val if (llm_val and llm_val in param_names) else None) or pick_fn(params, hints)
 
 
+def _notes_auth_required(notes: dict) -> bool:
+    """Parse auth_required from LLM notes, handling string 'true'/'false' vs Python bool.
+    bool('false') == True is a silent bug — this helper avoids it."""
+    v = notes.get("auth_required") or notes.get("authenticated")
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, int):
+        return bool(v)
+    if isinstance(v, str):
+        return v.strip().lower() not in ("false", "0", "no", "none", "")
+    return False
+
+
 def _make_rce_canary_payload(notes: dict) -> Optional[dict]:
     """Auto-generate an RCE canary payload when the LLM didn't supply one.
 
@@ -16393,7 +16406,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _pt_url_suffix = notes.get("url_suffix") or ""
                 _pt_query_suffix = notes.get("query_suffix") or ""
                 _pt_custom_hdrs = notes.get("custom_headers") or None
-                _pt_auth_req = bool(notes.get("auth_required"))
+                _pt_auth_req = _notes_auth_required(notes)
                 _pt_dockerfile = _notes_dockerfile(notes)
                 _pt_extra_files = notes.get("extra_files") or None
                 _pt_setup_cmds = notes.get("setup_cmds") or None
@@ -16662,8 +16675,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _lfi_detail_low = (wr.detail or "").lower()
                 from .wpverify import _get_active_wp_image as _gwi_lfi
                 _lfi_rc255_empty = (
-                    "(rc=255):" in _lfi_detail_low
-                    and len(_lfi_detail_low.split("(rc=255):", 1)[-1].strip()) == 0
+                    "activacion del plugin fallo:" in _lfi_detail_low
+                    and len(_lfi_detail_low.split("activacion del plugin fallo:", 1)[-1].strip()) == 0
                 )
                 if (not wr.verified
                         and "activacion del plugin fallo:" in _lfi_detail_low
@@ -17105,7 +17118,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         if _scf.get("parameters"):
                             params = _scf["parameters"]
                         _scf_cmdi = True
-                _cmdi_auth_req = bool(notes.get("auth_required"))
+                _cmdi_auth_req = _notes_auth_required(notes)
                 wr = verify_generic_command_injection(
                     _cmdi_local_path_str, _cmdi_ep, notes.get("http_method") or "GET",
                     params, cmd_param_hint=cmd_p or "", on_step=step, budget_s=budget_s,
@@ -17200,7 +17213,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         parameters=notes.get("parameters") or [],
                         payload=notes.get("payload") or "",
                         confirm_string=notes.get("confirm_string") or "",
-                        auth_required=bool(notes.get("auth_required") or notes.get("authenticated")),
+                        auth_required=_notes_auth_required(notes),
                         pkg_version=inv.llm_notes.get("vulnerable_version") or "",
                         on_step=step,
                         budget_s=budget_s,
@@ -17228,7 +17241,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         parameters=notes.get("parameters") or [],
                         payload=notes.get("payload") or "",
                         confirm_string=notes.get("confirm_string") or "",
-                        auth_required=bool(notes.get("auth_required") or notes.get("authenticated")),
+                        auth_required=_notes_auth_required(notes),
                         pkg_version=inv.llm_notes.get("vulnerable_version") or "",
                         on_step=step,
                         budget_s=budget_s,
@@ -17262,7 +17275,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         parameters=notes.get("parameters") or [],
                         payload=notes.get("payload") or "",
                         confirm_string=notes.get("confirm_string") or "",
-                        auth_required=bool(notes.get("auth_required") or notes.get("authenticated")),
+                        auth_required=_notes_auth_required(notes),
                         pkg_version=inv.llm_notes.get("vulnerable_version") or "",
                         on_step=step,
                         budget_s=budget_s,
@@ -17287,7 +17300,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     _gen_sc = notes.get("setup_cmds") or None
                     _gen_di = notes.get("docker_image") or ""
                     _gen_hdrs = notes.get("custom_headers") or None
-                    _gen_auth = bool(notes.get("auth_required", True))
+                    _gen_auth = _notes_auth_required(notes)
                     _gen_params = notes.get("parameters") or []
                     if fr.local_path:
                         _inject_custom_docker_lab(_gen_lp, notes, step)
@@ -17394,7 +17407,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         parameters=notes.get("parameters") or [],
                         payload=notes.get("payload") or "",
                         confirm_string=notes.get("confirm_string") or "",
-                        auth_required=bool(notes.get("auth_required") or notes.get("authenticated")),
+                        auth_required=_notes_auth_required(notes),
                         pkg_version=inv.llm_notes.get("vulnerable_version") or "",
                         on_step=step,
                         budget_s=budget_s,
@@ -17429,7 +17442,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         parameters=(notes.get("parameters") or _lln.get("parameters") or []),
                         payload=(notes.get("payload") or _lln.get("payload") or ""),
                         confirm_string=(notes.get("confirm_string") or _lln.get("confirm_string") or ""),
-                        auth_required=bool(notes.get("auth_required") or notes.get("authenticated")
+                        auth_required=_notes_auth_required(notes
                                            or _lln.get("auth_required")),
                         pkg_version=(_lln.get("vulnerable_version") or _lln.get("affected_version") or ""),
                         on_step=step,
@@ -17460,7 +17473,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         parameters=notes.get("parameters") or [],
                         payload=notes.get("payload") or "",
                         confirm_string=notes.get("confirm_string") or "",
-                        auth_required=bool(notes.get("auth_required") or notes.get("authenticated")),
+                        auth_required=_notes_auth_required(notes),
                         pkg_version=inv.llm_notes.get("vulnerable_version") or "",
                         on_step=step,
                         budget_s=budget_s,
@@ -17487,7 +17500,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         parameters=notes.get("parameters") or [],
                         payload=notes.get("payload") or "",
                         confirm_string=notes.get("confirm_string") or "",
-                        auth_required=bool(notes.get("auth_required") or notes.get("authenticated")),
+                        auth_required=_notes_auth_required(notes),
                         pkg_version=inv.llm_notes.get("vulnerable_version") or "",
                         on_step=step,
                         budget_s=budget_s,
@@ -17524,7 +17537,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         parameters=notes.get("parameters") or [],
                         payload=notes.get("payload") or "",
                         confirm_string=notes.get("confirm_string") or "",
-                        auth_required=bool(notes.get("auth_required") or notes.get("authenticated")),
+                        auth_required=_notes_auth_required(notes),
                         pkg_version=_directus_ver,
                         docker_image=notes.get("docker_image") or "",
                         request_chain=notes.get("request_chain") or None,
@@ -17556,7 +17569,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     parameters=notes.get("parameters") or [],
                     payload=notes.get("payload") or "",
                     confirm_string=notes.get("confirm_string") or "",
-                    auth_required=bool(notes.get("auth_required") or notes.get("authenticated")),
+                    auth_required=_notes_auth_required(notes),
                     docker_image=_ghost_docker_img,
                     on_step=step,
                     budget_s=budget_s,
@@ -17580,7 +17593,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         parameters=notes.get("parameters") or [],
                         payload=notes.get("payload") or "",
                         confirm_string=notes.get("confirm_string") or "",
-                        auth_required=bool(notes.get("auth_required") or notes.get("authenticated")),
+                        auth_required=_notes_auth_required(notes),
                         pkg_version=inv.llm_notes.get("vulnerable_version") or "",
                         on_step=step,
                         budget_s=budget_s,
@@ -17603,7 +17616,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         parameters=notes.get("parameters") or [],
                         payload=notes.get("payload") or "",
                         confirm_string=notes.get("confirm_string") or "",
-                        auth_required=bool(notes.get("auth_required") or notes.get("authenticated")),
+                        auth_required=_notes_auth_required(notes),
                         pkg_version=inv.llm_notes.get("vulnerable_version") or "",
                         on_step=step,
                         budget_s=budget_s,
@@ -17626,7 +17639,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         http_method=notes.get("http_method") or "GET",
                         payload=notes.get("payload") or "",
                         confirm_string=notes.get("confirm_string") or "",
-                        auth_required=bool(notes.get("auth_required") or notes.get("authenticated")),
+                        auth_required=_notes_auth_required(notes),
                         bypass_header=notes.get("bypass_header") or "",
                         bypass_value=notes.get("bypass_value") or "",
                         pkg_version=inv.llm_notes.get("vulnerable_version") or "",
@@ -17651,7 +17664,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         http_method=notes.get("http_method") or "GET",
                         payload=notes.get("payload") or "",
                         confirm_string=notes.get("confirm_string") or "",
-                        auth_required=bool(notes.get("auth_required") or notes.get("authenticated")),
+                        auth_required=_notes_auth_required(notes),
                         bypass_header=notes.get("bypass_header") or "",
                         bypass_value=notes.get("bypass_value") or "",
                         pkg_version=inv.llm_notes.get("vulnerable_version") or "",
@@ -17676,7 +17689,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         http_method=notes.get("http_method") or "GET",
                         payload=notes.get("payload") or "",
                         confirm_string=notes.get("confirm_string") or "",
-                        auth_required=bool(notes.get("auth_required") or notes.get("authenticated")),
+                        auth_required=_notes_auth_required(notes),
                         bypass_header=notes.get("bypass_header") or "",
                         bypass_value=notes.get("bypass_value") or "",
                         pkg_version=inv.llm_notes.get("vulnerable_version") or "",
@@ -17706,7 +17719,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         parameters=notes.get("parameters") or [],
                         payload=notes.get("payload") or "",
                         confirm_string=notes.get("confirm_string") or "",
-                        auth_required=bool(notes.get("auth_required") or notes.get("authenticated")),
+                        auth_required=_notes_auth_required(notes),
                         pkg_version=inv.llm_notes.get("vulnerable_version") or "",
                         on_step=step,
                         budget_s=budget_s,
@@ -17725,7 +17738,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     _go_gen_sc = notes.get("setup_cmds") or None
                     _go_gen_di = notes.get("docker_image") or ""
                     _go_gen_hdrs = notes.get("custom_headers") or None
-                    _go_gen_auth = bool(notes.get("auth_required", True))
+                    _go_gen_auth = _notes_auth_required(notes)
                     _go_gen_params = notes.get("parameters") or []
                     if fr.local_path:
                         _inject_custom_docker_lab(_go_gen_lp, notes, step)
@@ -18127,10 +18140,10 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 )
                 _dv_detail_low = (wr.detail or "").lower()
                 from .wpverify import _get_active_wp_image as _gwi
-                # rc=255 with empty output also signals PHP crash (compat issue but PHP suppresses errors)
+                # empty output after the colon = PHP crash with no error text (silent rc=255)
                 _sqli_rc255_empty = (
-                    "(rc=255):" in _dv_detail_low
-                    and len(_dv_detail_low.split("(rc=255):", 1)[-1].strip()) == 0
+                    "activacion del plugin fallo:" in _dv_detail_low
+                    and len(_dv_detail_low.split("activacion del plugin fallo:", 1)[-1].strip()) == 0
                 )
                 if (not wr.verified
                         and "activacion del plugin fallo:" in _dv_detail_low
@@ -18383,7 +18396,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _genlab_param = sqli_p or ""
                 _is_local_lab = (fr.kind == "local-dir")
                 _sqli_custom_hdrs = notes.get("custom_headers") or None
-                _sqli_auth_req = bool(notes.get("auth_required"))
+                _sqli_auth_req = _notes_auth_required(notes)
                 _sqli_nonce_ep = notes.get("nonce_endpoint") or ""
                 _sqli_setup_cmds = notes.get("setup_cmds") or None
                 _sqli_df = _notes_dockerfile(notes)
@@ -18618,7 +18631,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         if _scf.get("parameters"):
                             params = _scf["parameters"]
                         _scf_ssrf = True
-                _ssrf_auth_req = bool(notes.get("auth_required"))
+                _ssrf_auth_req = _notes_auth_required(notes)
                 _ssrf_docker_image = notes.get("docker_image") or ""
                 _ssrf_extra_wait = _auto_setup_wait_s(_ssrf_docker_image, _ssrf_dockerfile)
                 wr = verify_generic_ssrf(
@@ -18724,7 +18737,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     _hc_hdrs.setdefault("Content-Type", "application/json")
                 _hc_docker_image = notes.get("docker_image") or ""
                 _hc_extra_wait = _auto_setup_wait_s(_hc_docker_image, _hc_df)
-                _hc_auth_required = bool(notes.get("auth_required", True))
+                _hc_auth_required = _notes_auth_required(notes)
                 wr = verify_generic_http_confirm(
                     _hc_local_path_str, _hc_ep, _hc_method,
                     confirm_string=_hc_confirm, patched_patterns=_hc_patched,
@@ -19655,8 +19668,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     "critical error on this website", "has been a critical error",
                 )
                 _map_rc255_empty = (
-                    "(rc=255):" in _map_detail_low
-                    and len(_map_detail_low.split("(rc=255):", 1)[-1].strip()) == 0
+                    "activacion del plugin fallo:" in _map_detail_low
+                    and len(_map_detail_low.split("activacion del plugin fallo:", 1)[-1].strip()) == 0
                 )
                 if (not wr.verified
                         and "activacion del plugin fallo:" in _map_detail_low
@@ -19736,8 +19749,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     "critical error on this website", "has been a critical error",
                 )
                 _fu_rc255_empty = (
-                    "(rc=255):" in _fu_detail_low
-                    and len(_fu_detail_low.split("(rc=255):", 1)[-1].strip()) == 0
+                    "activacion del plugin fallo:" in _fu_detail_low
+                    and len(_fu_detail_low.split("activacion del plugin fallo:", 1)[-1].strip()) == 0
                 )
                 if (not wr.verified
                         and "activacion del plugin fallo:" in _fu_detail_low
