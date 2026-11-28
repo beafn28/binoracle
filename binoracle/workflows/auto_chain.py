@@ -5274,6 +5274,23 @@ def process_never_attempted_cves(
     import json as _j, os as _os, re as _re_na
     step = on_step or print
 
+    # Purge lock files older than 60 minutes — these are always stale (a live scan
+    # would have finished or been killed long ago). This prevents the scan from
+    # blocking on locks left by processes killed with SIGKILL or via orphaned workers.
+    import time as _time_lk
+    _now_lk = _time_lk.time()
+    for _lk_fname in _os.listdir(reports_dir):
+        if not _lk_fname.endswith(".json.lock"):
+            continue
+        _lk_fpath = _os.path.join(reports_dir, _lk_fname)
+        try:
+            _lk_age = _now_lk - _os.path.getmtime(_lk_fpath)
+            if _lk_age > 3600:  # 60 minutes
+                _os.remove(_lk_fpath)
+                step(f"lock obsoleto eliminado (>{int(_lk_age//60)}m): {_lk_fname}")
+        except OSError:
+            pass
+
     # Collect never-attempted CVEs with enough config to try
     candidates = []
     _cve_set = set(cve_filter) if cve_filter else None
