@@ -9598,12 +9598,12 @@ def verify_wordpress_sqli(
                         _log_lower = _last50.lower()
                         if "fatal error" in _log_lower or "php fatal" in _log_lower:
                             res.evidence["failure_root_cause"] = "php_fatal"
-                            step(f"[log-inspect] PHP fatal detectado en logs del contenedor")
+                            step("[log-inspect] PHP fatal detectado en logs del contenedor")
                         elif "table" in _log_lower and ("doesn't exist" in _log_lower
                                                          or "not found" in _log_lower):
                             res.evidence["failure_root_cause"] = "missing_table"
-                            step(f"[log-inspect] tabla MySQL no encontrada — setup_wp_options / "
-                                 f"companion_plugin probablemente necesario")
+                            step("[log-inspect] tabla MySQL no encontrada — setup_wp_options / "
+                                 "companion_plugin probablemente necesario")
                         elif "access denied" in _log_lower:
                             res.evidence["failure_root_cause"] = "db_access_denied"
             except Exception:
@@ -12987,10 +12987,10 @@ def verify_wordpress_missing_auth_probe(
                             f"{endpoint} — prueba dura que el endpoint expone datos internos sin auth")
                         res.evidence["sentinel_uuid"] = _sentinel_uuid
                         res.evidence["sentinel_found_in_response"] = True
-                        step(f"VERIFICADO sentinel: UUID plantado encontrado en respuesta anonima")
+                        step("VERIFICADO sentinel: UUID plantado encontrado en respuesta anonima")
                         return res
                     else:
-                        step(f"sentinel: UUID no en respuesta anon — endpoint no es un info-disclosure directa")
+                        step("sentinel: UUID no en respuesta anon — endpoint no es un info-disclosure directa")
                 except Exception:
                     pass
                 finally:

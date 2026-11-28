@@ -27,7 +27,7 @@ from .wpverify import (  # wpverify parchea sys.path para requests si hace falta
                        _UPLOAD_BINARY_SUFFIXES, _HEADER_INJECTION_HINTS,
                        _REDIRECT_HINTS, _SQLI_HINTS, _URL_HINTS, _XML_HINTS, _XSS_HINTS,
                        _XssBrowserSession, _docker_daemon_ok, _http_request,
-                       _http_request_raw_path, _http_request_retrying, _lab_host,
+                       _http_request_raw_path, _lab_host,
                        _pick_param, _redirect_location_is_external, _run, _screenshot_response,
                        _screenshot_terminal_step,
                        _token, configure_burp_mcp)  # noqa: F401 -- reexportado a proposito, ver abajo
