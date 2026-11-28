@@ -15834,12 +15834,14 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                        "CHAR(", "0X7E", "LOAD_FILE(", "INTO OUTFILE",
                                        "CAST(", "AS INTEGER)", "AS INT)", "PG_SLEEP(",
                                        "1=1--", "1 OR 1", "' AND '", "AND 1=")
+            _sqli_payload_params: list = []  # params whose VALUE contained a SQL payload
             if inv.vuln_class in ("sqli", "sql-injection") and isinstance(notes.get("parameters"), dict):
                 _cleaned_params = {}
                 for _k, _v in notes["parameters"].items():
                     _vs = str(_v) if _v is not None else ""
                     if any(_ind in _vs.upper() for _ind in _SQL_PAYLOAD_INDICATORS):
                         _cleaned_params[_k] = "1"
+                        _sqli_payload_params.append(_k)
                         step(f"[param-clean] pre-injected SQL removed from param {_k!r} → '1'")
                     else:
                         _cleaned_params[_k] = _v
@@ -15849,13 +15851,16 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             # sqli_param cleanup: LLM sometimes puts a SQL payload AS the parameter name instead
             # of the actual parameter name. When sqli_param itself looks like a payload, infer
             # the real param name from the parameters dict or leave it empty.
+            # Prefer params that HAD an injected payload (they're the most likely injection point).
             _sqli_p = (notes.get("sqli_param") or "").strip()
             if _sqli_p and any(_ind in _sqli_p.upper() for _ind in _SQL_PAYLOAD_INDICATORS):
-                # Prefer the first param from the parameters dict (excluding static boolean params)
-                _param_candidates = [
-                    k for k, v in (notes.get("parameters") or {}).items()
-                    if k not in ("is_or_search", "allow_marketing") and not isinstance(v, bool)
-                ]
+                # First priority: params whose values contained SQL payloads (injection points)
+                _param_candidates = (
+                    _sqli_payload_params or [
+                        k for k, v in (notes.get("parameters") or {}).items()
+                        if k not in ("is_or_search", "allow_marketing") and not isinstance(v, bool)
+                    ]
+                )
                 _real_sqli_p = _param_candidates[0] if _param_candidates else ""
                 step(f"[param-clean] sqli_param {_sqli_p!r} looks like a payload → corrected to {_real_sqli_p!r}")
                 notes["sqli_param"] = _real_sqli_p
@@ -15904,7 +15909,19 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             # Fix source_url when LLM set a bare WordPress plugin slug instead of a full URL.
             # e.g. "serbian-transliteration" → "https://downloads.wordpress.org/plugin/serbian-transliteration.zip"
             _src_raw = (notes.get("source_url") or "").strip()
-            if _src_raw and not _src_raw.startswith("http") and "/" not in _src_raw and len(_src_raw) > 2:
+            # Reject Python package specifiers (Flask==2.0.0, requests>=2.28), uppercase packages,
+            # and anything with version-specifier chars (=, >, <) or file extensions (.zip, .tar.gz).
+            _is_wp_slug_candidate = (
+                _src_raw
+                and not _src_raw.startswith("http")
+                and "/" not in _src_raw
+                and len(_src_raw) > 2
+                and not any(c in _src_raw for c in ("=", ">", "<", "@"))
+                and not _src_raw.endswith((".zip", ".tar.gz", ".tgz", ".whl"))
+                and _src_raw == _src_raw.lower()   # WP slugs are always lowercase
+                and " " not in _src_raw            # WP slugs have no spaces
+            )
+            if _is_wp_slug_candidate:
                 _slug_url = f"https://downloads.wordpress.org/plugin/{_src_raw}.zip"
                 notes["source_url"] = _slug_url
                 inv.llm_notes["source_url"] = _slug_url
