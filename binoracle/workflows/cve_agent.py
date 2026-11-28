@@ -14397,6 +14397,11 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                 inv.llm_notes.setdefault("parameters", {})["action"] = _ajax_acts[0]
                                 notes.setdefault("parameters", {})["action"] = _ajax_acts[0]
                                 step(f"patch_diff: parameters.action auto-seeded: {_ajax_acts[0]!r}")
+                            # Fix endpoint "/" — LLM said "/" when it had no idea; correct to admin-ajax.php
+                            if _ep_pd in ("/", ) and _ajax_acts:
+                                inv.llm_notes["endpoint"] = "/wp-admin/admin-ajax.php"
+                                notes["endpoint"] = "/wp-admin/admin-ajax.php"
+                                step(f"[ep-fix] endpoint '/' corrected → admin-ajax.php (action={_ajax_acts[0]!r})")
                         # Propagate nonce action names
                         _nonce_acts = _pd_struct.get("nonce_action_names") or []
                         if _nonce_acts:
@@ -15676,6 +15681,42 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         inv.llm_notes["http_method"] = "POST"
                 except Exception:
                     pass
+            # Endpoint "/" correction — LLM returned "/" when it had no idea.
+            # If diff signals carry REST routes, use the first one as the endpoint.
+            _ep_now = notes.get("endpoint") or ""
+            if _ep_now in ("/", ):
+                _diff_now = getattr(inv, "diff_analysis", None) or {}
+                _rest_now = _diff_now.get("rest_routes") or []
+                _ajax_now = _diff_now.get("ajax_action_names") or []
+                if _ajax_now and not is_drupal and not is_joomla:
+                    notes["endpoint"] = "/wp-admin/admin-ajax.php"
+                    notes.setdefault("parameters", {})["action"] = _ajax_now[0]
+                    inv.llm_notes["endpoint"] = notes["endpoint"]
+                    step(f"[ep-fix] '/' → admin-ajax.php action={_ajax_now[0]!r}")
+                elif _rest_now:
+                    _rn = _rest_now[0]
+                    if isinstance(_rn, str) and _rn.startswith("/"):
+                        notes["endpoint"] = _rn
+                        inv.llm_notes["endpoint"] = _rn
+                        step(f"[ep-fix] '/' → REST route from diff: {_rn!r}")
+            # Pre-injected SQL payload cleanup — LLM sometimes writes raw SQL payloads
+            # into notes["parameters"] values. Reset them to benign defaults so the SQLi
+            # verifier can inject its own payload cleanly.
+            _SQL_PAYLOAD_INDICATORS = ("UNION SELECT", "SLEEP(", "BENCHMARK(",
+                                       "WAITFOR DELAY", "OR 1=1", "' OR '",
+                                       '"OR"', "--", "/**/")
+            if inv.vuln_class in ("sqli", "sql-injection") and isinstance(notes.get("parameters"), dict):
+                _cleaned_params = {}
+                for _k, _v in notes["parameters"].items():
+                    _vs = str(_v) if _v is not None else ""
+                    if any(_ind in _vs.upper() for _ind in _SQL_PAYLOAD_INDICATORS):
+                        _cleaned_params[_k] = "1"
+                        step(f"[param-clean] pre-injected SQL removed from param {_k!r} → '1'")
+                    else:
+                        _cleaned_params[_k] = _v
+                if _cleaned_params != notes["parameters"]:
+                    notes["parameters"] = _cleaned_params
+                    inv.llm_notes["parameters"] = _cleaned_params
             # verificacion DINAMICA: solo para el caso concreto que wpverify.py sabe confirmar de
             # verdad (account-takeover por missing-authorization/idor en un plugin de WordPress).
             # Cualquier fuente que de verdad trajo codigo de un plugin sirve -- no solo
@@ -16018,6 +16059,28 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                 head, _, body = entry.partition("\n")
                                 trimmed = "\n".join(body.splitlines()[-15:])
                                 inv.blockers.append(f"{head}:\n```\n{trimmed}\n```")
+                        # Deserialization re-routing: if information-disclosure CVE is actually
+                        # a PHP deserialization / object injection, try the deserialization verifier.
+                        _deser_kws = ("deserializ", "object injection", "object-inject",
+                                      "maybe_serialize", "unserialize", "php objec")
+                        _desc_lo_d = (inv.description or "").lower()
+                        if (inv.vuln_class == "information-disclosure" and
+                                any(kw in _desc_lo_d for kw in _deser_kws)):
+                            from .wpverify import verify_wordpress_deserialization, _pick_param, _SERIAL_HINTS
+                            _d_params = notes.get("parameters") or []
+                            _d_sp = _notes_param("serial_param", notes, _d_params, _pick_param, _SERIAL_HINTS)
+                            step(("information-disclosure → rerutando a verificacion deserialization "
+                                  "(PHP object injection detectado en descripcion)..." if es else
+                                  "information-disclosure → re-routing to deserialization verification "
+                                  "(PHP object injection detected in description)..."))
+                            wr2 = verify_wordpress_deserialization(
+                                fr.local_path, plugin_dir, notes.get("endpoint"),
+                                notes.get("http_method") or "POST", _d_params,
+                                serial_param_hint=_d_sp or "", on_step=step, budget_s=budget_s,
+                                companion_plugins=companion_plugins,
+                                keep_lab_on_failure=keep_lab_on_failure)
+                            if wr2 and wr2.verified:
+                                _apply_wpverify_result(inv, wr2, es, llm)
             elif (fr.kind in ("local-zip", "zip-url") and not plugin_dir
                   and inv.vuln_class in ("missing-authorization", "idor")):
                 inv.blockers.append(("verificacion dinamica no intentada: no se pudo determinar "
