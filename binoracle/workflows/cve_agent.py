@@ -15734,6 +15734,46 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 if _cleaned_params != notes["parameters"]:
                     notes["parameters"] = _cleaned_params
                     inv.llm_notes["parameters"] = _cleaned_params
+            # Auto-fill docker_image when missing — without it the Docker lab cannot start.
+            # Infer from inv.cms, source_url, or bare plugin slug heuristics.
+            if not (notes.get("docker_image") or "").strip():
+                _di_cms = getattr(inv, "cms", "") or ""
+                _di_src = (notes.get("source_url") or "").lower()
+                _di_inferred = ""
+                if (_di_cms == "wordpress"
+                        or "wordpress.org" in _di_src
+                        or "plugins.svn.wordpress" in _di_src
+                        or "wordpress" in _di_src):
+                    _di_inferred = "wordpress:php8.2-apache"
+                elif _di_cms == "drupal" or "drupal.org" in _di_src:
+                    _di_inferred = "drupal:10-apache"
+                elif _di_cms == "joomla" or "joomla.org" in _di_src or "extensions.joomla" in _di_src:
+                    _di_inferred = "joomla:php8.1-apache"
+                elif _di_cms == "ghost" or "github.com/tryghost" in _di_src or "ghost.org" in _di_src:
+                    _di_inferred = "ghost:5-alpine"
+                elif _di_cms == "strapi" or "strapi.io" in _di_src or "github.com/strapi" in _di_src:
+                    _di_inferred = "strapi/strapi:latest"
+                elif _di_cms == "directus" or "directus" in _di_src:
+                    _di_inferred = "directus/directus:latest"
+                elif _di_cms in ("craft", "craftcms") or "craftcms" in _di_src:
+                    _di_inferred = "craftcms/craft:latest"
+                elif "github.com/rack/rack" in _di_src or (_di_cms == "rack"):
+                    _di_inferred = "ruby:3.2-alpine"
+                elif _di_cms in ("laravel", "php") or "laravel" in _di_src:
+                    _di_inferred = "php:8.2-apache"
+                # Bare plugin slug (no slash, no http) → WordPress plugin
+                _di_src2 = (notes.get("source_url") or "")
+                if (not _di_inferred and _di_src2
+                        and not _di_src2.startswith("http")
+                        and "/" not in _di_src2 and len(_di_src2) > 2):
+                    _di_inferred = "wordpress:php8.2-apache"
+                # CMS=wordpress fallback with no source_url
+                if not _di_inferred and _di_cms == "wordpress":
+                    _di_inferred = "wordpress:php8.2-apache"
+                if _di_inferred:
+                    notes["docker_image"] = _di_inferred
+                    inv.llm_notes["docker_image"] = _di_inferred
+                    step(f"[docker] auto-inferred docker_image={_di_inferred!r} (cms={_di_cms!r}, src={_di_src[:40]!r})")
             # verificacion DINAMICA: solo para el caso concreto que wpverify.py sabe confirmar de
             # verdad (account-takeover por missing-authorization/idor en un plugin de WordPress).
             # Cualquier fuente que de verdad trajo codigo de un plugin sirve -- no solo
