@@ -224,6 +224,8 @@ def analyze_patch_diff(raw_diff: str) -> dict:
         "removed_capability_checks": [],
         "removed_auth_checks": False,
         "removed_nonce_checks": False,
+        "dangerous_sinks_removed": {},
+        "sink_input_sources": [],
     }
     if not raw_diff or not raw_diff.strip():
         return result
@@ -420,6 +422,43 @@ def analyze_patch_diff(raw_diff: str) -> dict:
             result["bypass_hints"].append(
                 f"Sink reached directly: {line.strip()[:100]}"
             )
+
+    # Dangerous sinks in removed lines: categorizes which vulnerability classes
+    # have confirmed sink patterns in the removed (vulnerable) code.
+    _DANGEROUS_SINKS: dict = {
+        "sqli": ["$wpdb->query(", "$wpdb->get_results(", "$wpdb->get_var(",
+                 "mysql_query(", "DB::select(", "DB::statement(", ".execute(", ".raw("],
+        "xss": ["echo $", "print $", "innerHTML", ".html(", "document.write(",
+                "v-html=", "dangerouslySetInnerHTML"],
+        "rce": ["eval(", "exec(", "system(", "passthru(", "shell_exec(", "popen(",
+                "subprocess.call(", "os.system(", "child_process.exec(", "child_process.spawn("],
+        "lfi": ["include(", "require(", "include_once(", "require_once(", "file_get_contents($"],
+        "path_traversal": ["file_get_contents($", "fopen($", "readfile($", "file($"],
+        "ssrf": ["wp_remote_get($", "wp_remote_post($", "curl_exec(", "urllib.request",
+                 "requests.get(", "requests.post(", "fetch(", "axios.get("],
+        "ssti": ["render_template_string(", "Environment().from_string(", "nunjucks.renderString(",
+                 "Handlebars.compile(", "_.template("],
+        "sqli_order": ["ORDER BY $", "ORDER BY '", "ORDER BY `", "FIELD($", "FIELD('"],
+    }
+    _INPUT_SOURCES = ["$_GET", "$_POST", "$_REQUEST", "$_COOKIE", "$_SERVER",
+                      "request.GET", "request.POST", "request.data", "request.json",
+                      "req.body", "req.query", "req.params", "params[", "body[",
+                      "getParameter(", "request.getParameter("]
+    for _rl in removed_lines:
+        _rls = _rl.strip()
+        if not _rls:
+            continue
+        for _category, _patterns in _DANGEROUS_SINKS.items():
+            for _pat in _patterns:
+                if _pat in _rls:
+                    result["dangerous_sinks_removed"].setdefault(_category, [])
+                    if _pat not in result["dangerous_sinks_removed"][_category]:
+                        result["dangerous_sinks_removed"][_category].append(_pat)
+                    break
+        # Extract input source variables near sinks
+        for _src in _INPUT_SOURCES:
+            if _src in _rls and _src not in result["sink_input_sources"]:
+                result["sink_input_sources"].append(_src)
 
     # __return_true as confirmed missing-auth signal:
     # If the diff removes 'permission_callback' => '__return_true' (open endpoint)

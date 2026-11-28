@@ -3532,6 +3532,12 @@ def _cheerleader_analysis(llm, inv, wr, es: bool) -> dict:
         for _acc_sig in ("removed_capability_checks", "removed_auth_checks", "removed_nonce_checks"):
             if _inv_diff.get(_acc_sig) and not _diff_analysis.get(_acc_sig):
                 _diff_analysis[_acc_sig] = _inv_diff[_acc_sig]
+        # Dangerous sinks in removed code — indicates which vuln classes have confirmed sinks
+        for _sink_sig in ("dangerous_sinks_removed", "sink_input_sources"):
+            if _inv_diff.get(_sink_sig) and not _diff_analysis.get(_sink_sig):
+                _diff_analysis[_sink_sig] = _inv_diff[_sink_sig]
+            elif _patch_diff.get(_sink_sig) and not _diff_analysis.get(_sink_sig):
+                _diff_analysis[_sink_sig] = _patch_diff.get(_sink_sig)
         # Enrich with lab evidence: tested_version, write_access_proven, patch_smoke_test
         _ev_cheer = getattr(wr, "evidence", {}) or {}
         _tested_ver = (_ev_cheer.get("tested_plugin_version") or
@@ -14288,6 +14294,15 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             elif _vc_pd in ("xss", "cross-site-scripting", "stored-xss") and not inv.llm_notes.get("xss_param"):
                                 inv.llm_notes["xss_param"] = _sp
                                 step(f"patch_diff: sanitize_param '{_sp}' → xss_param (auto-seeded from diff)")
+                        # Propagate dangerous_sinks_removed and sink_input_sources
+                        for _sink_key in ("dangerous_sinks_removed", "sink_input_sources"):
+                            _sk_val = _pd_struct.get(_sink_key)
+                            if _sk_val:
+                                inv.llm_notes["patch_diff_analysis"][_sink_key] = _sk_val
+                                if not getattr(inv, "diff_analysis", None):
+                                    inv.diff_analysis = {}
+                                if _sink_key not in inv.diff_analysis:
+                                    inv.diff_analysis[_sink_key] = _sk_val
                         step((f"patch_diff_structured del store de intel: "
                               f"fix_type={_pd_struct.get('fix_type')!r}, "
                               f"bypass_hints={_pd_struct.get('bypass_hints', [])}") if es else

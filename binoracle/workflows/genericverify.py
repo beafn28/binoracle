@@ -8887,6 +8887,39 @@ def verify_generic_http_confirm(
                     res.evidence["weaponization"] = _wep
             return res
 
+        # Content-Type retry: if POST with one content type returned 400 or no content,
+        # retry with the alternate type. Mirrors the same logic in wpverify.py.
+        if (confirm_string.lower() not in _searchable.lower() and
+                post_data is not None and m not in ("GET", "HEAD")):
+            _ct_tried = (hdrs.get("Content-Type") or hdrs.get("content-type") or "").lower()
+            _ct_is_json = "application/json" in _ct_tried
+            _status_code = getattr(resp, "status_code", 0) if hasattr(resp, "status_code") else 0
+            if _status_code == 400 or len((body or "").strip()) <= 20:
+                _retry_kwargs: dict = {"timeout": 20, "headers": dict(hdrs)}
+                if _ct_is_json:
+                    # Retry as form-encoded
+                    _retry_kwargs["headers"]["Content-Type"] = "application/x-www-form-urlencoded"
+                    _retry_kwargs["data"] = post_data
+                else:
+                    # Retry as JSON
+                    _retry_kwargs["headers"]["Content-Type"] = "application/json"
+                    _retry_kwargs["json"] = post_data
+                try:
+                    _ct_resp = _http_request(m, url, **_retry_kwargs)
+                    _ct_body = _ct_resp.text if hasattr(_ct_resp, "text") else ""
+                    _ct_headers_str = " ".join(
+                        f"{k}: {v}" for k, v in
+                        (dict(_ct_resp.headers) if hasattr(_ct_resp, "headers") else {}).items())
+                    _ct_searchable = _ct_body + "\n" + _ct_headers_str
+                    if confirm_string.lower() in _ct_searchable.lower():
+                        step(f"Content-Type retry encontro confirm_string con "
+                             f"{'form-encoded' if _ct_is_json else 'JSON'}")
+                        resp = _ct_resp
+                        body = _ct_body
+                        _searchable = _ct_searchable
+                except Exception:
+                    pass
+
         # First attempt failed — try up to 2 endpoint format variants without Docker rebuild.
         # Common patterns: trailing slash, no leading slash, /api/ prefix variant.
         _ep_variants: list[str] = []
