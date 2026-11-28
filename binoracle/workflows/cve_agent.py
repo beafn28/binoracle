@@ -6015,17 +6015,21 @@ def _apply_wpverify_result(inv, wr, es: bool, llm=None) -> None:
 
     # ── Gap #1: Inject-not-exploit guard ─────────────────────────────────────
     # Check BEFORE confidence gate: if the verifier modified the target to CREATE
-    # the vulnerability, downgrade even confirmed results.
+    # the vulnerability, this is not a confirmation of anything -- any target would
+    # show "vulnerable" if the verifier itself writes code into it, disables auth in
+    # its config, or grants itself admin DB rights. Previously this only downgraded
+    # confidence and left wr.verified=True, which meant _apply_wpverify_result still
+    # volcaba inv.verified=True right after -- the exact same class of bug as the
+    # SanityGuy fix above (a mechanism built to catch a false proof had no power to
+    # stop it from counting as "CONF" in the dashboard/history). Fixed the same way:
+    # wr.verified is reset to False, not just the confidence label.
     _ine_reason = _check_inject_not_exploit(wr)
     if _ine_reason:
         wr.evidence["inject_not_exploit_warning"] = _ine_reason
-        # Downgrade: inject-not-exploit is a form of controlled interference
-        _wr_cur_conf = getattr(wr, "confidence", "none")
-        if wr.verified and _wr_cur_conf == "confirmed":
-            wr.confidence = "probable"
-            wr.evidence["confidence_downgraded_by"] = "inject_not_exploit_guard"
-        elif wr.verified and _wr_cur_conf == "probable":
-            wr.confidence = "possible"
+        if wr.verified:
+            wr.verified = False
+            _wr_cur_conf = getattr(wr, "confidence", "none")
+            wr.confidence = "possible" if _wr_cur_conf in ("confirmed", "probable") else _wr_cur_conf
             wr.evidence["confidence_downgraded_by"] = "inject_not_exploit_guard"
 
     # Post-verify confidence sanity gate.
