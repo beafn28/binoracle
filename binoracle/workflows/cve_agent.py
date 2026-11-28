@@ -15816,6 +15816,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             if _di_placeholder:
                 _di_cms = getattr(inv, "cms", "") or ""
                 _di_src = (notes.get("source_url") or "").lower()
+                _di_target = (notes.get("target_binary") or "").lower()
+                _di_desc = (inv.description or "").lower()
                 _di_inferred = ""
                 if (_di_cms == "wordpress"
                         or "wordpress.org" in _di_src
@@ -15826,18 +15828,36 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     _di_inferred = "drupal:10-apache"
                 elif _di_cms == "joomla" or "joomla.org" in _di_src or "extensions.joomla" in _di_src:
                     _di_inferred = "joomla:php8.1-apache"
-                elif _di_cms == "ghost" or "github.com/tryghost" in _di_src or "ghost.org" in _di_src:
+                elif (_di_cms == "ghost" or "github.com/tryghost" in _di_src
+                      or "ghost.org" in _di_src or "ghost" in _di_target):
                     _di_inferred = "ghost:5-alpine"
-                elif _di_cms == "strapi" or "strapi.io" in _di_src or "github.com/strapi" in _di_src:
+                elif (_di_cms == "strapi" or "strapi.io" in _di_src
+                      or "github.com/strapi" in _di_src or "strapi" in _di_target):
                     _di_inferred = "strapi/strapi:latest"
-                elif _di_cms == "directus" or "directus" in _di_src:
+                elif (_di_cms == "directus" or "directus" in _di_src
+                      or "directus" in _di_target):
                     _di_inferred = "directus/directus:latest"
-                elif _di_cms in ("craft", "craftcms") or "craftcms" in _di_src:
+                elif (_di_cms in ("craft", "craftcms") or "craftcms" in _di_src
+                      or "craftcms" in _di_target or "craft cms" in _di_desc):
                     _di_inferred = "craftcms/craft:latest"
-                elif "github.com/rack/rack" in _di_src or (_di_cms == "rack"):
+                elif ("github.com/rack/rack" in _di_src or _di_cms == "rack"
+                      or _di_target == "rack"):
                     _di_inferred = "ruby:3.2-alpine"
-                elif _di_cms in ("laravel", "php") or "laravel" in _di_src:
+                elif (_di_cms in ("laravel", "php") or "laravel" in _di_src
+                      or "laravel" in _di_target):
                     _di_inferred = "php:8.2-apache"
+                elif ("mattermost" in _di_target or "mattermost" in _di_src
+                      or "mattermost" in _di_desc):
+                    _di_inferred = "mattermost/mattermost-team-edition:latest"
+                elif ("audiobookshelf" in _di_target or "audiobookshelf" in _di_src
+                      or "audiobookshelf" in _di_desc):
+                    _di_inferred = "advplyr/audiobookshelf:latest"
+                elif ("paperless" in _di_target or "paperless" in _di_src
+                      or "paperless-ngx" in _di_desc):
+                    _di_inferred = "ghcr.io/paperless-ngx/paperless-ngx:latest"
+                elif ("zitadel" in _di_target or "zitadel" in _di_src
+                      or "zitadel" in _di_desc):
+                    _di_inferred = "ghcr.io/zitadel/zitadel:latest"
                 # Bare plugin slug (no slash, no http) → WordPress plugin
                 _di_src2 = (notes.get("source_url") or "")
                 if (not _di_inferred and _di_src2
