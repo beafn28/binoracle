@@ -7994,23 +7994,27 @@ def _hueco_code_analysis(inv: "Investigation", fr: Any, llm: Any, step: Any, es:
     # (e.g. xss→code-injection, integer-overflow→dos, ssrf→code-injection)
     _desc_lower = (inv.description or "").lower()
     _CLASS_KEYWORDS: list[tuple[str, list[str]]] = [
+        # Most specific / unambiguous classes first to avoid false matches
         ("sqli",             ["sql injection", "sql-injection", "sqli", "unescaped schema", "search_path"]),
-        ("code-injection",   ["code injection", "function injection", "shortcode", "eval(", "template injection",
-                               "arbitrary code", "remote code execution", "rce", "code exec"]),
-        ("rce",              ["remote code execution", "arbitrary code execution", "command injection"]),
-        ("xss",              ["cross-site scripting", "xss", "reflected xss", "stored xss", "dom xss"]),
-        ("ssrf",             ["server-side request forgery", "ssrf", "unvalidated upstream", "open redirect"]),
+        ("ssti",             ["server-side template injection", "ssti"]),
+        ("xxe",              ["xml external entity", "xxe", "xml injection"]),
+        ("deserialization",  ["deserialization", "unserialize", "object injection"]),
         ("redos",            ["regular expression denial", "redos", "catastrophic backtracking",
-                               "exponential backtracking", "polynomial backtracking", "regex.*denial"]),
-        ("dos",              ["denial of service", "denial-of-service", " dos ", "event loop", "infinite loop",
+                               "exponential backtracking", "polynomial backtracking"]),
+        ("dos",              ["denial of service", "denial-of-service", "event loop", "infinite loop",
                                "algorithmic complexity"]),
-        ("path-traversal",   ["path traversal", "directory traversal", "lfi", "local file inclusion"]),
+        ("rce",              ["remote code execution", "arbitrary code execution", "command injection",
+                               "arbitrary commands", "code execution"]),
+        # code-injection: PHP/server eval, shortcode chains — NOT generic RCE
+        ("code-injection",   ["code injection", "function injection", "shortcode", "eval(", "php function call",
+                               "arbitrary php", "call_user_func", "restricted function"]),
+        ("xss",              ["cross-site scripting", "xss", "reflected xss", "stored xss", "dom xss"]),
+        ("ssrf",             ["server-side request forgery", "ssrf", "unvalidated upstream"]),
+        ("path-traversal",   ["path traversal", "directory traversal", "lfi", "local file inclusion",
+                               "arbitrary file read", "file disclosure"]),
         ("file-upload",      ["arbitrary file upload", "unrestricted file upload", "file upload"]),
         ("missing-authorization", ["missing authorization", "capability check", "nonce check",
                                     "authentication bypass", "auth bypass", "unauthenticated"]),
-        ("deserialization",  ["deserialization", "unserialize", "object injection"]),
-        ("ssti",             ["server-side template injection", "ssti", "template injection"]),
-        ("xxe",              ["xml external entity", "xxe", "xml injection"]),
         ("idor",             ["insecure direct object", "idor", "object reference"]),
     ]
     _original_vc = vc

@@ -50,7 +50,7 @@ _DOCKER_IMAGE_PROFILES: dict[str, dict] = {
             "IMPORT_IP_DENY_LIST": "",
         },
         "cmd": None,
-        "startup_wait": 30,
+        "startup_wait": 60,
         "health_path": "/server/health",
     },
     "advplyr/audiobookshelf:": {
