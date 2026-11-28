@@ -318,8 +318,11 @@ def verify_directus_web_cve(
                             pass
 
                     import socketserver
-                    self._srv = socketserver.TCPServer(("0.0.0.0", self._port), _H)
-                    self._srv.socket.setsockopt(1, 2, 1)  # SO_REUSEADDR
+
+                    class _ReuseServer(socketserver.TCPServer):
+                        allow_reuse_address = True
+
+                    self._srv = _ReuseServer(("0.0.0.0", self._port), _H)
                     self._srv.timeout = 1
                     for _ in range(50):
                         self._srv.handle_request()
