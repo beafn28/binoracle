@@ -2188,6 +2188,15 @@ class _DockerLab:
 
         return _ctx()
 
+    def teardown(self) -> None:
+        """Explicit teardown — delegates to inner lab if still live. Safe to call after `running()`."""
+        if self._lab is not None:
+            try:
+                self._lab.teardown()
+            except Exception:
+                pass
+            self._lab = None
+
     def exec_in_container(self, cmd: str) -> bool:
         """Run cmd via docker exec in the main container. Returns True on success."""
         if not self._lab or not self._container:
@@ -4958,9 +4967,18 @@ def verify_generic_sqli_blind(
             try:
                 _ep_fast = endpoint.split("?")[0] if endpoint and "?" in endpoint else endpoint
                 _hdrs_fast = dict(custom_headers or {})
+                _fp_json_body = bool(
+                    _hdrs_fast.get("Content-Type", "").startswith("application/json")
+                    or _ep_fast.startswith("/api")
+                    or any("json" in str(k).lower() for k in parameters)
+                )
                 if m == "GET":
                     _r_fast = _http_request(m, base_url + _ep_fast, timeout=15,
                                              params=parameters, headers=_hdrs_fast or None)
+                elif _fp_json_body:
+                    _hdrs_fast.setdefault("Content-Type", "application/json")
+                    _r_fast = _http_request(m, base_url + _ep_fast, timeout=15,
+                                             json=parameters, headers=_hdrs_fast or None)
                 else:
                     _r_fast = _http_request(m, base_url + _ep_fast, timeout=15,
                                              data=parameters, headers=_hdrs_fast or None)
@@ -5056,10 +5074,16 @@ def verify_generic_sqli_blind(
         _eb_baseline_body = ""
         try:
             _bl_params = dict(base_params)
-            _bl_r = _http_request(m, base_url + endpoint_path, timeout=12,
-                                  params=_bl_params if m == "GET" else None,
-                                  data=_bl_params if m != "GET" else None,
-                                  headers=dict(custom_headers or {}))
+            _bl_hdrs = dict(custom_headers or {})
+            if _use_json_body and m != "GET":
+                _bl_hdrs.setdefault("Content-Type", "application/json")
+                _bl_r = _http_request(m, base_url + endpoint_path, timeout=12,
+                                      json=_bl_params, headers=_bl_hdrs)
+            else:
+                _bl_r = _http_request(m, base_url + endpoint_path, timeout=12,
+                                      params=_bl_params if m == "GET" else None,
+                                      data=_bl_params if m != "GET" else None,
+                                      headers=_bl_hdrs)
             _eb_baseline_body = getattr(_bl_r, "text", "") or ""
         except Exception:
             pass
