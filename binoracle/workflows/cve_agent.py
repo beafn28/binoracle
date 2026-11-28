@@ -3400,6 +3400,16 @@ _CHEERLEADER_SYS = (
     "o el lock es mas fino. Probar con tokens de expiracion mas larga o aumentar paralelismo.\n"
     "   - CORS: si ACAO no refleja el Origin, el servidor puede tener una whitelist. Probar "
     "subdominios del origen real o valor 'null'.\n"
+    "12. FAILURE ROOT CAUSE — si 'failure_root_cause' tiene un valor, razona sobre el:\n"
+    "   - 'php_fatal': el plugin crashea en PHP 8.x. Sugerir cambiar docker_image a 'wordpress:php7.4-apache' "
+    "o revisar si el plugin requiere una version PHP especifica.\n"
+    "   - 'missing_table': la tabla del plugin no existe. Implica que el plugin no inicializo su DB. "
+    "Sugerir companion_plugin (ej. woocommerce si es un plugin de WooCommerce) o setup_wp_options para "
+    "activar la funcionalidad que crea la tabla.\n"
+    "   - 'db_connection_failed': la base de datos no respondio. Infra issue — no reintentar sin revisar "
+    "el docker_image y la configuracion de la DB.\n"
+    "   - 'port_conflict': puerto ya en uso — infra issue, reintentar puede funcionar.\n"
+    "   El campo 'container_logs_snippet' tiene los ultimos logs del contenedor para mas contexto.\n"
     "REGLA CRITICA: Razona SOLO en el contexto del framework/CMS real indicado en 'target_framework' "
     "del contexto. NUNCA sugieras endpoints de WordPress (admin-ajax.php, wp-json/, post_type, "
     "wp_ajax_) salvo que target_framework contenga 'wordpress'. "
@@ -3502,6 +3512,8 @@ def _cheerleader_analysis(llm, inv, wr, es: bool) -> dict:
             "detail": getattr(wr, "detail", ""),
             "failure_trace": failure_trace[-5:] if failure_trace else [],
             "logs_tail": [entry[:300] for entry in logs_tail],
+            "failure_root_cause": (getattr(wr, "evidence", {}) or {}).get("failure_root_cause", ""),
+            "container_logs_snippet": (getattr(wr, "evidence", {}) or {}).get("container_logs_on_failure", "")[:300],
             "evidence": {k: str(v)[:200] for k, v in list(evidence_summary.items())[:15]},
             "source_grounding": _grounding_snippet,
             "static_analysis_candidates": _static_candidates,
