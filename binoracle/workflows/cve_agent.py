@@ -15750,7 +15750,10 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     step(f"[ep-fix] traversal in endpoint split: base={_base_ep2!r} traversal={_traversal2[:40]!r}")
             # Auto-fill docker_image when missing — without it the Docker lab cannot start.
             # Infer from inv.cms, source_url, or bare plugin slug heuristics.
-            if not (notes.get("docker_image") or "").strip():
+            _di_raw = (notes.get("docker_image") or "").strip().lower()
+            _di_placeholder = _di_raw in ("", "?", "none", "unknown", "n/a", "na",
+                                          "tbd", "todo", "placeholder", "unset")
+            if _di_placeholder:
                 _di_cms = getattr(inv, "cms", "") or ""
                 _di_src = (notes.get("source_url") or "").lower()
                 _di_inferred = ""
@@ -16628,12 +16631,17 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 # PHP 8.x compat fallback for LFI: same logic as SQLi path
                 _lfi_detail_low = (wr.detail or "").lower()
                 from .wpverify import _get_active_wp_image as _gwi_lfi
+                _lfi_rc255_empty = (
+                    "(rc=255):" in _lfi_detail_low
+                    and len(_lfi_detail_low.split("(rc=255):", 1)[-1].strip()) == 0
+                )
                 if (not wr.verified
                         and "activacion del plugin fallo:" in _lfi_detail_low
-                        and any(_p in _lfi_detail_low for _p in (
+                        and (any(_p in _lfi_detail_low for _p in (
                             "cannot make non static method", "must be compatible with",
                             "must be of type", " static method ",
                             "critical error on this website", "has been a critical error"))
+                             or _lfi_rc255_empty)
                         and not _gwi_lfi().endswith("php7.4-apache")
                         and not notes.get("docker_image", "").endswith("php7.4-apache")):
                     step(("LFI: activacion fallo por PHP 8.x incompatibilidad — "
@@ -18089,9 +18097,15 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 )
                 _dv_detail_low = (wr.detail or "").lower()
                 from .wpverify import _get_active_wp_image as _gwi
+                # rc=255 with empty output also signals PHP crash (compat issue but PHP suppresses errors)
+                _sqli_rc255_empty = (
+                    "(rc=255):" in _dv_detail_low
+                    and len(_dv_detail_low.split("(rc=255):", 1)[-1].strip()) == 0
+                )
                 if (not wr.verified
                         and "activacion del plugin fallo:" in _dv_detail_low
-                        and any(_p in _dv_detail_low for _p in _PHP8_STRICT_PATTERNS)
+                        and (any(_p in _dv_detail_low for _p in _PHP8_STRICT_PATTERNS)
+                             or _sqli_rc255_empty)
                         and not _gwi().endswith("php7.4-apache")
                         and not notes.get("docker_image", "").endswith("php7.4-apache")):
                     step(("activacion fallo por PHP 8.x incompatibilidad — "
@@ -19610,9 +19624,14 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     "must be of type", " static method ",
                     "critical error on this website", "has been a critical error",
                 )
+                _map_rc255_empty = (
+                    "(rc=255):" in _map_detail_low
+                    and len(_map_detail_low.split("(rc=255):", 1)[-1].strip()) == 0
+                )
                 if (not wr.verified
                         and "activacion del plugin fallo:" in _map_detail_low
-                        and any(_p in _map_detail_low for _p in _PHP8_MAP_PATTERNS)
+                        and (any(_p in _map_detail_low for _p in _PHP8_MAP_PATTERNS)
+                             or _map_rc255_empty)
                         and not _gwi_map().endswith("php7.4-apache")
                         and not notes.get("docker_image", "").endswith("php7.4-apache")):
                     step(("missing-auth: activacion fallo por PHP 8.x — "
@@ -19686,9 +19705,14 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     "must be of type", " static method ",
                     "critical error on this website", "has been a critical error",
                 )
+                _fu_rc255_empty = (
+                    "(rc=255):" in _fu_detail_low
+                    and len(_fu_detail_low.split("(rc=255):", 1)[-1].strip()) == 0
+                )
                 if (not wr.verified
                         and "activacion del plugin fallo:" in _fu_detail_low
-                        and any(_p in _fu_detail_low for _p in _PHP8_FU_PATTERNS)
+                        and (any(_p in _fu_detail_low for _p in _PHP8_FU_PATTERNS)
+                             or _fu_rc255_empty)
                         and not _gwi_fu().endswith("php7.4-apache")
                         and not notes.get("docker_image", "").endswith("php7.4-apache")):
                     step(("file-upload: activacion fallo por PHP 8.x — "
