@@ -403,6 +403,151 @@ def analyze_patch_diff(raw_diff: str) -> dict:
     # Deduplicate bypass hints
     result["bypass_hints"] = list(dict.fromkeys(result["bypass_hints"]))[:8]
 
+    # Extract SQL injection context from vulnerable (removed) lines
+    sqli_intel = extract_sqli_intel(removed_lines)
+    if sqli_intel.get("injection_context"):
+        result["sqli_intel"] = sqli_intel
+        # Auto-add bypass hint for ORDER BY injection (no quoting, no WHERE close)
+        if sqli_intel["injection_context"] == "order_by" and "order_by" not in " ".join(result["bypass_hints"]).lower():
+            result["bypass_hints"].append(
+                "SQL injection in ORDER BY context — no string quotes, payload is a bare "
+                "expression (e.g. extractvalue(1,concat(0x7e,version())) or "
+                "IF(1=1,SLEEP(5),0)); do NOT append AND/OR or use quotes"
+            )
+        elif sqli_intel["injection_context"] == "numeric" and "numeric" not in " ".join(result["bypass_hints"]).lower():
+            result["bypass_hints"].append(
+                "SQL injection in numeric context (no surrounding quotes) — inject as "
+                "integer: e.g. '1 AND extractvalue(1,concat(0x7e,version()))'"
+            )
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# SQL injection context extraction from patch diff
+# ---------------------------------------------------------------------------
+
+_SQL_CTX_RE = re.compile(
+    r"\b(ORDER\s+BY|WHERE|HAVING|LIMIT|GROUP\s+BY)\b", re.IGNORECASE
+)
+_SQL_CONCAT_RE = re.compile(
+    # PHP string concat into SQL: '" . $var . "' or "'. $var .'"
+    r"""['"][.\s]+\$\w+|"""
+    # PHP heredoc/interpolation: "$var" or "{$var}"
+    r"""\$\{?\w+\}?[^'"]*(?:['"]|$)|"""
+    # Python f-string: f"...{var}..."
+    r"""\{[\w.]+\}|"""
+    # Node.js template literal: `...${var}...`
+    r"""\$\{[\w.]+\}"""
+)
+_SQL_TABLE_RE = re.compile(
+    r"""\b(?:FROM|JOIN|INTO|UPDATE)\s+[`'"]*(\w+)[`'"]*""", re.IGNORECASE
+)
+_SQL_COLUMN_RE = re.compile(
+    r"""\b(?:WHERE|SET|ON)\s+[`'"]*(\w+)[`'"]*\s*[=<>!]""", re.IGNORECASE
+)
+_SQL_PREPARE_RE = re.compile(
+    r"\b(?:prepare|wpdb->prepare|parameterize|bindParam|bindValue|placeholder)\b",
+    re.IGNORECASE
+)
+
+
+def extract_sqli_intel(removed_lines: list) -> dict:
+    """Extract SQL injection context from removed (vulnerable) patch diff lines.
+
+    Looks for SQL query construction via string concatenation and identifies:
+    - injection_context: "where", "order_by", "having", "limit", "numeric"
+    - injection_quoting: "single", "double", "none"
+    - table_names: tables in the query
+    - column_names: columns near the injection
+    - sql_template: the raw vulnerable SQL snippet (up to 200 chars)
+    """
+    result: dict = {
+        "injection_context": None,
+        "injection_quoting": None,
+        "table_names": [],
+        "column_names": [],
+        "sql_template": "",
+    }
+
+    # Only look at lines that look like SQL query construction (not the fix)
+    sql_lines = []
+    for line in removed_lines:
+        ls = line.strip()
+        if not ls:
+            continue
+        # Must have SQL keyword AND string concatenation with a variable
+        ctx_m = _SQL_CTX_RE.search(ls)
+        concat_m = _SQL_CONCAT_RE.search(ls)
+        # Also accept lines with wpdb->query/get_results with interpolation
+        is_sink = bool(re.search(r"\$wpdb\s*->(?:query|get_results|get_row|get_var)\s*\(", ls))
+        if (ctx_m or is_sink) and concat_m:
+            sql_lines.append((ls, ctx_m))
+
+    if not sql_lines:
+        return result
+
+    # Process the best matching line (prefer one with ORDER BY, then WHERE)
+    order_by_lines = [(l, m) for l, m in sql_lines
+                      if m and "ORDER" in m.group(1).upper()]
+    best_lines = order_by_lines or sql_lines
+
+    for ls, ctx_m in best_lines[:3]:
+        ctx_keyword = (ctx_m.group(1).upper().replace(" ", "_")
+                       if ctx_m else "")
+
+        if "ORDER_BY" in ctx_keyword:
+            result["injection_context"] = "order_by"
+            result["injection_quoting"] = "none"
+        elif ctx_keyword in ("WHERE", "HAVING"):
+            result["injection_context"] = "where"
+            # Determine quoting by looking at the character immediately before the
+            # concat operator (". $var", ". $_POST", "${var}", "{var}")
+            # Pattern: single-quote before concat: WHERE col = '" . $var
+            #          double-quote before concat: WHERE col = "' . $var (unusual)
+            # Simpler: scan the line for '" .' or "' ." or "= '" or '= "'
+            if re.search(r"""[=\s]'\s*[."]\s*\.""", ls) or re.search(r"""'\s*\.\s*\$""", ls):
+                result["injection_quoting"] = "single"
+            elif re.search(r'''"[.\s]*\.\s*\$''', ls) and re.search(r"""WHERE\b""", ls, re.IGNORECASE):
+                # e.g. WHERE col = "' . $var . '"  — double outer, single inner
+                result["injection_quoting"] = "single"
+            elif re.search(r'[=\s]"\s*[.]\s*\$', ls):
+                result["injection_quoting"] = "double"
+            else:
+                result["injection_context"] = "numeric"
+                result["injection_quoting"] = "none"
+        elif "LIMIT" in ctx_keyword:
+            result["injection_context"] = "limit"
+            result["injection_quoting"] = "none"
+        elif result["injection_context"] is None:
+            # Sink line without explicit SQL keyword — numeric context
+            result["injection_context"] = "numeric"
+            result["injection_quoting"] = "none"
+
+        # Extract table names
+        for tbl in _SQL_TABLE_RE.findall(ls):
+            if tbl and tbl not in result["table_names"] and not tbl.startswith("{"):
+                result["table_names"].append(tbl)
+
+        # Extract column names
+        for col in _SQL_COLUMN_RE.findall(ls):
+            if col and col not in result["column_names"] and not col.startswith("{"):
+                result["column_names"].append(col)
+
+        if not result["sql_template"]:
+            result["sql_template"] = ls[:200]
+
+        if result["injection_context"]:
+            break
+
+    # Strip empty lists
+    if not result["table_names"]:
+        del result["table_names"]
+    if not result["column_names"]:
+        del result["column_names"]
+    if not result["sql_template"]:
+        del result["sql_template"]
+
     return result
 
 

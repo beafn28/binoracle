@@ -3509,6 +3509,8 @@ def verify_generic_lfi_rce(
                            " (ninguna ruta de log probada fue incluida; puede que el log real "
                            "este en otra ruta, o que el parametro no incluya ficheros como "
                            "codigo)"))
+        if not res.verified:
+            _capture_container_logs_on_failure(container, res, step)
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = _diagnose_infra_error(e, source_dir)
@@ -3845,6 +3847,7 @@ def verify_generic_file_upload(
                           f"-- no se confirmo subida sin restriccion (puede que el endpoint/"
                           f"parametro no sean los reales, o que el servidor rechace de verdad "
                           f"estas extensiones)")
+            _capture_container_logs_on_failure(container, res, step)
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = _diagnose_infra_error(e, source_dir)

@@ -12994,6 +12994,33 @@ def verify_wordpress_missing_auth_probe(
                                 f" — respuesta anonima ({len(body)}B) difiere de subscriber "
                                 f"({len(_sub_body)}B): posible filtrado por rol")
                             res.evidence["privilege_comparison"] = f"anon={len(body)}B sub={len(_sub_body)}B"
+                            # Admin comparison: if anon ≈ admin, the endpoint leaks admin-only
+                            # data without authentication — a stronger form of missing-auth.
+                            if not res.verified and len(body.strip()) > 30:
+                                try:
+                                    _r_adm = boot.admin_sess.request(
+                                        m, boot.base_url + endpoint,
+                                        json=params_dict if (m not in ("GET","HEAD") and json_body) else None,
+                                        data=params_dict if (m not in ("GET","HEAD") and not json_body) else None,
+                                        params=params_dict if m == "GET" else None,
+                                        timeout=15, allow_redirects=True)
+                                    _adm_st = _r_adm.status_code
+                                    _adm_body = (_r_adm.text or "")[:2000]
+                                    res.evidence["status_admin"] = _adm_st
+                                    if (_adm_st < 400
+                                            and abs(len(_adm_body) - len(body)) < max(50, len(body) * 0.15)
+                                            and len(_adm_body.strip()) > 30):
+                                        res.verified = True
+                                        res.confidence = "probable"
+                                        res.evidence["privilege_comparison"] = "anon==admin (admin-data exposed)"
+                                        res.detail = (
+                                            f"MISSING-AUTH CONFIRMADA (nivel admin): respuesta "
+                                            f"anonima ({status}/{len(body)}B) ≈ admin "
+                                            f"({_adm_st}/{len(_adm_body)}B) — endpoint expone "
+                                            f"datos de admin sin autenticacion")
+                                        return res
+                                except Exception:
+                                    pass
                 except Exception:
                     pass
 

@@ -7095,6 +7095,18 @@ def _synthesize_exploit_from_intel(
                         patch_diff["input_path"] = _ipath
         except Exception:
             pass
+        _sqli_ctx = patch_diff.get("sqli_intel") or {}
+        _sqli_ctx_str = ""
+        if _sqli_ctx.get("injection_context"):
+            _sqli_ctx_str = (
+                f"\n- SQL injection context (from patch diff): "
+                f"context={_sqli_ctx['injection_context']!r}, "
+                f"quoting={_sqli_ctx.get('injection_quoting', 'unknown')!r}, "
+                f"tables={_sqli_ctx.get('table_names', [])}, "
+                f"columns={_sqli_ctx.get('column_names', [])}"
+                + (f"\n  Vulnerable SQL template: {_sqli_ctx['sql_template']!r}"
+                   if _sqli_ctx.get("sql_template") else "")
+            )
         patch_summary = (
             f"Patch diff (what changed to fix it):\n"
             f"- Files: {patch_diff.get('changed_files', [])}\n"
@@ -7103,7 +7115,8 @@ def _synthesize_exploit_from_intel(
             f"- Auth checks added: {patch_diff.get('auth_checks_added', [])}\n"
             f"- Fix completeness: {patch_diff.get('fix_completeness', 'unknown')}\n"
             f"- Input path to sink: {patch_diff.get('input_path', '')}\n"
-            f"- Bypass hints: {patch_diff.get('bypass_hints', [])}\n"
+            f"- Bypass hints: {patch_diff.get('bypass_hints', [])}"
+            f"{_sqli_ctx_str}\n"
             f"- Diff snippet:\n{patch_diff.get('raw_diff_snippet', '')[:800]}")
     _poc_code = (schema_hints or {}).get("public_poc_code", "")
     schema_str = ""
@@ -13797,6 +13810,15 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             "fix_completeness": _pd_struct.get("fix_completeness", "unknown"),
                             "raw_diff_snippet": _stored_intel.get("patch_diff_analysis", "")[:2000],
                         }
+                        # Include SQLi injection context if extracted by diff_analyzer
+                        _sqli_intel = _pd_struct.get("sqli_intel") or {}
+                        if _sqli_intel.get("injection_context"):
+                            inv.llm_notes["patch_diff_analysis"]["sqli_intel"] = _sqli_intel
+                            # Auto-set sqli_via_orderby from patch diff — overrides LLM guess
+                            if (_sqli_intel["injection_context"] == "order_by"
+                                    and not inv.llm_notes.get("sqli_via_orderby")):
+                                inv.llm_notes["sqli_via_orderby"] = True
+                                step("patch_diff sqli_intel: ORDER BY injection detected → sqli_via_orderby=True")
                         step((f"patch_diff_structured del store de intel: "
                               f"fix_type={_pd_struct.get('fix_type')!r}, "
                               f"bypass_hints={_pd_struct.get('bypass_hints', [])}") if es else
