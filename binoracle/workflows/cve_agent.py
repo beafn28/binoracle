@@ -5397,6 +5397,38 @@ def _run_evidence_retry_loop(llm, step, es: bool, system_prompt: str, evidence_k
         wr_retry.detail = (f"[reintento {attempt_n + 1}/{max_attempts} sugerido por el LLM tras "
                           f"leer la evidencia real: {suggestion.get('razon')}] " + wr_retry.detail)
         wr = wr_retry
+
+    # ── Gap #3: Summarization-on-maxiter ─────────────────────────────────────
+    # When all attempts are exhausted without success, ask the LLM for a comprehensive
+    # synthesis of everything tried: root cause, final hypothesis, blockers.
+    if not wr.verified and llm is not None and inv is not None:
+        _ft_all = getattr(wr, "failure_trace", []) or []
+        if len(_ft_all) >= 2:  # only worth summarizing when multiple attempts tried
+            try:
+                _mxs = _summarize_maxiter(llm, inv, wr, _ft_all, es=es)
+                if _mxs:
+                    _inv_notes = getattr(inv, "llm_notes", {})
+                    if isinstance(_inv_notes, dict):
+                        _inv_notes["maxiter_summary"] = _mxs
+                    # Store final hypothesis in attempt_evidence for the report
+                    if not isinstance(getattr(wr, "evidence", None), dict):
+                        wr.evidence = {}
+                    wr.evidence["maxiter_summary"] = _mxs
+                    _final_h = _mxs.get("hipotesis_final") or {}
+                    if _final_h.get("endpoint"):
+                        wr.evidence["final_hypothesis_endpoint"] = _final_h["endpoint"]
+                    if _mxs.get("causa_raiz"):
+                        wr.evidence["final_root_cause"] = _mxs["causa_raiz"]
+                    _conf_verd = float(_mxs.get("confianza_verdadera") or 0)
+                    step((f"[maxiter-summary] causa_raiz={_mxs.get('causa_raiz','?')!r}, "
+                          f"confianza_real={_conf_verd:.0%}, "
+                          f"hipotesis_final={(_final_h.get('endpoint') or '(ninguna)')!r}") if es else
+                         (f"[maxiter-summary] root_cause={_mxs.get('causa_raiz','?')!r}, "
+                          f"true_confidence={_conf_verd:.0%}, "
+                          f"final_hypothesis={(_final_h.get('endpoint') or '(none)')!r}"))
+            except Exception:
+                pass
+
     return wr
 
 
@@ -5698,6 +5730,192 @@ def _build_reproduce_sh(cve_id: str, poc: dict, confidence: str = "confirmed") -
     return "\n".join(lines) + "\n"
 
 
+# ── Gap #1: Inject-not-exploit guard ─────────────────────────────────────────
+# Detects when verification code *creates* the vulnerability instead of exploiting
+# a pre-existing one (CVE-Genie's inject-not-exploit check, extended).
+_INJECT_NOT_EXPLOIT_PATTERNS = [
+    # Writing PHP code to plugin/WP dirs during verification
+    r"(?:echo|tee|printf)\s+.*?\.php",
+    r"file_put_contents\s*\(.*?\.php",
+    # wp eval adding hooks or routes — sentinel only uses option add/update/delete
+    r"wp\s+eval.*add_action\s*\(",
+    r"wp\s+eval.*register_rest_route\s*\(",
+    r"wp\s+eval.*remove_all_filters",
+    r"wp\s+eval.*add_filter.*authenticate",
+    # Deactivating security / firewall plugins mid-run
+    r"wp\s+plugin\s+deactivate\s+(?:wordfence|ithemes|better-wp-security|anti-malware|bulletproof)",
+    # Writing PHP eval() logic to wp_options (not the controlled sentinel key)
+    r"wp\s+option\s+(?:add|update)\s+(?!binoracle_infodiscl_sentinel)\S+.*(?:eval|base64_decode|system|exec|passthru)\(",
+    # sed/awk patching plugin files at runtime
+    r"sed\s+-i.*\.php",
+    r"awk\s+.*>.*\.php",
+    # chmod 777 on plugin files
+    r"chmod\s+777.*\.php",
+]
+
+
+def _check_inject_not_exploit(wr) -> str:
+    """Returns a reason string if the verifier modified the target to create the vuln,
+    or empty string if clean. Checks logs and evidence for injection patterns."""
+    import re as _re_ine
+    logs_text = " ".join(str(l) for l in (getattr(wr, "logs", []) or []))
+    # Also check wp-cli output stored in evidence
+    ev = getattr(wr, "evidence", {}) or {}
+    extra = " ".join(str(v) for v in [
+        ev.get("container_logs_on_failure", ""),
+        ev.get("wpcli_output", ""),
+        ev.get("lab_setup_log", ""),
+    ])
+    combined = logs_text + " " + extra
+    for pattern in _INJECT_NOT_EXPLOIT_PATTERNS:
+        if _re_ine.search(pattern, combined, _re_ine.IGNORECASE):
+            return f"inject-not-exploit: pattern {pattern!r} found in logs/evidence"
+    return ""
+
+
+# ── Gap #2: Post-success SanityGuy (second-LLM pass) ─────────────────────────
+# After hard-proof verification, a second LLM reviews whether the proof is genuine:
+# unique token, default-WP collision risk, patch tested on correct version, etc.
+_SANITY_GUY_SYS = (
+    "Eres un revisor de seguridad de segunda opinion (SanityGuy). "
+    "Se te da la evidencia de un exploit CONFIRMADO. Tu mision: validar que la verificacion "
+    "sea GENUINA y no un artefacto de lab.\n\n"
+    "Evalua estos 5 criterios:\n"
+    "1. TOKEN_UNICO: ¿el sentinel/canary/confirm_string es suficientemente unico para descartar "
+    "coincidencia? (hex 12+ chars = ok; palabra comun sola = sospechoso)\n"
+    "2. NO_DEFAULT_WP: ¿podria una instalacion WP por defecto (sin el plugin vulnerable) "
+    "devolver este mismo resultado? Si si, es FP potencial.\n"
+    "3. PARCHE_NO_PROBADO: ¿se verifico explicitamente que el plugin parchado NO muestra el token? "
+    "Si no se probo, la verificacion podria ser un artefacto del lab setup.\n"
+    "4. CUERPO_CLARO: ¿el token aparece textualmente exacto en el body, o solo como substring "
+    "ambiguo (ej. '1234' dentro de '12345678')?\n"
+    "5. NO_INJECT: ¿hay evidencia de que el verificador modifico el plugin/WP para CREAR la "
+    "vulnerabilidad en vez de explotarla? (inject_not_exploit_warning en evidencia)\n\n"
+    "Responde SOLO con JSON valido:\n"
+    "{\"genuine\": true, \"confidence\": \"confirmed|probable|possible\", "
+    "\"concerns\": [\"concern1\", ...], \"verdict\": \"frase breve\"}.\n"
+    "Si genuine=true y sin concerns: concerns=[]. "
+    "Solo devuelve genuine=false si hay evidencia CONCRETA de FP, no por incertidumbre."
+)
+
+
+def _sanity_guy_check(wr, llm, cve_id: str = "", es: bool = True) -> dict:
+    """Second-LLM sanity pass on a confirmed result. Returns:
+      {'genuine': bool, 'confidence': str, 'concerns': list, 'verdict': str}
+    or {} on error/unavailable.
+    Only called when wr.verified=True and evidence looks hard (sentinel/canary).
+    """
+    if llm is None or not getattr(llm, "available", lambda: False)():
+        return {}
+    try:
+        from ..llm.base import Message
+        import json as _json
+        ev = getattr(wr, "evidence", {}) or {}
+        # Build a sanitised summary of the evidence for the second LLM
+        _ev_summary = {
+            "cve_id": cve_id,
+            "confidence": getattr(wr, "confidence", ""),
+            "sentinel_uuid": ev.get("sentinel_uuid", ""),
+            "sentinel_found_in_response": ev.get("sentinel_found_in_response", False),
+            "canary": (ev.get("canary") or ev.get("canario") or "")[:60],
+            "confirm_string": (ev.get("confirm_string") or "")[:80],
+            "anon_body_snippet": (ev.get("anon_body_snippet") or
+                                  ev.get("respuesta_cuerpo_recorte") or "")[:300],
+            "inject_not_exploit_warning": ev.get("inject_not_exploit_warning", ""),
+            "nonce_bypass_proven": ev.get("nonce_bypass_proven", False),
+            "sensitive_field": ev.get("sensitive_field", ""),
+            "auth_vs_anon_check": ev.get("auth_vs_anon_check", ""),
+            "detail": (getattr(wr, "detail", "") or "")[:300],
+        }
+        prompt = (f"Evidencia a revisar:\n{_json.dumps(_ev_summary, ensure_ascii=False)}")
+        raw = llm.chat(
+            [Message("system", _SANITY_GUY_SYS), Message("user", prompt)],
+            json_mode=True, temperature=0.0)
+        data = _json.loads(raw)
+        if not isinstance(data, dict):
+            return {}
+        return data
+    except Exception:
+        return {}
+
+
+# ── Gap #3: Summarization-on-maxiter ─────────────────────────────────────────
+# When the retry loop exhausts max_attempts, ask the LLM for a comprehensive
+# synthesis of everything tried. Richer than cheerleader — covers all attempts.
+_MAXITER_SUMMARY_SYS = (
+    "Eres un analista de vulnerabilidades que acaba de agotar todos los intentos de "
+    "verificacion de un CVE. Se te pasa el historial completo de intentos fallidos.\n\n"
+    "Tu tarea: sintetizar EN DETALLE:\n"
+    "1. CAUSA_RAIZ: ¿por que fallaron TODOS los intentos? (1 razon principal)\n"
+    "2. INTENTOS_AGOTADOS: lista de tecnicas/endpoints ya probados (para no repetir)\n"
+    "3. HIPOTESIS_FINAL: la hipotesis mas prometedora que NO se ha podido probar aun "
+    "(si la hay) — con endpoint, metodo, parametro y payload especificos\n"
+    "4. BLOQUEADORES: que condition en el lab/plugin impide la verificacion "
+    "(version_incompatible / plugin_no_activo / endpoint_404 / auth_mismatch / etc)\n"
+    "5. CONFIANZA_VERDADERA: ¿cuanto confias en que esta vuln es real dado lo visto "
+    "(0.0=no creible, 1.0=casi seguro pero no pudo probarse tecnicamente)?\n\n"
+    "Responde SOLO con JSON:\n"
+    "{\"causa_raiz\": \"...\", \"intentos_agotados\": [...], "
+    "\"hipotesis_final\": {\"endpoint\": \"...\", \"method\": \"...\", "
+    "\"param\": \"...\", \"payload\": \"...\", \"razon\": \"...\"}, "
+    "\"bloqueadores\": [...], \"confianza_verdadera\": 0.0}"
+)
+
+
+def _summarize_maxiter(llm, inv, wr, all_failure_traces: list, es: bool = True) -> dict:
+    """Called when retry loop hits max_attempts. Returns a structured summary of
+    everything tried, the root cause, and the best remaining hypothesis.
+    Stored in inv.llm_notes['maxiter_summary'] and inv.attempt_evidence.
+    """
+    if llm is None or not getattr(llm, "available", lambda: False)():
+        return {}
+    try:
+        from ..llm.base import Message
+        import json as _json
+        # Build history from all failure traces (each attempt's evidence + detail)
+        _history = []
+        for _ft in (all_failure_traces or []):
+            if isinstance(_ft, dict):
+                _history.append({
+                    "attempt": _ft.get("attempt", "?"),
+                    "endpoint": _ft.get("endpoint", ""),
+                    "param": _ft.get("param", ""),
+                    "technique": _ft.get("technique", ""),
+                    "detail": (_ft.get("detail") or "")[:200],
+                    "causa": _ft.get("causa", ""),
+                })
+        # Also pull last wr evidence
+        ev = getattr(wr, "evidence", {}) or {}
+        _last_ev = {
+            "sqli_techniques_tried": ev.get("sqli_techniques_tried", []),
+            "failure_root_cause": ev.get("failure_root_cause", ""),
+            "container_logs_snippet": ev.get("container_logs_on_failure", "")[:200],
+            "last_status": ev.get("status_control") or ev.get("last_status", ""),
+            "last_body": (ev.get("respuesta_control_recorte") or "")[:200],
+        }
+        _notes = getattr(inv, "llm_notes", {}) or {}
+        _ctx = {
+            "cve_id": getattr(inv, "cve_id", ""),
+            "vuln_class": getattr(inv, "vuln_class", ""),
+            "total_attempts": len(all_failure_traces),
+            "history": _history[-8:],  # last 8 attempts
+            "last_evidence": _last_ev,
+            "endpoint_tried": _notes.get("endpoint", ""),
+            "diff_rest_routes": (_notes.get("patch_diff_analysis") or {}).get("rest_routes", []),
+            "bypass_hints": (_notes.get("patch_diff_analysis") or {}).get("bypass_hints", []),
+        }
+        prompt = f"Historial completo de intentos:\n{_json.dumps(_ctx, ensure_ascii=False)[:4000]}"
+        raw = llm.chat(
+            [Message("system", _MAXITER_SUMMARY_SYS), Message("user", prompt)],
+            json_mode=True, temperature=0.1, max_tokens=800)
+        data = _json.loads(raw)
+        if not isinstance(data, dict):
+            return {}
+        return data
+    except Exception:
+        return {}
+
+
 def _apply_wpverify_result(inv, wr, es: bool, llm=None) -> None:
     """Vuelca un WpVerifyResult (ver workflows/wpverify.py) en la investigacion."""
     from .wpverify import _auto_set_confidence
@@ -5711,6 +5929,21 @@ def _apply_wpverify_result(inv, wr, es: bool, llm=None) -> None:
         wr.verified = False
         if not getattr(wr, "confidence", None) or wr.confidence in ("confirmed", "none"):
             wr.confidence = "inconclusive"
+
+    # ── Gap #1: Inject-not-exploit guard ─────────────────────────────────────
+    # Check BEFORE confidence gate: if the verifier modified the target to CREATE
+    # the vulnerability, downgrade even confirmed results.
+    _ine_reason = _check_inject_not_exploit(wr)
+    if _ine_reason:
+        wr.evidence["inject_not_exploit_warning"] = _ine_reason
+        # Downgrade: inject-not-exploit is a form of controlled interference
+        _wr_cur_conf = getattr(wr, "confidence", "none")
+        if wr.verified and _wr_cur_conf == "confirmed":
+            wr.confidence = "probable"
+            wr.evidence["confidence_downgraded_by"] = "inject_not_exploit_guard"
+        elif wr.verified and _wr_cur_conf == "probable":
+            wr.confidence = "possible"
+            wr.evidence["confidence_downgraded_by"] = "inject_not_exploit_guard"
 
     # Post-verify confidence sanity gate.
     # Challenge "probable" results with thin evidence to prevent FPs.
@@ -5749,6 +5982,35 @@ def _apply_wpverify_result(inv, wr, es: bool, llm=None) -> None:
                 f"downgraded from {_wr_conf!r}: body_len={_body_len}, "
                 f"bool_diff={_bool_diff}, hard_proof=False"
             )
+
+    # ── Gap #2: Post-success SanityGuy (second-LLM pass) ─────────────────────
+    # Only for confirmed results with hard evidence (sentinel/canary).
+    # Validates that the proof is genuine and not a lab artefact.
+    if wr.verified and getattr(wr, "confidence", "") == "confirmed" and llm is not None:
+        _ev_sg = getattr(wr, "evidence", {}) or {}
+        _has_hard = any([
+            _ev_sg.get("sentinel_uuid"),
+            _ev_sg.get("canary"), _ev_sg.get("canario_encontrado"),
+            _ev_sg.get("mysql_version_extraida"), _ev_sg.get("postgres_version"),
+            _ev_sg.get("db_version"), _ev_sg.get("command_output"),
+            _ev_sg.get("file_read_success"), _ev_sg.get("loot"),
+        ])
+        if _has_hard:
+            _sg = _sanity_guy_check(wr, llm, cve_id=getattr(inv, "cve_id", ""), es=es)
+            if _sg:
+                wr.evidence["sanity_guy"] = _sg
+                _sg_concerns = _sg.get("concerns") or []
+                if not _sg.get("genuine", True):
+                    # SanityGuy says not genuine → downgrade hard
+                    wr.confidence = "possible"
+                    wr.evidence["confidence_downgraded_by"] = (
+                        "sanity_guy: " + (_sg.get("verdict") or "not genuine")[:100])
+                elif _sg_concerns:
+                    # Genuine but has concerns → downgrade one level from confirmed
+                    if _sg.get("confidence") in ("probable", "possible"):
+                        wr.confidence = _sg["confidence"]
+                        wr.evidence["confidence_downgraded_by"] = (
+                            f"sanity_guy concerns: {_sg_concerns[:2]}")
 
     inv.dynamic_verify = {"attempted": True, "available": wr.available, "ok": wr.ok,
                           "verified": wr.verified, "detail": wr.detail, "logs": wr.logs,
