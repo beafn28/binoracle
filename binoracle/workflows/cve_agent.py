@@ -6103,7 +6103,18 @@ def _apply_wpverify_result(inv, wr, es: bool, llm=None) -> None:
                 wr.evidence["sanity_guy"] = _sg
                 _sg_concerns = _sg.get("concerns") or []
                 if not _sg.get("genuine", True):
-                    # SanityGuy says not genuine → downgrade hard
+                    # SanityGuy dice que NO es genuino -- esto es exactamente lo que
+                    # "verified" representa en todo el proyecto (una prueba de oraculo
+                    # real, no un artefacto del lab). Bajar solo la confianza y dejar
+                    # wr.verified=True dejaba el bug sin cerrar: _apply_wpverify_result
+                    # vuelca wr.verified directo a inv.verified/inv.dynamic_verify sin
+                    # volver a mirar la confianza, asi que un "no genuino" explicito de
+                    # SanityGuy seguia contando como "CONF" en el dashboard -- la unica
+                    # comprobacion diseñada para cazar artefactos de lab no tenia poder
+                    # real para anular un falso veredicto. Confirmado en vivo: esto
+                    # neutraliza el proposito entero de SanityGuy para el conteo de
+                    # verificados, que es lo unico que ve el dashboard/history.
+                    wr.verified = False
                     wr.confidence = "possible"
                     wr.evidence["confidence_downgraded_by"] = (
                         "sanity_guy: " + (_sg.get("verdict") or "not genuine")[:100])
