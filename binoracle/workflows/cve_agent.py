@@ -14699,6 +14699,24 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                   "auto-correct vuln_class: sqli→path-traversal (file read without SQL in handler)"))
                 except Exception:
                     pass
+            # Auto-detect admin-only vulnerability from description keywords.
+            # When description says "administrators" / "admin role" and auth_required is unset,
+            # mark it True early so the verifier starts with admin session instead of anon.
+            if not inv.llm_notes.get("auth_required"):
+                _d_low = (inv.description or "").lower()
+                _admin_kws = (
+                    "exploitable by admin", "accessible to admin",
+                    "exploitable by an admin", "by administrators", " by admin",
+                    "admin role", "administrator role", "requires admin",
+                    "admin user", "administrative privileges",
+                    "admin access only", "admin-only",
+                )
+                if any(kw in _d_low for kw in _admin_kws):
+                    inv.llm_notes["auth_required"] = "admin"
+                    notes["auth_required"] = "admin"
+                    step(("auto-detect: descripción indica vuln solo explotable por admin → auth_required=admin" if es else
+                          "auto-detect: description indicates admin-only vuln → auth_required=admin"))
+
             # HUECO path: when no public exploit exists, derive the attack from the real
             # source code BEFORE grounding — the taint scanner finds the vulnerable
             # parameter/endpoint deterministically, then the LLM reasons from actual PHP
@@ -17850,9 +17868,13 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 extra_setup_trigger_paths: List[str] = list(notes.get("setup_trigger_paths") or [])
                 _desc_low = (inv.description or "").lower()
                 _derived_role = (
-                    "administrator" if (notes.get("auth_required") and
-                                        any(w in _desc_low for w in
-                                            ("administrator", "admin user")))
+                    "administrator" if (
+                        notes.get("auth_required") in ("admin", "administrator", True)
+                        or (notes.get("auth_required") and
+                            any(w in _desc_low for w in
+                                ("administrator", "administrators", "admin user",
+                                 "admin role", "administrative", "admin-only")))
+                    )
                     else "editor" if any(w in _desc_low for w in ("editor",))
                     else "author" if any(w in _desc_low for w in ("author",))
                     else "contributor" if any(w in _desc_low for w in ("contributor",))
